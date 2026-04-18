@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ZonWiki.Api/ZonWiki.Api.csproj" />
+    <Project Path="src/ZonWiki.Domain/ZonWiki.Domain.csproj" />
+    <Project Path="src/ZonWiki.Infrastructure/ZonWiki.Infrastructure.csproj" />
+    <Project Path="src/ZonWiki.SyncWorker/ZonWiki.SyncWorker.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ZonWiki.Api.Tests/ZonWiki.Api.Tests.csproj" />
+    <Project Path="tests/ZonWiki.Infrastructure.Tests/ZonWiki.Infrastructure.Tests.csproj" />
+  </Folder>
+</Solution>
