@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx --version)",
+      "Bash(claude mcp:*)",
+      "Bash(npx -y @playwright/mcp --help)",
+      "Bash(dotnet --version)",
+      "Bash(dotnet --list-sdks)",
+      "Bash(docker --version)",
+      "Bash(docker compose:*)",
+      "Bash(dotnet new:*)",
+      "Bash(mkdir -p src tests)",
+      "Bash(dotnet sln:*)",
+      "Bash(dotnet add:*)",
+      "Bash(ls:*)",
+      "Bash(dotnet tool:*)",
+      "Bash(docker exec:*)",
+      "Bash(dotnet ef:*)",
+      "Bash(break)",
+      "Bash(netstat -ano)",
+      "Bash(tasklist /FI \"PID eq 7588\" /FI \"PID eq 12236\")",
+      "Bash(powershell:*)",
+      "Bash(curl -sS http://localhost:5009/healthz)",
+      "Bash(curl:*)",
+      "Bash(pnpm dlx:*)",
+      "Bash(cmd //c \"nvm version\")",
+      "Bash(cmd //c \"nvm list\")",
+      "Bash(cmd:*)",
+      "Bash(export PATH=\"/c/Users/User/AppData/Roaming/nvm/v20.12.2:$PATH\")",
+      "Bash(pnpm install:*)",
+      "Bash(pnpm run:*)",
+      "Bash(pnpm add:*)",
+      "Bash(docker volume:*)"
+    ]
+  }
+}
