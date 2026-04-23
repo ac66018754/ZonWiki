@@ -76,6 +76,9 @@ spec:
     spec:
       containers:
         - name: backend
+          # 預設從 Docker Hub 抓；如果放在別的 Registry 要寫完整地址
+          # 例如 ghcr.io/mycompany/task-backend:1.0.0
+          # 詳細說明見 03-開發後部署.md 的「Image 名稱與 Registry 的關係」
           image: mycompany/task-backend:1.0.0
 ```
 

@@ -59,7 +59,11 @@ docker compose up   # 跑本機開發環境
 # 用 hotfix tag 建立新 Image
 docker build -t bruce/task-backend:1.0.1-hotfix ./bruce-backend
 
-# 推上去
+# 推上去（預設推到 Docker Hub）
+# 如果你用 GitHub Container Registry，名稱要寫完整：
+#   docker build -t ghcr.io/你的帳號/task-backend:1.0.1-hotfix ./bruce-backend
+#   docker push ghcr.io/你的帳號/task-backend:1.0.1-hotfix
+# 詳細說明見 03-開發後部署.md 的「Image 名稱與 Registry 的關係」
 docker push bruce/task-backend:1.0.1-hotfix
 ```
 
