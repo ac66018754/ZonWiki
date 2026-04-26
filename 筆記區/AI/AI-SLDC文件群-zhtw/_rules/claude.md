@@ -26,6 +26,7 @@
 | `deprecation.md` | 歸檔過期 task / decision / constraint 時 |
 | `glossary.md` | 使用專案專有術語前 — 先到此確認意義 |
 | `retrofit-guide.md` | **僅限**將 AI-SLDC 中途導入既有專案時 |
+| `autonomy-authorization.md` | **每次**遇到「停下等人類」的暫停點時 — 規範如何讀 `docs/AI-自治授權.md` |
 
 如果上表中的規範檔案在這個專案的 `/docs/_rules/` 缺漏，視為 CRITICAL 缺口 — 立刻停下並回報給人類。
 
@@ -48,6 +49,8 @@
 如果 `current-state.md` 不存在，或明顯過期（>3 天未更新），視為 CRITICAL 問題 — 先更新它再繼續。
 
 **Retrofit 偵測：** 如果 `current-state.md` 仍是初始模板（Phase: Planning、所有欄位都 "none yet"）**但專案目錄已經有原始碼、設定檔或 git 歷史** — 這是中途導入情境。**必須**先讀並依照 `retrofit-guide.md` 執行回填，**不得**直接走全新專案 Phase 1 流程。
+
+**自治授權檢查（適用於整段流程）：** 任何時候本系統規範要求「停下等人類」（PRD/Task/Decision Approval、Steps Drift Material 重審、Schema → Dev/Prod 放行、Retrofit 整體驗收、歧義時等人類選擇等），**必須先依 `autonomy-authorization.md` 重讀 `docs/AI-自治授權.md`**，再決定要停下還是自走。每次都要重讀，不准沿用本 session 早先讀到的版本。
 
 ---
 
@@ -99,3 +102,4 @@
 - CRITICAL：達門檻的錯誤不得忽略 — 一律建立 issue
 - CRITICAL：歷史文件不得刪除 — 依 `deprecation.md` 歸檔
 - CRITICAL：不得悄悄偏離 task 的 Approved Steps — 依 `task-writing.md` 的 Steps Drift Policy 處理
+- CRITICAL：每次到「停下等人類」的暫停點，**必須**重讀 `docs/AI-自治授權.md` — 依 `autonomy-authorization.md`，不得 cache、不得自行揣測缺漏值；自治處理過的暫停點必須留下 `AI Agent (per autonomy-authorization #N)` 稽核 footprint

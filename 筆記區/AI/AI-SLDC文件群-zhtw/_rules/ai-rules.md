@@ -23,7 +23,13 @@
 ## Task 處理
 - 任何功能 → **必須**先產 task
 - Task **必須**透過 `## 相關連結` 段連到 PRD 需求 ID 與相關 issue / decision
-- Task **必須**為 `Status: Approved`（含人類填寫的 Approved By + Approved Date）才能開始寫 code
+- Task **必須**為 `Status: Approved` 才能開始寫 code；Approved 來源可為（a）人類填的 Approved By + Approved Date，或（b）AI 依 `autonomy-authorization.md` 重讀 `docs/AI-自治授權.md` 後，項目 #2 為「是」時的自治填入
+
+## 暫停點與自治授權
+- 每次遇到「停下等人類」的暫停點 → **必須**依 `autonomy-authorization.md` 重讀 `docs/AI-自治授權.md`，決定停下或自走
+- 不得 cache、不得沿用本 session 早先讀到的值
+- 自治處理過的暫停點**必須**在文件對應欄位填 `AI Agent (per autonomy-authorization #N)` 並在 session log 註記
+- 授權檔不存在 / 缺漏 / 格式錯誤 → 該項視同「否」
 
 ## Schema 變更處理
 - 任何 DB schema 變更 → 在執行 migration **之前**，必須依 `schema-change-writing.md` 建立紀錄
@@ -68,3 +74,4 @@
 - Decision 不得不同步 Rules 到 `constraints.md`
 - 不得刪除歷史文件 — 依 `deprecation.md` 歸檔
 - 不得悄悄偏離 task 的 Approved Steps — 依 Steps Drift Policy 處理
+- 不得在暫停點不讀 `docs/AI-自治授權.md` 就自行決定停下或自走 — 依 `autonomy-authorization.md`

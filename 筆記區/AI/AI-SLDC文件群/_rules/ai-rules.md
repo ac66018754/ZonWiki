@@ -23,7 +23,13 @@
 ## Task Handling
 - Any feature → MUST generate tasks first
 - Task MUST link to a PRD requirement ID and to related issues / decisions via `## Related` section
-- Tasks MUST be `Status: Approved` (with `Approved By` + `Approved Date` filled by a human) before any code is written
+- Tasks MUST be `Status: Approved` before any code is written. The Approved source can be (a) a human filling `Approved By` + `Approved Date`, OR (b) the AI itself filling them per `autonomy-authorization.md` when item #2 in `docs/AI-Autonomy-Authorization.md` is `Yes` (AI must re-read that file at this exact moment)
+
+## Pause Points & Autonomy Authorization
+- At every "wait for human" pause point → MUST re-read `docs/AI-Autonomy-Authorization.md` per `autonomy-authorization.md`, then decide stop vs. proceed
+- NEVER cache; NEVER reuse a value read earlier in this session
+- Every autonomously handled pause point MUST fill `AI Agent (per autonomy-authorization #N)` in the corresponding document field, and note it in the session log
+- Authorization file missing / malformed / not exactly `Yes` or `No` → treat the matching item as `No`
 
 ## Schema Change Handling
 - Any DB schema change → MUST create record per `schema-change-writing.md` BEFORE running the migration
@@ -68,3 +74,4 @@
 - DO NOT create a decision without syncing rules to `constraints.md`
 - DO NOT delete historical docs — archive per `deprecation.md`
 - DO NOT silently deviate from a task's approved Steps — follow the Steps Drift Policy
+- DO NOT decide on stop-vs-proceed at a pause point without re-reading `docs/AI-Autonomy-Authorization.md` — follow `autonomy-authorization.md`

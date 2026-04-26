@@ -81,3 +81,16 @@ production 出事時的精確還原步驟。含資料保留策略。
 - migration 檔**必須**版控、並透過 `Migration File` 連結
 - Reverted 紀錄**不刪** — `Status: Reverted`，並用一份新的 schema-change 紀錄描述修正動作
 - 命名規則來自全域 CLAUDE.md 的 DB schema 標準 — 該規則覆蓋任何在地慣例
+
+## 暫停點對照（自治授權 #7 / #8）
+
+本流程有兩個「等人類」暫停點，分別對應兩個獨立授權：
+
+| 暫停點 | 觸發 | 對應授權項 |
+|---|---|---|
+| 套到 dev 前 | `Status: Planned` 通過命名合規後、產 migration 之前 | #7 |
+| 套到 prod 前 | `Status: Applied (Dev)` → `Applied (Prod)` 之間 | #8（**強烈建議永遠「否」**） |
+
+AI 到達任一暫停點前**必須**依 `autonomy-authorization.md` 重讀 `docs/AI-自治授權.md`。
+若對應項目為「是」，AI 自行放行並在 `Applied On` 對應列填 `AI Agent (per autonomy-authorization #7)` 或 `#8` 加時間，並在 session log 註記。
+**命名合規檢查不過時不得繞過** — 屬於「不可授權項目」，無論 #7 / #8 是否為「是」都仍要停下。

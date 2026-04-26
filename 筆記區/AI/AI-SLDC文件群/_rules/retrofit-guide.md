@@ -71,15 +71,23 @@ AI 在 Session Recovery Flow 讀 `current-state.md` 時，如果發現：
 
 依照 `onboarding-writing.md` 產出 `onboarding/quick-start.md`，確保新人或新 AI session 能把服務啟動起來。
 
-### Step 8: 人類 Review
+### Step 8: Review（Human or AI per Autonomy Authorization）
 
-**以上所有回填內容都是 Draft 狀態，必須經過人類確認。**
+**All backfilled docs are Draft by default. Some form of review must run before normal flow resumes.**
 
-AI 完成回填後，應告知人類：
-- 「回填完成，請 review 以下文件：prd.md、X 份 decisions、constraints.md、X 份 tasks」
-- 「以下欄位標記為『原因不詳』，需要你補充：...」
+After backfill, the AI MUST re-read `docs/AI-Autonomy-Authorization.md` per `autonomy-authorization.md` and check item #9 (Retrofit Sign-off):
 
-人類確認後，流程正式接回正常的 Phase 3（開發）。
+- **#9 = `No` (default):** AI tells the human:
+  - "Backfill complete. Please review: prd.md, X decisions, constraints.md, X tasks"
+  - "These fields are marked 'reason unknown' and need your input: ..."
+  - After human confirmation, the project resumes normal Phase 3 (development).
+
+- **#9 = `Yes`:** AI promotes every backfilled Draft to its Active state (PRD → Approved, decisions → Accepted, in-progress tasks → Approved, Done tasks stay Done) and:
+  - Fills `<Approver/Decision Maker>: AI Agent (per autonomy-authorization #9)` plus today's date in each document
+  - In the first session log, lists every autonomously promoted document AND every "reason unknown" field that could not be resolved
+  - If a backfilled doc later turns out to be wrong, the human can still correct it via deprecation / amendment
+
+**Caution:** Step 2 of this guide warns that an AI-reverse-engineered PRD is **always incomplete**. Authorizing #9 = `Yes` does not eliminate that risk — it merely shifts the verification burden onto the AI and leaves the trace in the session log. Only set #9 = `Yes` if you trust the AI's understanding of this specific codebase.
 
 ---
 

@@ -73,6 +73,13 @@ Convert decision into actionable rules:
 
 Use `Reversibility` to judge whether a future Supersede is feasible. Decisions marked `One-Way` should require an explicit human sign-off before acceptance.
 
+> **Pause-point reference (autonomy authorization #3 / #4 / #5):** `Proposed → Accepted` is a "wait for human sign-off" pause, split into three independent authorizations by Reversibility:
+> - Easy → check item #3 in `docs/AI-Autonomy-Authorization.md`
+> - Hard → check item #4
+> - One-Way → check item #5 (**strongly recommended to keep at `No` permanently**)
+>
+> The AI MUST re-read `docs/AI-Autonomy-Authorization.md` per `autonomy-authorization.md` at this pause. If the matching item is `Yes`, the AI fills `Decision Maker: AI Agent (per autonomy-authorization #N)`, sets `Date Decided` to today, flips Status to `Accepted`, and records this in the session log.
+
 ## Rules
 - When creating a new decision that supersedes an old one:
   1. Set the new decision's `Supersedes` to the old decision

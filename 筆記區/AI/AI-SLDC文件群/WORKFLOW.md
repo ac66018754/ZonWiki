@@ -15,6 +15,7 @@ Last Updated: 2026-04-26
 |---|---|---|
 | 1 | **You** | Copy the entire `筆記區/AI/AI-SLDC文件群/_rules/` folder into `<project>/docs/_rules/` |
 | 2 | **You** | In `docs/`, create empty `current-state.md` (use the `current-state-writing.md` template, Phase = Planning, all fields "none yet") and an empty `constraints.md` |
+| 3 | **You** | Copy the master-root `AI-Autonomy-Authorization-template.md` to `<project>/docs/AI-Autonomy-Authorization.md`. Fill `Yes`/`No` for each item based on how much you trust the AI on this project (every item must have a value) |
 
 ### A2. First conversation with the AI — produce the PRD
 
@@ -145,19 +146,26 @@ Last Updated: 2026-04-26
 
 ---
 
-## When You MUST Step In (the only role humans can't skip)
+## When You MUST Step In (governed by the authorization file)
 
-The AI always waits for you on these. If you don't act, the flow halts:
+Every time the AI hits a "wait for human" pause point, it **first re-reads `docs/AI-Autonomy-Authorization.md`** (per `_rules/autonomy-authorization.md`) before deciding to stop or proceed. So **this table is "what you must do when the matching authorization item is `No`"**:
 
-| Trigger | What you must do |
-|---|---|
-| AI finishes PRD Draft | Set Status to `Approved` |
-| AI finishes task Draft | Set Status to `Approved`, fill Approved By/Date |
-| AI finishes decision Proposed | Set Status to `Accepted`, fill Decision Maker / Date Decided |
-| AI finishes schema-change Planned and wants to touch prod | Green-light it |
-| AI reports an ambiguity / asks you to choose | Make the call or supply more info |
+| Trigger | Authorization item | What you must do when item = `No` |
+|---|---|---|
+| AI finishes PRD Draft | #1 | Set Status to `Approved` |
+| AI finishes task Draft (incl. bug-fix tasks) | #2 | Set Status to `Approved`, fill Approved By/Date |
+| AI finishes decision Proposed (Easy) | #3 | Set Status to `Accepted`, fill Decision Maker / Date Decided |
+| AI finishes decision Proposed (Hard) | #4 | Same as above |
+| AI finishes decision Proposed (One-Way) | #5 | Same as above (**strongly recommended to keep at `No` permanently**) |
+| AI detects material Steps Drift | #6 | Re-approve the task that was demoted to Draft |
+| AI finishes schema-change Planned, wants dev | #7 | Green-light dev |
+| AI finishes schema-change Applied (Dev), wants prod | #8 | Sign off prod (**strongly recommended to keep at `No` permanently**) |
+| Retrofit backfill is complete (all Drafts) | #9 | Review backfill, fill unknowns, promote Drafts to Approved |
+| AI reports ambiguity / asks you to choose | #10 | Make the call or supply more info |
 
-Everything else, the AI can do alone. **Do these 5 things on time and the workflow runs itself.**
+**Items where authorization is `Yes`**, the AI proceeds, fills `AI Agent (per autonomy-authorization #N)` in the corresponding field, and notes it in the session log. Changes to the authorization file take effect immediately at the very next pause point — no ceremony required.
+
+**Items that CANNOT be authorized** (still enforced even if the file says `Yes`): naming-rule violations, DB mocks, deleting historical docs, skipping the session log, ignoring threshold-meeting errors, failing to sync decision rules to constraints, silently deviating from approved Steps.
 
 ---
 

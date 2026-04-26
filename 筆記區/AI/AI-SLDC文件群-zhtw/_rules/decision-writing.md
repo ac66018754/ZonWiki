@@ -73,6 +73,13 @@ Reversibility: Easy | Hard | One-Way
 
 `Reversibility` 用來判斷未來是否可被 supersede。標 `One-Way` 的 decision 在 Accepted 前要有人類明確簽名。
 
+> **暫停點對照（自治授權 #3 / #4 / #5）：** `Proposed → Accepted` 是「等人類拍板」的暫停點，依 Reversibility 拆三段獨立授權：
+> - Easy → 看 `docs/AI-自治授權.md` 項目 #3
+> - Hard → 看項目 #4
+> - One-Way → 看項目 #5（**強烈建議永遠保持「否」**）
+>
+> AI 在此暫停前**必須**依 `autonomy-authorization.md` 重讀 `docs/AI-自治授權.md`。若對應項目為「是」，AI 自行把 `Decision Maker` 填 `AI Agent (per autonomy-authorization #N)`、`Date Decided` 填當下日期、Status 改 `Accepted`，並在 session log 註記。
+
 ## 規則
 - 新 decision 取代舊 decision 時：
   1. 在新 decision 的 `Supersedes` 寫舊 decision

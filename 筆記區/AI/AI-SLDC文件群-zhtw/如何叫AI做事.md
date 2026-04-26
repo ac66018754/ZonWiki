@@ -20,6 +20,8 @@
 複製完後，依專案需要微調（測試覆蓋率門檻、命名豁免等）。
 **不要讓母本和專案版分支太遠** — 母本永遠是最新版，專案版是當下凍結版。
 
+**還要做一件事**：把母本根目錄的 `AI-自治授權-範本.md` 複製到 `<專案>/docs/AI-自治授權.md`，依該專案信任 AI 的程度填入「是／否」。AI 每次遇到「停下等人類」的暫停點都會重讀這個檔案決定要停下還是自走。沒這檔案 → 所有項目視同「否」，AI 永遠停下等你。
+
 每個專案根目錄不需要再寫 CLAUDE.md，全域 `~/.claude/CLAUDE.md` 已經有 startup sequence。
 專案專有規則寫進 `docs/constraints.md` — AI 啟動時必讀。
 
@@ -63,6 +65,18 @@
 > 不准違反全域 CLAUDE.md 命名規則寫 schema。
 > 不准結束 session 沒更新 `current-state.md` + 寫 session log。
 > 不准悄悄改變 task 的 Steps — 依 Steps Drift Policy 處理。
+> 每次到「等人類」暫停點，必須重讀 `docs/AI-自治授權.md`（依 `_rules/autonomy-authorization.md`），自治處理過的暫停點要留下 `AI Agent (per autonomy-authorization #N)` footprint。
+
+## 四之二、AI 自治授權怎麼控制
+
+`docs/AI-自治授權.md` 是「我這個專案讓 AI 自己決定到哪裡為止」的開關。10 個項目（PRD / Task / Decision Easy/Hard/One-Way / Steps Drift / Schema dev/prod / Retrofit / 歧義）每項填「是」或「否」。
+
+- 改了就生效，下個暫停點立刻採用 — 不用 commit、不用通知 AI。
+- 想全部交給 AI 走完？把 1～4、6、7、9、10 都填「是」（5、8 仍建議「否」，避開 One-Way decision 與 prod migration）。
+- 想全程嚴格人工？全部填「否」，等同退回原本最謹慎的流程。
+- 想 review 中間 AI 自治處理過什麼？看 session log 的 `Worked On` 段，AI 必填「本次 X 個暫停點由 AI 自治處理（依授權 #N、#M）」。
+
+**永遠不可授權的紅線**：命名規則、DB mock、刪歷史、跳過 session log、達門檻錯誤不開 issue、decision 不同步 constraints、悄悄偏離 Steps — 即使授權檔填「是」，AI 仍要遵守。
 
 ---
 
@@ -93,7 +107,9 @@
 │   ├── schema-change-writing.md   ← DB 變更紀錄、命名合規檢查
 │   ├── deprecation.md             ← 歸檔規則（不刪只歸）
 │   ├── glossary.md                ← 專案術語定義
-│   └── retrofit-guide.md          ← 中途導入才用
+│   ├── retrofit-guide.md          ← 中途導入才用
+│   └── autonomy-authorization.md  ← 規範如何讀 docs/AI-自治授權.md
+├── AI-自治授權-範本.md             ← 給每個專案複製到 docs/AI-自治授權.md
 └── 如何叫AI做事.md                 ← 本文件（給未來的我的入口）
 ```
 

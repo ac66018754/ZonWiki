@@ -89,6 +89,8 @@ Approved Date: YYYY-MM-DD | <pending>
 
 **Approved 不得跳過。** AI **不得**對 `Status: Draft` 的 task 寫 code。
 
+> **暫停點對照（自治授權 #2）：** `Draft → Approved` 是「等人類」的暫停點。AI 在此暫停前**必須**依 `autonomy-authorization.md` 重讀 `docs/AI-自治授權.md`。若 #2 為「是」，AI 自行把 `Approved By` 填 `AI Agent (per autonomy-authorization #2)`、`Approved Date` 填當下日期、Status 改 `Approved`，並在 session log 註記。bug fix 修復 task 同此。
+
 ## 步驟偏離政策（Steps Drift Policy）
 
 執行中發現原本的 Steps 錯了、不完整、或基於過期假設時：
@@ -100,8 +102,10 @@ Approved Date: YYYY-MM-DD | <pending>
 
 - **重大變更**（不同做法、不同檔案範圍、需要新 decision、範圍擴大）：
   - 停。**不要**動手。
-  - 二擇一：
-    1. 修改 task → 把 `Status` 退回 `Draft` → 請人類重新核准；或
-    2. 把這個 task 標 `Blocked`（或依 `deprecation.md` 歸檔放棄），另開一個正確做法的新 task。
+  - 依 `autonomy-authorization.md` 重讀 `docs/AI-自治授權.md` 看項目 #6（Steps Drift Material 變更）：
+    - #6 = 否 → 二擇一：
+      1. 修改 task → 把 `Status` 退回 `Draft` → 請人類重新核准；或
+      2. 把這個 task 標 `Blocked`（或依 `deprecation.md` 歸檔放棄），另開一個正確做法的新 task。
+    - #6 = 是 → AI 自行修改 Steps、把 task `Status` 退回 `Draft` 後再依 #2 自治核准（`Approved By` 填 `AI Agent (per autonomy-authorization #6)`），並在 session log 詳列偏離原因。
 
-**絕不**悄悄偏離 Approved Steps，必須留下偏離紀錄。
+**絕不**悄悄偏離 Approved Steps，必須留下偏離紀錄（無論 #6 是不是「是」，偏離紀錄本身永遠強制）。

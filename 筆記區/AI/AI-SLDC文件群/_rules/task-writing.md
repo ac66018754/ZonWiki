@@ -89,6 +89,8 @@ How to PROVE Definition of Done is met:
 
 **MUST NOT skip Approved.** AI MUST NOT execute a task with `Status: Draft`.
 
+> **Pause-point reference (autonomy authorization #2):** `Draft → Approved` is a "wait for human" pause point. Before stopping here, the AI MUST re-read `docs/AI-Autonomy-Authorization.md` per `autonomy-authorization.md`. If #2 is `Yes`, the AI fills `Approved By: AI Agent (per autonomy-authorization #2)`, sets `Approved Date` to today, flips Status to `Approved`, and records this in the session log. Bug-fix tasks follow the same rule.
+
 ## Steps Drift Policy
 
 If during execution you find the original Steps are wrong, incomplete, or based on outdated assumptions:
@@ -100,8 +102,10 @@ If during execution you find the original Steps are wrong, incomplete, or based 
 
 - **Material change** (different approach, different file set, requires a new decision, expands scope):
   - STOP. Do not implement.
-  - Either:
-    1. Revise the task → set `Status` back to `Draft` → request human re-approval, OR
-    2. Close this task as `Blocked` (or archive it via `deprecation.md` if abandoned), then create a new task with the correct approach.
+  - Re-read `docs/AI-Autonomy-Authorization.md` per `autonomy-authorization.md` and check item #6 (Steps Drift Material change):
+    - #6 = `No` → choose one:
+      1. Revise the task → set `Status` back to `Draft` → request human re-approval, OR
+      2. Close this task as `Blocked` (or archive it via `deprecation.md` if abandoned), then create a new task with the correct approach.
+    - #6 = `Yes` → AI revises Steps, demotes task to `Draft`, then re-approves autonomously per #2 (filling `Approved By: AI Agent (per autonomy-authorization #6)`), and details the drift reason in the session log.
 
-NEVER silently deviate from approved Steps without recording the drift.
+NEVER silently deviate from approved Steps without recording the drift (the drift record is mandatory regardless of #6).

@@ -26,6 +26,7 @@ All rules live in `/docs/_rules/`. After reading this file, you know which rule 
 | `deprecation.md` | When archiving expired tasks, decisions, or constraints |
 | `glossary.md` | When using a project-specific term — verify meaning here first |
 | `retrofit-guide.md` | ONLY when adopting AI-SLDC into an existing project (mid-project) |
+| `autonomy-authorization.md` | EVERY time you hit a "wait for human" pause point — defines how to read `docs/AI-Autonomy-Authorization.md` |
 
 If a rule file referenced above is missing from this project's `/docs/_rules/`, treat it as a CRITICAL gap — stop and surface to the human before continuing.
 
@@ -48,6 +49,8 @@ When starting a new session, or when context is lost, you MUST follow this seque
 If `current-state.md` is missing or clearly stale (>3 days old), treat this as a CRITICAL issue and update it before proceeding.
 
 **Retrofit detection:** If `current-state.md` is still the initial template (Phase: Planning, all fields are "none yet") BUT the project directory already contains source code, config files, or git history — this is a mid-project adoption. You MUST read and follow `retrofit-guide.md` BEFORE doing any other work. Do NOT start the normal Phase 1 flow.
+
+**Autonomy authorization check (applies throughout the entire flow):** ANY time this system tells you to "wait for human" (PRD/Task/Decision Approval, Steps Drift material re-approval, Schema → Dev/Prod sign-off, Retrofit overall review, ambiguity-driven choice, etc.), you MUST first re-read `docs/AI-Autonomy-Authorization.md` per `autonomy-authorization.md`, then decide whether to stop or proceed. Re-read every time. NEVER reuse a value read earlier in the same session.
 
 ---
 
@@ -99,3 +102,4 @@ If `current-state.md` is missing or clearly stale (>3 days old), treat this as a
 - CRITICAL: DO NOT ignore errors that meet the threshold — every qualifying error becomes an issue record
 - CRITICAL: DO NOT delete historical docs — archive per `deprecation.md`
 - CRITICAL: DO NOT silently deviate from a task's approved Steps — follow the Steps Drift Policy in `task-writing.md`
+- CRITICAL: At every "wait for human" pause point, you MUST re-read `docs/AI-Autonomy-Authorization.md` per `autonomy-authorization.md`. NEVER cache. NEVER guess at missing values. Every autonomously handled pause point MUST leave an `AI Agent (per autonomy-authorization #N)` audit footprint.

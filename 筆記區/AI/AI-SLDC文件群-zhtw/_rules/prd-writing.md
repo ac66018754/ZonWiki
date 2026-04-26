@@ -69,3 +69,9 @@ Status: Draft | In Review | Approved
 - PRD **必須** `Status: Approved` 才能開始開發
 - Task **必須**回溯到此 PRD 中的某個需求 ID
 - 需求變更時，**先**更新 PRD，**再**更新受影響的 task
+
+## 暫停點對照（自治授權 #1）
+
+`Status: Draft → Approved` 是「等人類」的暫停點。
+AI 在此暫停前**必須**依 `autonomy-authorization.md` 重讀 `docs/AI-自治授權.md`。
+若項目 #1 為「是」，AI 自行把 PRD `Status` 改為 `Approved`、在文件底部加 `Approved By: AI Agent (per autonomy-authorization #1) on YYYY-MM-DD`，並在 session log 註記。

@@ -82,3 +82,16 @@ If rollback is impossible (One-Way), state so explicitly and link the supporting
 - MUST keep migration files in source control alongside this record (link via `Migration File`)
 - Reverted records are NOT deleted — set `Status: Reverted` and create a new schema-change record for the corrective change
 - Naming rules come from the global CLAUDE.md DB schema standard — that document overrides any local convention
+
+## Pause-Point Reference (Autonomy Authorization #7 / #8)
+
+This flow has two "wait for human" pauses, each with its own authorization item:
+
+| Pause | Trigger | Maps to |
+|---|---|---|
+| Before applying to dev | After `Status: Planned` passes naming compliance, before generating the migration | #7 |
+| Before applying to prod | Between `Status: Applied (Dev)` and `Applied (Prod)` | #8 (**strongly recommended to stay `No`**) |
+
+At each pause, the AI MUST re-read `docs/AI-Autonomy-Authorization.md` per `autonomy-authorization.md`.
+If the matching item is `Yes`, the AI proceeds and fills the corresponding `Applied On` row with `AI Agent (per autonomy-authorization #7)` or `#8` plus a timestamp, and records this in the session log.
+**Naming compliance failures CANNOT be bypassed** — that's an "uncannot-be-authorized" item, regardless of whether #7 / #8 is `Yes`.

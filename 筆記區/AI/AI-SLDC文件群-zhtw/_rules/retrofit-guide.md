@@ -90,15 +90,23 @@ AI 在 Session Recovery Flow 讀 `current-state.md` 時，如果發現：
 
 依 `onboarding-writing.md` 產出 `onboarding/quick-start.md`，確保新人或新 AI session 能把服務啟動。
 
-### Step 11：人類 Review
+### Step 11：Review（人類或 AI 自治）
 
-**以上所有回填內容都是 Draft 狀態，必須經人類確認。**
+**以上所有回填內容預設都是 Draft 狀態，必須經 review 才接回正常流程。**
 
-AI 完成回填後，要告知人類：
-- 「回填完成，請 review 以下文件：prd.md、X 份 decisions、constraints.md、X 份 tasks、schema-changes、第一筆 session log」
-- 「以下欄位標記為『原因不詳』，需要你補充：...」
+AI 完成回填後，**必須**依 `autonomy-authorization.md` 重讀 `docs/AI-自治授權.md` 看項目 #9（Retrofit 回填驗收）：
 
-人類確認後，流程正式接回正常的開發 phase。
+- **#9 = 否（預設）：** AI 告知人類：
+  - 「回填完成，請 review 以下文件：prd.md、X 份 decisions、constraints.md、X 份 tasks、schema-changes、第一筆 session log」
+  - 「以下欄位標記為『原因不詳』，需要你補充：...」
+  - 人類確認後，流程正式接回正常的開發 phase。
+
+- **#9 = 是：** AI 自行把所有回填 Draft 提升到對應 Active 狀態（PRD → Approved、decisions → Accepted、in-progress tasks → Approved、Done tasks 維持 Done），並：
+  - 在每份文件填 `<Approver/Decision Maker>: AI Agent (per autonomy-authorization #9)` 與當下日期
+  - 在第一筆 session log 詳列「自治驗收清單 + 每份文件中無法確認的『原因不詳』欄位」
+  - 後續若人類發現某份回填錯誤，仍可走 deprecation / 修改流程修正
+
+**注意：** retrofit-guide 第 2 步「PRD 反推一定不完整」這個風險不會因為授權「是」就消失 — 只是把人類驗收的責任先壓在 AI 上、由 session log 留底。建議只在你信得過 AI 對該專案理解的情況下才把 #9 設為「是」。
 
 ---
 

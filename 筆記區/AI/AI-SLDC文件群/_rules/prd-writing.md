@@ -67,3 +67,9 @@ Anything explicitly excluded from this version
 - PRD MUST have Status: Approved before development begins
 - Tasks MUST trace back to a requirement ID in this PRD
 - If a requirement changes, update the PRD first, then update affected tasks
+
+## Pause-Point Reference (Autonomy Authorization #1)
+
+`Status: Draft → Approved` is a "wait for human" pause.
+At this pause, the AI MUST re-read `docs/AI-Autonomy-Authorization.md` per `autonomy-authorization.md`.
+If item #1 is `Yes`, the AI flips `Status` to `Approved`, appends `Approved By: AI Agent (per autonomy-authorization #1) on YYYY-MM-DD` to the bottom of the file, and records this in the session log.
