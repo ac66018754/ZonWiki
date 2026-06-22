@@ -3,6 +3,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
+import { enhanceCodeBlocks } from '@/lib/codeBlocks';
 import {
   getNote,
   updateNote,
@@ -98,6 +99,13 @@ export default function NotesDetailPage() {
     resetUndo();
     return () => resetUndo();
   }, [note?.id]);
+
+  // 為閱讀檢視中的程式碼區塊注入「一鍵複製」按鈕（內容為注入 HTML，故以 DOM 後處理）。
+  // 內容（contentHtml）或分頁變更後重跑；已處理的區塊有 data-cb 標記不會重複加。
+  useEffect(() => {
+    if (activeTab !== 'preview' || !previewRef.current) return;
+    enhanceCodeBlocks(previewRef.current);
+  }, [activeTab, note?.contentHtml]);
 
   // AI 操作回調：AI（排版/美化/撤銷）只更新編輯器內容，不寫 DB、也不重抓筆記
   // （後端已改為純轉換、不落地）。先前的 getNote 重抓會把編輯器內容蓋回 DB 版，
@@ -838,16 +846,28 @@ export default function NotesDetailPage() {
         }
 
         .markdown-prose pre {
+          position: relative;
           background: var(--code-bg);
-          padding: var(--spacing-3);
+          border: 1px solid var(--border-strong, var(--border-default));
+          border-left: 4px solid var(--action-primary-bg);
+          padding: var(--spacing-4);
+          padding-top: calc(var(--spacing-4) + 4px);
           border-radius: var(--radius-md);
+          box-shadow: var(--shadow-sm);
           overflow-x: auto;
-          margin: var(--spacing-3) 0;
+          margin: var(--spacing-4) 0;
         }
 
         .markdown-prose pre code {
+          display: block;
           background: transparent;
           padding: 0;
+          font-family: var(--font-mono);
+          font-size: 0.9em;
+          /* 長行自動換行（依需求要有換行），而非只能水平捲動 */
+          white-space: pre-wrap;
+          word-break: break-word;
+          overflow-wrap: anywhere;
         }
 
         .markdown-prose ul,

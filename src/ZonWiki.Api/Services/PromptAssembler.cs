@@ -95,6 +95,70 @@ public static class PromptAssembler
     }
 
     /// <summary>
+    /// 組建選取片段提問的 Prompt（含祖先脈絡版）：在原本「節點內容 + 框選文字 + 提問」之上，
+    /// 再附上該節點的祖先脈絡，讓 AI 看到更完整的上下文（修正「框選提問上下文太少」）。
+    /// 格式：
+    /// 上下文脈絡：
+    /// [祖先1內容]
+    /// ...
+    /// 節點內容：
+    /// [整份節點內容]
+    /// 焦點（框選文字）：
+    /// [anchorText]
+    /// 提問：
+    /// [userQuestion]
+    /// </summary>
+    /// <param name="ancestry">祖先鏈（不含來源節點本身）。</param>
+    /// <param name="nodeContent">來源節點的完整內容。</param>
+    /// <param name="anchorText">被框選的文字片段。</param>
+    /// <param name="userQuestion">使用者輸入的追問。</param>
+    /// <returns>組建後的 Prompt。</returns>
+    public static string AssembleSelectionPromptWithContext(
+        List<Node> ancestry,
+        string nodeContent,
+        string anchorText,
+        string userQuestion)
+    {
+        var sb = new StringBuilder();
+
+        if (ancestry.Count > 0)
+        {
+            sb.AppendLine("上下文脈絡：");
+            sb.AppendLine();
+            foreach (var node in ancestry)
+            {
+                if (!string.IsNullOrEmpty(node.Content))
+                {
+                    sb.AppendLine(node.Content);
+                    sb.AppendLine();
+                }
+            }
+            sb.AppendLine("---");
+            sb.AppendLine();
+        }
+
+        sb.AppendLine("節點內容：");
+        sb.AppendLine();
+        sb.AppendLine(nodeContent);
+        sb.AppendLine();
+
+        sb.AppendLine("---");
+        sb.AppendLine();
+        sb.AppendLine("焦點（框選文字）：");
+        sb.AppendLine();
+        sb.AppendLine(anchorText);
+        sb.AppendLine();
+
+        sb.AppendLine("---");
+        sb.AppendLine();
+        sb.AppendLine("提問：");
+        sb.AppendLine();
+        sb.Append(userQuestion);
+
+        return sb.ToString();
+    }
+
+    /// <summary>
     /// 組建圖片生成的 Prompt：由祖先脈絡與節點內容組建，供生圖模型參考。
     /// 格式類同節點提問，但用於圖片模型。
     /// </summary>

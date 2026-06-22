@@ -1,10 +1,20 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { createTaskCard, type TaskGroup, type CurrentUser } from "@/lib/api";
+import {
+  createTaskCard,
+  assignTaskTags,
+  listNoteTags,
+  createNoteTag,
+  createTaskGroup,
+  type TaskGroup,
+  type NoteTag,
+  type CurrentUser,
+} from "@/lib/api";
 import { DateTimePicker } from "@/components/DateTimePicker";
 import { SearchableMultiSelect } from "@/components/SearchableMultiSelect";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
+import { showToast } from "@/lib/toast";
 import { FALLBACK_TZ, PRIORITY_META } from "../taskUtils";
 
 /** 行事曆點格子帶入的初始時間（UTC ISO；可為 null）。null=不開啟。 */
@@ -39,6 +49,22 @@ export function QuickCreateTaskModal({
   const [priority, setPriority] = useState(0);
   const [groupId, setGroupId] = useState("");
   const [saving, setSaving] = useState(false);
+  // 分類清單（以 prop 為基底，可就地新增分類後即時反映）
+  const [localGroups, setLocalGroups] = useState<TaskGroup[]>(groups);
+  // 標籤（與筆記共用標籤庫）
+  const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
+  const [tagPool, setTagPool] = useState<NoteTag[]>([]);
+
+  // 分類 prop 變動時同步本地清單
+  useEffect(() => {
+    setLocalGroups(groups);
+  }, [groups]);
+
+  // 開啟時載入共用標籤庫
+  useEffect(() => {
+    if (!initial) return;
+    listNoteTags().then(setTagPool).catch(() => {});
+  }, [initial]);
 
   // 每次開啟（initial 變更）重置欄位並帶入時間
   useEffect(() => {
@@ -49,6 +75,7 @@ export function QuickCreateTaskModal({
     setDue(initial.dueDateTime);
     setPriority(0);
     setGroupId("");
+    setSelectedTagIds([]);
   }, [initial]);
 
   // Esc 關閉
@@ -77,6 +104,11 @@ export function QuickCreateTaskModal({
         dueDateTime: due,
       });
       if (created) {
+        // 標籤需在卡片建立後另以 PUT 整組指派（沿用編輯器同一流程）
+        if (selectedTagIds.length > 0) {
+          await assignTaskTags(created.id, selectedTagIds);
+        }
+        showToast("任務已建立", { type: "success" });
         onCreated();
         onClose();
       }
@@ -183,12 +215,50 @@ export function QuickCreateTaskModal({
           <div style={{ flex: 1, minWidth: "160px" }}>
             <SearchableMultiSelect
               single
-              options={groups.map((g) => ({ id: g.id, name: g.name }))}
+              options={localGroups.map((g) => ({ id: g.id, name: g.name }))}
               selectedIds={groupId ? [groupId] : []}
               onChange={(ids) => setGroupId(ids[0] ?? "")}
-              placeholder="分類（可留空）…"
+              onCreate={async (name) => {
+                try {
+                  const g = await createTaskGroup({ name });
+                  if (g) {
+                    setLocalGroups((prev) => [...prev, g]);
+                    return { id: g.id, name: g.name };
+                  }
+                } catch {
+                  /* 建立失敗：忽略，使用者可重試 */
+                }
+                return null;
+              }}
+              placeholder="搜尋或新增分類…"
             />
           </div>
+        </div>
+
+        {/* 標籤（與筆記共用標籤庫；與編輯任務一致） */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-1)" }}>
+          <span style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>標籤</span>
+          <SearchableMultiSelect
+            options={tagPool.map((t) => ({ id: t.id, name: t.name }))}
+            selectedIds={selectedTagIds}
+            onChange={setSelectedTagIds}
+            onCreate={async (name) => {
+              const existing = tagPool.find((t) => t.name === name);
+              if (existing) return { id: existing.id, name: existing.name };
+              try {
+                const created = await createNoteTag(name);
+                if (created) {
+                  setTagPool((prev) => [...prev, created]);
+                  return { id: created.id, name: created.name };
+                }
+              } catch {
+                /* 409 重名等：忽略 */
+              }
+              return null;
+            }}
+            prefix="#"
+            placeholder="搜尋或新增標籤…（與筆記共用）"
+          />
         </div>
 
         {/* 內容（Markdown；與完整編輯器同一套工具列） */}

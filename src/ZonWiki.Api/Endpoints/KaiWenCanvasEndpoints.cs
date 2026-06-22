@@ -1185,6 +1185,18 @@ public static class KaiWenCanvasEndpoints
 
         node.ValidFlag = false;
         node.DeletedDateTime = DateTime.UtcNow; // 進統一垃圾桶需設刪除時間
+
+        // 一併軟刪除以此節點為來源或目標的連線（Edge），避免畫布上殘留指向已刪除節點的懸空連線。
+        var incidentEdges = await db.Edge
+            .Where(e => e.CanvasId == node.CanvasId
+                && (e.SourceNodeId == nodeGuid || e.TargetNodeId == nodeGuid))
+            .ToListAsync(ct);
+        foreach (var edge in incidentEdges)
+        {
+            edge.ValidFlag = false;
+            edge.DeletedDateTime = DateTime.UtcNow;
+        }
+
         await db.SaveChangesAsync(ct);
 
         return Results.StatusCode(StatusCodes.Status204NoContent);

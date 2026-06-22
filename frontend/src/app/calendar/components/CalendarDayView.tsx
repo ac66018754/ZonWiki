@@ -102,7 +102,11 @@ export function CalendarDayView({
           textAlign: "center",
           padding: "var(--spacing-3)",
           borderRadius: "var(--radius-lg)",
-          background: isToday ? "var(--status-success-bg)" : "var(--bg-surface-secondary)",
+          // 今日：淡綠底 + 綠框 + 綠字（含「（今天）」標記），不再整條塗滿濃綠。
+          background: isToday
+            ? "color-mix(in srgb, var(--status-success-bg) 40%, var(--bg-surface-secondary))"
+            : "var(--bg-surface-secondary)",
+          border: isToday ? "1px solid var(--status-success-fg)" : "1px solid transparent",
           color: isToday ? "var(--status-success-fg)" : "var(--text-primary)",
           fontSize: "var(--text-2xl)",
           fontWeight: 700,

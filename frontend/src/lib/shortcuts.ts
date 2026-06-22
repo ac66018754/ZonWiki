@@ -33,6 +33,7 @@ export interface ShortcutAction {
  */
 export const SHORTCUT_ACTIONS: readonly ShortcutAction[] = [
   // ── 全域（任何頁面皆可用）──
+  { id: "openHome", scope: "global", label: "返回首頁", defaultKey: "h" },
   { id: "openTasks", scope: "global", label: "前往 Todo（日程規劃）", defaultKey: "t" },
   { id: "openCanvas", scope: "global", label: "前往開問啦（畫布）", defaultKey: "q" },
   { id: "openNotes", scope: "global", label: "前往筆記", defaultKey: "n" },

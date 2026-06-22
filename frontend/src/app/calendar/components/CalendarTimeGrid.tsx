@@ -253,7 +253,14 @@ export function CalendarTimeGrid({
                   height: 24 * HOUR_H,
                   borderLeft: "1px solid var(--border-subtle, var(--border-default))",
                   backgroundImage: hourLineBg,
-                  background: dayKey === todayKey ? "var(--status-success-bg)" : undefined,
+                  // 今日：用「淡底色 + 左側強調線」標示，而非整欄塗滿綠色（過去太刺眼）。
+                  // 注意：用 backgroundColor（非 background 簡寫）才不會把 backgroundImage 的時刻線洗掉。
+                  backgroundColor:
+                    dayKey === todayKey
+                      ? "color-mix(in srgb, var(--status-success-bg) 35%, transparent)"
+                      : undefined,
+                  boxShadow:
+                    dayKey === todayKey ? "inset 2px 0 0 0 var(--status-success-fg)" : undefined,
                   cursor: "pointer",
                 }}
               >
@@ -264,10 +271,12 @@ export function CalendarTimeGrid({
                   // 拖曳移動時可能換欄（週視圖）；只在「目標欄」畫拖曳中的塊，避免重複。
                   if (isDragging && drag!.mode === "move" && drag!.dayIndex !== dayIndex) return null;
                   const c = barColors(p.task);
-                  const gap = 2;
+                  // 任務塊四周留小縫隙，讓周圍空白時段仍可點擊新增（gap=左右、vGap=上下）。
+                  const gap = 3;
+                  const vGap = 2;
                   const widthPct = 100 / p.cols;
-                  const top = (sMin / 60) * HOUR_H;
-                  const height = Math.max(((eMin - sMin) / 60) * HOUR_H, 14);
+                  const top = (sMin / 60) * HOUR_H + vGap;
+                  const height = Math.max(((eMin - sMin) / 60) * HOUR_H - vGap * 2, 12);
                   return (
                     <div
                       key={p.task.id}

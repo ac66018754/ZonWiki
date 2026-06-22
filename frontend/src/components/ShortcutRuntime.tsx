@@ -107,6 +107,9 @@ function isTypingTarget(target: EventTarget | null): boolean {
 /** 執行 global 範圍的動作（導覽 / 聚焦搜尋）。 */
 function runGlobalAction(id: string, router: ReturnType<typeof useRouter>): void {
   switch (id) {
+    case "openHome":
+      router.push("/");
+      break;
     case "openTasks":
       router.push("/tasks");
       break;

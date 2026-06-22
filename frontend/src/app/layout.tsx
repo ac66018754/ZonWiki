@@ -8,6 +8,7 @@ import { AuthGuard } from "@/components/AuthGuard";
 import { SessionExpiryPrompt } from "@/components/SessionExpiryPrompt";
 import { MobileNavOverlay } from "@/components/MobileNavOverlay";
 import { ShortcutRuntime } from "@/components/ShortcutRuntime";
+import { ToastHost } from "@/components/ToastHost";
 import { RouteAttr } from "@/components/RouteAttr";
 import { CanvasToolbarProvider } from "@/components/CanvasToolbarContext";
 import { getCurrentUser } from "@/lib/api";
@@ -104,6 +105,9 @@ export default async function RootLayout({
 
         {/* 登入失效提示：任一 API 回 401 時彈出「請先登入」+前往登入按鈕（取代靜默彈回） */}
         <SessionExpiryPrompt />
+
+        {/* 全域 Toast（小彈窗）：儲存成功等提示，自己淡出消失、無關閉鈕 */}
+        <ToastHost />
 
         <CanvasToolbarProvider>
         {user ? (

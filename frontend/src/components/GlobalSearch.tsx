@@ -6,15 +6,71 @@ import { searchAll, SearchResult } from "@/lib/api";
 import { logger } from "@/lib/logger";
 
 /**
+ * 搜尋結果項目（在後端內容結果之外，再加上前端的「功能/頁面」項目）。
+ * 後端 SearchResult.type 為嚴格聯集，這裡額外允許 "function"。
+ */
+type SearchItem = Omit<SearchResult, "type"> & {
+  type: SearchResult["type"] | "function";
+};
+
+/**
+ * 可被全域搜尋找到的「功能/頁面」項目（涵蓋主要功能入口與個人頁各子頁）。
+ * 純前端靜態索引：不需後端改動，輸入關鍵字即可在搜尋框中直接跳轉到對應功能。
+ */
+interface FeatureEntry {
+  /** 顯示標題。 */
+  title: string;
+  /** 跳轉網址。 */
+  url: string;
+  /** 額外比對關鍵字（中英別名）。 */
+  keywords: string[];
+}
+
+const FEATURE_INDEX: readonly FeatureEntry[] = [
+  { title: "首頁（儀表板）", url: "/", keywords: ["home", "dashboard", "首頁", "主頁"] },
+  { title: "日程規劃 / 任務 / 行事曆", url: "/tasks", keywords: ["task", "todo", "calendar", "任務", "日程", "行事曆", "看板", "清單"] },
+  { title: "開問啦（AI 畫布）", url: "/canvas", keywords: ["canvas", "kaiwen", "畫布", "節點", "ai", "開問啦"] },
+  { title: "筆記", url: "/notes", keywords: ["note", "筆記", "知識"] },
+  { title: "知識圖譜", url: "/notes/graph", keywords: ["graph", "圖譜", "知識圖譜"] },
+  { title: "垃圾桶", url: "/trash", keywords: ["trash", "垃圾桶", "回收", "刪除", "還原"] },
+  { title: "個人頁面 / 帳號資訊", url: "/profile", keywords: ["profile", "account", "帳號", "個人", "暱稱"] },
+  { title: "修改密碼", url: "/profile", keywords: ["password", "密碼", "修改密碼", "改密碼"] },
+  { title: "顯示時區設定", url: "/profile", keywords: ["timezone", "時區"] },
+  { title: "統計數據", url: "/profile/stats", keywords: ["stats", "統計", "數據"] },
+  { title: "活動紀錄", url: "/profile/activity", keywords: ["activity", "活動", "紀錄", "歷史"] },
+  { title: "快捷鍵設定", url: "/profile/shortcuts", keywords: ["shortcut", "快捷鍵", "鍵盤", "綁定"] },
+];
+
+/**
+ * 在功能索引中比對查詢字串，回傳符合的功能項目（type=function）。
+ * @param query 使用者輸入。
+ * @returns 符合的功能項目陣列（空查詢回空陣列）。
+ */
+function searchFeatures(query: string): SearchItem[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  return FEATURE_INDEX.filter(
+    (feature) =>
+      feature.title.toLowerCase().includes(q) ||
+      feature.keywords.some((keyword) => keyword.toLowerCase().includes(q))
+  ).map((feature) => ({
+    type: "function" as const,
+    id: `fn:${feature.url}:${feature.title}`,
+    title: feature.title,
+    url: feature.url,
+  }));
+}
+
+/**
  * 全域搜尋下拉組件
  * - 支援 Cmd/Ctrl+K 快捷鍵
- * - 搜尋筆記、任務
+ * - 搜尋筆記、任務、畫布、節點，以及個人頁/主功能等「功能項目」
  * - 鍵盤上下選取 + Enter 跳轉
  */
 export function GlobalSearch() {
   const router = useRouter();
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<SearchResult[]>([]);
+  const [results, setResults] = useState<SearchItem[]>([]);
   const [isOpen, setIsOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -45,14 +101,18 @@ export function GlobalSearch() {
     // 200ms debounce
     searchTimeoutRef.current = setTimeout(() => {
       (async () => {
+        // 前端功能索引：即使後端失敗也先放上功能項目，確保「搜尋頁面功能」永遠可用。
+        const features = searchFeatures(q);
         try {
           // 使用後端搜尋 API 同時搜尋筆記、任務、畫布、節點
-          const results = await searchAll(q);
-          setResults(results);
+          const serverResults = await searchAll(q);
+          // 功能項目置前（使用者意圖找功能時優先），再接內容結果
+          setResults([...features, ...serverResults]);
           setIsOpen(true);
         } catch (err) {
           logger.error("Search failed:", err);
-          setResults([]);
+          setResults(features);
+          setIsOpen(features.length > 0);
         } finally {
           setLoading(false);
         }
@@ -63,7 +123,7 @@ export function GlobalSearch() {
   /**
    * 導航到選中結果
    */
-  const navigateToResult = (result: SearchResult) => {
+  const navigateToResult = (result: SearchItem) => {
     router.push(result.url);
     setIsOpen(false);
     setQuery("");
@@ -141,6 +201,8 @@ export function GlobalSearch() {
         return { label: "節點", emoji: "◇" };
       case "quicklink":
         return { label: "連結", emoji: "🔗" };
+      case "function":
+        return { label: "功能", emoji: "⚙️" };
       default:
         return { label: type, emoji: "◆" };
     }
@@ -151,7 +213,7 @@ export function GlobalSearch() {
       <input
         ref={inputRef}
         type="text"
-        placeholder="搜尋筆記、任務、畫布、節點… (Cmd+K)"
+        placeholder="搜尋筆記、任務、畫布、功能… (Cmd+K)"
         value={query}
         onChange={(e) => handleSearch(e.target.value)}
         onKeyDown={handleKeyDown}

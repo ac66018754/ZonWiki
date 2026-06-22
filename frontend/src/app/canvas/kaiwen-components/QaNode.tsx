@@ -294,11 +294,19 @@ function QaNodeComponent({ data, selected }: NodeProps<QaRfNode>) {
                 </button>
               )}
 
-              {/* 刪除鈕 */}
+              {/* 刪除鈕：先確認再刪。刪除為軟刪除，可在「垃圾桶」復原。 */}
               <button
                 className="nodrag kw-muted text-xs hover:text-[var(--kw-danger)]"
-                title="刪除節點"
-                onClick={data.onDelete}
+                title="刪除節點（可在垃圾桶復原）"
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      '確定要刪除此節點嗎？\n刪除後會移到「垃圾桶」，可隨時復原。'
+                    )
+                  ) {
+                    data.onDelete()
+                  }
+                }}
                 data-testid="delete-node"
               >
                 ✕

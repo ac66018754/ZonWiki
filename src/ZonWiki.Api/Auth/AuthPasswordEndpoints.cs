@@ -256,7 +256,7 @@ public static class AuthPasswordEndpoints
     /// <param name="db">資料庫上下文</param>
     /// <param name="http">HTTP 內容</param>
     /// <param name="ct">取消權杖</param>
-    /// <returns>成功時返回 200；驗證失敗時返回 401</returns>
+    /// <returns>成功回 200；未登入回 401；目前密碼錯誤或新密碼不合規回 400</returns>
     private static async Task<IResult> ChangePasswordAsync(
         ChangePasswordRequest request,
         ZonWikiDbContext db,
@@ -285,7 +285,15 @@ public static class AuthPasswordEndpoints
 
         if (verificationResult == PasswordVerificationResult.Failed)
         {
-            return Results.Unauthorized();
+            // 「目前密碼錯誤」屬於使用者輸入錯誤（client error），回 400 而非 401。
+            // 若回 401，前端的全域「登入失效」處理會誤判成 session 過期，
+            // 進而跳出「連線忙碌／伺服器暫時中斷」之類與實情不符的提示。回 400 可讓前端就地顯示明確錯誤。
+            return Results.BadRequest(new
+            {
+                success = false,
+                error = "目前密碼錯誤",
+                statusCode = 400
+            });
         }
 
         // 驗證新密碼

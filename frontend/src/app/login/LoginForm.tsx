@@ -211,15 +211,25 @@ export function LoginForm() {
         {/* 內容 */}
         <div style={{ padding: "var(--spacing-6)" }}>
           {error && (
-            <div style={{
-              marginBottom: "var(--spacing-4)",
-              padding: "var(--spacing-3)",
-              background: "var(--status-error-bg)",
-              color: "var(--status-error-fg)",
-              borderRadius: "var(--radius-md)",
-              fontSize: "var(--text-sm)",
-            }}>
-              {error}
+            <div
+              role="alert"
+              className="login-error-alert"
+              style={{
+                marginBottom: "var(--spacing-4)",
+                padding: "var(--spacing-3) var(--spacing-4)",
+                background: "var(--status-error-bg)",
+                color: "var(--status-error-fg)",
+                border: "2px solid var(--status-error-fg)",
+                borderRadius: "var(--radius-md)",
+                fontSize: "var(--text-sm)",
+                fontWeight: 700,
+                display: "flex",
+                alignItems: "center",
+                gap: "var(--spacing-2)",
+              }}
+            >
+              <span aria-hidden style={{ fontSize: "var(--text-base)" }}>⚠️</span>
+              <span>{error}</span>
             </div>
           )}
 

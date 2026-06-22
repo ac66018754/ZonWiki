@@ -1,8 +1,47 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useRef, useState, type ComponentPropsWithoutRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+
+/**
+ * 預覽中的程式碼區塊：包一層容器並加上「複製」按鈕。
+ * react-markdown 會把 ```code``` 渲染成 <pre><code>…</code></pre>，
+ * 這裡覆寫 pre 的渲染以加入複製鈕（醒目化與換行樣式見 globals.css 的 .md-preview pre）。
+ * 複製時直接從 DOM 讀同層的 <pre> 文字（避免 useRef，與本檔其餘 React 風格一致）。
+ */
+function PreWithCopy(props: ComponentPropsWithoutRef<"pre"> & { node?: unknown }) {
+  const [copied, setCopied] = useState(false);
+  const { children, ...rest } = props;
+  // 移除 react-markdown 注入的 node，避免被展開到 DOM。
+  delete (rest as { node?: unknown }).node;
+
+  const copy = async (e: React.MouseEvent<HTMLButtonElement>) => {
+    const pre = e.currentTarget.parentElement?.querySelector("pre");
+    const text = pre?.textContent ?? "";
+    try {
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+    } catch {
+      /* 忽略複製失敗 */
+    }
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <div className="code-block-wrap">
+      <button
+        type="button"
+        className={`code-copy-btn${copied ? " copied" : ""}`}
+        onClick={copy}
+        aria-label="複製程式碼"
+      >
+        {copied ? "已複製" : "複製"}
+      </button>
+      <pre {...rest}>{children}</pre>
+    </div>
+  );
+}
 
 /**
  * 共用 Markdown 編輯器：文字輸入框 + 格式工具列。
@@ -190,7 +229,9 @@ export function MarkdownEditor({
         {showPreview && (
           <div className="mde-preview md-preview" style={{ minHeight }}>
             {value.trim() ? (
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{value}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ pre: PreWithCopy }}>
+                {value}
+              </ReactMarkdown>
             ) : (
               <span className="mde-muted">預覽會顯示在這裡…</span>
             )}

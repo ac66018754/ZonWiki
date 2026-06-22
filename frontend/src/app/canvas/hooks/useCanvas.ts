@@ -648,6 +648,12 @@ export function useCanvas(
           AnchorSuffix: params.anchorSuffix,
           TargetNodeId: params.targetNodeId,
         })
+        // 樂觀加入本地狀態（避免「連結到節點後要刷新才看得到可點擊連結」）。以 Id 去重。
+        if (link?.InlineLink_Id) {
+          setInlineLinks((prev) =>
+            prev.some((l) => l.InlineLink_Id === link.InlineLink_Id) ? prev : [...prev, link]
+          )
+        }
         setError(null)
         return link
       } catch (err) {
@@ -688,6 +694,15 @@ export function useCanvas(
           AnchorSuffix: params.anchorSuffix,
           Color: params.color,
         })
+        // 樂觀加入本地狀態：後端 CreateHighlight 不廣播 SSE，且本地原本未更新，
+        // 導致「選色後畫面沒反應、要刷新才看得到重點」（畫重點看似失效）。以 Id 去重。
+        if (highlight?.Highlight_Id) {
+          setHighlights((prev) =>
+            prev.some((h) => h.Highlight_Id === highlight.Highlight_Id)
+              ? prev
+              : [...prev, highlight]
+          )
+        }
         setError(null)
         return highlight
       } catch (err) {
@@ -809,31 +824,22 @@ export function useCanvas(
     ) => {
       if (!canvasId) return
       try {
-        // 先新建回答節點
-        const newNode = await kaiwenApi.createNode(canvasId, {
-          Title: '回答',
-          Content: '',
-          ParentId: sourceNodeId,
-          X: pos?.x ?? 0,
-          Y: pos?.y ?? 0,
-        })
-
-        if (!newNode) return
-
-        // 再建立行內連結
-        await kaiwenApi.createInlineLink(canvasId, {
+        // 改走後端「框選提問」單一端點：後端會一次建立「回答節點 + 行內連結 + 連線」，
+        // 並以「節點完整內容 + 祖先脈絡 + 框選文字」組 Prompt。
+        // （舊版在前端手動 createNode + createInlineLink + askFollowup，會：
+        //   ① 留下一個空的「回答」孤節點；② askFollowup 只送問題、缺框選脈絡；③ 沒有連線。）
+        // 回答節點與連線會經由 SSE（NodeAdded / EdgeAdded / AskStarted）即時帶回並更新畫布。
+        await kaiwenApi.askInlineLink(canvasId, {
           SourceNodeId: sourceNodeId,
           AnchorText: anchorText,
           AnchorStart: start,
           AnchorEnd: end,
           AnchorPrefix: prefix,
           AnchorSuffix: suffix,
-          TargetNodeId: newNode.Node_Id,
+          Question: question,
+          X: pos?.x ?? null,
+          Y: pos?.y ?? null,
         })
-
-        // 最後對新節點提問
-        setPending((prev) => new Set(prev).add(newNode.Node_Id))
-        await kaiwenApi.askFollowup(canvasId, sourceNodeId, question, pos)
 
         setError(null)
       } catch (err) {
@@ -852,7 +858,7 @@ export function useCanvas(
       color: string
     ) => {
       try {
-        await kaiwenApi.createHighlight(nodeId, {
+        const highlight = await kaiwenApi.createHighlight(nodeId, {
           AnchorText: anchorText,
           Start: start,
           End: end,
@@ -860,6 +866,14 @@ export function useCanvas(
           AnchorSuffix: suffix,
           Color: color,
         })
+        // 樂觀加入本地狀態（後端不廣播 HighlightAdded SSE；以 Id 去重）。
+        if (highlight?.Highlight_Id) {
+          setHighlights((prev) =>
+            prev.some((h) => h.Highlight_Id === highlight.Highlight_Id)
+              ? prev
+              : [...prev, highlight]
+          )
+        }
         setError(null)
       } catch (err) {
         const message = err instanceof Error ? err.message : '無法畫重點'

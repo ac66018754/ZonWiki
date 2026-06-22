@@ -178,17 +178,18 @@ export function ChangePasswordSection() {
 
     setSaving(true);
     try {
-      const ok = await changePassword({ currentPassword: current, newPassword: next });
-      if (ok) {
+      const result = await changePassword({ currentPassword: current, newPassword: next });
+      if (result.ok) {
         setMsg("密碼已更新");
         setCurrent("");
         setNext("");
         setConfirm("");
       } else {
-        setErr("修改密碼失敗，請確認當前密碼是否正確");
+        // 後端會帶回明確訊息（如「目前密碼錯誤」）；沒有時退回通用提示。
+        setErr(result.error ?? "修改密碼失敗，請確認當前密碼是否正確");
       }
     } catch {
-      setErr("修改密碼失敗");
+      setErr("修改密碼失敗，請稍後再試");
     } finally {
       setSaving(false);
     }
