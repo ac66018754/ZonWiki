@@ -1,0 +1,1288 @@
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.RegularExpressions;
+using Markdig;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using ZonWiki.Api.Auth;
+using ZonWiki.Domain.Common;
+using ZonWiki.Domain.Dtos;
+using ZonWiki.Domain.Entities;
+using ZonWiki.Infrastructure.Notes;
+using ZonWiki.Infrastructure.Persistence;
+
+namespace ZonWiki.Api.Endpoints;
+
+/// <summary>
+/// 筆記寫入端點（CRUD、分類、標籤、AI 輔助）。
+/// 所有寫入操作需使用者驗證；每次 create/update/delete 都記錄版本（NoteRevision）。
+/// 內容渲染使用 Markdig（禁用 raw HTML 防 XSS）；ContentHash 用於匯入衝突偵測。
+/// </summary>
+public static class NoteWriteEndpoints
+{
+    /// <summary>
+    /// Markdown 渲染管線（禁用 raw HTML 以防 XSS）。
+    /// </summary>
+    private static readonly MarkdownPipeline MarkdownPipeline = new MarkdownPipelineBuilder()
+        .UseAdvancedExtensions()
+        .UseAutoLinks()
+        .DisableHtml()
+        .Build();
+
+    /// <summary>
+    /// Wiki 連結比對：擷取 [[X]] 形式。
+    /// </summary>
+    private static readonly Regex WikiLinkRegex = new(
+        @"\[\[([^\]\r\n]+)\]\]",
+        RegexOptions.Compiled);
+
+    /// <summary>
+    /// 註冊筆記寫入相關的 HTTP 端點。
+    /// </summary>
+    /// <param name="app">端點路由建構器。</param>
+    /// <param name="authConfigured">是否已設定驗證（未設定時略過授權要求）。</param>
+    public static void MapNoteWriteEndpoints(this IEndpointRouteBuilder app, bool authConfigured)
+    {
+        // POST /api/notes - 建立筆記
+        var createNote = app.MapPost("/api/notes", CreateNoteHandler);
+
+        // PUT /api/notes/{id} - 更新筆記
+        var updateNote = app.MapPut("/api/notes/{id:guid}", UpdateNoteHandler);
+
+        // DELETE /api/notes/{id} - 軟刪除筆記
+        var deleteNote = app.MapDelete("/api/notes/{id:guid}", DeleteNoteHandler);
+
+        // PUT /api/notes/{id}/categories - 更新筆記分類（多對多）
+        var assignCategories = app.MapPut("/api/notes/{id:guid}/categories", AssignCategoriesHandler);
+
+        // POST /api/notes/{noteId}/categories/{categoryId} - 將筆記加入「單一」分類（冪等）
+        // 供「拖曳筆記直接進某分類」用：只需 noteId + categoryId，不需要先知道該筆記既有的分類清單。
+        var addNoteToCategory = app.MapPost(
+            "/api/notes/{noteId:guid}/categories/{categoryId:guid}",
+            AddNoteToCategoryHandler);
+
+        // PUT /api/notes/{id}/tags - 更新筆記標籤（多對多；整組取代；自動建立不存在的標籤）
+        var assignTags = app.MapPut("/api/notes/{id:guid}/tags", AssignTagsHandler);
+
+        // POST /api/notes/{noteId}/tags/{tagId} - 將「單一」標籤加到筆記（冪等、原子；避免讀-改-寫競態）
+        var addNoteTag = app.MapPost(
+            "/api/notes/{noteId:guid}/tags/{tagId:guid}",
+            AddNoteTagHandler);
+
+        // DELETE /api/notes/{noteId}/tags/{tagId} - 從筆記移除「單一」標籤（冪等、原子）
+        var removeNoteTag = app.MapDelete(
+            "/api/notes/{noteId:guid}/tags/{tagId:guid}",
+            RemoveNoteTagHandler);
+
+        // GET /api/notes/{id}/revisions - 查詢筆記編輯歷史
+        var getRevisions = app.MapGet("/api/notes/{id:guid}/revisions", GetRevisionsHandler);
+
+        // GET /api/notes/{id}/backlinks - 查詢反向連結（有哪些筆記指向此筆記）
+        var getBacklinks = app.MapGet("/api/notes/{id:guid}/backlinks", GetBacklinksHandler);
+
+        // GET /api/graph - 知識圖譜（所有筆記與連結，供前端繪製）
+        var getGraph = app.MapGet("/api/graph", GetKnowledgeGraphHandler);
+
+        // POST /api/notes/{id}/reformat - AI 排版調整
+        var reformatNote = app.MapPost("/api/notes/{id:guid}/reformat", ReformatNoteHandler);
+
+        // POST /api/notes/{id}/beautify - AI 整體美化
+        var beautifyNote = app.MapPost("/api/notes/{id:guid}/beautify", BeautifyNoteHandler);
+
+        // POST /api/notes/{id}/ask-selection - 框選提問：AI 回答 → 建答案筆記 → 以錨點關聯回來
+        var askSelection = app.MapPost("/api/notes/{id:guid}/ask-selection", AskSelectionHandler);
+
+        // 要求驗證的端點
+        if (authConfigured)
+        {
+            createNote.RequireAuthorization();
+            updateNote.RequireAuthorization();
+            deleteNote.RequireAuthorization();
+            assignCategories.RequireAuthorization();
+            addNoteToCategory.RequireAuthorization();
+            assignTags.RequireAuthorization();
+            reformatNote.RequireAuthorization();
+            beautifyNote.RequireAuthorization();
+            askSelection.RequireAuthorization();
+        }
+    }
+
+    // ==================== Ask Selection（框選提問 → 答案筆記 + 關聯） ====================
+
+    /// <summary>
+    /// 框選提問：以選取文字為脈絡請 AI 回答，建立一則「答案筆記」，並從來源筆記的選取範圍
+    /// 建立 NoteMark 關聯指向答案筆記（與開問啦節點「框選提問→產生回答節點+行內連結」對應）。
+    /// </summary>
+    private static async Task<IResult> AskSelectionHandler(
+        HttpContext http,
+        ZonWikiDbContext db,
+        ILogger<object> logger,
+        INoteAiService aiService,
+        Guid id,
+        AskSelectionRequest request,
+        CancellationToken ct)
+    {
+        var userId = ExtractUserId(http);
+        if (userId == Guid.Empty)
+        {
+            return Results.Json(
+                ApiResponse<AskSelectionResultDto>.Fail("Invalid user identity", 401),
+                statusCode: StatusCodes.Status401Unauthorized);
+        }
+
+        var sourceNote = await db.Note
+            .FirstOrDefaultAsync(n => n.Id == id && n.ValidFlag && n.UserId == userId, ct);
+        if (sourceNote is null)
+        {
+            return Results.NotFound(ApiResponse<AskSelectionResultDto>.Fail("Note not found", 404));
+        }
+
+        var question = (request.Question ?? "").Trim();
+        var selected = (request.AnchorText ?? "").Trim();
+        if (string.IsNullOrEmpty(question))
+        {
+            return Results.BadRequest(ApiResponse<AskSelectionResultDto>.Fail("缺少問題", 400));
+        }
+
+        try
+        {
+            // 1) 請 AI 回答。
+            var answer = await aiService.AskAboutAsync(selected, question, ct);
+
+            // 2) 組答案筆記內容（含來源出處引言 + 問題 + 回答）。
+            var titleBase = question.Length <= 40 ? question : question[..40] + "…";
+            var answerContent =
+                $"> 來源：[[{sourceNote.Title}]]\n> 選取：「{selected}」\n\n" +
+                $"**問題**：{question}\n\n**回答**：\n\n{answer}";
+
+            // 3) 建答案筆記（slug 去重、Markdig 渲染、建立 create 版本）。
+            var baseSlug = GenerateSlug(titleBase);
+            if (string.IsNullOrEmpty(baseSlug)) baseSlug = "note";
+            var slug = baseSlug;
+            for (var i = 2;
+                 await db.Note.AnyAsync(n => n.UserId == userId && n.Slug == slug && n.ValidFlag, ct);
+                 i++)
+            {
+                slug = $"{baseSlug}-{i}";
+            }
+
+            var answerNote = new Note
+            {
+                UserId = userId,
+                Title = titleBase,
+                Slug = slug,
+                ContentRaw = answerContent,
+                ContentHtml = Markdown.ToHtml(answerContent, MarkdownPipeline),
+                ContentHash = ComputeContentHash(answerContent),
+                Kind = "note",
+                IsDraft = false,
+                CreatedUser = userId.ToString(),
+                UpdatedUser = userId.ToString(),
+            };
+            db.Note.Add(answerNote);
+            await db.SaveChangesAsync(ct);
+
+            db.NoteRevision.Add(new NoteRevision
+            {
+                UserId = userId,
+                NoteId = answerNote.Id,
+                RevisionNo = 1,
+                ChangeKind = "create",
+                Title = answerNote.Title,
+                ContentRaw = answerNote.ContentRaw,
+                CreatedUser = userId.ToString(),
+                UpdatedUser = userId.ToString(),
+            });
+
+            // 4) 從來源筆記的選取範圍建立 NoteMark 關聯 → 答案筆記。
+            var mark = new NoteMark
+            {
+                UserId = userId,
+                NoteId = sourceNote.Id,
+                Kind = "link",
+                AnchorText = request.AnchorText ?? "",
+                AnchorStart = request.AnchorStart,
+                AnchorEnd = request.AnchorEnd,
+                AnchorPrefix = request.AnchorPrefix ?? "",
+                AnchorSuffix = request.AnchorSuffix ?? "",
+                TargetType = "note",
+                TargetId = answerNote.Id,
+                CreatedUser = userId.ToString(),
+                UpdatedUser = userId.ToString(),
+            };
+            db.NoteMark.Add(mark);
+            await db.SaveChangesAsync(ct);
+
+            var dto = new AskSelectionResultDto(answerNote.Id, answerNote.Slug, mark.Id);
+            return Results.Ok(ApiResponse<AskSelectionResultDto>.Ok(dto));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed ask-selection (userId={UserId}, noteId={NoteId})", userId, id);
+            return Results.StatusCode(500);
+        }
+    }
+
+    // ==================== Create Note ====================
+
+    private static async Task<IResult> CreateNoteHandler(
+        HttpContext http,
+        ZonWikiDbContext db,
+        ILogger<object> logger,
+        CreateNoteRequest request,
+        CancellationToken ct)
+    {
+        // 取得使用者身分
+        var userId = ExtractUserId(http);
+        if (userId == Guid.Empty)
+        {
+            return Results.Json(
+                ApiResponse<NoteDetailDto>.Fail("Invalid user identity", 401),
+                statusCode: StatusCodes.Status401Unauthorized);
+        }
+
+        // 驗證請求
+        var validationError = ValidateCreateNoteRequest(request);
+        if (validationError != null)
+        {
+            return Results.BadRequest(ApiResponse<NoteDetailDto>.Fail(validationError, 400));
+        }
+
+        try
+        {
+            // 產生 Slug（去除特殊字元、轉小寫、用連字號分隔）；全被濾掉就以 "note" 墊底。
+            var baseSlug = GenerateSlug(request.Title);
+            if (string.IsNullOrEmpty(baseSlug))
+            {
+                baseSlug = "note";
+            }
+
+            // 同使用者內 slug 若重複，自動加序號（-2, -3 …）而非報錯——避免「同標題就建不了筆記」。
+            var slug = baseSlug;
+            for (var i = 2;
+                 await db.Note.AnyAsync(n => n.UserId == userId && n.Slug == slug && n.ValidFlag, ct);
+                 i++)
+            {
+                slug = $"{baseSlug}-{i}";
+            }
+
+            // 內容允許為空（先建立、再編輯）；null 一律轉空字串避免後續 NPE。
+            var contentRaw = request.ContentRaw ?? string.Empty;
+            var contentHtml = Markdown.ToHtml(contentRaw, MarkdownPipeline);
+            var contentHash = ComputeContentHash(contentRaw);
+
+            // 建立筆記實體
+            var note = new Note
+            {
+                UserId = userId,
+                Title = request.Title.Trim(),
+                Slug = slug,
+                ContentRaw = contentRaw,
+                ContentHtml = contentHtml,
+                ContentHash = contentHash,
+                Kind = request.Kind ?? "note",
+                IsDraft = request.IsDraft,
+                JournalDate = request.JournalDate,
+                CreatedUser = userId.ToString(),
+                UpdatedUser = userId.ToString(),
+            };
+
+            db.Note.Add(note);
+            await db.SaveChangesAsync(ct);
+
+            // 建立版本紀錄（ChangeKind = "create"）
+            var revision = new NoteRevision
+            {
+                UserId = userId,
+                NoteId = note.Id,
+                RevisionNo = 1,
+                ChangeKind = "create",
+                Title = note.Title,
+                ContentRaw = note.ContentRaw,
+                CreatedUser = userId.ToString(),
+                UpdatedUser = userId.ToString(),
+            };
+            db.NoteRevision.Add(revision);
+
+            // 指派分類（若傳入）
+            if (request.CategoryIds?.Count > 0)
+            {
+                await SetNoteCategoriesAsync(db, userId, note.Id, request.CategoryIds, ct);
+            }
+
+            // 指派標籤（若傳入）
+            if (request.TagIds?.Count > 0)
+            {
+                await SetNoteTagsAsync(db, userId, note.Id, request.TagIds, ct);
+            }
+
+            // 解析 wiki 連結並建立 NoteLink
+            await ParseAndCreateWikiLinksAsync(db, userId, note.Id, note.ContentRaw, ct);
+
+            await db.SaveChangesAsync(ct);
+
+            // 回傳結果
+            var dto = new NoteDetailDto(
+                note.Id,
+                note.Title,
+                note.Slug,
+                note.ContentHtml,
+                note.ContentRaw,
+                note.Kind,
+                note.IsDraft,
+                note.CreatedDateTime,
+                note.UpdatedDateTime,
+                0);
+
+            // Location 標頭只能是 ASCII；slug 可能含中文（GenerateSlug 保留 Unicode），故 URL 編碼，
+            // 否則會丟 InvalidOperationException: Invalid non-ASCII character in header。
+            return Results.Created(
+                $"/api/notes/{Uri.EscapeDataString(note.Slug)}",
+                ApiResponse<NoteDetailDto>.Ok(dto));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to create note (userId={UserId}, title={Title})", userId, request.Title);
+            return Results.StatusCode(500);
+        }
+    }
+
+    // ==================== Update Note ====================
+
+    private static async Task<IResult> UpdateNoteHandler(
+        HttpContext http,
+        ZonWikiDbContext db,
+        ILogger<object> logger,
+        Guid id,
+        UpdateNoteRequest request,
+        CancellationToken ct)
+    {
+        var userId = ExtractUserId(http);
+        if (userId == Guid.Empty)
+        {
+            return Results.Json(
+                ApiResponse<NoteDetailDto>.Fail("Invalid user identity", 401),
+                statusCode: StatusCodes.Status401Unauthorized);
+        }
+
+        // 查詢筆記
+        var note = await db.Note
+            .FirstOrDefaultAsync(n => n.Id == id && n.ValidFlag && n.UserId == userId, ct);
+
+        if (note is null)
+        {
+            return Results.NotFound(ApiResponse<NoteDetailDto>.Fail("Note not found", 404));
+        }
+
+        try
+        {
+            var contentChanged = false;
+
+            // 更新標題（若傳入）
+            if (!string.IsNullOrWhiteSpace(request.Title))
+            {
+                note.Title = request.Title.Trim();
+            }
+
+            // 更新內容（若傳入）
+            if (!string.IsNullOrWhiteSpace(request.ContentRaw))
+            {
+                note.ContentRaw = request.ContentRaw;
+                note.ContentHtml = Markdown.ToHtml(request.ContentRaw, MarkdownPipeline);
+                note.ContentHash = ComputeContentHash(request.ContentRaw);
+                contentChanged = true;
+            }
+
+            // 更新草稿狀態（若傳入）
+            if (request.IsDraft.HasValue)
+            {
+                note.IsDraft = request.IsDraft.Value;
+            }
+
+            note.UpdatedUser = userId.ToString();
+
+            // 記錄版本
+            var latestRevision = await db.NoteRevision
+                .Where(r => r.NoteId == id)
+                .OrderByDescending(r => r.RevisionNo)
+                .FirstOrDefaultAsync(ct);
+
+            var nextRevisionNo = (latestRevision?.RevisionNo ?? 0) + 1;
+
+            var revision = new NoteRevision
+            {
+                UserId = userId,
+                NoteId = note.Id,
+                RevisionNo = nextRevisionNo,
+                ChangeKind = "update",
+                Title = note.Title,
+                ContentRaw = note.ContentRaw,
+                CreatedUser = userId.ToString(),
+                UpdatedUser = userId.ToString(),
+            };
+            db.NoteRevision.Add(revision);
+
+            // 更新分類（整組取代；reconcile 會復活軟刪除列，避免唯一索引衝突）
+            if (request.CategoryIds != null)
+            {
+                await SetNoteCategoriesAsync(db, userId, id, request.CategoryIds, ct);
+            }
+
+            // 更新標籤（整組取代）
+            if (request.TagIds != null)
+            {
+                await SetNoteTagsAsync(db, userId, id, request.TagIds, ct);
+            }
+
+            // 若內容有變，重新解析 wiki 連結
+            if (contentChanged)
+            {
+                // 刪除舊連結
+                var oldLinks = await db.NoteLink
+                    .Where(nl => nl.SourceNoteId == id && nl.ValidFlag)
+                    .ToListAsync(ct);
+                foreach (var link in oldLinks)
+                {
+                    link.ValidFlag = false;
+                }
+
+                // 建立新連結
+                await ParseAndCreateWikiLinksAsync(db, userId, id, note.ContentRaw, ct);
+            }
+
+            await db.SaveChangesAsync(ct);
+
+            var dto = new NoteDetailDto(
+                note.Id,
+                note.Title,
+                note.Slug,
+                note.ContentHtml,
+                note.ContentRaw,
+                note.Kind,
+                note.IsDraft,
+                note.CreatedDateTime,
+                note.UpdatedDateTime,
+                await db.Comment.CountAsync(c => c.NoteId == id && c.ValidFlag, ct));
+
+            return Results.Ok(ApiResponse<NoteDetailDto>.Ok(dto));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to update note (userId={UserId}, noteId={NoteId})", userId, id);
+            return Results.StatusCode(500);
+        }
+    }
+
+    // ==================== Delete Note ====================
+
+    private static async Task<IResult> DeleteNoteHandler(
+        HttpContext http,
+        ZonWikiDbContext db,
+        ILogger<object> logger,
+        Guid id,
+        CancellationToken ct)
+    {
+        var userId = ExtractUserId(http);
+        if (userId == Guid.Empty)
+        {
+            return Results.Json(
+                ApiResponse<object>.Fail("Invalid user identity", 401),
+                statusCode: StatusCodes.Status401Unauthorized);
+        }
+
+        var note = await db.Note
+            .FirstOrDefaultAsync(n => n.Id == id && n.ValidFlag && n.UserId == userId, ct);
+
+        if (note is null)
+        {
+            return Results.NotFound(ApiResponse<object>.Fail("Note not found", 404));
+        }
+
+        try
+        {
+            note.ValidFlag = false;
+            note.DeletedDateTime = DateTime.UtcNow;
+            note.UpdatedUser = userId.ToString();
+
+            // 記錄版本（ChangeKind = "delete"）
+            var latestRevision = await db.NoteRevision
+                .Where(r => r.NoteId == id)
+                .OrderByDescending(r => r.RevisionNo)
+                .FirstOrDefaultAsync(ct);
+
+            var nextRevisionNo = (latestRevision?.RevisionNo ?? 0) + 1;
+
+            var revision = new NoteRevision
+            {
+                UserId = userId,
+                NoteId = note.Id,
+                RevisionNo = nextRevisionNo,
+                ChangeKind = "delete",
+                Title = note.Title,
+                ContentRaw = note.ContentRaw,
+                CreatedUser = userId.ToString(),
+                UpdatedUser = userId.ToString(),
+            };
+            db.NoteRevision.Add(revision);
+
+            await db.SaveChangesAsync(ct);
+
+            return Results.Ok(ApiResponse<object>.Ok(new { id = note.Id }));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to delete note (userId={UserId}, noteId={NoteId})", userId, id);
+            return Results.StatusCode(500);
+        }
+    }
+
+    // ==================== Assign Categories ====================
+
+    private static async Task<IResult> AssignCategoriesHandler(
+        HttpContext http,
+        ZonWikiDbContext db,
+        ILogger<object> logger,
+        Guid id,
+        List<Guid> categoryIds,
+        CancellationToken ct)
+    {
+        var userId = ExtractUserId(http);
+        if (userId == Guid.Empty)
+        {
+            return Results.Json(
+                ApiResponse<object>.Fail("Invalid user identity", 401),
+                statusCode: StatusCodes.Status401Unauthorized);
+        }
+
+        var note = await db.Note
+            .FirstOrDefaultAsync(n => n.Id == id && n.ValidFlag && n.UserId == userId, ct);
+
+        if (note is null)
+        {
+            return Results.NotFound(ApiResponse<object>.Fail("Note not found", 404));
+        }
+
+        try
+        {
+            await SetNoteCategoriesAsync(db, userId, id, categoryIds, ct);
+
+            await db.SaveChangesAsync(ct);
+
+            return Results.Ok(ApiResponse<object>.Ok(new { id = note.Id }));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to assign categories (userId={UserId}, noteId={NoteId})", userId, id);
+            return Results.StatusCode(500);
+        }
+    }
+
+    // ==================== Add Note To Single Category ====================
+
+    /// <summary>
+    /// 將一篇筆記加入「單一」分類（冪等）。供「拖曳筆記直接進某分類」用。
+    /// 與 AssignCategoriesHandler（整組取代）不同，本端點只「新增」一個關聯，不影響其它分類。
+    /// </summary>
+    /// <param name="http">HTTP 內容（用於取得使用者身分）。</param>
+    /// <param name="db">資料庫內容。</param>
+    /// <param name="logger">記錄器。</param>
+    /// <param name="noteId">筆記識別碼。</param>
+    /// <param name="categoryId">要加入的分類識別碼。</param>
+    /// <param name="ct">取消權杖。</param>
+    /// <returns>成功時回傳 200；筆記或分類不存在時回傳 404；未驗證回傳 401。</returns>
+    private static async Task<IResult> AddNoteToCategoryHandler(
+        HttpContext http,
+        ZonWikiDbContext db,
+        ILogger<object> logger,
+        Guid noteId,
+        Guid categoryId,
+        CancellationToken ct)
+    {
+        var userId = ExtractUserId(http);
+        if (userId == Guid.Empty)
+        {
+            return Results.Json(
+                ApiResponse<object>.Fail("Invalid user identity", 401),
+                statusCode: StatusCodes.Status401Unauthorized);
+        }
+
+        // 確認筆記存在且屬於本人。
+        var note = await db.Note
+            .FirstOrDefaultAsync(n => n.Id == noteId && n.ValidFlag && n.UserId == userId, ct);
+        if (note is null)
+        {
+            return Results.NotFound(ApiResponse<object>.Fail("Note not found", 404));
+        }
+
+        // 確認分類存在且屬於本人。
+        var categoryExists = await db.Category
+            .AnyAsync(c => c.Id == categoryId && c.ValidFlag && c.UserId == userId, ct);
+        if (!categoryExists)
+        {
+            return Results.NotFound(ApiResponse<object>.Fail("Category not found", 404));
+        }
+
+        try
+        {
+            // NoteCategory 對 (NoteId, CategoryId) 有唯一索引，因此每組配對至多一列（含已軟刪除者）。
+            // 必須用 IgnoreQueryFilters 才能看見被軟刪除（ValidFlag=false）的舊關聯以便復活，
+            // 否則直接 Add 新列會違反唯一索引。額外以 UserId 明確過濾，確保跨租戶安全。
+            var existing = await db.NoteCategory
+                .IgnoreQueryFilters()
+                .FirstOrDefaultAsync(
+                    nc => nc.NoteId == noteId && nc.CategoryId == categoryId && nc.UserId == userId,
+                    ct);
+
+            if (existing is null)
+            {
+                // 沒有任何關聯 → 新建一筆。
+                db.NoteCategory.Add(new NoteCategory
+                {
+                    UserId = userId,
+                    NoteId = noteId,
+                    CategoryId = categoryId,
+                    CreatedUser = userId.ToString(),
+                    UpdatedUser = userId.ToString(),
+                });
+            }
+            else if (!existing.ValidFlag)
+            {
+                // 曾被移除（軟刪除）→ 復活，而非插入重複列。
+                existing.ValidFlag = true;
+                existing.DeletedDateTime = null;
+                existing.UpdatedUser = userId.ToString();
+            }
+            // else：已是有效關聯 → 不做任何事（冪等）。
+
+            await db.SaveChangesAsync(ct);
+            return Results.Ok(ApiResponse<object>.Ok(new { noteId, categoryId }));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(
+                ex,
+                "Failed to add note to category (userId={UserId}, noteId={NoteId}, categoryId={CategoryId})",
+                userId,
+                noteId,
+                categoryId);
+            return Results.StatusCode(500);
+        }
+    }
+
+    // ==================== Add / Remove single Tag (atomic) ====================
+
+    /// <summary>
+    /// 將「單一」標籤加到一篇筆記（冪等、原子）。
+    /// 與 AssignTagsHandler（整組取代）不同，本端點只新增一個關聯、不影響其它標籤，
+    /// 因此前端不需先讀目前標籤再整組送出，可避免讀-改-寫競態覆蓋他處的變更。
+    /// </summary>
+    /// <param name="http">HTTP 內容（取得使用者身分）。</param>
+    /// <param name="db">資料庫內容。</param>
+    /// <param name="logger">記錄器。</param>
+    /// <param name="noteId">筆記識別碼。</param>
+    /// <param name="tagId">要加入的標籤識別碼。</param>
+    /// <param name="ct">取消權杖。</param>
+    /// <returns>成功 200；筆記或標籤不存在 404；未驗證 401。</returns>
+    private static async Task<IResult> AddNoteTagHandler(
+        HttpContext http,
+        ZonWikiDbContext db,
+        ILogger<object> logger,
+        Guid noteId,
+        Guid tagId,
+        CancellationToken ct)
+    {
+        var userId = ExtractUserId(http);
+        if (userId == Guid.Empty)
+        {
+            return Results.Json(
+                ApiResponse<object>.Fail("Invalid user identity", 401),
+                statusCode: StatusCodes.Status401Unauthorized);
+        }
+
+        // 確認筆記存在且屬於本人。
+        var note = await db.Note
+            .FirstOrDefaultAsync(n => n.Id == noteId && n.ValidFlag && n.UserId == userId, ct);
+        if (note is null)
+        {
+            return Results.NotFound(ApiResponse<object>.Fail("Note not found", 404));
+        }
+
+        // 確認標籤存在且屬於本人。
+        var tagExists = await db.Tag
+            .AnyAsync(t => t.Id == tagId && t.ValidFlag && t.UserId == userId, ct);
+        if (!tagExists)
+        {
+            return Results.NotFound(ApiResponse<object>.Fail("Tag not found", 404));
+        }
+
+        try
+        {
+            // NoteTag 對 (NoteId, TagId) 有唯一索引；用 IgnoreQueryFilters 看見已軟刪除的舊關聯以便復活。
+            var existing = await db.NoteTag
+                .IgnoreQueryFilters()
+                .FirstOrDefaultAsync(
+                    nt => nt.NoteId == noteId && nt.TagId == tagId && nt.UserId == userId,
+                    ct);
+
+            if (existing is null)
+            {
+                db.NoteTag.Add(new NoteTag
+                {
+                    UserId = userId,
+                    NoteId = noteId,
+                    TagId = tagId,
+                    CreatedUser = userId.ToString(),
+                    UpdatedUser = userId.ToString(),
+                });
+            }
+            else if (!existing.ValidFlag)
+            {
+                existing.ValidFlag = true;
+                existing.DeletedDateTime = null;
+                existing.UpdatedUser = userId.ToString();
+            }
+            // else：已是有效關聯 → 冪等不動作。
+
+            await db.SaveChangesAsync(ct);
+            return Results.Ok(ApiResponse<object>.Ok(new { noteId, tagId }));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(
+                ex,
+                "Failed to add tag to note (userId={UserId}, noteId={NoteId}, tagId={TagId})",
+                userId,
+                noteId,
+                tagId);
+            return Results.StatusCode(500);
+        }
+    }
+
+    /// <summary>
+    /// 從一篇筆記移除「單一」標籤（冪等、原子；軟刪除該關聯）。
+    /// </summary>
+    /// <param name="http">HTTP 內容（取得使用者身分）。</param>
+    /// <param name="db">資料庫內容。</param>
+    /// <param name="logger">記錄器。</param>
+    /// <param name="noteId">筆記識別碼。</param>
+    /// <param name="tagId">要移除的標籤識別碼。</param>
+    /// <param name="ct">取消權杖。</param>
+    /// <returns>成功 200；筆記不存在 404；未驗證 401。</returns>
+    private static async Task<IResult> RemoveNoteTagHandler(
+        HttpContext http,
+        ZonWikiDbContext db,
+        ILogger<object> logger,
+        Guid noteId,
+        Guid tagId,
+        CancellationToken ct)
+    {
+        var userId = ExtractUserId(http);
+        if (userId == Guid.Empty)
+        {
+            return Results.Json(
+                ApiResponse<object>.Fail("Invalid user identity", 401),
+                statusCode: StatusCodes.Status401Unauthorized);
+        }
+
+        // 確認筆記存在且屬於本人。
+        var note = await db.Note
+            .FirstOrDefaultAsync(n => n.Id == noteId && n.ValidFlag && n.UserId == userId, ct);
+        if (note is null)
+        {
+            return Results.NotFound(ApiResponse<object>.Fail("Note not found", 404));
+        }
+
+        try
+        {
+            var existing = await db.NoteTag
+                .FirstOrDefaultAsync(
+                    nt => nt.NoteId == noteId && nt.TagId == tagId && nt.UserId == userId && nt.ValidFlag,
+                    ct);
+
+            if (existing is not null)
+            {
+                existing.ValidFlag = false;
+                existing.DeletedDateTime = DateTime.UtcNow;
+                existing.UpdatedUser = userId.ToString();
+                await db.SaveChangesAsync(ct);
+            }
+            // 找不到有效關聯 → 視為已移除（冪等）。
+
+            return Results.Ok(ApiResponse<object>.Ok(new { noteId, tagId }));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(
+                ex,
+                "Failed to remove tag from note (userId={UserId}, noteId={NoteId}, tagId={TagId})",
+                userId,
+                noteId,
+                tagId);
+            return Results.StatusCode(500);
+        }
+    }
+
+    // ==================== Assign Tags ====================
+
+    private static async Task<IResult> AssignTagsHandler(
+        HttpContext http,
+        ZonWikiDbContext db,
+        ILogger<object> logger,
+        Guid id,
+        List<Guid> tagIds,
+        CancellationToken ct)
+    {
+        var userId = ExtractUserId(http);
+        if (userId == Guid.Empty)
+        {
+            return Results.Json(
+                ApiResponse<object>.Fail("Invalid user identity", 401),
+                statusCode: StatusCodes.Status401Unauthorized);
+        }
+
+        var note = await db.Note
+            .FirstOrDefaultAsync(n => n.Id == id && n.ValidFlag && n.UserId == userId, ct);
+
+        if (note is null)
+        {
+            return Results.NotFound(ApiResponse<object>.Fail("Note not found", 404));
+        }
+
+        try
+        {
+            await SetNoteTagsAsync(db, userId, id, tagIds, ct);
+
+            await db.SaveChangesAsync(ct);
+
+            return Results.Ok(ApiResponse<object>.Ok(new { id = note.Id }));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to assign tags (userId={UserId}, noteId={NoteId})", userId, id);
+            return Results.StatusCode(500);
+        }
+    }
+
+    // ==================== Get Revisions ====================
+
+    private static async Task<IResult> GetRevisionsHandler(
+        ZonWikiDbContext db,
+        Guid id,
+        CancellationToken ct)
+    {
+        var noteExists = await db.Note
+            .AnyAsync(n => n.Id == id && n.ValidFlag, ct);
+
+        if (!noteExists)
+        {
+            return Results.NotFound(ApiResponse<List<NoteRevisionDto>>.Fail("Note not found", 404));
+        }
+
+        var revisions = await db.NoteRevision
+            .Where(r => r.NoteId == id && r.ValidFlag)
+            .OrderBy(r => r.RevisionNo)
+            .Select(r => new NoteRevisionDto(
+                r.Id,
+                r.RevisionNo,
+                r.ChangeKind,
+                r.Title,
+                r.ContentRaw,
+                r.CreatedDateTime,
+                r.CreatedUser))
+            .ToListAsync(ct);
+
+        return Results.Ok(ApiResponse<List<NoteRevisionDto>>.Ok(revisions));
+    }
+
+    // ==================== Get Backlinks ====================
+
+    private static async Task<IResult> GetBacklinksHandler(
+        ZonWikiDbContext db,
+        Guid id,
+        CancellationToken ct)
+    {
+        var noteExists = await db.Note
+            .AnyAsync(n => n.Id == id && n.ValidFlag, ct);
+
+        if (!noteExists)
+        {
+            return Results.NotFound(ApiResponse<List<BacklinkDto>>.Fail("Note not found", 404));
+        }
+
+        var backlinks = await db.NoteLink
+            .Where(nl => nl.TargetNoteId == id && nl.ValidFlag)
+            .Join(
+                db.Note,
+                nl => nl.SourceNoteId,
+                n => n.Id,
+                (nl, n) => new BacklinkDto(
+                    nl.Id,
+                    nl.SourceNoteId,
+                    n.Title,
+                    n.Slug,
+                    nl.AnchorText))
+            .OrderBy(b => b.SourceNoteTitle)
+            .ToListAsync(ct);
+
+        return Results.Ok(ApiResponse<List<BacklinkDto>>.Ok(backlinks));
+    }
+
+    // ==================== Get Knowledge Graph ====================
+
+    private static async Task<IResult> GetKnowledgeGraphHandler(
+        HttpContext http,
+        ZonWikiDbContext db,
+        ILogger<object> logger,
+        CancellationToken ct)
+    {
+        // 若啟用驗證，只返回使用者自己的筆記與連結
+        Guid? userId = null;
+        var userIdClaim = http.User.FindFirst(AuthExtensions.UserIdClaimType)?.Value;
+        if (!string.IsNullOrEmpty(userIdClaim) && Guid.TryParse(userIdClaim, out var uid))
+        {
+            userId = uid;
+        }
+
+        try
+        {
+            // 取得所有有效筆記（若有使用者身分則過濾）
+            var notesQuery = db.Note.Where(n => n.ValidFlag);
+            if (userId.HasValue)
+            {
+                notesQuery = notesQuery.Where(n => n.UserId == userId.Value);
+            }
+
+            var nodes = await notesQuery
+                .Select(n => new GraphNodeDto(
+                    n.Id,
+                    n.Title,
+                    n.Slug,
+                    n.Kind))
+                .ToListAsync(ct);
+
+            // 取得所有連結（若有使用者身分則過濾）
+            var linksQuery = db.NoteLink.Where(nl => nl.ValidFlag);
+            if (userId.HasValue)
+            {
+                linksQuery = linksQuery.Where(nl => nl.UserId == userId.Value);
+            }
+
+            var edges = await linksQuery
+                .Select(nl => new GraphEdgeDto(
+                    nl.SourceNoteId,
+                    nl.TargetNoteId,
+                    nl.AnchorText))
+                .ToListAsync(ct);
+
+            var graph = new KnowledgeGraphDto(nodes, edges);
+
+            return Results.Ok(ApiResponse<KnowledgeGraphDto>.Ok(graph));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to generate knowledge graph (userId={UserId})", userId);
+            return Results.StatusCode(500);
+        }
+    }
+
+    // ==================== AI Reformat ====================
+
+    private static async Task<IResult> ReformatNoteHandler(
+        HttpContext http,
+        ZonWikiDbContext db,
+        ILogger<object> logger,
+        INoteAiService aiService,
+        Guid id,
+        AiTransformRequest request,
+        CancellationToken ct)
+        => await TransformNoteContentAsync(http, db, logger, id, request, ct,
+            (content) => aiService.ReformatAsync(content, ct), "reformat");
+
+    // ==================== AI Beautify ====================
+
+    private static async Task<IResult> BeautifyNoteHandler(
+        HttpContext http,
+        ZonWikiDbContext db,
+        ILogger<object> logger,
+        INoteAiService aiService,
+        Guid id,
+        AiTransformRequest request,
+        CancellationToken ct)
+        => await TransformNoteContentAsync(http, db, logger, id, request, ct,
+            (content) => aiService.BeautifyAsync(content, ct), "beautify");
+
+    /// <summary>
+    /// AI 排版／美化共用處理：對「請求帶來的目前內容」做轉換並回傳結果，
+    /// 「不寫入資料庫、不建立版本、不重解析連結」——避免覆蓋使用者尚未儲存的編輯，
+    /// 並消除與「保存」端點同時寫同一列的競態（最終由使用者按保存才寫入）。
+    /// </summary>
+    /// <param name="http">HTTP 內容（取得使用者身分）。</param>
+    /// <param name="db">資料庫內容（僅用於驗證筆記擁有權）。</param>
+    /// <param name="logger">記錄器。</param>
+    /// <param name="id">筆記識別碼（驗證擁有權用）。</param>
+    /// <param name="request">請求內容（目前的 Markdown）。</param>
+    /// <param name="ct">取消權杖。</param>
+    /// <param name="transform">實際的轉換函式（排版或美化）。</param>
+    /// <param name="opName">操作名稱（記錄用）。</param>
+    /// <returns>轉換結果（contentRaw + contentHtml）。</returns>
+    private static async Task<IResult> TransformNoteContentAsync(
+        HttpContext http,
+        ZonWikiDbContext db,
+        ILogger<object> logger,
+        Guid id,
+        AiTransformRequest request,
+        CancellationToken ct,
+        Func<string, Task<string>> transform,
+        string opName)
+    {
+        var userId = ExtractUserId(http);
+        if (userId == Guid.Empty)
+        {
+            return Results.Json(
+                ApiResponse<AiTransformResultDto>.Fail("Invalid user identity", 401),
+                statusCode: StatusCodes.Status401Unauthorized);
+        }
+
+        // 驗證筆記存在且屬於本人（防護；不讀其內容、不修改）。
+        var owns = await db.Note.AnyAsync(n => n.Id == id && n.ValidFlag && n.UserId == userId, ct);
+        if (!owns)
+        {
+            return Results.NotFound(ApiResponse<AiTransformResultDto>.Fail("Note not found", 404));
+        }
+
+        var input = request?.ContentRaw ?? string.Empty;
+
+        try
+        {
+            // 對「請求帶來的目前內容」做 AI 轉換（不是讀 DB 內容）。
+            var transformed = await transform(input);
+            var html = Markdown.ToHtml(transformed, MarkdownPipeline);
+
+            var dto = new AiTransformResultDto(transformed, html);
+            return Results.Ok(ApiResponse<AiTransformResultDto>.Ok(dto));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to {Op} note (userId={UserId}, noteId={NoteId})", opName, userId, id);
+            return Results.StatusCode(500);
+        }
+    }
+
+    // ==================== Helper Methods ====================
+
+    /// <summary>
+    /// 從 HttpContext 提取使用者 ID。
+    /// 只允許從使用者聲明（user claim）提取；禁止從查詢參數或其他來源讀取，避免用戶繞過授權。
+    /// </summary>
+    private static Guid ExtractUserId(HttpContext http)
+    {
+        var userIdClaim = http.User.FindFirst(AuthExtensions.UserIdClaimType)?.Value;
+        if (!string.IsNullOrEmpty(userIdClaim) && Guid.TryParse(userIdClaim, out var userId))
+        {
+            return userId;
+        }
+
+        return Guid.Empty;
+    }
+
+    /// <summary>
+    /// 驗證建立筆記請求。
+    /// </summary>
+    private static string? ValidateCreateNoteRequest(CreateNoteRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.Title))
+            return "Title is required";
+
+        if (request.Title.Length > 500)
+            return "Title too long (max 500)";
+
+        // 內容允許為空：新建筆記可先只有標題，之後再編輯內容。
+
+        if (request.Kind != null && request.Kind != "note" && request.Kind != "journal")
+            return "Kind must be 'note' or 'journal'";
+
+        return null;
+    }
+
+    /// <summary>
+    /// 產生 slug（從標題移除特殊字元、轉小寫、用連字號分隔）。
+    /// </summary>
+    private static string GenerateSlug(string title)
+    {
+        var slug = Regex.Replace(title.ToLowerInvariant(), @"[^\w\s-]", string.Empty);
+        slug = Regex.Replace(slug, @"[\s]+", "-");
+        slug = Regex.Replace(slug, @"-+", "-").Trim('-');
+        return slug;
+    }
+
+    /// <summary>
+    /// 計算內容雜湊（SHA-256）。
+    /// </summary>
+    private static string ComputeContentHash(string content)
+    {
+        using var sha256 = SHA256.Create();
+        var hash = sha256.ComputeHash(Encoding.UTF8.GetBytes(content));
+        return Convert.ToHexString(hash);
+    }
+
+    /// <summary>
+    /// 設定筆記的分類（整組取代；reconcile）。
+    /// 只接受屬於本人且有效的分類；用 IgnoreQueryFilters 載入既有關聯（含軟刪除）以便
+    /// 「復活 / 軟刪除 / 新增」，避免重新加入已移除的分類時違反 (NoteId, CategoryId) 唯一索引。
+    /// </summary>
+    /// <param name="db">資料庫內容。</param>
+    /// <param name="userId">使用者識別碼。</param>
+    /// <param name="noteId">筆記識別碼。</param>
+    /// <param name="categoryIds">目標分類識別碼清單（空清單＝清空所有分類）。</param>
+    /// <param name="ct">取消權杖。</param>
+    private static async Task SetNoteCategoriesAsync(
+        ZonWikiDbContext db,
+        Guid userId,
+        Guid noteId,
+        List<Guid> categoryIds,
+        CancellationToken ct)
+    {
+        var requested = (categoryIds ?? new List<Guid>()).Distinct().ToList();
+        // 僅接受本人且有效的分類。
+        var validCategoryIds = requested.Count == 0
+            ? new List<Guid>()
+            : await db.Category
+                .Where(c => c.UserId == userId && c.ValidFlag && requested.Contains(c.Id))
+                .Select(c => c.Id)
+                .ToListAsync(ct);
+
+        var existing = await db.NoteCategory
+            .IgnoreQueryFilters()
+            .Where(nc => nc.NoteId == noteId && nc.UserId == userId)
+            .ToListAsync(ct);
+        var existingIds = existing.Select(nc => nc.CategoryId).ToHashSet();
+
+        foreach (var link in existing)
+        {
+            var shouldHave = validCategoryIds.Contains(link.CategoryId);
+            if (link.ValidFlag != shouldHave)
+            {
+                link.ValidFlag = shouldHave;
+                link.DeletedDateTime = shouldHave ? null : DateTime.UtcNow;
+                link.UpdatedUser = userId.ToString();
+                link.UpdatedDateTime = DateTime.UtcNow;
+            }
+        }
+
+        foreach (var categoryId in validCategoryIds.Where(cid => !existingIds.Contains(cid)))
+        {
+            db.NoteCategory.Add(new NoteCategory
+            {
+                UserId = userId,
+                NoteId = noteId,
+                CategoryId = categoryId,
+                CreatedUser = userId.ToString(),
+                UpdatedUser = userId.ToString(),
+            });
+        }
+    }
+
+    /// <summary>
+    /// 設定筆記的標籤（整組取代；reconcile）。
+    /// 同 <see cref="SetNoteCategoriesAsync"/>，以復活軟刪除列避免違反 (NoteId, TagId) 唯一索引。
+    /// 標籤須事先存在（前端以 createNoteTag 建立後再傳 id）。
+    /// </summary>
+    /// <param name="db">資料庫內容。</param>
+    /// <param name="userId">使用者識別碼。</param>
+    /// <param name="noteId">筆記識別碼。</param>
+    /// <param name="tagIds">目標標籤識別碼清單（空清單＝清空所有標籤）。</param>
+    /// <param name="ct">取消權杖。</param>
+    private static async Task SetNoteTagsAsync(
+        ZonWikiDbContext db,
+        Guid userId,
+        Guid noteId,
+        List<Guid> tagIds,
+        CancellationToken ct)
+    {
+        var requested = (tagIds ?? new List<Guid>()).Distinct().ToList();
+        var validTagIds = requested.Count == 0
+            ? new List<Guid>()
+            : await db.Tag
+                .Where(t => t.UserId == userId && t.ValidFlag && requested.Contains(t.Id))
+                .Select(t => t.Id)
+                .ToListAsync(ct);
+
+        var existing = await db.NoteTag
+            .IgnoreQueryFilters()
+            .Where(nt => nt.NoteId == noteId && nt.UserId == userId)
+            .ToListAsync(ct);
+        var existingIds = existing.Select(nt => nt.TagId).ToHashSet();
+
+        foreach (var link in existing)
+        {
+            var shouldHave = validTagIds.Contains(link.TagId);
+            if (link.ValidFlag != shouldHave)
+            {
+                link.ValidFlag = shouldHave;
+                link.DeletedDateTime = shouldHave ? null : DateTime.UtcNow;
+                link.UpdatedUser = userId.ToString();
+                link.UpdatedDateTime = DateTime.UtcNow;
+            }
+        }
+
+        foreach (var tagId in validTagIds.Where(tid => !existingIds.Contains(tid)))
+        {
+            db.NoteTag.Add(new NoteTag
+            {
+                UserId = userId,
+                NoteId = noteId,
+                TagId = tagId,
+                CreatedUser = userId.ToString(),
+                UpdatedUser = userId.ToString(),
+            });
+        }
+    }
+
+    /// <summary>
+    /// 解析 ContentRaw 的 wiki 連結（[[X]] 格式）並建立 NoteLink。
+    /// 若同使用者內存在相符的 slug 或標題，填入 TargetNoteId；否則 TargetNoteId 為 null。
+    /// </summary>
+    private static async Task ParseAndCreateWikiLinksAsync(
+        ZonWikiDbContext db,
+        Guid userId,
+        Guid sourceNoteId,
+        string contentRaw,
+        CancellationToken ct)
+    {
+        var matches = WikiLinkRegex.Matches(contentRaw);
+
+        foreach (Match match in matches)
+        {
+            var anchorText = match.Groups[1].Value.Trim();
+            if (string.IsNullOrEmpty(anchorText))
+                continue;
+
+            // 嘗試比對 slug 或標題
+            Guid? targetNoteId = null;
+
+            // 先比對 slug（更精確）
+            var targetNote = await db.Note
+                .FirstOrDefaultAsync(
+                    n => n.UserId == userId && n.ValidFlag &&
+                         (n.Slug == GenerateSlug(anchorText) || n.Title == anchorText),
+                    ct);
+
+            if (targetNote != null)
+            {
+                targetNoteId = targetNote.Id;
+            }
+
+            // 建立連結
+            var link = new NoteLink
+            {
+                UserId = userId,
+                SourceNoteId = sourceNoteId,
+                TargetNoteId = targetNoteId,
+                AnchorText = anchorText,
+                CreatedUser = userId.ToString(),
+                UpdatedUser = userId.ToString(),
+            };
+            db.NoteLink.Add(link);
+        }
+    }
+}

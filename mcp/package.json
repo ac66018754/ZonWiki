@@ -1,0 +1,31 @@
+{
+  "name": "zonwiki-mcp",
+  "version": "0.1.0",
+  "description": "ZonWiki MCP Server - AI tool to read/write notes, tasks, and canvases in ZonWiki knowledge base",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "zonwiki-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "mcp",
+    "zonwiki",
+    "knowledge-base",
+    "ai"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "typescript": "^5.6.3"
+  }
+}

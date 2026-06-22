@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "zonwiki": {
+      "command": "node",
+      "args": ["<ZonWiki-repo>/mcp/dist/index.js"],
+      "env": {
+        "ZONWIKI_API_BASE": "http://localhost:5009"
+      }
+    }
+  }
+}

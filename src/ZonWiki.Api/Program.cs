@@ -1,0 +1,149 @@
+using Microsoft.EntityFrameworkCore;
+using ZonWiki.Api.Auth;
+using ZonWiki.Api.Endpoints;
+using ZonWiki.Api.Realtime;
+using ZonWiki.Api.Services;
+using ZonWiki.Domain.Common;
+using ZonWiki.Domain.Entities;
+using ZonWiki.Infrastructure;
+using ZonWiki.Infrastructure.Auth;
+using ZonWiki.Infrastructure.Notes;
+using ZonWiki.Infrastructure.Persistence;
+
+var builder = WebApplication.CreateBuilder(args);
+
+const string CorsPolicyName = "ZonWikiCors";
+var allowedOrigins = builder.Configuration
+    .GetSection("Cors:AllowedOrigins")
+    .Get<string[]>() ?? ["http://localhost:3000"];
+
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<ICurrentUser, CurrentUserService>();
+
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy(CorsPolicyName, policy =>
+        policy.WithOrigins(allowedOrigins)
+              .AllowAnyHeader()
+              .AllowAnyMethod()
+              .AllowCredentials());
+});
+
+builder.Services.AddZonWikiInfrastructure(builder.Configuration);
+builder.Services.AddZonWikiAuth(builder.Configuration, out var authConfigured);
+
+// AI 與 SSE 服務（P4 - 開問啦移植）
+builder.Services.AddSingleton<SseHub>();
+builder.Services.AddScoped<AskCancellationRegistry>();
+builder.Services.AddScoped<AncestryService>();
+builder.Services.AddScoped<AskOrchestrator>();
+
+var connectionString = builder.Configuration.GetConnectionString(
+    DependencyInjection.PostgresConnectionName)
+    ?? throw new InvalidOperationException("Postgres connection string missing.");
+
+builder.Services.AddHealthChecks()
+    .AddNpgSql(connectionString, name: "postgres");
+
+builder.Services.AddOpenApi();
+
+var app = builder.Build();
+
+// Apply migrations on startup (dev convenience).
+using (var scope = app.Services.CreateScope())
+{
+    var dbContext = scope.ServiceProvider.GetRequiredService<ZonWikiDbContext>();
+    await dbContext.Database.MigrateAsync();
+
+    // 正式環境沒有本機 claude CLI（僅 Local 有）→ 自動停用所有 ClaudeCli 模型，
+    // 避免節點下拉選到一定會失敗的項目（遷移自本機的 claude-* 列也會被一併停用）。
+    if (app.Environment.IsProduction())
+    {
+        var disabledClaudeCli = await dbContext.AiModel
+            .IgnoreQueryFilters()
+            .Where(m => m.Provider == "ClaudeCli" && m.Enabled)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(m => m.Enabled, false));
+        if (disabledClaudeCli > 0)
+        {
+            app.Logger.LogInformation(
+                "Prod 啟動：自動停用 {Count} 筆 ClaudeCli 模型（本機才有 CLI）", disabledClaudeCli);
+        }
+    }
+
+    // 開發用 seed：若 DB 無任何使用者，建立一個開發使用者便於匯入/匯出測試
+    if (app.Environment.IsDevelopment())
+    {
+        var userCount = await dbContext.User.CountAsync();
+        if (userCount == 0)
+        {
+            var defaultEmail = builder.Configuration["Development:DefaultUserEmail"] ?? "dev@example.com";
+            var provisioningService = scope.ServiceProvider.GetRequiredService<UserProvisioningService>();
+
+            var devUser = await provisioningService.EnsureUserAsync(
+                googleSub: "dev-user-google-sub",
+                email: defaultEmail,
+                displayName: "Dev User",
+                avatarUrl: null,
+                cancellationToken: CancellationToken.None);
+
+            app.Logger.LogInformation("Development seed: Created dev user {UserId} ({Email})", devUser.Id, devUser.Email);
+        }
+    }
+}
+
+if (app.Environment.IsDevelopment())
+{
+    app.MapOpenApi();
+}
+
+app.UseCors(CorsPolicyName);
+
+// 驗證與授權：一律啟用（Cookie auth + 本機密碼 auth）
+app.UseAuthentication();
+app.UseAuthorization();
+
+app.MapHealthChecks("/healthz").AllowAnonymous();
+app.MapGet("/", () => Results.Ok(new { name = "ZonWiki API", status = "alive", authConfigured })).AllowAnonymous();
+
+// 對應驗證端點（OAuth + 本機密碼）
+app.MapZonWikiAuthEndpoints(authConfigured);
+app.MapAuthPasswordEndpoints();
+app.MapProfileEndpoints(); // 個人頁：profile/stats/activity/改 email/刪帳號
+
+app.MapCategoryEndpoints();
+app.MapNoteEndpoints();
+app.MapTagEndpoints();
+app.MapNoteWriteEndpoints(authConfigured);
+app.MapCommentEndpoints(authConfigured);
+app.MapTaskEndpoints();
+app.MapTaskGroupEndpoints();
+app.MapSubTaskEndpoints();
+app.MapTaskRelationEndpoints();
+app.MapNoteTaskLinkEndpoints();
+app.MapEntityLinkEndpoints(); // 通用實體關聯：任務/子任務/筆記/節點 互連
+app.MapNoteMarkEndpoints(); // 筆記文字標註：畫重點/做關聯/寫備註
+app.MapNoteOverlayEndpoints(); // 筆記浮層：便利貼/塗鴉/圖片輪播
+app.MapQuickLinkEndpoints();
+app.MapCaptureItemEndpoints();
+app.MapCalendarEndpoints();
+app.MapHomePageEndpoints();
+
+// 使用者設定與垃圾桶（P5 - 全站共用設定）
+app.MapUserSettingsEndpoints();
+app.MapTrashEndpoints();
+
+// Canvas SSE 端點（P4 - 開問啦移植）
+app.MapCanvasEndpoints();
+
+// 開問啦 Canvas REST API（P4 - 完整 CRUD）
+app.MapKaiWenCanvasEndpoints();
+
+// 畫布設定：System Prompt CRUD、畫布分類與關聯、單一畫布系統設定
+app.MapCanvasSystemEndpoints();
+
+// 全站搜尋端點（I6 - 納入筆記、任務、畫布、節點）
+app.MapSearchEndpoints();
+
+app.Run();
+
+public partial class Program;

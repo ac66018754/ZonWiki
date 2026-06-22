@@ -1,0 +1,202 @@
+"use client";
+
+import { useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+
+/**
+ * 共用 Markdown 編輯器：文字輸入框 + 格式工具列。
+ *
+ * 工具列同時支援兩種用法：
+ * - 先框選文字，再按格式鍵 → 套用到選取範圍（粗體、H1、程式碼區塊…）。
+ * - 不選文字直接按格式鍵 → 插入標記並把游標放到正確位置，接著打字即可。
+ *
+ * 不熟 Markdown 的人也能用按鈕快速產生格式；熟的人仍可直接打字。
+ * 可選 withPreview：提供 編輯／並排／預覽 三種檢視。
+ */
+type ViewMode = "edit" | "split" | "preview";
+
+export function MarkdownEditor({
+  value,
+  onChange,
+  onBlur,
+  placeholder,
+  minHeight = 200,
+  withPreview = false,
+  className,
+  textareaClassName,
+  ariaLabel = "Markdown 編輯器",
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  /** textarea 失焦時觸發（例如即時存檔）。 */
+  onBlur?: () => void;
+  placeholder?: string;
+  /** 編輯區最小高度（px）。 */
+  minHeight?: number;
+  /** 是否提供 編輯／並排／預覽 切換。 */
+  withPreview?: boolean;
+  /** 外層額外 class（例如畫布需要 nodrag）。 */
+  className?: string;
+  /** textarea 額外 class（沿用既有樣式時）。 */
+  textareaClassName?: string;
+  ariaLabel?: string;
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const [view, setView] = useState<ViewMode>("edit");
+
+  /** 還原 textarea 的選取狀態（在 onChange 觸發重繪後）。 */
+  const restore = (start: number, end: number) => {
+    requestAnimationFrame(() => {
+      const ta = ref.current;
+      if (!ta) return;
+      ta.focus();
+      ta.selectionStart = start;
+      ta.selectionEnd = end;
+    });
+  };
+
+  /** 以 before/after 包住選取（無選取時插入 placeholder 並選起來，方便直接覆寫）。 */
+  const wrap = (before: string, after: string, placeholder: string) => {
+    const ta = ref.current;
+    if (!ta) return;
+    const s = ta.selectionStart;
+    const e = ta.selectionEnd;
+    const sel = value.slice(s, e) || placeholder;
+    onChange(value.slice(0, s) + before + sel + after + value.slice(e));
+    restore(s + before.length, s + before.length + sel.length);
+  };
+
+  /** 在（選取範圍涵蓋的）每一行行首加上前綴（H1/清單/待辦/引用…）。 */
+  const linePrefix = (prefix: string) => {
+    const ta = ref.current;
+    if (!ta) return;
+    const s = ta.selectionStart;
+    const e = ta.selectionEnd;
+    const lineStart = value.lastIndexOf("\n", s - 1) + 1;
+    const segment = value.slice(lineStart, e);
+    const prefixed = segment
+      .split("\n")
+      .map((line) => prefix + line)
+      .join("\n");
+    onChange(value.slice(0, lineStart) + prefixed + value.slice(e));
+    restore(lineStart, e + (prefixed.length - segment.length));
+  };
+
+  /** 建立程式碼區塊（把選取包進 ```，並確保前後換行）。 */
+  const codeBlock = () => {
+    const ta = ref.current;
+    if (!ta) return;
+    const s = ta.selectionStart;
+    const e = ta.selectionEnd;
+    const sel = value.slice(s, e) || "程式碼";
+    const before = value.slice(0, s);
+    const after = value.slice(e);
+    const nlBefore = before.length > 0 && !before.endsWith("\n");
+    const nlAfter = after.length > 0 && !after.startsWith("\n");
+    const fence = `${nlBefore ? "\n" : ""}\`\`\`\n${sel}\n\`\`\`${nlAfter ? "\n" : ""}`;
+    onChange(before + fence + after);
+    const start = s + (nlBefore ? 1 : 0) + 4; // 跳過（換行+）```\n
+    restore(start, start + sel.length);
+  };
+
+  /** 在游標處插入一段獨立區塊（前後自動補換行；如表格、分隔線）。 */
+  const insertBlock = (block: string) => {
+    const ta = ref.current;
+    if (!ta) return;
+    const s = ta.selectionStart;
+    const e = ta.selectionEnd;
+    const before = value.slice(0, s);
+    const after = value.slice(e);
+    const nlBefore = before.length > 0 && !before.endsWith("\n") ? "\n" : "";
+    const nlAfter = after.length > 0 && !after.startsWith("\n") ? "\n" : "";
+    const text = nlBefore + block + nlAfter;
+    onChange(before + text + after);
+    const pos = s + text.length;
+    restore(pos, pos);
+  };
+
+  // 工具列：常用的 Markdown 格式都備齊（標題 1~3、粗/斜/刪除線、清單/編號/待辦、引用、
+  // 行內/區塊程式碼、表格、圖片、分隔線、連結）。
+  const tools: { label: React.ReactNode; title: string; run: () => void }[] = [
+    { label: "H1", title: "標題 1（行首 # ）", run: () => linePrefix("# ") },
+    { label: "H2", title: "標題 2（行首 ## ）", run: () => linePrefix("## ") },
+    { label: "H3", title: "標題 3（行首 ### ）", run: () => linePrefix("### ") },
+    { label: <b>B</b>, title: "粗體", run: () => wrap("**", "**", "粗體") },
+    { label: <i>I</i>, title: "斜體", run: () => wrap("*", "*", "斜體") },
+    { label: <s>S</s>, title: "刪除線", run: () => wrap("~~", "~~", "刪除線") },
+    { label: "•", title: "項目清單", run: () => linePrefix("- ") },
+    { label: "1.", title: "編號清單", run: () => linePrefix("1. ") },
+    { label: "☑", title: "待辦清單", run: () => linePrefix("- [ ] ") },
+    { label: "❝", title: "引用", run: () => linePrefix("> ") },
+    { label: "`", title: "行內程式碼", run: () => wrap("`", "`", "code") },
+    { label: "</>", title: "程式碼區塊", run: codeBlock },
+    { label: "⊞", title: "表格", run: () => insertBlock("| 欄位 1 | 欄位 2 |\n| --- | --- |\n| 內容 | 內容 |") },
+    { label: "🖼", title: "圖片", run: () => wrap("![", "](url)", "替代文字") },
+    { label: "―", title: "分隔線", run: () => insertBlock("---") },
+    { label: "🔗", title: "連結", run: () => wrap("[", "](url)", "文字") },
+  ];
+
+  const showEditor = !withPreview || view !== "preview";
+  const showPreview = withPreview && view !== "edit";
+
+  return (
+    <div className={`mde ${className || ""}`}>
+      <div className="mde-toolbar">
+        {tools.map((t, i) => (
+          <button
+            key={i}
+            type="button"
+            className="mde-btn"
+            title={t.title}
+            // 防止按鈕奪走焦點：保留 textarea 的選取範圍，也避免誤觸 onBlur 存檔。
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={t.run}
+            tabIndex={-1}
+          >
+            {t.label}
+          </button>
+        ))}
+        {withPreview && (
+          <div className="mde-views">
+            {(["edit", "split", "preview"] as ViewMode[]).map((m) => (
+              <button
+                key={m}
+                type="button"
+                className={`mde-view-btn ${view === m ? "mde-view-btn--on" : ""}`}
+                onClick={() => setView(m)}
+                tabIndex={-1}
+              >
+                {m === "edit" ? "編輯" : m === "split" ? "並排" : "預覽"}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className={`mde-body ${showEditor && showPreview ? "mde-body--split" : ""}`}>
+        {showEditor && (
+          <textarea
+            ref={ref}
+            className={`mde-textarea ${textareaClassName || ""}`}
+            style={{ minHeight }}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            onBlur={onBlur}
+            placeholder={placeholder}
+            aria-label={ariaLabel}
+          />
+        )}
+        {showPreview && (
+          <div className="mde-preview md-preview" style={{ minHeight }}>
+            {value.trim() ? (
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{value}</ReactMarkdown>
+            ) : (
+              <span className="mde-muted">預覽會顯示在這裡…</span>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

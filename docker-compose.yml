@@ -1,0 +1,71 @@
+# ZonWiki — local stack.
+#
+#   方式A(平常開發 / Non-Docker):  docker compose up -d        ← 只起 PostgreSQL
+#   方式B(段落 / 全 Docker):      docker compose --profile full up -d --build
+#
+# 兩種方式共用同一個 postgres 容器與 zonwiki-postgres-data 資料卷,資料一致。
+# 一次只能用一種方式(三個服務都用同一組連接埠 3000 / 5009 / 5533)。
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: zonwiki-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: zonwiki
+      POSTGRES_PASSWORD: zonwiki_dev_password
+      POSTGRES_DB: zonwiki
+      TZ: Asia/Taipei
+    ports:
+      # 主機 5533 對容器 5432（本機標準埠；5433 曾被其他專案容器佔用，故全專案統一改用 5533）。
+      - "5533:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zonwiki -d zonwiki"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # --- 方式B 專用:全 Docker 才會啟動的前後端 ---------------------------------
+  api:
+    profiles: ["full"]
+    build:
+      context: ./src
+      dockerfile: ZonWiki.Api/Dockerfile
+    container_name: zonwiki-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      # 容器網路內 postgres 走服務名 + 內部埠 5432(不是主機的 5533)。
+      ConnectionStrings__Postgres: "Host=postgres;Port=5432;Database=zonwiki;Username=zonwiki;Password=zonwiki_dev_password;Include Error Detail=true"
+      TZ: Asia/Taipei
+    ports:
+      - "5009:8080"
+
+  web:
+    profiles: ["full"]
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # 瀏覽器端打 API 的位址(主機發佈埠),build 時烤進前端 bundle。
+        NEXT_PUBLIC_API_URL: "http://localhost:5009"
+    container_name: zonwiki-web
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      # Next.js 伺服器端(SSR)在容器網路內打 API 走服務名。
+      API_INTERNAL_URL: "http://api:8080"
+      TZ: Asia/Taipei
+    ports:
+      - "3000:3000"
+
+volumes:
+  postgres-data:
+    name: zonwiki-postgres-data

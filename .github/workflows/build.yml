@@ -1,0 +1,66 @@
+# ============================================================================
+# 打包並推送容器映像到 GHCR（GitHub Container Registry）
+#
+# 用途：
+#   讓 GitHub 的雲端機器幫忙把 API（.NET）與前端（Next.js）打包成 Docker 映像，
+#   推到 ghcr.io。如此「本機」與「VM」都不需要 build（符合 VM 不 build 的鐵則）。
+#
+# 觸發時機：
+#   - 推送到 main 或 feature/Website 分支時自動執行
+#   - 也可在 GitHub Actions 頁面手動按「Run workflow」（workflow_dispatch）
+#
+# 認證：
+#   使用 GitHub 自動提供的 GITHUB_TOKEN（不需額外金鑰），權限見下方 permissions。
+#
+# 備註：
+#   這是「只打包、不部署」的版本。自動部署到 VM 屬後續（需 Workload Identity
+#   Federation）再加上 deploy job；先用這支把映像產出，VM 端手動 pull 即可上線。
+# ============================================================================
+name: Build & Push Images
+
+on:
+  push:
+    branches: [main, feature/Website]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  # 映像名稱（GHCR 要求全小寫）；ac66018754 為 repo 擁有者帳號
+  IMAGE_API: ghcr.io/ac66018754/zonwiki-api
+  IMAGE_WEB: ghcr.io/ac66018754/zonwiki-web
+  # 前端在 build 時會把此公開網址內嵌進瀏覽器端 bundle
+  PUBLIC_URL: https://zonwiki.pee-yang.com
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 取出原始碼
+        uses: actions/checkout@v4
+
+      - name: 登入 GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 打包並推送 API 映像
+        uses: docker/build-push-action@v6
+        with:
+          context: ./src
+          file: ./src/ZonWiki.Api/Dockerfile
+          push: true
+          tags: ${{ env.IMAGE_API }}:latest,${{ env.IMAGE_API }}:${{ github.sha }}
+
+      - name: 打包並推送前端映像
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          build-args: NEXT_PUBLIC_API_URL=${{ env.PUBLIC_URL }}
+          push: true
+          tags: ${{ env.IMAGE_WEB }}:latest,${{ env.IMAGE_WEB }}:${{ github.sha }}
