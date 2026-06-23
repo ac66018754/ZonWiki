@@ -733,6 +733,20 @@ function SlideBody({
   const [idx, setIdx] = useState(0);
   const [url, setUrl] = useState('');
   const [adding, setAdding] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  /** 直接上傳/貼上圖片：讀成 data URL 後加入輪播（不需網址）。 */
+  const addImageFile = (file: File) => {
+    if (!file.type.startsWith('image/')) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        onImagesChange([...images, reader.result]);
+        setIdx(images.length);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
 
   useEffect(() => {
     if (images.length <= 1 || adding) return;
@@ -746,7 +760,18 @@ function SlideBody({
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       <div style={{ flex: 1, position: 'relative', minHeight: 0, background: '#000', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         {images.length === 0 ? (
-          <span style={{ color: '#aaa', fontSize: 'var(--text-xs)' }}>尚無圖片，下方加入網址</span>
+          <span
+            style={{ color: '#aaa', fontSize: 'var(--text-xs)', textAlign: 'center', cursor: 'pointer', padding: '0 8px' }}
+            onClick={() => fileRef.current?.click()}
+            title="點此上傳圖片"
+            onPaste={(e) => {
+              const item = Array.from(e.clipboardData?.items ?? []).find((it) => it.type.startsWith('image/'));
+              const f = item?.getAsFile();
+              if (f) { e.preventDefault(); addImageFile(f); }
+            }}
+          >
+            尚無圖片，點此上傳或下方貼上/加網址
+          </span>
         ) : (
           // eslint-disable-next-line @next/next/no-img-element
           <img src={images[safeIdx]} alt={`slide-${safeIdx}`} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
@@ -765,11 +790,32 @@ function SlideBody({
       </div>
       <div style={{ display: 'flex', gap: 3, padding: '3px', flexShrink: 0 }}>
         <input
+          ref={fileRef}
+          type="file"
+          accept="image/*"
+          style={{ display: 'none' }}
+          onChange={(e) => { const f = e.target.files?.[0]; if (f) addImageFile(f); e.target.value = ''; }}
+        />
+        <button
+          className="tk-btn"
+          style={{ cursor: 'pointer', fontSize: 'var(--text-xs)', padding: '2px 6px', flexShrink: 0 }}
+          onClick={() => fileRef.current?.click()}
+          title="上傳圖片（直接放圖，不需網址）"
+          data-testid="slide-upload"
+        >
+          📁 上傳
+        </button>
+        <input
           value={url}
           onChange={(e) => setUrl(e.target.value)}
           onFocus={() => setAdding(true)}
           onBlur={() => setAdding(false)}
-          placeholder="圖片網址…"
+          onPaste={(e) => {
+            const item = Array.from(e.clipboardData?.items ?? []).find((it) => it.type.startsWith('image/'));
+            const f = item?.getAsFile();
+            if (f) { e.preventDefault(); addImageFile(f); }
+          }}
+          placeholder="或貼上圖片 / 網址…"
           style={{ flex: 1, minWidth: 0, fontSize: 'var(--text-xs)', padding: '2px 4px', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-sm)' }}
           data-testid="slide-url"
         />

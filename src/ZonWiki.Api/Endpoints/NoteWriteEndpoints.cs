@@ -965,19 +965,23 @@ public static class NoteWriteEndpoints
             return Results.NotFound(ApiResponse<List<BacklinkDto>>.Fail("Note not found", 404));
         }
 
+        // 先以真實欄位 n.Title 排序、再投影成 DTO。
+        // 不可在 Join 投影成 BacklinkDto「之後」再 OrderBy(b => b.SourceNoteTitle)——
+        // EF Core 會試圖在 SQL ORDER BY 內重建 BacklinkDto 而無法轉譯（造成 500）。
         var backlinks = await db.NoteLink
             .Where(nl => nl.TargetNoteId == id && nl.ValidFlag)
             .Join(
                 db.Note,
                 nl => nl.SourceNoteId,
                 n => n.Id,
-                (nl, n) => new BacklinkDto(
-                    nl.Id,
-                    nl.SourceNoteId,
-                    n.Title,
-                    n.Slug,
-                    nl.AnchorText))
-            .OrderBy(b => b.SourceNoteTitle)
+                (nl, n) => new { nl, n })
+            .OrderBy(x => x.n.Title)
+            .Select(x => new BacklinkDto(
+                x.nl.Id,
+                x.nl.SourceNoteId,
+                x.n.Title,
+                x.n.Slug,
+                x.nl.AnchorText))
             .ToListAsync(ct);
 
         return Results.Ok(ApiResponse<List<BacklinkDto>>.Ok(backlinks));
