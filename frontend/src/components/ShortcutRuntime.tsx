@@ -104,9 +104,32 @@ function isTypingTarget(target: EventTarget | null): boolean {
   return target.isContentEditable;
 }
 
-/** 執行 global 範圍的動作（導覽 / 聚焦搜尋）。 */
+/** 顯示主題循環順序（與 Header 一致）。 */
+const THEME_ORDER = ["warmpaper", "light", "dark", "night"] as const;
+
+/** 事件：主題已由快捷鍵切換 → 通知 Header 等同步顯示。 */
+export const THEME_CHANGED_EVENT = "zonwiki:theme-changed";
+
+/** 切換到下一個顯示主題（暖紙→明亮→暗色→夜間→暖紙），並廣播事件讓 Header 同步。 */
+function cycleTheme(): void {
+  const current = document.documentElement.getAttribute("data-theme") ?? "warmpaper";
+  const idx = THEME_ORDER.indexOf(current as (typeof THEME_ORDER)[number]);
+  const next = THEME_ORDER[(idx + 1) % THEME_ORDER.length];
+  document.documentElement.setAttribute("data-theme", next);
+  try {
+    localStorage.setItem("zonwiki:theme", next);
+  } catch {
+    /* localStorage 不可用時忽略 */
+  }
+  window.dispatchEvent(new CustomEvent(THEME_CHANGED_EVENT, { detail: { theme: next } }));
+}
+
+/** 執行 global 範圍的動作（導覽 / 聚焦搜尋 / 切換主題）。 */
 function runGlobalAction(id: string, router: ReturnType<typeof useRouter>): void {
   switch (id) {
+    case "openHome":
+      router.push("/");
+      break;
     case "openTasks":
       router.push("/tasks");
       break;
@@ -121,5 +144,8 @@ function runGlobalAction(id: string, router: ReturnType<typeof useRouter>): void
       input?.focus();
       break;
     }
+    case "cycleTheme":
+      cycleTheme();
+      break;
   }
 }

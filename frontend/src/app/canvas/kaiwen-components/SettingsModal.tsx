@@ -511,7 +511,15 @@ export function SettingsModal({ timezone: propTimezone, onClose, onModelsChanged
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      // 點背景（非內容）即關閉；若有未儲存變更先確認，避免誤關丟失模型設定。
+      onMouseDown={(e) => {
+        if (e.target !== e.currentTarget) return
+        if (dirty && !window.confirm('有未儲存的變更，確定要關閉設定嗎？')) return
+        onClose()
+      }}
+    >
       {/* Modal 容器 */}
       <div className="flex max-h-[90vh] w-full max-w-3xl flex-col rounded-lg bg-[var(--kw-bg)] shadow-lg">
         {/* Modal 標題列 */}

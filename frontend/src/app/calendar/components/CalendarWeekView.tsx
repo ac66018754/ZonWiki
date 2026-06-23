@@ -107,7 +107,9 @@ export function CalendarWeekView({
                 textAlign: "center",
                 padding: "var(--spacing-2)",
                 borderRadius: "var(--radius-md)",
-                background: isToday ? "var(--status-success-bg)" : "var(--bg-surface-secondary)",
+                background: isToday
+                  ? "color-mix(in srgb, var(--status-success-bg) 45%, var(--bg-surface-secondary))"
+                  : "var(--bg-surface-secondary)",
               }}
             >
               <div style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>{dayNames[d.getDay()]}</div>

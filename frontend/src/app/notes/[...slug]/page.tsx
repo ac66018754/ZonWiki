@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
+import { enhanceCodeBlocks } from '@/lib/codeBlocks';
 import {
   getNote,
   updateNote,
@@ -55,6 +56,7 @@ export default function NotesDetailPage() {
   const slug = Array.isArray(routeParams.slug)
     ? routeParams.slug.map((s) => decodeURIComponent(s)).join('/')
     : decodeURIComponent(String(routeParams.slug ?? ''));
+  const router = useRouter();
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [note, setNote] = useState<NoteDetail | null>(null);
   const [comments, setComments] = useState<Comment[]>([]);
@@ -89,7 +91,7 @@ export default function NotesDetailPage() {
   const [isPostingComment, setIsPostingComment] = useState(false);
 
   // 標籤頁
-  const [activeTab, setActiveTab] = useState<'preview' | 'comments' | 'history' | 'backlinks'>('preview');
+  const [activeTab, setActiveTab] = useState<'preview' | 'comments' | 'history' | 'backlinks' | 'links'>('preview');
 
   // 共用「復原 / 重做」：手繪塗鴉與畫重點共用同一條 Ctrl+Z 堆疊，僅在預覽分頁掛上單一鍵盤監聽。
   useUndoHotkeys(activeTab === 'preview');
@@ -98,6 +100,36 @@ export default function NotesDetailPage() {
     resetUndo();
     return () => resetUndo();
   }, [note?.id]);
+
+  // 預覽容器的 callback ref：掛載當下就為程式碼區塊注入「複製」鈕，並以 MutationObserver
+  // 持續處理之後才出現/重繪的區塊（取代原本相依 previewRef 時序的 useEffect——實測它不一定跑到）。
+  // 同時把 node 存回 previewRef，供 NoteMarksLayer / NoteOverlay 使用。
+  const previewObsRef = useRef<MutationObserver | null>(null);
+  const setPreviewNode = useCallback((node: HTMLDivElement | null) => {
+    previewRef.current = node;
+    previewObsRef.current?.disconnect();
+    previewObsRef.current = null;
+    if (!node) return;
+    enhanceCodeBlocks(node);
+    const obs = new MutationObserver(() => enhanceCodeBlocks(node));
+    obs.observe(node, { childList: true, subtree: true });
+    previewObsRef.current = obs;
+  }, []);
+
+  // 把「目前筆記所屬分類」廣播給左側欄，讓它標示「📍 此筆記在這」（避免迷路）。
+  // 用分類 id 串接當相依，分類載入/切換筆記時更新；離開時清空。
+  const noteCatIdsKey = (note?.categories ?? []).map((c) => c.id).join(',');
+  useEffect(() => {
+    const ids = noteCatIdsKey ? noteCatIdsKey.split(',') : [];
+    window.dispatchEvent(
+      new CustomEvent('zonwiki:note-active-category', { detail: { categoryIds: ids } })
+    );
+    return () => {
+      window.dispatchEvent(
+        new CustomEvent('zonwiki:note-active-category', { detail: { categoryIds: [] } })
+      );
+    };
+  }, [noteCatIdsKey]);
 
   // AI 操作回調：AI（排版/美化/撤銷）只更新編輯器內容，不寫 DB、也不重抓筆記
   // （後端已改為純轉換、不落地）。先前的 getNote 重抓會把編輯器內容蓋回 DB 版，
@@ -269,6 +301,67 @@ export default function NotesDetailPage() {
   return (
     <div className="note-detail-page">
       <div className="note-detail__container">
+        {/* 置頂工具列（sticky，不隨內文捲走）：返回 + 標題 + 編輯 / 匯出 PDF / 刪除，同一行。 */}
+        <div
+          style={{
+            position: 'sticky',
+            top: 0,
+            zIndex: 30,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 'var(--spacing-3)',
+            marginBottom: 'var(--spacing-3)',
+            paddingTop: 'var(--spacing-2)',
+            paddingBottom: 'var(--spacing-2)',
+            background: 'var(--bg-canvas)',
+            borderBottom: '1px solid var(--border-default)',
+          }}
+        >
+          <button
+            onClick={() => router.back()}
+            className="btn-secondary"
+            title="返回上一個瀏覽的地方"
+            style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 'var(--spacing-1)' }}
+          >
+            ← 返回
+          </button>
+          <h1
+            style={{
+              margin: 0,
+              flex: 1,
+              minWidth: 0,
+              fontSize: 'var(--text-xl)',
+              fontWeight: 700,
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
+            title={note.title}
+          >
+            {note.title}
+          </h1>
+          <div style={{ display: 'flex', gap: 'var(--spacing-2)', flexShrink: 0 }}>
+            <button
+              onClick={() => {
+                setEditTitle(note.title);
+                setEditContent(note.contentRaw);
+                setEditCatIds((note.categories ?? []).map((c) => c.id));
+                setEditTagIds((note.tags ?? []).map((t) => t.id));
+                setIsEditing(true);
+              }}
+              className="btn-primary"
+            >
+              ✏️ 編輯
+            </button>
+            <button onClick={handleExportPdf} className="btn-secondary" title="以瀏覽器列印（可另存為 PDF）">
+              📄 匯出 PDF
+            </button>
+            <button onClick={handleDelete} className="btn-danger">
+              🗑️ 刪除
+            </button>
+          </div>
+        </div>
+
         {/* 錯誤提示 */}
         {error && (
           <div
@@ -285,10 +378,7 @@ export default function NotesDetailPage() {
           </div>
         )}
 
-        {/* 關聯列：此筆記關聯的任務/子任務/節點，可搜尋既有項目來關聯（點任務→回到當天行事曆） */}
-        <div style={{ marginBottom: 'var(--spacing-4)' }}>
-          <LinkedEntitiesBar type="note" id={note.id} sourceTitle={note.title} />
-        </div>
+        {/* 關聯內容已移到下方「關聯」分頁（見標籤頁） */}
 
         {/* 編輯模式 */}
         {isEditing ? (
@@ -437,61 +527,18 @@ export default function NotesDetailPage() {
         ) : (
           /* 查看模式 */
           <>
-            {/* 筆記頭：標題與「編輯／設為草稿／刪除」同行 */}
-            <div style={{ marginBottom: 'var(--spacing-6)' }}>
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'flex-start',
-                  gap: 'var(--spacing-3)',
-                }}
-              >
-                <h1
-                  style={{
-                    margin: 0,
-                    fontSize: 'var(--text-3xl)',
-                    fontWeight: 700,
-                    flex: 1,
-                    minWidth: 0,
-                  }}
-                >
-                  {note.title}
-                </h1>
-                <div style={{ display: 'flex', gap: 'var(--spacing-2)', flexShrink: 0 }}>
-                  <button
-                    onClick={() => {
-                      // 進入編輯前以目前筆記內容重設各編輯欄位（含分類/標籤）。
-                      setEditTitle(note.title);
-                      setEditContent(note.contentRaw);
-                      setEditCatIds((note.categories ?? []).map((c) => c.id));
-                      setEditTagIds((note.tags ?? []).map((t) => t.id));
-                      setIsEditing(true);
-                    }}
-                    className="btn-primary"
-                  >
-                    ✏️ 編輯
-                  </button>
-                  <button onClick={handleExportPdf} className="btn-secondary" title="以瀏覽器列印（可另存為 PDF）">
-                    📄 匯出 PDF
-                  </button>
-                  <button onClick={handleDelete} className="btn-danger">
-                    🗑️ 刪除
-                  </button>
-                </div>
-              </div>
-              <div
-                style={{
-                  marginTop: 'var(--spacing-3)',
-                  display: 'flex',
-                  gap: 'var(--spacing-4)',
-                  fontSize: 'var(--text-sm)',
-                  color: 'var(--text-secondary)',
-                }}
-              >
-                <span>建立：{formatNoteFullDateTime(note.createdDateTime)}</span>
-                <span>更新：{formatNoteFullDateTime(note.updatedDateTime)}</span>
-              </div>
+            {/* 建立／更新時間（標題與動作鈕已移至上方置頂工具列） */}
+            <div
+              style={{
+                marginBottom: 'var(--spacing-5)',
+                display: 'flex',
+                gap: 'var(--spacing-4)',
+                fontSize: 'var(--text-sm)',
+                color: 'var(--text-secondary)',
+              }}
+            >
+              <span>建立：{formatNoteFullDateTime(note.createdDateTime)}</span>
+              <span>更新：{formatNoteFullDateTime(note.updatedDateTime)}</span>
             </div>
 
             {/* 標籤頁 */}
@@ -588,13 +635,55 @@ export default function NotesDetailPage() {
               >
                 🔗 反向連結
               </button>
+              <button
+                onClick={() => setActiveTab('links')}
+                style={{
+                  padding: 'var(--spacing-2) var(--spacing-4)',
+                  border: 'none',
+                  background: 'transparent',
+                  cursor: 'pointer',
+                  borderBottom:
+                    activeTab === 'links'
+                      ? '2px solid var(--action-primary-bg)'
+                      : '2px solid transparent',
+                  color:
+                    activeTab === 'links' ? 'var(--action-primary-bg)' : 'var(--text-secondary)',
+                  fontWeight: activeTab === 'links' ? 600 : 400,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                🧷 關聯
+              </button>
             </div>
+
+            {/* 關聯分頁：此筆記關聯的任務/子任務/節點，可搜尋既有項目來關聯（點任務→回到當天行事曆） */}
+            {activeTab === 'links' && (
+              <div>
+                <div
+                  style={{
+                    marginBottom: 'var(--spacing-3)',
+                    padding: 'var(--spacing-3)',
+                    background: 'var(--bg-surface-secondary, var(--bg-surface))',
+                    border: '1px solid var(--border-default)',
+                    borderRadius: 'var(--radius-md)',
+                    fontSize: 'var(--text-sm)',
+                    color: 'var(--text-secondary)',
+                    lineHeight: 'var(--line-height-normal)',
+                  }}
+                >
+                  <strong style={{ color: 'var(--text-primary)' }}>🧷 關聯</strong>
+                  ＝你<strong>手動</strong>把這篇筆記綁到其他「任務 / 開問啦節點 / 其他筆記」，
+                  兩邊都看得到、可互相點擊跳轉。用下方「＋關聯」搜尋並加入既有項目即可。
+                </div>
+                <LinkedEntitiesBar type="note" id={note.id} sourceTitle={note.title} />
+              </div>
+            )}
 
             {/* 預覽標籤：框選文字畫重點/做關聯/寫備註（NoteMarksLayer）＋ 浮層便利貼/塗鴉/輪播（NoteOverlay，疊最上層） */}
             {activeTab === 'preview' && (
               <div style={{ position: 'relative' }}>
                 <div
-                  ref={previewRef}
+                  ref={setPreviewNode}
                   className="markdown-prose"
                   style={{
                     background: 'var(--bg-surface)',
@@ -751,14 +840,32 @@ export default function NotesDetailPage() {
 
             {/* 反向連結標籤 */}
             {activeTab === 'backlinks' && (
-              <div
-                style={{
-                  background: 'var(--bg-surface)',
-                  borderRadius: 'var(--radius-lg)',
-                  border: '1px solid var(--border-default)',
-                }}
-              >
-                <NoteBacklinks noteId={note.id} />
+              <div>
+                <div
+                  style={{
+                    marginBottom: 'var(--spacing-3)',
+                    padding: 'var(--spacing-3)',
+                    background: 'var(--bg-surface-secondary, var(--bg-surface))',
+                    border: '1px solid var(--border-default)',
+                    borderRadius: 'var(--radius-md)',
+                    fontSize: 'var(--text-sm)',
+                    color: 'var(--text-secondary)',
+                    lineHeight: 'var(--line-height-normal)',
+                  }}
+                >
+                  <strong style={{ color: 'var(--text-primary)' }}>🔗 反向連結</strong>
+                  ＝系統<strong>自動</strong>偵測「哪些<strong>其他筆記</strong>用 <code>[[本篇標題]]</code> 連到這篇」。
+                  你不用手動建立——只要在別的筆記內文寫 <code>[[{note.title}]]</code>，那篇就會出現在這裡。
+                </div>
+                <div
+                  style={{
+                    background: 'var(--bg-surface)',
+                    borderRadius: 'var(--radius-lg)',
+                    border: '1px solid var(--border-default)',
+                  }}
+                >
+                  <NoteBacklinks noteId={note.id} />
+                </div>
               </div>
             )}
 
@@ -779,8 +886,12 @@ export default function NotesDetailPage() {
       </div>
 
       <style jsx>{`
+        /* 讓本頁自己成為「固定高度的捲動容器」，而非整頁(body)捲動——
+           否則上方 sticky 工具列因為祖先(main-content)雖有 overflow:auto 卻不真的捲動，
+           sticky 便失效、會被一起捲走。高度扣掉全站固定標題列(--header-height)。 */
         .note-detail-page {
           width: 100%;
+          height: calc(100vh - var(--header-height));
           overflow-y: auto;
         }
 
@@ -829,7 +940,10 @@ export default function NotesDetailPage() {
           text-decoration: underline;
         }
 
-        .markdown-prose code {
+        /* 只套用到「行內程式碼」（直接父層不是 pre）。
+           否則這個 inline 樣式（背景＋padding）會落到區塊程式碼的 <code> 上，
+           讓多行內容每一行各自出現一塊灰底（看起來變成一行一行的）。區塊程式碼樣式見 globals.css。 */
+        .markdown-prose :not(pre) > code {
           background: var(--code-bg);
           padding: 2px 6px;
           border-radius: var(--radius-sm);
@@ -837,18 +951,8 @@ export default function NotesDetailPage() {
           font-size: 0.9em;
         }
 
-        .markdown-prose pre {
-          background: var(--code-bg);
-          padding: var(--spacing-3);
-          border-radius: var(--radius-md);
-          overflow-x: auto;
-          margin: var(--spacing-3) 0;
-        }
-
-        .markdown-prose pre code {
-          background: transparent;
-          padding: 0;
-        }
+        /* 程式碼區塊（pre / pre code）樣式改由 globals.css 全域定義，
+           以確保套用到「以 HTML 注入」的內容、且在所有主題都醒目（見 .markdown-prose pre）。 */
 
         .markdown-prose ul,
         .markdown-prose ol {

@@ -7,8 +7,9 @@ import { captureSelection, reAnchor, type SelectionInfo } from '@/lib/textAnchor
 import {
   listNoteMarks,
   createNoteMark,
+  updateNoteMark,
   deleteNoteMark,
-  askNoteSelection,
+  askNoteSelectionAnswer,
   searchLinkCandidates,
   type NoteMark,
   type CreateNoteMarkInput,
@@ -16,6 +17,7 @@ import {
 } from '@/lib/api';
 import { ColorPickerInline, resolveColor } from '@/components/ColorPicker';
 import { pushUndo } from '@/lib/undoManager';
+import { NOTE_ASK_STICKY_EVENT } from '@/components/NoteOverlay';
 
 /** 目標型別 → 中文標籤（hover 浮窗顯示）。 */
 const TARGET_LABEL: Record<string, string> = {
@@ -47,6 +49,9 @@ export function NoteMarksLayer({ noteId, containerRef, contentHtml, active }: Pr
   const router = useRouter();
   const [marks, setMarks] = useState<NoteMark[]>([]);
   const [sel, setSel] = useState<(SelectionInfo & { rect: DOMRect }) | null>(null);
+  // 本次選取已建立的重點 mark id：再選色時改用「更新顏色」而非重複建立，
+  // 讓使用者可反覆調色，工具面板不關閉（只在點外部空白處才關）。
+  const [hlMarkId, setHlMarkId] = useState<string | null>(null);
   const [hover, setHover] = useState<{ markIds: string[]; rect: DOMRect } | null>(null);
   const hideTimer = useRef<number | null>(null);
 
@@ -79,7 +84,10 @@ export function NoteMarksLayer({ noteId, containerRef, contentHtml, active }: Pr
       const info = captureSelection(el);
       if (!info) return;
       const range = window.getSelection()?.getRangeAt(0);
-      if (range) setSel({ ...info, rect: range.getBoundingClientRect() });
+      if (range) {
+        setHlMarkId(null); // 新的一次選取 → 下次選色建立新的重點
+        setSel({ ...info, rect: range.getBoundingClientRect() });
+      }
     };
 
     const onOver = (e: Event) => {
@@ -134,6 +142,7 @@ export function NoteMarksLayer({ noteId, containerRef, contentHtml, active }: Pr
 
   const clearSelection = () => {
     setSel(null);
+    setHlMarkId(null);
     window.getSelection()?.removeAllRanges();
   };
 
@@ -143,27 +152,35 @@ export function NoteMarksLayer({ noteId, containerRef, contentHtml, active }: Pr
    * 建立一筆標註並登記復原動作。
    * undo＝刪除剛建的標註；redo＝以同 payload 重建（id 會變，故用 ref 追蹤最新 id）。
    */
-  const createMarkUndoable = async (payload: CreateNoteMarkInput) => {
+  const createMarkUndoable = async (payload: CreateNoteMarkInput): Promise<NoteMark | null> => {
     const created = await createNoteMark(noteId, payload);
     await reload();
-    if (!created) return;
+    if (!created) return null;
     const ref = { id: created.id };
     pushUndo({
       undo: async () => { await deleteNoteMark(ref.id); await reload(); },
       redo: async () => { const m = await createNoteMark(noteId, payload); if (m) ref.id = m.id; await reload(); },
     });
+    return created;
   };
 
   const addHighlight = async (color: string) => {
     if (!sel) return;
-    const payload: CreateNoteMarkInput = {
+    // 已對本次選取畫過重點 → 改既有重點顏色（避免重複堆疊），且不關閉面板可繼續調色。
+    if (hlMarkId) {
+      await updateNoteMark(hlMarkId, { color });
+      await reload();
+      return;
+    }
+    const created = await createMarkUndoable({
       kind: 'highlight',
       anchorText: sel.text, anchorStart: sel.start, anchorEnd: sel.end,
       anchorPrefix: sel.prefix, anchorSuffix: sel.suffix,
       color,
-    };
-    clearSelection();
-    await createMarkUndoable(payload);
+    });
+    if (created) setHlMarkId(created.id);
+    // 不關閉面板（只在點外部空白處才關）；清掉瀏覽器選取，但保留 sel 供再次調色。
+    window.getSelection()?.removeAllRanges();
   };
 
   const addLink = async (targetType: string, targetId?: string, targetUrl?: string) => {
@@ -205,10 +222,15 @@ export function NoteMarksLayer({ noteId, containerRef, contentHtml, active }: Pr
     });
   };
 
-  // 框選提問：呼叫 AI → 建答案筆記＋關聯 → 重抓標註並導向答案筆記。
+  // 框選提問：以「整篇筆記 + 框選文字」為脈絡向 AI 提問，把答案放進「就在原處旁邊」的便利貼，
+  // 不另開新筆記。便利貼由 NoteOverlay 接收事件後建立（座標相對於內文容器，放在選取段落下方）。
   const askSelection = async (question: string): Promise<boolean> => {
     if (!sel || !question.trim()) return false;
-    const res = await askNoteSelection(noteId, {
+    const containerRect = containerRef.current?.getBoundingClientRect();
+    const x = containerRect ? Math.max(8, sel.rect.left - containerRect.left) : 24;
+    const y = containerRect ? sel.rect.bottom - containerRect.top + 8 : 24;
+    const selectedText = sel.text;
+    const answer = await askNoteSelectionAnswer(noteId, {
       anchorText: sel.text,
       anchorStart: sel.start,
       anchorEnd: sel.end,
@@ -217,12 +239,12 @@ export function NoteMarksLayer({ noteId, containerRef, contentHtml, active }: Pr
       question: question.trim(),
     });
     clearSelection();
-    if (res) {
-      await reload();
-      router.push(`/notes/${res.answerSlug.split('/').map(encodeURIComponent).join('/')}`);
-      return true;
-    }
-    return false;
+    if (answer == null) return false;
+    const stickyText = `Q：${question.trim()}\n（選取：「${selectedText.slice(0, 40)}${selectedText.length > 40 ? '…' : ''}」）\n\n${answer}`;
+    window.dispatchEvent(
+      new CustomEvent(NOTE_ASK_STICKY_EVENT, { detail: { x, y, text: stickyText } })
+    );
+    return true;
   };
 
   const navigate = (m: NoteMark) => {
@@ -412,7 +434,7 @@ function NoteSelectionPopover({
             autoFocus
             value={askQ}
             onChange={(e) => setAskQ(e.target.value)}
-            placeholder="針對這段文字問 AI…（會建立一則答案筆記並關聯回來）"
+            placeholder="針對這段文字問 AI…（會以整篇筆記為脈絡，在旁邊新增便利貼回答）"
             rows={2}
             style={{ ...inputStyle, resize: 'vertical' }}
             data-testid="note-ask-text"

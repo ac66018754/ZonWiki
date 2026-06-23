@@ -33,6 +33,7 @@ import { DateTimePicker } from "@/components/DateTimePicker";
 import { EntityLinkPopover } from "@/components/EntityLinkPopover";
 import { LinkedEntitiesBar } from "@/components/LinkedEntitiesBar";
 import { logger } from "@/lib/logger";
+import { showToast } from "@/lib/toast";
 import type { LinkEntityType } from "@/lib/api";
 
 /** 連結浮動視窗的開啟狀態（針對某個子任務）。 */
@@ -283,6 +284,8 @@ export function TaskEditorModal({
         populateFields(fresh);
       }
       setSavedFlash(true);
+      // 醒目的小彈窗提示（自動淡出消失，無關閉鈕）
+      showToast("任務已儲存", { type: "success" });
     } catch (e) {
       logger.error("儲存任務失敗：", e);
       setSaveError(true);

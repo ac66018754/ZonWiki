@@ -172,6 +172,9 @@ export const kaiwenApi = {
     }
   ) => http<HighlightDto>('POST', `/nodes/${encodeURIComponent(nodeId)}/highlights`, body),
 
+  updateHighlight: (highlightId: string, color: string) =>
+    http<HighlightDto>('PATCH', `/highlights/${encodeURIComponent(highlightId)}`, { Color: color }),
+
   deleteHighlight: (highlightId: string) =>
     http<unknown>('DELETE', `/highlights/${encodeURIComponent(highlightId)}`),
 
@@ -195,6 +198,24 @@ export const kaiwenApi = {
       X: pos?.x ?? null,
       Y: pos?.y ?? null,
     }),
+
+  // 框選文字提問：後端會建立「回答節點 + 行內連結 + 連線」，並用「節點完整內容 + 祖先脈絡 + 框選文字」
+  // 組 Prompt（比 askFollowup 只送問題的脈絡更完整）。
+  askInlineLink: (
+    canvasId: string,
+    body: {
+      SourceNodeId: string
+      AnchorText: string
+      AnchorStart: number
+      AnchorEnd: number
+      AnchorPrefix: string
+      AnchorSuffix: string
+      Question: string
+      X?: number | null
+      Y?: number | null
+    }
+  ) =>
+    http<unknown>('POST', `/canvases/${encodeURIComponent(canvasId)}/ask-inline-link`, body),
 
   cancelAsk: (canvasId: string, nodeId: string) =>
     http<unknown>('POST', `/canvases/${encodeURIComponent(canvasId)}/cancel`, { NodeId: nodeId }),

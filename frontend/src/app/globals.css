@@ -794,6 +794,129 @@ html[data-route="login"] .main-content {
   }
 }
 
+/* 全域 Toast（小彈窗）動畫：快速浮現 → 維持 → 漸漸淡出消失。
+   時長由 inline style 的 animation-duration 帶入（預設 2000ms）。 */
+@keyframes zonwiki-toast {
+  0% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.96);
+  }
+  8% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  55% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.99);
+  }
+}
+
+/* 登入錯誤提示框：出現時輕微抖動一下以吸引注意（醒目的紅框已在 inline style）。 */
+@keyframes zonwiki-error-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  20% {
+    transform: translateX(-6px);
+  }
+  40% {
+    transform: translateX(6px);
+  }
+  60% {
+    transform: translateX(-4px);
+  }
+  80% {
+    transform: translateX(4px);
+  }
+}
+
+.login-error-alert {
+  animation: zonwiki-error-shake 0.4s ease;
+}
+
+/* ────────────────────────────────────────────────────────────────
+   程式碼區塊：一鍵複製鈕（注入 HTML 用）＋ 編輯器預覽的醒目化與換行
+   筆記閱讀檢視的 <pre> 樣式定義於該頁 styled-jsx；此處為共用的複製鈕與編輯器預覽。
+   ──────────────────────────────────────────────────────────────── */
+
+/* 複製鈕：定位於程式碼區塊右上角（區塊本身需 position:relative）。 */
+.code-copy-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 2px 10px;
+  background: var(--action-primary-bg);
+  color: var(--action-primary-fg);
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  opacity: 0.8;
+  transition: opacity 0.15s ease, background 0.15s ease;
+  z-index: 2;
+}
+
+.code-copy-btn:hover {
+  opacity: 1;
+}
+
+.code-copy-btn.copied {
+  background: var(--status-success-fg);
+  color: #fff;
+}
+
+/* 編輯器預覽（MarkdownEditor）：包住程式碼區塊以定位複製鈕。 */
+.code-block-wrap {
+  position: relative;
+}
+
+/* 程式碼區塊醒目化 + 換行（編輯器預覽 .md-preview 與筆記閱讀檢視 .markdown-prose 一致）。
+   全域定義可確保套用到「以 HTML 注入」的筆記內容（styled-jsx 不一定觸及注入內容）；
+   尤其 position:relative 是複製鈕定位的關鍵。 */
+.md-preview pre,
+.markdown-prose pre {
+  position: relative;
+  /* 用 surface-secondary 當底（各主題都與筆記表面 bg-surface 有差異），
+     不要用 --code-bg——它在 明亮/暗色/夜間 幾乎等於表面色，會讓區塊看不出來。 */
+  background: var(--bg-surface-secondary);
+  border: 1px solid var(--border-strong, var(--border-default));
+  border-left: 4px solid var(--action-primary-bg);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-4);
+  padding-top: calc(var(--spacing-4) + 4px);
+  box-shadow: var(--shadow-sm);
+  overflow-x: auto;
+  margin: var(--spacing-4) 0;
+}
+
+.md-preview pre code,
+.markdown-prose pre code {
+  display: block;
+  background: transparent;
+  padding: 0;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+/* Header 導覽項目的快捷鍵提示（如「日程規劃 (T)」）。可在顯示設定中開關。 */
+.nav-hint {
+  margin-left: 2px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  opacity: 0.55;
+  font-family: var(--font-mono);
+}
+
 /* ============================================================================
    Header Components & Navigation
    ============================================================================ */

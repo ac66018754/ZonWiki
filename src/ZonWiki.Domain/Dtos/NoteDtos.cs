@@ -231,6 +231,13 @@ public sealed record AskSelectionResultDto(
     Guid MarkId);
 
 /// <summary>
+/// 框選提問（便利貼模式）的回應：只回傳 AI 答案文字，由前端放進便利貼浮層，
+/// 不另建答案筆記。AI 以「整篇筆記內容 + 框選文字」為上下文回答。
+/// </summary>
+/// <param name="Answer">AI 回答（Markdown）。</param>
+public sealed record AskSelectionAnswerDto(string Answer);
+
+/// <summary>
 /// 筆記文字標註資料傳輸物件（重點 / 關聯 / 備註）。
 /// </summary>
 /// <param name="Id">標註識別碼。</param>

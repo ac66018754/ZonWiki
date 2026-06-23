@@ -405,8 +405,9 @@ async function fetchJson<T>(
     window.dispatchEvent(new CustomEvent("zonwiki:unauthorized"));
   }
 
-  // 401/404 不算錯誤，回傳原始 response
-  if (!res.ok && res.status !== 401 && res.status !== 404) {
+  // 401/404/400 不視為例外，回傳已解析的 ApiResponse 主體（含 error 訊息）供呼叫端就地處理。
+  // 400（client error）帶有明確錯誤訊息（如「目前密碼錯誤」），不應拋例外被當成連線失敗。
+  if (!res.ok && res.status !== 401 && res.status !== 404 && res.status !== 400) {
     throw new Error(`API ${path} failed with ${res.status}`);
   }
 
@@ -474,19 +475,35 @@ export async function login(payload: {
 }
 
 /**
- * 修改密碼
+ * 修改密碼的結果。
+ * - ok=true：修改成功。
+ * - ok=false：失敗，error 為可直接顯示的訊息（如「目前密碼錯誤」）。
+ */
+export interface ChangePasswordResult {
+  /** 是否成功。 */
+  ok: boolean;
+  /** 失敗時的錯誤訊息（可為 undefined）。 */
+  error?: string;
+}
+
+/**
+ * 修改密碼。
+ * 後端在「目前密碼錯誤」時回 400（而非 401），故不會觸發全域登入失效提示；
+ * 呼叫端可依 {@link ChangePasswordResult.error} 就地顯示明確錯誤。
+ * @param payload 目前密碼與新密碼。
+ * @returns 修改結果（含錯誤訊息）。
  */
 export async function changePassword(payload: {
   /** 當前密碼 */
   currentPassword: string;
   /** 新密碼（最少 8 個字元） */
   newPassword: string;
-}): Promise<boolean> {
+}): Promise<ChangePasswordResult> {
   const r = await fetchJson<void>("/api/auth/change-password", {
     method: "POST",
     body: JSON.stringify(payload),
   });
-  return r.success;
+  return { ok: r.success, error: r.success ? undefined : r.error ?? undefined };
 }
 
 // ============================================================================
@@ -1654,6 +1671,28 @@ export async function askNoteSelection(
     { method: 'POST', body: JSON.stringify(input) }
   );
   return r.data ?? null;
+}
+
+/**
+ * 框選提問（便利貼模式）：以「整篇筆記 + 框選文字」為脈絡向 AI 提問，
+ * 只取回答案文字（不建答案筆記），由前端放進便利貼浮層。
+ */
+export async function askNoteSelectionAnswer(
+  noteId: string,
+  input: {
+    anchorText: string;
+    anchorStart: number;
+    anchorEnd: number;
+    anchorPrefix: string;
+    anchorSuffix: string;
+    question: string;
+  }
+): Promise<string | null> {
+  const r = await fetchJson<{ answer: string }>(
+    `/api/notes/${encodeURIComponent(noteId)}/ask-selection-answer`,
+    { method: 'POST', body: JSON.stringify(input) }
+  );
+  return r.data?.answer ?? null;
 }
 
 /** 列出某筆記的所有文字標註。 */

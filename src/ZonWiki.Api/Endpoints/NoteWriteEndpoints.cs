@@ -92,6 +92,10 @@ public static class NoteWriteEndpoints
         // POST /api/notes/{id}/ask-selection - 框選提問：AI 回答 → 建答案筆記 → 以錨點關聯回來
         var askSelection = app.MapPost("/api/notes/{id:guid}/ask-selection", AskSelectionHandler);
 
+        // POST /api/notes/{id}/ask-selection-answer - 框選提問（便利貼模式）：以「整篇筆記+框選文字」為脈絡，
+        // 只回傳 AI 答案文字，由前端放進便利貼浮層（不另建答案筆記）。
+        var askSelectionAnswer = app.MapPost("/api/notes/{id:guid}/ask-selection-answer", AskSelectionAnswerHandler);
+
         // 要求驗證的端點
         if (authConfigured)
         {
@@ -104,6 +108,7 @@ public static class NoteWriteEndpoints
             reformatNote.RequireAuthorization();
             beautifyNote.RequireAuthorization();
             askSelection.RequireAuthorization();
+            askSelectionAnswer.RequireAuthorization();
         }
     }
 
@@ -219,6 +224,57 @@ public static class NoteWriteEndpoints
         catch (Exception ex)
         {
             logger.LogError(ex, "Failed ask-selection (userId={UserId}, noteId={NoteId})", userId, id);
+            return Results.StatusCode(500);
+        }
+    }
+
+    /// <summary>
+    /// 框選提問（便利貼模式）：以「整篇筆記內容 + 框選文字」為脈絡請 AI 回答，
+    /// 只回傳答案文字（不建答案筆記、不建關聯）；由前端把答案放進便利貼浮層。
+    /// </summary>
+    private static async Task<IResult> AskSelectionAnswerHandler(
+        HttpContext http,
+        ZonWikiDbContext db,
+        ILogger<object> logger,
+        INoteAiService aiService,
+        Guid id,
+        AskSelectionRequest request,
+        CancellationToken ct)
+    {
+        var userId = ExtractUserId(http);
+        if (userId == Guid.Empty)
+        {
+            return Results.Json(
+                ApiResponse<AskSelectionAnswerDto>.Fail("Invalid user identity", 401),
+                statusCode: StatusCodes.Status401Unauthorized);
+        }
+
+        var sourceNote = await db.Note
+            .FirstOrDefaultAsync(n => n.Id == id && n.ValidFlag && n.UserId == userId, ct);
+        if (sourceNote is null)
+        {
+            return Results.NotFound(ApiResponse<AskSelectionAnswerDto>.Fail("Note not found", 404));
+        }
+
+        var question = (request.Question ?? "").Trim();
+        var selected = (request.AnchorText ?? "").Trim();
+        if (string.IsNullOrEmpty(question))
+        {
+            return Results.BadRequest(ApiResponse<AskSelectionAnswerDto>.Fail("缺少問題", 400));
+        }
+
+        try
+        {
+            // 把「整篇筆記內容 + 框選段落」一起當成上下文（沿用 AskAboutAsync，不改 AI 介面）。
+            var context =
+                $"【整篇筆記內容】\n{sourceNote.ContentRaw}\n\n" +
+                $"【使用者特別框選、想聚焦的段落】\n「{selected}」";
+            var answer = await aiService.AskAboutAsync(context, question, ct);
+            return Results.Ok(ApiResponse<AskSelectionAnswerDto>.Ok(new AskSelectionAnswerDto(answer)));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed ask-selection-answer (userId={UserId}, noteId={NoteId})", userId, id);
             return Results.StatusCode(500);
         }
     }
@@ -909,19 +965,23 @@ public static class NoteWriteEndpoints
             return Results.NotFound(ApiResponse<List<BacklinkDto>>.Fail("Note not found", 404));
         }
 
+        // 先以真實欄位 n.Title 排序、再投影成 DTO。
+        // 不可在 Join 投影成 BacklinkDto「之後」再 OrderBy(b => b.SourceNoteTitle)——
+        // EF Core 會試圖在 SQL ORDER BY 內重建 BacklinkDto 而無法轉譯（造成 500）。
         var backlinks = await db.NoteLink
             .Where(nl => nl.TargetNoteId == id && nl.ValidFlag)
             .Join(
                 db.Note,
                 nl => nl.SourceNoteId,
                 n => n.Id,
-                (nl, n) => new BacklinkDto(
-                    nl.Id,
-                    nl.SourceNoteId,
-                    n.Title,
-                    n.Slug,
-                    nl.AnchorText))
-            .OrderBy(b => b.SourceNoteTitle)
+                (nl, n) => new { nl, n })
+            .OrderBy(x => x.n.Title)
+            .Select(x => new BacklinkDto(
+                x.nl.Id,
+                x.nl.SourceNoteId,
+                x.n.Title,
+                x.n.Slug,
+                x.nl.AnchorText))
             .ToListAsync(ct);
 
         return Results.Ok(ApiResponse<List<BacklinkDto>>.Ok(backlinks));

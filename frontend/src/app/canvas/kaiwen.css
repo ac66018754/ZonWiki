@@ -317,13 +317,43 @@ html[data-theme='night'],
   box-shadow: 0 0 0 2px var(--kw-ring);
 }
 
-.react-flow__edge {
-  stroke: var(--kw-edge);
-  stroke-width: 2;
+/* 連線樣式一律交給 DeletableEdge 元件（內聯設定描邊），與原版開問啦一致。
+   不要在此加 .react-flow__edge / .react-flow__edge.selected 全域描邊——
+   它會把 React Flow「選取時」連同那條很寬的隱形互動路徑一起染色，產生一條醜醜的寬高亮帶。
+   明確保險：那條 20px 寬的「互動點擊路徑」永遠透明，避免任何（含舊快取）群組描邊滲進去變成黑塊。 */
+.react-flow__edge .react-flow__edge-interaction {
+  stroke: transparent;
 }
 
-.react-flow__edge.selected {
-  stroke: var(--kw-ring);
+/* 聚光效果（移植自原版開問啦 index.css）。先前漏移植造成兩個問題：
+   1. 連線的「內光流動」path（DeletableEdge 的 .edge-spotlight-flow）本身「沒有」內聯 fill="none"，
+      完全靠這條 CSS 補 fill:none；少了它，貝茲曲線會以「預設黑色」填滿其包圍區域 →
+      使用者在彎曲處看到的「黑色半橢圓」其實是這條未設 fill 的 path 被填黑，不是描邊變黑。
+      補上 fill:none 後黑色消失，並一併補回原版的虛線流動動畫。
+   2. 選中連線時，兩端節點會被加上 .node-spotlight class，但少了這條 CSS 就沒有發光特效。 */
+@keyframes spotlightPulse {
+  0%, 100% {
+    box-shadow: 0 0 0 2px var(--kw-accent), 0 0 14px 1px color-mix(in srgb, var(--kw-accent) 45%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 2px var(--kw-accent), 0 0 24px 4px color-mix(in srgb, var(--kw-accent) 70%, transparent);
+  }
+}
+
+.node-spotlight {
+  border-color: var(--kw-accent) !important;
+  animation: spotlightPulse 1.8s ease-in-out infinite;
+}
+
+@keyframes spotlightFlow {
+  to { stroke-dashoffset: -32; }
+}
+
+.edge-spotlight-flow {
+  fill: none;
+  stroke-dasharray: 8 16;
+  stroke-linecap: round;
+  animation: spotlightFlow 0.8s linear infinite;
 }
 
 /* 右下角縮圖地圖：套主題色（預設淺色在暗色畫布上很突兀），節點與遮罩皆隨主題。
@@ -569,4 +599,28 @@ html[data-theme='night'],
   border-top: 1px solid var(--kw-border);
   margin-top: 0.25rem;
   padding-top: 0.25rem;
+}
+
+/* ──────────────────────────────────────────────────────────────
+   節點內文「行內連結」(InlineLink) 的可見樣式
+   先前未定義，導致沒畫重點的連結文字看不出來（只能在右側抽屜看到）。
+   現在以「顏色 + 波浪底線」標示，滑入有淡底；失效連結改虛線灰色。
+   ────────────────────────────────────────────────────────────── */
+.kw-inline-link {
+  color: var(--kw-primary);
+  text-decoration: underline;
+  text-decoration-style: wavy;
+  text-decoration-color: var(--kw-primary);
+  text-underline-offset: 2px;
+  cursor: pointer;
+  border-radius: 2px;
+}
+.kw-inline-link:hover {
+  background: var(--kw-primary-soft-bg);
+}
+.kw-inline-link-detached {
+  color: var(--kw-muted);
+  text-decoration-style: dotted;
+  text-decoration-color: var(--kw-muted);
+  cursor: not-allowed;
 }

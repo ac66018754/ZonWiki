@@ -71,7 +71,7 @@ export interface QaNodeData {
     suffix: string,
     question: string
   ) => void
-  /** 新增高亮 */
+  /** 新增高亮（回傳建立的高亮 ID 供「立即改色」沿用）。 */
   onHighlight: (
     anchorText: string,
     start: number,
@@ -79,7 +79,9 @@ export interface QaNodeData {
     prefix: string,
     suffix: string,
     color: string
-  ) => void
+  ) => Promise<string | null>
+  /** 更新既有高亮的顏色（畫重點後不滿意可即時改色）。 */
+  onUpdateHighlight: (highlightId: string, color: string) => void
   /** 新增行內連結 */
   onLinkToNode: (
     anchorText: string,
@@ -155,6 +157,8 @@ function QaNodeComponent({ data, selected }: NodeProps<QaRfNode>) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(node.Node_Content)
   const [selection, setSelection] = useState<ActiveSelection | null>(null)
+  // 本次選取已建立的高亮 ID：再選色時改用「更新顏色」而非重複建立，讓使用者可反覆調色。
+  const [activeHighlightId, setActiveHighlightId] = useState<string | null>(null)
   const [followUp, setFollowUp] = useState<string | null>(null)
 
   // 節點 ID 複製提示
@@ -179,6 +183,8 @@ function QaNodeComponent({ data, selected }: NodeProps<QaRfNode>) {
     if (sel) {
       const range = window.getSelection()?.getRangeAt(0)
       if (range) {
+        // 新的一次選取 → 重置「本次已建立高亮」，下一次選色會建立新的高亮。
+        setActiveHighlightId(null)
         setSelection({ ...sel, rect: range.getBoundingClientRect() })
       }
     } else {
@@ -191,6 +197,7 @@ function QaNodeComponent({ data, selected }: NodeProps<QaRfNode>) {
    */
   const clearSelection = () => {
     setSelection(null)
+    setActiveHighlightId(null)
     window.getSelection()?.removeAllRanges()
   }
 
@@ -205,6 +212,7 @@ function QaNodeComponent({ data, selected }: NodeProps<QaRfNode>) {
       const target = e.target as HTMLElement | null
       if (!target?.closest('[data-testid="selection-popover"]')) {
         setSelection(null)
+        setActiveHighlightId(null)
         window.getSelection()?.removeAllRanges()
       }
     }
@@ -294,11 +302,19 @@ function QaNodeComponent({ data, selected }: NodeProps<QaRfNode>) {
                 </button>
               )}
 
-              {/* 刪除鈕 */}
+              {/* 刪除鈕：先確認再刪。刪除為軟刪除，可在「垃圾桶」復原。 */}
               <button
                 className="nodrag kw-muted text-xs hover:text-[var(--kw-danger)]"
-                title="刪除節點"
-                onClick={data.onDelete}
+                title="刪除節點（可在垃圾桶復原）"
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      '確定要刪除此節點嗎？\n刪除後會移到「垃圾桶」，可隨時復原。'
+                    )
+                  ) {
+                    data.onDelete()
+                  }
+                }}
                 data-testid="delete-node"
               >
                 ✕
@@ -437,16 +453,22 @@ function QaNodeComponent({ data, selected }: NodeProps<QaRfNode>) {
             )
             clearSelection()
           }}
-          onHighlight={(color) => {
-            data.onHighlight(
-              selection.text,
-              selection.start,
-              selection.end,
-              selection.prefix,
-              selection.suffix,
-              color
-            )
-            clearSelection()
+          onHighlight={async (color) => {
+            // 不關閉面板：選色後重點即套上，且可繼續調色（面板僅在點外部空白處才關閉）。
+            if (activeHighlightId) {
+              // 已建立過 → 改既有重點的顏色（避免重複堆疊多個重點）。
+              data.onUpdateHighlight(activeHighlightId, color)
+            } else {
+              const newId = await data.onHighlight(
+                selection.text,
+                selection.start,
+                selection.end,
+                selection.prefix,
+                selection.suffix,
+                color
+              )
+              if (newId) setActiveHighlightId(newId)
+            }
           }}
           onLinkToNode={(targetNodeId) => {
             data.onLinkToNode(

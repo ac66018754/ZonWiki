@@ -427,10 +427,12 @@ function CanvasInner({
         console.log('Generate image inline:', text),
       hasImageModel: models.some((m) => m.Kind === 'image'),
       imageModelOptions: models.filter((m) => m.Kind === 'image'),
+      // 框選提問：走 askInlineLink（後端建立回答節點 + 行內連結 + 連線，且用完整節點內容＋
+      // 祖先脈絡＋框選文字組 Prompt）。舊版誤接 askFollowup，會丟失框選脈絡且不產生連線。
       onAskInline: (text, start, end, prefix, suffix, question) =>
-        actions.askFollowup(node.Node_Id, question, text, start, end, prefix, suffix, childPosition(node.Node_Id)),
-      onHighlight: (text, start, end, prefix, suffix, color) =>
-        actions.createHighlight({
+        actions.askInlineLink(node.Node_Id, text, start, end, prefix, suffix, question, childPosition(node.Node_Id)),
+      onHighlight: async (text, start, end, prefix, suffix, color) => {
+        const created = await actions.createHighlight({
           nodeId: node.Node_Id,
           anchorText: text,
           start,
@@ -438,7 +440,10 @@ function CanvasInner({
           anchorPrefix: prefix,
           anchorSuffix: suffix,
           color,
-        }),
+        })
+        return created?.Highlight_Id ?? null
+      },
+      onUpdateHighlight: (highlightId, color) => actions.updateHighlight(highlightId, color),
       onLinkToNode: (text, start, end, prefix, suffix, targetNodeId) =>
         actions.createInlineLink({
           sourceNodeId: node.Node_Id,

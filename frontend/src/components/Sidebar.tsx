@@ -30,11 +30,11 @@ import { closeMobileNav } from "@/lib/mobileNav";
 /**
  * 個人頁面（/profile）子頁導覽項目。各子頁各自載入自己的資料。
  */
-const PROFILE_NAV: { href: string; label: string; icon: string }[] = [
-  { href: "/profile", label: "帳號資訊", icon: "👤" },
-  { href: "/profile/stats", label: "統計數據", icon: "📊" },
-  { href: "/profile/activity", label: "活動紀錄", icon: "🕑" },
-  { href: "/profile/shortcuts", label: "快捷鍵", icon: "⌨️" },
+const PROFILE_NAV: { href: string; label: string; icon: string; desc: string }[] = [
+  { href: "/profile", label: "帳號資訊", icon: "👤", desc: "暱稱、時區、密碼、帳號" },
+  { href: "/profile/stats", label: "統計數據", icon: "📊", desc: "筆記/任務/畫布等筆數" },
+  { href: "/profile/activity", label: "活動紀錄", icon: "🕑", desc: "近 30 天操作明細" },
+  { href: "/profile/shortcuts", label: "快捷鍵", icon: "⌨️", desc: "自訂鍵盤快捷鍵" },
 ];
 
 /**
@@ -51,6 +51,9 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
   const searchParams = useSearchParams();
 
   const [activeTab, setActiveTab] = useState<"categories" | "tags">("categories");
+  // 目前正在閱讀的筆記所屬分類（由筆記詳情頁透過事件提供），用來在側欄標示「📍 此筆記在這」，
+  // 即使網址沒有 ?categoryId 也能讓使用者知道目前內容的分類，不會迷路。
+  const [activeNoteCats, setActiveNoteCats] = useState<string[]>([]);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [categories, setCategories] = useState<NoteCategory[]>([]);
   const [tags, setTags] = useState<NoteTag[]>([]);
@@ -140,6 +143,38 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
     }, 60);
     return () => clearTimeout(timer);
   }, [searchParams, categories]);
+
+  // 監聽筆記詳情頁送來的「目前筆記所屬分類」事件，供側欄標示目前位置。
+  useEffect(() => {
+    const onActiveCats = (e: Event) => {
+      const ids = (e as CustomEvent<{ categoryIds?: string[] }>).detail?.categoryIds ?? [];
+      setActiveNoteCats(ids);
+    };
+    window.addEventListener("zonwiki:note-active-category", onActiveCats);
+    return () => window.removeEventListener("zonwiki:note-active-category", onActiveCats);
+  }, []);
+
+  // 目前筆記所屬分類變更時，自動展開其所有祖先，讓「📍 此筆記在這」可見。
+  useEffect(() => {
+    if (activeNoteCats.length === 0 || categories.length === 0) return;
+    const byId = new Map(categories.map((c) => [c.id, c] as const));
+    const toExpand = new Set<string>();
+    for (const id of activeNoteCats) {
+      let cur = byId.get(id);
+      while (cur?.parentId) {
+        toExpand.add(cur.parentId);
+        cur = byId.get(cur.parentId);
+      }
+    }
+    setCollapsed((prev) => {
+      let changed = false;
+      const next = new Set(prev);
+      toExpand.forEach((id) => {
+        if (next.delete(id)) changed = true;
+      });
+      return changed ? next : prev;
+    });
+  }, [activeNoteCats, categories]);
 
   // ─────────── 樹工具 ───────────
   const childrenOf = (parentId: string | null) =>
@@ -451,8 +486,12 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
     return (
       <aside id="app-sidebar" className="sidebar" role="complementary">
         <MobileSectionNav />
-        <div className="ctx-head">
-          <h2 className="ctx-title">個人頁面</h2>
+        <div className="pf-head">
+          <div className="pf-avatar">{user?.displayName?.charAt(0).toUpperCase() ?? "?"}</div>
+          <div className="pf-head-text">
+            <div className="pf-head-name">{user?.displayName ?? "個人頁面"}</div>
+            <div className="pf-head-sub">個人頁面</div>
+          </div>
         </div>
         <nav className="pf-nav">
           {PROFILE_NAV.map((item) => {
@@ -466,53 +505,122 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
                 href={item.href}
                 className={`pf-link ${active ? "pf-link--active" : ""}`}
               >
-                <span className="pf-icon">{item.icon}</span>
-                {item.label}
+                <span className="pf-icon" aria-hidden>{item.icon}</span>
+                <span className="pf-link-text">
+                  <span className="pf-link-label">{item.label}</span>
+                  <span className="pf-link-desc">{item.desc}</span>
+                </span>
               </Link>
             );
           })}
         </nav>
         <style jsx>{`
-          .ctx-head {
+          .pf-head {
+            display: flex;
+            align-items: center;
+            gap: var(--spacing-3);
             margin-bottom: var(--spacing-4);
-            padding-bottom: var(--spacing-3);
+            padding-bottom: var(--spacing-4);
             border-bottom: 1px solid var(--border-default);
           }
-          .ctx-title {
-            margin: 0;
-            font-size: var(--text-sm);
-            font-weight: 600;
-            color: var(--text-secondary);
+          .pf-avatar {
+            flex-shrink: 0;
+            width: 40px;
+            height: 40px;
+            border-radius: var(--radius-full);
+            background: var(--action-secondary-bg);
+            color: var(--action-secondary-fg);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: var(--text-lg);
+          }
+          .pf-head-text {
+            min-width: 0;
+          }
+          .pf-head-name {
+            font-size: var(--text-base);
+            font-weight: 700;
+            color: var(--text-primary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+          }
+          .pf-head-sub {
+            font-size: var(--text-xs);
+            color: var(--text-tertiary);
             text-transform: uppercase;
             letter-spacing: 0.05em;
           }
           .pf-nav {
             display: flex;
             flex-direction: column;
-            gap: 2px;
+            gap: var(--spacing-1);
           }
           .pf-link {
+            position: relative;
             display: flex;
             align-items: center;
-            gap: var(--spacing-2);
+            gap: var(--spacing-3);
             padding: var(--spacing-2) var(--spacing-3);
             border-radius: var(--radius-md);
-            color: var(--text-secondary);
+            color: var(--text-primary);
             text-decoration: none;
-            font-size: var(--text-sm);
+            border: 1px solid transparent;
+            transition: background 0.15s ease, border-color 0.15s ease;
           }
           .pf-link:hover {
             background: var(--bg-surface-secondary, var(--bg-default));
-            color: var(--text-primary);
+            border-color: var(--border-default);
           }
           .pf-link--active {
-            background: var(--action-primary-bg);
-            color: var(--action-primary-fg);
-            font-weight: 600;
+            background: var(--action-secondary-bg);
+            border-color: var(--action-secondary-fg);
+          }
+          .pf-link--active::before {
+            content: "";
+            position: absolute;
+            left: 0;
+            top: 6px;
+            bottom: 6px;
+            width: 3px;
+            border-radius: 0 3px 3px 0;
+            background: var(--action-secondary-fg);
           }
           .pf-icon {
-            width: 18px;
-            text-align: center;
+            flex-shrink: 0;
+            width: 28px;
+            height: 28px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: var(--radius-sm);
+            background: var(--bg-surface-secondary, var(--bg-default));
+            font-size: var(--text-base);
+          }
+          .pf-link--active .pf-icon {
+            background: var(--bg-surface);
+          }
+          .pf-link-text {
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+          }
+          .pf-link-label {
+            font-size: var(--text-sm);
+            font-weight: 600;
+            color: var(--text-primary);
+          }
+          .pf-link--active .pf-link-label {
+            color: var(--action-secondary-fg);
+          }
+          .pf-link-desc {
+            font-size: var(--text-xs);
+            color: var(--text-tertiary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
           }
         `}</style>
       </aside>
@@ -623,6 +731,9 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
     const kids = childrenOf(cat.id);
     const isCollapsed = collapsed.has(cat.id);
     const isSelected = selectedCategoryId === cat.id;
+    // 目前閱讀的筆記所屬分類（網址未帶 categoryId 時，用此標示目前位置）。
+    const isCurrentNote = !selectedCategoryId && activeNoteCats.includes(cat.id);
+    const highlighted = isSelected || isCurrentNote;
     return (
       <div key={cat.id}>
         <div
@@ -739,10 +850,15 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
               if (kids.length > 0) toggleCollapse(cat.id);
             }}
             style={{
-              fontWeight: isSelected ? 600 : 400,
-              color: isSelected ? "var(--action-secondary-fg)" : "var(--text-secondary)",
+              fontWeight: highlighted ? 600 : 400,
+              color: highlighted ? "var(--action-secondary-fg)" : "var(--text-secondary)",
+              background: isCurrentNote ? "var(--action-secondary-bg)" : undefined,
+              borderRadius: isCurrentNote ? "var(--radius-sm)" : undefined,
             }}
           >
+            {isCurrentNote && (
+              <span title="目前閱讀的筆記在此分類" style={{ marginRight: 2 }}>📍</span>
+            )}
             <span className="nt-name-text">{cat.name}</span>
             <span className="nt-count">
               {kids.length > 0

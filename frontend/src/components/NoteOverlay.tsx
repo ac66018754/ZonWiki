@@ -17,10 +17,16 @@ import { pushUndo } from '@/lib/undoManager';
 const STICKY_COLORS = ['#fff9c4', '#ffe0b2', '#c8e6c9', '#bbdefb', '#f8bbd0', '#e1bee7'];
 
 /**
+ * 事件：框選提問的答案要放進「就在原處旁邊」的便利貼（由 NoteMarksLayer 派發、NoteOverlay 接收建立）。
+ * detail：{ x, y, text }（x/y 為相對內文容器的座標）。
+ */
+export const NOTE_ASK_STICKY_EVENT = 'zonwiki:note-ask-sticky';
+
+/**
  * 繪圖工具。null＝不繪圖（一般互動：可選文字、拖便利貼）。
  * erase-stroke＝整筆刪除（點一筆即刪整筆）；erase-area＝局部擦除（擦到哪、那裏消失）。
  */
-type DrawTool = 'pen' | 'line' | 'rect' | 'ellipse' | 'erase-stroke' | 'erase-area' | null;
+type DrawTool = 'pen' | 'line' | 'rect' | 'ellipse' | 'erase-stroke' | 'erase-area' | 'erase-box' | null;
 
 /** 一個繪圖形狀。free＝多點折線；line/rect/ellipse＝起訖兩點。 */
 interface Shape {
@@ -61,8 +67,23 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
   const [penWidth, setPenWidth] = useState(3);
   const [penDash, setPenDash] = useState(false);
   const [showPenColor, setShowPenColor] = useState(false);
+  // 「剛畫完的形狀」索引：可在工具列即時調整其顏色 / 線寬 / 虛線並立刻看到變化。
+  // null＝沒有可調整的對象（換工具、擦除、開始畫新的一筆都會清除）。
+  const [selectedShapeIdx, setSelectedShapeIdx] = useState<number | null>(null);
 
   useEffect(() => setMounted(true), []);
+
+  // 畫筆色盤：點空白處（色盤與色票鈕以外）才關閉，方便連續調色。
+  useEffect(() => {
+    if (!showPenColor) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t?.closest('[data-overlay-colorpop]') || t?.closest('[data-overlay-colorbtn]')) return;
+      setShowPenColor(false);
+    };
+    document.addEventListener('mousedown', onDown, true);
+    return () => document.removeEventListener('mousedown', onDown, true);
+  }, [showPenColor]);
 
   useEffect(() => {
     let alive = true;
@@ -70,6 +91,33 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
       if (alive) setItems(list);
     });
     return () => { alive = false; };
+  }, [noteId]);
+
+  // 以 ref 持有最新 items，供事件監聽器計算 zIndex（避免 stale closure）。
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+
+  // 接收「框選提問答案 → 便利貼」事件：在指定座標建立便利貼並加入浮層（取代開新筆記）。
+  useEffect(() => {
+    const onAskSticky = (e: Event) => {
+      const detail = (e as CustomEvent<{ x: number; y: number; text: string }>).detail;
+      if (!detail) return;
+      const z = itemsRef.current.reduce((m, i) => Math.max(m, i.zIndex), 0) + 1;
+      createNoteOverlay(noteId, {
+        kind: 'sticky',
+        x: Math.max(0, detail.x),
+        y: Math.max(0, detail.y),
+        width: 300,
+        height: 220,
+        zIndex: z,
+        color: STICKY_COLORS[2],
+        text: detail.text,
+      }).then((created) => {
+        if (created) setItems((prev) => [...prev, created]);
+      });
+    };
+    window.addEventListener(NOTE_ASK_STICKY_EVENT, onAskSticky);
+    return () => window.removeEventListener(NOTE_ASK_STICKY_EVENT, onAskSticky);
   }, [noteId]);
 
   // 量測內文容器尺寸（繪圖 SVG 用）
@@ -155,6 +203,7 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
   const shapes: Shape[] = drawing?.dataJson ? normalizeShapes(safeParse<unknown[]>(drawing.dataJson, [])) : [];
   const curShape = useRef<Shape | null>(null);
   const eraseWork = useRef<Shape[] | null>(null); // 局部擦除進行中的暫存結果
+  const eraseBox = useRef<{ x0: number; y0: number; x1: number; y1: number } | null>(null); // 框選擦除進行中的選取框
   const [, forceRerender] = useState(0);
 
   // 以 ref 持有最新狀態，避免復原 / 重做的閉包鎖死過時物件（例如尚未建立的繪圖項目）。
@@ -211,11 +260,18 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
 
   const onSvgDown = (e: React.PointerEvent<SVGSVGElement>) => {
     if (!tool || tool === 'erase-stroke') return; // 整筆刪除由各形狀自行接收點擊
+    // 開始新的一筆 / 擦除 → 取消「可調整上一個形狀」的選取。
+    setSelectedShapeIdx(null);
     const p = relPoint(e);
     // 抓住指標，跨出 SVG 仍持續繪圖 / 擦除；合成事件或無作用指標時可能拋錯，忽略即可。
     try { (e.target as Element).setPointerCapture?.(e.pointerId); } catch { /* ignore */ }
     if (tool === 'erase-area') {
       eraseWork.current = eraseAt(shapes, p[0], p[1], eraseRadius);
+      forceRerender((n) => n + 1);
+      return;
+    }
+    if (tool === 'erase-box') {
+      eraseBox.current = { x0: p[0], y0: p[1], x1: p[0], y1: p[1] };
       forceRerender((n) => n + 1);
       return;
     }
@@ -229,6 +285,12 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
     if (tool === 'erase-area' && eraseWork.current) {
       const p = relPoint(e);
       eraseWork.current = eraseAt(eraseWork.current, p[0], p[1], eraseRadius);
+      forceRerender((n) => n + 1);
+      return;
+    }
+    if (tool === 'erase-box' && eraseBox.current) {
+      const p = relPoint(e);
+      eraseBox.current = { ...eraseBox.current, x1: p[0], y1: p[1] };
       forceRerender((n) => n + 1);
       return;
     }
@@ -247,21 +309,109 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
       else forceRerender((n) => n + 1);
       return;
     }
+    if (eraseBox.current) {
+      const b = eraseBox.current;
+      eraseBox.current = null;
+      const minX = Math.min(b.x0, b.x1);
+      const maxX = Math.max(b.x0, b.x1);
+      const minY = Math.min(b.y0, b.y1);
+      const maxY = Math.max(b.y0, b.y1);
+      // 太小的框視為誤點，不擦。
+      if (maxX - minX < 4 && maxY - minY < 4) {
+        forceRerender((n) => n + 1);
+        return;
+      }
+      const next = eraseInBox(shapes, minX, minY, maxX, maxY);
+      if (JSON.stringify(next) !== JSON.stringify(shapes)) commitShapes(next);
+      else forceRerender((n) => n + 1);
+      return;
+    }
     const s = curShape.current;
     curShape.current = null;
     if (!s) return;
     const ok = s.type === 'free' ? s.points.length > 1 : !samePoint(s.points[0], s.points[1]);
-    if (ok) commitShapes([...shapes, s]);
-    else forceRerender((n) => n + 1);
+    if (ok) {
+      // 把剛畫好的形狀設為「可即時調整」對象（它會是陣列最後一個）。
+      setSelectedShapeIdx(shapes.length);
+      commitShapes([...shapes, s]);
+    } else {
+      forceRerender((n) => n + 1);
+    }
   };
   const eraseShape = (idx: number) => {
     if (tool !== 'erase-stroke') return;
+    setSelectedShapeIdx(null);
     commitShapes(shapes.filter((_, i) => i !== idx));
   };
   const clearDrawing = () => {
     if (!shapes.length) return;
     if (!window.confirm('清除這張筆記上的所有手繪？（可用 Ctrl+Z 復原）')) return;
+    setSelectedShapeIdx(null);
     commitShapes([]);
+  };
+
+  // ── 手動加高繪圖區（讓便利貼 / 塗鴉 / 輪播可向下延伸）──
+  // 把「額外高度」存在 drawing 項目的 height 欄位（原本未用），不更動 shapes(dataJson) 格式。
+  const GROW_STEP = 320; // 每次加高的像素
+  const extraHeight = Math.max(0, drawing?.height ?? 0);
+
+  /** 確保有 drawing 項目，回傳它（沒有就建立一個帶指定額外高度者）。 */
+  const ensureDrawingItem = async (initialExtraHeight: number): Promise<NoteOverlayItem | null> => {
+    if (drawingRef.current) return drawingRef.current;
+    if (creatingRef.current) await creatingRef.current;
+    if (drawingRef.current) return drawingRef.current;
+    const created = await createNoteOverlay(noteId, {
+      kind: 'drawing', x: 0, y: 0, width: 0, height: initialExtraHeight, zIndex: 0, dataJson: JSON.stringify([]),
+    });
+    if (created) {
+      drawingRef.current = created;
+      setItems((prev) => [...prev, created]);
+    }
+    return created;
+  };
+
+  /** 把繪圖區額外高度設為指定值（>=0）並持久化。 */
+  const setCanvasExtraHeight = async (next: number) => {
+    const clamped = Math.max(0, Math.round(next));
+    const d = await ensureDrawingItem(clamped);
+    if (!d) return;
+    patchLocal(d.id, { height: clamped });
+    await persist(d.id, { height: clamped });
+  };
+
+  const growCanvas = () => setCanvasExtraHeight(extraHeight + GROW_STEP);
+  const shrinkCanvas = () => setCanvasExtraHeight(Math.max(0, extraHeight - GROW_STEP));
+
+  // ── 即時調整「剛畫完形狀」的樣式（顏色 / 線寬 / 虛線）──
+  /** 把樣式套到目前選取的形狀並即時持久化（不推 undo，避免微調時產生大量步驟）。 */
+  const applyToSelected = (patch: Partial<Pick<Shape, 'color' | 'width' | 'dash'>>) => {
+    if (selectedShapeIdx === null) return;
+    const cur = shapesRef.current;
+    if (selectedShapeIdx < 0 || selectedShapeIdx >= cur.length) return;
+    const next = cur.map((s, i) => (i === selectedShapeIdx ? { ...s, ...patch } : s));
+    setDrawingShapes(next);
+  };
+  const changePenColor = (hex: string) => {
+    setPenColor(hex);
+    applyToSelected({ color: hex });
+  };
+  const changePenWidth = (w: number) => {
+    setPenWidth(w);
+    // 橡皮擦半徑沿用此滑桿；只有在繪圖工具且有選取形狀時才回套到形狀。
+    if (isPenTool) applyToSelected({ width: w });
+  };
+  const togglePenDash = () => {
+    setPenDash((v) => {
+      const nextDash = !v;
+      applyToSelected({ dash: nextDash });
+      return nextDash;
+    });
+  };
+
+  /** 切換繪圖工具：點同一鈕關閉；換工具時清除「可調整形狀」選取。 */
+  const selectTool = (t: Exclude<DrawTool, null>) => {
+    setSelectedShapeIdx(null);
+    setTool((cur) => (cur === t ? null : t));
   };
 
   const allShapes = eraseWork.current
@@ -273,14 +423,17 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
 
   return (
     <>
+      {/* 撐高內文容器的占位元素（正常流）：讓繪圖區與便利貼/輪播可向下延伸到加高後的區域。 */}
+      {extraHeight > 0 && <div aria-hidden style={{ height: extraHeight, pointerEvents: 'none' }} />}
+
       <div
         style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 20, overflow: 'hidden' }}
         data-testid="note-overlay"
       >
-        {/* 手繪 SVG（繪圖中捕捉指標；否則僅顯示、指標穿透）。 */}
+        {/* 手繪 SVG（繪圖中捕捉指標；否則僅顯示、指標穿透）。高度含手動加高（extraHeight）。 */}
         <svg
           width={size.w}
-          height={size.h}
+          height={size.h + extraHeight}
           style={{
             position: 'absolute', left: 0, top: 0,
             pointerEvents: drawingActive ? 'auto' : 'none',
@@ -293,8 +446,27 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
           data-testid="overlay-draw-svg"
         >
           {allShapes.map((s, i) => (
-            <ShapeEl key={i} s={s} erasable={tool === 'erase-stroke'} onErase={() => eraseShape(i)} />
+            <ShapeEl
+              key={i}
+              s={s}
+              erasable={tool === 'erase-stroke'}
+              onErase={() => eraseShape(i)}
+            />
           ))}
+          {/* 框選擦除進行中的選取框（虛線；放開後框內內容被擦除） */}
+          {eraseBox.current && (
+            <rect
+              x={Math.min(eraseBox.current.x0, eraseBox.current.x1)}
+              y={Math.min(eraseBox.current.y0, eraseBox.current.y1)}
+              width={Math.abs(eraseBox.current.x1 - eraseBox.current.x0)}
+              height={Math.abs(eraseBox.current.y1 - eraseBox.current.y0)}
+              fill="rgba(120,120,120,0.12)"
+              stroke="var(--text-secondary, #888)"
+              strokeWidth={1}
+              strokeDasharray="5 4"
+              style={{ pointerEvents: 'none' }}
+            />
+          )}
         </svg>
 
         {/* 便利貼 / 輪播 元件（繪圖中暫不可互動，讓 SVG 捕捉） */}
@@ -320,7 +492,7 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
               }}
             >
               <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)' }}>
-                {item.kind === 'sticky' ? '便利貼' : '輪播'}
+                {item.kind === 'sticky' ? '便利貼' : '圖片板'}
               </span>
               <button
                 onClick={() => remove(item.id)}
@@ -379,7 +551,7 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
             borderRadius: 'var(--radius-md)', padding: 4, boxShadow: 'var(--shadow-md)', maxWidth: 380,
           }}>
             <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={addSticky} title="新增便利貼" data-testid="overlay-add-sticky">＋便利貼</button>
-            <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={addSlide} title="新增圖片輪播" data-testid="overlay-add-slide">＋輪播</button>
+            <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={addSlide} title="新增圖片板（可放多張圖、手動切換）" data-testid="overlay-add-slide">＋圖片板</button>
             {/* 繪圖工具：點同一鈕可再關閉 */}
             {([
               ['pen', '✏️', '自由筆'],
@@ -388,13 +560,14 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
               ['ellipse', '◯', '橢圓'],
               ['erase-stroke', '🧹', '橡皮擦：整筆刪除（點一筆即刪整筆）'],
               ['erase-area', '🧽', '橡皮擦：局部擦除（擦到哪、那裏消失）'],
+              ['erase-box', '⬚', '橡皮擦：框選擦除（框到哪、那裏消失，同一形狀不連帶整個刪除）'],
             ] as [Exclude<DrawTool, null>, string, string][]).map(([t, icon, label]) => (
               <button
                 key={t}
                 className={`tk-btn ${tool === t ? 'tk-btn--primary' : ''}`}
                 style={{ cursor: 'pointer' }}
                 title={label}
-                onClick={() => setTool(tool === t ? null : t)}
+                onClick={() => selectTool(t)}
                 data-testid={`overlay-tool-${t}`}
               >
                 {icon}
@@ -405,13 +578,14 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
                 title="畫筆顏色"
                 onClick={() => setShowPenColor((v) => !v)}
                 data-testid="overlay-pen-color"
+                data-overlay-colorbtn
                 style={{ width: 18, height: 18, flexShrink: 0, borderRadius: '50%', background: penColor, border: '1px solid var(--border-strong, #999)', cursor: 'pointer' }}
               />
             )}
             {(isPenTool || tool === 'erase-area') && (
               <input
                 type="range" min={1} max={20} value={penWidth}
-                onChange={(e) => setPenWidth(Number(e.target.value))}
+                onChange={(e) => changePenWidth(Number(e.target.value))}
                 title={tool === 'erase-area' ? `橡皮擦大小：${eraseRadius}` : `線寬：${penWidth}`}
                 style={{ width: 70 }}
                 data-testid="overlay-pen-width"
@@ -422,28 +596,46 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
                 className={`tk-btn ${penDash ? 'tk-btn--primary' : ''}`}
                 style={{ cursor: 'pointer' }}
                 title="虛線 / 實線"
-                onClick={() => setPenDash((v) => !v)}
+                onClick={togglePenDash}
               >
                 {penDash ? '┄' : '—'}
               </button>
+            )}
+            {selectedShapeIdx !== null && isPenTool && (
+              <span
+                style={{ fontSize: 'var(--text-xs)', color: 'var(--action-secondary-fg)', whiteSpace: 'nowrap' }}
+                title="可直接調整工具列的顏色 / 線寬 / 虛線，會即時套用到剛畫的圖形"
+              >
+                ✎ 調整剛畫的圖形
+              </span>
             )}
             {shapes.length > 0 && (
               <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={clearDrawing} title="清除全部手繪（可 Ctrl+Z 復原）" data-testid="overlay-clear">清除</button>
             )}
             {drawingActive && (
-              <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={() => setTool(null)} title="結束繪圖（回到一般互動）">完成</button>
+              <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={growCanvas} title="加高繪圖區（往下擴充，可放更多便利貼/塗鴉/輪播）" data-testid="overlay-grow">＋高</button>
+            )}
+            {drawingActive && extraHeight > 0 && (
+              <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={shrinkCanvas} title="降低繪圖區高度" data-testid="overlay-shrink">−高</button>
+            )}
+            {drawingActive && (
+              <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={() => { setSelectedShapeIdx(null); setTool(null); }} title="結束繪圖（回到一般互動）">完成</button>
             )}
           </div>
 
           {showPenColor && isPenTool && (
-            <div style={{
-              width: 220, background: 'var(--bg-surface)', border: '1px solid var(--border-default)',
-              borderRadius: 'var(--radius-md)', boxShadow: 'var(--shadow-lg)', padding: 8,
-            }}>
+            <div
+              data-overlay-colorpop
+              style={{
+                width: 220, background: 'var(--bg-surface)', border: '1px solid var(--border-default)',
+                borderRadius: 'var(--radius-md)', boxShadow: 'var(--shadow-lg)', padding: 8,
+              }}
+            >
+              {/* 選色後不關閉色盤（連續調色）；點空白處才關 */}
               <ColorPickerInline
                 initial={penColor}
-                onChange={(hex) => setPenColor(hex)}
-                onPick={(hex) => { setPenColor(hex); setShowPenColor(false); }}
+                onChange={(hex) => changePenColor(hex)}
+                onPick={(hex) => changePenColor(hex)}
               />
             </div>
           )}
@@ -454,8 +646,30 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
   );
 }
 
-/** 渲染單一形狀。 */
-function ShapeEl({ s, erasable, onErase }: { s: Shape; erasable: boolean; onErase: () => void }) {
+/** 依給定描邊屬性渲染單一形狀（free/line→polyline、rect→rect、ellipse→ellipse）。 */
+function renderShapeWith(
+  s: Shape,
+  props: React.SVGProps<SVGPolylineElement & SVGRectElement & SVGEllipseElement>
+): React.ReactElement | null {
+  if (s.type === 'free' || s.type === 'line') {
+    return <polyline points={s.points.map((p) => `${p[0]},${p[1]}`).join(' ')} {...props} />;
+  }
+  const [a, b] = s.points;
+  if (!a || !b) return null;
+  if (s.type === 'rect') {
+    return <rect x={Math.min(a[0], b[0])} y={Math.min(a[1], b[1])} width={Math.abs(b[0] - a[0])} height={Math.abs(b[1] - a[1])} {...props} />;
+  }
+  return <ellipse cx={(a[0] + b[0]) / 2} cy={(a[1] + b[1]) / 2} rx={Math.abs(b[0] - a[0]) / 2} ry={Math.abs(b[1] - a[1]) / 2} {...props} />;
+}
+
+/** 渲染單一形狀（不畫任何外框/光暈——避免被誤判成線條粗度）。 */
+function ShapeEl({
+  s, erasable, onErase,
+}: {
+  s: Shape;
+  erasable: boolean;
+  onErase: () => void;
+}) {
   const common = {
     fill: 'none' as const,
     stroke: s.color,
@@ -466,16 +680,7 @@ function ShapeEl({ s, erasable, onErase }: { s: Shape; erasable: boolean; onEras
     style: { pointerEvents: (erasable ? 'stroke' : 'none') as React.CSSProperties['pointerEvents'], cursor: erasable ? 'cell' : 'default' },
     onPointerDown: erasable ? onErase : undefined,
   };
-  if (s.type === 'free' || s.type === 'line') {
-    return <polyline points={s.points.map((p) => `${p[0]},${p[1]}`).join(' ')} {...common} />;
-  }
-  const [a, b] = s.points;
-  if (!a || !b) return null;
-  if (s.type === 'rect') {
-    return <rect x={Math.min(a[0], b[0])} y={Math.min(a[1], b[1])} width={Math.abs(b[0] - a[0])} height={Math.abs(b[1] - a[1])} {...common} />;
-  }
-  // ellipse
-  return <ellipse cx={(a[0] + b[0]) / 2} cy={(a[1] + b[1]) / 2} rx={Math.abs(b[0] - a[0]) / 2} ry={Math.abs(b[1] - a[1]) / 2} {...common} />;
+  return renderShapeWith(s, common);
 }
 
 /** 便利貼內容：可編輯文字 + 底色選擇。 */
@@ -517,7 +722,10 @@ function StickyBody({
   );
 }
 
-/** 圖片輪播內容。 */
+/**
+ * 圖片板內容：固定大小（可手動拖曳調整）、可放多張圖片、手動切換（不自動輪播）。
+ * 框不會自適應圖片——由使用者決定框的大小，圖片以 contain 顯示。
+ */
 function SlideBody({
   item, onImagesChange,
 }: {
@@ -527,24 +735,46 @@ function SlideBody({
   const images: string[] = item.dataJson ? safeParse<string[]>(item.dataJson, []) : [];
   const [idx, setIdx] = useState(0);
   const [url, setUrl] = useState('');
-  const [adding, setAdding] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    if (images.length <= 1 || adding) return;
-    const t = window.setInterval(() => setIdx((i) => (i + 1) % images.length), 3000);
-    return () => window.clearInterval(t);
-  }, [images.length, adding]);
+  /** 直接上傳/貼上圖片：讀成 data URL 後加入圖片板（不需網址）。 */
+  const addImageFile = (file: File) => {
+    if (!file.type.startsWith('image/')) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        onImagesChange([...images, reader.result]);
+        setIdx(images.length);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
 
   const safeIdx = images.length ? idx % images.length : 0;
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-      <div style={{ flex: 1, position: 'relative', minHeight: 0, background: '#000', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ flex: 1, position: 'relative', minHeight: 0, background: 'var(--bg-surface-secondary, #1118)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         {images.length === 0 ? (
-          <span style={{ color: '#aaa', fontSize: 'var(--text-xs)' }}>尚無圖片，下方加入網址</span>
+          <span
+            style={{ color: '#aaa', fontSize: 'var(--text-xs)', textAlign: 'center', cursor: 'pointer', padding: '0 8px' }}
+            onClick={() => fileRef.current?.click()}
+            title="點此上傳圖片"
+            onPaste={(e) => {
+              const item = Array.from(e.clipboardData?.items ?? []).find((it) => it.type.startsWith('image/'));
+              const f = item?.getAsFile();
+              if (f) { e.preventDefault(); addImageFile(f); }
+            }}
+          >
+            尚無圖片，點此上傳或下方貼上/加網址
+          </span>
         ) : (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={images[safeIdx]} alt={`slide-${safeIdx}`} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
+          <img
+            src={images[safeIdx]}
+            alt={`board-${safeIdx}`}
+            style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
+          />
         )}
         {images.length > 1 && (
           <>
@@ -560,11 +790,30 @@ function SlideBody({
       </div>
       <div style={{ display: 'flex', gap: 3, padding: '3px', flexShrink: 0 }}>
         <input
+          ref={fileRef}
+          type="file"
+          accept="image/*"
+          style={{ display: 'none' }}
+          onChange={(e) => { const f = e.target.files?.[0]; if (f) addImageFile(f); e.target.value = ''; }}
+        />
+        <button
+          className="tk-btn"
+          style={{ cursor: 'pointer', fontSize: 'var(--text-xs)', padding: '2px 6px', flexShrink: 0 }}
+          onClick={() => fileRef.current?.click()}
+          title="上傳圖片（直接放圖，不需網址）"
+          data-testid="slide-upload"
+        >
+          📁 上傳
+        </button>
+        <input
           value={url}
           onChange={(e) => setUrl(e.target.value)}
-          onFocus={() => setAdding(true)}
-          onBlur={() => setAdding(false)}
-          placeholder="圖片網址…"
+          onPaste={(e) => {
+            const item = Array.from(e.clipboardData?.items ?? []).find((it) => it.type.startsWith('image/'));
+            const f = item?.getAsFile();
+            if (f) { e.preventDefault(); addImageFile(f); }
+          }}
+          placeholder="或貼上圖片 / 網址…"
           style={{ flex: 1, minWidth: 0, fontSize: 'var(--text-xs)', padding: '2px 4px', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-sm)' }}
           data-testid="slide-url"
         />
@@ -625,53 +874,116 @@ function dist2(ax: number, ay: number, bx: number, by: number): number {
   return dx * dx + dy * dy;
 }
 
-/** 點到線段的距離。 */
-function distToSegment(px: number, py: number, a: [number, number], b: [number, number]): number {
-  const [ax, ay] = a, [bx, by] = b;
-  const dx = bx - ax, dy = by - ay;
-  const lenSq = dx * dx + dy * dy;
-  if (lenSq === 0) return Math.sqrt(dist2(px, py, ax, ay));
-  let t = ((px - ax) * dx + (py - ay) * dy) / lenSq;
-  t = Math.max(0, Math.min(1, t));
-  return Math.sqrt(dist2(px, py, ax + t * dx, ay + t * dy));
+/** 把折線各段以約 2px 間距加密取樣，讓局部橡皮擦能可靠命中描邊。 */
+function densifyPolyline(corners: [number, number][], stepPx = 2): [number, number][] {
+  const out: [number, number][] = [];
+  for (let i = 0; i < corners.length - 1; i++) {
+    const [ax, ay] = corners[i];
+    const [bx, by] = corners[i + 1];
+    const segLen = Math.hypot(bx - ax, by - ay);
+    const steps = Math.max(1, Math.ceil(segLen / stepPx));
+    for (let k = 0; k < steps; k++) {
+      const t = k / steps;
+      out.push([ax + (bx - ax) * t, ay + (by - ay) * t]);
+    }
+  }
+  if (corners.length > 0) out.push(corners[corners.length - 1]);
+  return out;
 }
 
 /**
- * 局部擦除：在 (x,y) 半徑 r 內移除內容。
- * - free（自由筆）：移除半徑內的點並把折線「斷開」成多段（產生破洞，真正的橡皮擦效果）。
- * - line：碰到線段就整條移除（直線無法部分擦除而仍維持為直線）。
- * - rect / ellipse：碰到其範圍就整個移除。
- * @returns 擦除後的新形狀陣列（不可變，回新陣列）。
+ * 把幾何形狀（line/rect/ellipse）攤平成密集點折線，供局部橡皮擦做「部分擦除」。
+ * 自由筆（free）已是點折線，直接回傳其點。
  */
-function eraseAt(list: Shape[], x: number, y: number, r: number): Shape[] {
-  const r2 = r * r;
+function shapeToPoints(s: Shape): [number, number][] {
+  if (s.type === 'free') return s.points;
+  const [a, b] = s.points;
+  if (!a || !b) return [];
+  if (s.type === 'line') {
+    return densifyPolyline([a, b]);
+  }
+  if (s.type === 'rect') {
+    const x0 = Math.min(a[0], b[0]);
+    const y0 = Math.min(a[1], b[1]);
+    const x1 = Math.max(a[0], b[0]);
+    const y1 = Math.max(a[1], b[1]);
+    return densifyPolyline([[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]);
+  }
+  // ellipse：以參數式取樣（Ramanujan 周長近似決定取樣點數）
+  const cx = (a[0] + b[0]) / 2;
+  const cy = (a[1] + b[1]) / 2;
+  const rx = Math.abs(b[0] - a[0]) / 2;
+  const ry = Math.abs(b[1] - a[1]) / 2;
+  const circumference = Math.PI * (3 * (rx + ry) - Math.sqrt((3 * rx + ry) * (rx + 3 * ry)));
+  const n = Math.max(24, Math.ceil(circumference / 2));
+  const pts: [number, number][] = [];
+  for (let i = 0; i <= n; i++) {
+    const t = (i / n) * Math.PI * 2;
+    pts.push([cx + rx * Math.cos(t), cy + ry * Math.sin(t)]);
+  }
+  return pts;
+}
+
+/** 對一條點折線，移除「符合 shouldRemove 的點」並斷開成多段，把結果（型別一律 free）推入 out。 */
+function erodeFreePoints(
+  template: Shape,
+  points: [number, number][],
+  shouldRemove: (p: [number, number]) => boolean,
+  out: Shape[]
+): void {
+  let seg: [number, number][] = [];
+  for (const p of points) {
+    if (shouldRemove(p)) {
+      if (seg.length > 1) out.push({ ...template, type: 'free', points: seg });
+      seg = [];
+    } else {
+      seg.push(p);
+    }
+  }
+  if (seg.length > 1) out.push({ ...template, type: 'free', points: seg });
+}
+
+/**
+ * 以「點判定函式」擦除：把符合 shouldRemove 的點移除、斷開成多段（真正「擦到哪、那裏消失」）。
+ * - free：直接逐點處理。
+ * - line / rect / ellipse：先看是否真的碰到描邊；沒碰到 → 保留原向量圖形（不退化）；
+ *   碰到 → 攤平成密集點折線再套用同一套移除＋斷開邏輯（於是橢圓/矩形/直線也能被擦出缺口、其餘部分保留）。
+ */
+function eraseByPredicate(list: Shape[], shouldRemove: (p: [number, number]) => boolean): Shape[] {
   const out: Shape[] = [];
   for (const s of list) {
     if (s.type === 'free') {
-      let seg: [number, number][] = [];
-      for (const p of s.points) {
-        if (dist2(p[0], p[1], x, y) <= r2) {
-          if (seg.length > 1) out.push({ ...s, points: seg });
-          seg = [];
-        } else {
-          seg.push(p);
-        }
-      }
-      if (seg.length > 1) out.push({ ...s, points: seg });
-    } else if (s.type === 'line') {
-      const [a, b] = s.points;
-      if (!a || !b || distToSegment(x, y, a, b) > r) out.push(s); // 沒碰到才保留
-    } else {
-      // rect / ellipse：點落在（外擴 r 的）外接矩形內就移除
-      const [a, b] = s.points;
-      if (!a || !b) { out.push(s); continue; }
-      const inside =
-        x >= Math.min(a[0], b[0]) - r && x <= Math.max(a[0], b[0]) + r &&
-        y >= Math.min(a[1], b[1]) - r && y <= Math.max(a[1], b[1]) + r;
-      if (!inside) out.push(s);
+      erodeFreePoints(s, s.points, shouldRemove, out);
+      continue;
     }
+    const points = shapeToPoints(s);
+    if (!points.some(shouldRemove)) {
+      out.push(s); // 沒碰到 → 保留原向量圖形
+      continue;
+    }
+    erodeFreePoints(s, points, shouldRemove, out);
   }
   return out;
+}
+
+/** 局部擦除：在 (x,y) 半徑 r 內移除內容。 */
+function eraseAt(list: Shape[], x: number, y: number, r: number): Shape[] {
+  const r2 = r * r;
+  return eraseByPredicate(list, (p) => dist2(p[0], p[1], x, y) <= r2);
+}
+
+/** 框選擦除：移除落在矩形 [minX,maxX]×[minY,maxY] 內的內容（同樣只擦框到的部分，不連帶刪整個形狀）。 */
+function eraseInBox(
+  list: Shape[],
+  minX: number,
+  minY: number,
+  maxX: number,
+  maxY: number
+): Shape[] {
+  return eraseByPredicate(
+    list,
+    (p) => p[0] >= minX && p[0] <= maxX && p[1] >= minY && p[1] <= maxY
+  );
 }
 
 /** 安全解析 JSON，失敗回退預設值。 */

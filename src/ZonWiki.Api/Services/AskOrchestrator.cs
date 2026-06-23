@@ -166,6 +166,9 @@ public sealed class AskOrchestrator
                 Node_UpdatedDateTime = answer.UpdatedDateTime.ToString("O"),
             });
 
+            // 建立「來源節點 → 回答節點」的連線（修正生成節點沒有連接）
+            await CreateAndBroadcastEdgeAsync(userId, canvasGuid, canvasId, askFromGuid, answer.Id, cancellationToken);
+
             _hub.Publish(canvasId, "AskStarted", new { NodeId = answer.Id.ToString() });
 
             // 解析此畫布實際生效的 System Prompt（全域 + 分類 + 自選），串接後注入 AI
@@ -305,6 +308,9 @@ public sealed class AskOrchestrator
                 Node_UpdatedDateTime = questionNode.UpdatedDateTime.ToString("O"),
             });
 
+            // 建立「來源節點 → 問題節點」的連線；隨後 RunNodeAskAsync 會再建「問題節點 → 回答節點」。
+            await CreateAndBroadcastEdgeAsync(userId, canvasGuid, canvasId, fromGuid, questionNode.Id, cancellationToken);
+
             // 接著對問題節點提問（遞迴呼叫，但內部會組建祖先脈絡）
             await RunNodeAskAsync(userId, canvasId, questionNode.Id.ToString(), cts);
         }
@@ -389,8 +395,14 @@ public sealed class AskOrchestrator
                 source.Model,
                 cancellationToken);
 
-            // 組建 Prompt（選取片段提問的 Prompt 不含祖先脈絡）
-            var prompt = PromptAssembler.AssembleSelectionPrompt(source.Content, anchorText, question);
+            // 組建 Prompt：除了整份節點內容與框選文字，再附上祖先脈絡（修正「框選提問上下文太少」）。
+            // 限定在本畫布內追溯，避免跨畫布/跨帳號外洩（與 RunNodeAskAsync 同策略）。
+            var selectionAncestry = await _ancestry.GetAncestorChainAsync(sourceGuid, canvasGuid, cancellationToken);
+            var prompt = PromptAssembler.AssembleSelectionPromptWithContext(
+                selectionAncestry,
+                source.Content,
+                anchorText,
+                question);
 
             // 建立回答節點
             var answer = new Node
@@ -469,6 +481,9 @@ public sealed class AskOrchestrator
                 InlineLink_Detached = inlineLink.Detached,
             });
 
+            // 除了行內連結（文字層），再建立節點層的連線，讓回答節點在畫布上有可見連線。
+            await CreateAndBroadcastEdgeAsync(userId, canvasGuid, canvasId, sourceGuid, answer.Id, cancellationToken);
+
             _hub.Publish(canvasId, "AskStarted", new { NodeId = answer.Id.ToString() });
 
             // 解析此畫布實際生效的 System Prompt（全域 + 分類 + 自選），串接後注入 AI
@@ -502,6 +517,58 @@ public sealed class AskOrchestrator
             // 發佈通用友善訊息，詳細錯誤只記錄伺服器日誌
             _hub.Publish(canvasId, "error", new { Message = "提問失敗，請稍後重試。" });
         }
+    }
+
+    /// <summary>
+    /// 建立「來源節點 → 新節點」的連線（Edge）並廣播 EdgeAdded SSE，
+    /// 讓 AI 生成的節點在畫布上有可見的連線（修正「生出來的節點沒有連接」）。
+    /// 過去節點只設了 ParentId（樹狀關係）但未建立 Edge（圖結構），故畫布看不到連線。
+    /// </summary>
+    /// <param name="userId">擁有者使用者 Id（與畫布一致）。</param>
+    /// <param name="canvasGuid">畫布 Id（GUID）。</param>
+    /// <param name="canvasId">畫布 Id（字串，供 SSE 廣播用）。</param>
+    /// <param name="sourceNodeId">來源節點 Id。</param>
+    /// <param name="targetNodeId">目標（新建）節點 Id。</param>
+    /// <param name="cancellationToken">取消權杖。</param>
+    private async Task CreateAndBroadcastEdgeAsync(
+        Guid userId,
+        Guid canvasGuid,
+        string canvasId,
+        Guid sourceNodeId,
+        Guid targetNodeId,
+        CancellationToken cancellationToken)
+    {
+        var edge = new Edge
+        {
+            Id = Guid.NewGuid(),
+            UserId = userId,
+            CanvasId = canvasGuid,
+            SourceNodeId = sourceNodeId,
+            TargetNodeId = targetNodeId,
+            Kind = "default",
+            Label = string.Empty,
+            // 接點：父節點底部（b）→ 子節點頂部（t），讓父子連線往下走、較順眼
+            // （取代過去 null 接點被自動接到節點上緣、線往上繞的醜樣）。
+            SourceHandle = "b",
+            TargetHandle = "t",
+            DataJson = "{}",
+        };
+
+        _db.Edge.Add(edge);
+        await _db.SaveChangesAsync(cancellationToken);
+
+        _hub.Publish(canvasId, "EdgeAdded", new
+        {
+            Edge_Id = edge.Id.ToString(),
+            Edge_CanvasId = edge.CanvasId.ToString(),
+            Edge_SourceNodeId = edge.SourceNodeId.ToString(),
+            Edge_TargetNodeId = edge.TargetNodeId.ToString(),
+            Edge_Kind = edge.Kind,
+            Edge_Label = edge.Label,
+            Edge_SourceHandle = edge.SourceHandle,
+            Edge_TargetHandle = edge.TargetHandle,
+            Edge_CreatedDateTime = edge.CreatedDateTime.ToString("O"),
+        });
     }
 
     /// <summary>

@@ -150,11 +150,15 @@ export function CalendarMonthView({
                     title="點此新增當日任務"
                     style={{
                       borderRadius: "var(--radius-md)",
+                      // 今日：淡綠底 + 綠框（搭配下方綠色日期數字）標示，不再整格塗滿濃綠（太刺眼）。
+                      // 選取框（藍）優先於今日框（綠）。
                       border: isSel
                         ? "2px solid var(--action-primary-bg)"
+                        : isToday
+                        ? "2px solid var(--status-success-fg)"
                         : "1px solid var(--border-default)",
                       background: isToday
-                        ? "var(--status-success-bg)"
+                        ? "color-mix(in srgb, var(--status-success-bg) 30%, var(--bg-surface))"
                         : inMonth
                         ? "var(--bg-surface)"
                         : "var(--bg-surface-secondary)",
@@ -229,9 +233,9 @@ export function CalendarMonthView({
                           position: "absolute",
                           left: `calc(${leftPct}% + 3px)`,
                           width: `calc(${widthPct}% - 6px)`,
-                          top: `${HEADER_H + s.lane * BAR_STEP}px`,
-                          height: `${BAR_STEP - 3}px`,
-                          lineHeight: `${BAR_STEP - 3}px`,
+                          top: `${HEADER_H + s.lane * BAR_STEP + 2}px`,
+                          height: `${BAR_STEP - 5}px`,
+                          lineHeight: `${BAR_STEP - 5}px`,
                           background: c.bg,
                           color: c.fg,
                           border: `1px solid ${c.border}`,

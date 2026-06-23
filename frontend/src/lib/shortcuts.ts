@@ -33,16 +33,17 @@ export interface ShortcutAction {
  */
 export const SHORTCUT_ACTIONS: readonly ShortcutAction[] = [
   // ── 全域（任何頁面皆可用）──
+  { id: "openHome", scope: "global", label: "返回首頁", defaultKey: "h" },
   { id: "openTasks", scope: "global", label: "前往 Todo（日程規劃）", defaultKey: "t" },
   { id: "openCanvas", scope: "global", label: "前往開問啦（畫布）", defaultKey: "q" },
   { id: "openNotes", scope: "global", label: "前往筆記", defaultKey: "n" },
   { id: "focusSearch", scope: "global", label: "聚焦全域搜尋框", defaultKey: "f" },
+  { id: "cycleTheme", scope: "global", label: "切換顯示主題（暖紙→明亮→暗色→夜間）", defaultKey: "v" },
   // ── Todo 頁專用 ──
   { id: "calYear", scope: "tasks", label: "行事曆－年檢視", defaultKey: "y" },
   { id: "calMonth", scope: "tasks", label: "行事曆－月檢視", defaultKey: "m" },
   { id: "calWeek", scope: "tasks", label: "行事曆－週檢視", defaultKey: "w" },
   { id: "calDay", scope: "tasks", label: "行事曆－日檢視", defaultKey: "d" },
-  { id: "cycleView", scope: "tasks", label: "切換顯示模式（清單→看板→行事曆）", defaultKey: "v" },
   { id: "newTodo", scope: "tasks", label: "彈出「新增任務」表單", defaultKey: "a" },
 ];
 

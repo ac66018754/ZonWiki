@@ -1,8 +1,47 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useRef, useState, type ComponentPropsWithoutRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+
+/**
+ * 預覽中的程式碼區塊：包一層容器並加上「複製」按鈕。
+ * react-markdown 會把 ```code``` 渲染成 <pre><code>…</code></pre>，
+ * 這裡覆寫 pre 的渲染以加入複製鈕（醒目化與換行樣式見 globals.css 的 .md-preview pre）。
+ * 複製時直接從 DOM 讀同層的 <pre> 文字（避免 useRef，與本檔其餘 React 風格一致）。
+ */
+function PreWithCopy(props: ComponentPropsWithoutRef<"pre"> & { node?: unknown }) {
+  const [copied, setCopied] = useState(false);
+  const { children, ...rest } = props;
+  // 移除 react-markdown 注入的 node，避免被展開到 DOM。
+  delete (rest as { node?: unknown }).node;
+
+  const copy = async (e: React.MouseEvent<HTMLButtonElement>) => {
+    const pre = e.currentTarget.parentElement?.querySelector("pre");
+    const text = pre?.textContent ?? "";
+    try {
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+    } catch {
+      /* 忽略複製失敗 */
+    }
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <div className="code-block-wrap">
+      <button
+        type="button"
+        className={`code-copy-btn${copied ? " copied" : ""}`}
+        onClick={copy}
+        aria-label="複製程式碼"
+      >
+        {copied ? "已複製" : "複製"}
+      </button>
+      <pre {...rest}>{children}</pre>
+    </div>
+  );
+}
 
 /**
  * 共用 Markdown 編輯器：文字輸入框 + 格式工具列。
@@ -100,6 +139,38 @@ export function MarkdownEditor({
     restore(start, start + sel.length);
   };
 
+  // 圖片插入：支援「貼上剪貼簿圖片」與「選檔上傳」，直接以 data URL 內嵌（不需網址）。
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  /** 在指定位置插入圖片 Markdown（src 可為 data URL 或網址）。 */
+  const insertImageAt = (src: string, pos: number, alt = "圖片") => {
+    const md = `![${alt}](${src})`;
+    onChange(value.slice(0, pos) + md + value.slice(pos));
+    restore(pos + md.length, pos + md.length);
+  };
+
+  /** 讀取圖片檔成 data URL 後插入到 pos。 */
+  const insertImageFile = (file: File, pos: number) => {
+    if (!file.type.startsWith("image/")) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") insertImageAt(reader.result, pos);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  /** 貼上事件：剪貼簿含圖片時直接內嵌（不需網址）。 */
+  const onPasteImage = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = Array.from(e.clipboardData?.items ?? []);
+    const imgItem = items.find((it) => it.type.startsWith("image/"));
+    if (!imgItem) return; // 不是圖片就讓預設貼上（文字）正常進行
+    const file = imgItem.getAsFile();
+    if (!file) return;
+    e.preventDefault();
+    const ta = ref.current;
+    insertImageFile(file, ta ? ta.selectionStart : value.length);
+  };
+
   /** 在游標處插入一段獨立區塊（前後自動補換行；如表格、分隔線）。 */
   const insertBlock = (block: string) => {
     const ta = ref.current;
@@ -132,7 +203,7 @@ export function MarkdownEditor({
     { label: "`", title: "行內程式碼", run: () => wrap("`", "`", "code") },
     { label: "</>", title: "程式碼區塊", run: codeBlock },
     { label: "⊞", title: "表格", run: () => insertBlock("| 欄位 1 | 欄位 2 |\n| --- | --- |\n| 內容 | 內容 |") },
-    { label: "🖼", title: "圖片", run: () => wrap("![", "](url)", "替代文字") },
+    { label: "🖼", title: "插入圖片（選檔上傳；也可直接貼上剪貼簿圖片）", run: () => fileInputRef.current?.click() },
     { label: "―", title: "分隔線", run: () => insertBlock("---") },
     { label: "🔗", title: "連結", run: () => wrap("[", "](url)", "文字") },
   ];
@@ -174,6 +245,20 @@ export function MarkdownEditor({
         )}
       </div>
 
+      {/* 隱藏的選檔輸入：🖼 鈕觸發，選圖後以 data URL 內嵌（不需網址）。 */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        style={{ display: "none" }}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          const ta = ref.current;
+          if (file) insertImageFile(file, ta ? ta.selectionStart : value.length);
+          e.target.value = ""; // 允許再次選同一檔
+        }}
+      />
+
       <div className={`mde-body ${showEditor && showPreview ? "mde-body--split" : ""}`}>
         {showEditor && (
           <textarea
@@ -183,6 +268,7 @@ export function MarkdownEditor({
             value={value}
             onChange={(e) => onChange(e.target.value)}
             onBlur={onBlur}
+            onPaste={onPasteImage}
             placeholder={placeholder}
             aria-label={ariaLabel}
           />
@@ -190,7 +276,9 @@ export function MarkdownEditor({
         {showPreview && (
           <div className="mde-preview md-preview" style={{ minHeight }}>
             {value.trim() ? (
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{value}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ pre: PreWithCopy }}>
+                {value}
+              </ReactMarkdown>
             ) : (
               <span className="mde-muted">預覽會顯示在這裡…</span>
             )}

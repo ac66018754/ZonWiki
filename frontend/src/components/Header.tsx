@@ -10,6 +10,14 @@ import {
   isMobileNavOpen,
   MOBILE_NAV_EVENT,
 } from "@/lib/mobileNav";
+import {
+  SHORTCUT_ACTIONS,
+  effectiveKey,
+  keyCapLabel,
+  loadShortcutOverrides,
+  SHORTCUTS_UPDATED_EVENT,
+} from "@/lib/shortcuts";
+import { THEME_CHANGED_EVENT } from "@/components/ShortcutRuntime";
 
 /**
  * Header 元件
@@ -55,12 +63,58 @@ export function Header({ user }: { user: CurrentUser | null }) {
   const accountMenuRef = useRef<HTMLDivElement>(null);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
 
+  // 是否在導覽列顯示快捷鍵提示（如「日程規劃 (T)」）。預設關閉（避免太雜），
+  // 使用者可於「顯示」選單開啟；偏好存 localStorage。
+  const [showHints, setShowHints] = useState(false);
+  // 各快捷鍵動作目前「生效鍵」的鍵帽文字（動作 ID → 顯示字，如 "T"）。
+  const [hintKeys, setHintKeys] = useState<Record<string, string>>({});
+
   // 切換主題
   const handleThemeChange = (newTheme: typeof theme) => {
     setTheme(newTheme);
     localStorage.setItem("zonwiki:theme", newTheme);
     document.documentElement.setAttribute("data-theme", newTheme);
   };
+
+  // 切換「顯示快捷鍵提示」並持久化。
+  const toggleHints = () => {
+    setShowHints((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("zonwiki:showShortcutHints", next ? "1" : "0");
+      } catch {
+        /* localStorage 不可用時忽略 */
+      }
+      return next;
+    });
+  };
+
+  // 載入「顯示提示」偏好，並依快捷鍵覆寫算出各導覽動作的生效鍵；
+  // 覆寫更新時（SHORTCUTS_UPDATED_EVENT）即時重算。
+  useEffect(() => {
+    try {
+      setShowHints(localStorage.getItem("zonwiki:showShortcutHints") === "1");
+    } catch {
+      /* 忽略 */
+    }
+    let alive = true;
+    const apply = () =>
+      loadShortcutOverrides(true).then((overrides) => {
+        if (!alive) return;
+        const map: Record<string, string> = {};
+        for (const action of SHORTCUT_ACTIONS) {
+          map[action.id] = keyCapLabel(effectiveKey(action, overrides));
+        }
+        setHintKeys(map);
+      });
+    apply();
+    const onUpdated = () => apply();
+    window.addEventListener(SHORTCUTS_UPDATED_EVENT, onUpdated);
+    return () => {
+      alive = false;
+      window.removeEventListener(SHORTCUTS_UPDATED_EVENT, onUpdated);
+    };
+  }, []);
 
   // 處理登出
   const handleLogout = async () => {
@@ -76,7 +130,7 @@ export function Header({ user }: { user: CurrentUser | null }) {
     window.location.href = "/login";
   };
 
-  // 在掛載時應用保存的主題
+  // 在掛載時應用保存的主題，並監聽「主題已由快捷鍵切換」事件以同步顯示（V 鍵循環主題）。
   useEffect(() => {
     const stored = localStorage.getItem("zonwiki:theme") as
       | "warmpaper"
@@ -87,6 +141,15 @@ export function Header({ user }: { user: CurrentUser | null }) {
     const themeToApply = stored || "warmpaper";
     document.documentElement.setAttribute("data-theme", themeToApply);
     setTheme(themeToApply);
+
+    const onThemeChanged = (e: Event) => {
+      const next = (e as CustomEvent<{ theme?: string }>).detail?.theme;
+      if (next === "warmpaper" || next === "light" || next === "dark" || next === "night") {
+        setTheme(next);
+      }
+    };
+    window.addEventListener(THEME_CHANGED_EVENT, onThemeChanged);
+    return () => window.removeEventListener(THEME_CHANGED_EVENT, onThemeChanged);
   }, []);
 
   // 帳號選單：點外部自動關閉
@@ -143,12 +206,21 @@ export function Header({ user }: { user: CurrentUser | null }) {
         <nav className="nav" role="navigation">
           <Link href="/tasks" className="nav-item">
             日程規劃
+            {showHints && hintKeys.openTasks && (
+              <span className="nav-hint">({hintKeys.openTasks})</span>
+            )}
           </Link>
           <Link href="/canvas" className="nav-item">
             開問啦
+            {showHints && hintKeys.openCanvas && (
+              <span className="nav-hint">({hintKeys.openCanvas})</span>
+            )}
           </Link>
           <Link href="/notes" className="nav-item">
             筆記
+            {showHints && hintKeys.openNotes && (
+              <span className="nav-hint">({hintKeys.openNotes})</span>
+            )}
           </Link>
         </nav>
       </div>
@@ -173,8 +245,8 @@ export function Header({ user }: { user: CurrentUser | null }) {
         <div ref={themeMenuRef} style={{ position: "relative", display: "inline-block" }}>
           <button
             className="icon-btn"
-            title="顯示模式"
-            aria-label="顯示模式切換"
+            title="顯示設定"
+            aria-label="顯示設定"
             aria-haspopup="menu"
             aria-expanded={themeMenuOpen}
             onClick={() => setThemeMenuOpen((open) => !open)}
@@ -234,6 +306,50 @@ export function Header({ user }: { user: CurrentUser | null }) {
                 {opt.label}
               </button>
             ))}
+
+            {/* 分隔線 */}
+            <div
+              style={{
+                borderTop: "1px solid var(--border-default)",
+                margin: "var(--spacing-2) 0",
+              }}
+            />
+
+            {/* 顯示快捷鍵提示開關（如「日程規劃 (T)」） */}
+            <button
+              onClick={toggleHints}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                width: "100%",
+                textAlign: "left",
+                padding: "var(--spacing-2) var(--spacing-3)",
+                background: "transparent",
+                color: "var(--text-primary)",
+                border: "none",
+                borderRadius: "var(--radius-sm)",
+                cursor: "pointer",
+                fontSize: "var(--text-sm)",
+                gap: "var(--spacing-2)",
+              }}
+              role="menuitemcheckbox"
+              aria-checked={showHints}
+            >
+              <span>顯示快捷鍵提示</span>
+              <span
+                aria-hidden
+                style={{
+                  fontSize: "var(--text-xs)",
+                  fontWeight: 600,
+                  color: showHints
+                    ? "var(--action-secondary-fg)"
+                    : "var(--text-tertiary)",
+                }}
+              >
+                {showHints ? "開啟" : "關閉"}
+              </span>
+            </button>
           </div>
           )}
         </div>

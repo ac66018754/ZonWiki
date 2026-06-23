@@ -155,6 +155,10 @@ export function CalendarTimeGrid({
     const colW = colsRef.current ? colsRef.current.clientWidth / days.length : 1;
     const o = { start: placed.startMin, end: placed.endMin, dayIndex };
     let moved = false;
+    // 以閉包變數保存「最新」拖曳結果，供 onUp 直接讀取——
+    // 不可在 setDrag 的 updater 裡呼叫父層回呼（onTaskClick/onTaskTimeChange），
+    // 否則會「在渲染某元件時更新另一元件」（CalendarTimeGrid 渲染中更新 CalendarWeekView）而報錯。
+    const latest = { startMin: o.start, endMin: o.end, dayIndex: o.dayIndex };
     setDrag({ taskId: placed.task.id, mode, dayIndex, startMin: o.start, endMin: o.end, moved: false });
 
     const onMove = (ev: PointerEvent) => {
@@ -179,26 +183,27 @@ export function CalendarTimeGrid({
         en = Math.min(MINUTES_PER_DAY, Math.max(o.start + MIN_DUR, o.end + dMin));
         s = o.start;
       }
+      latest.startMin = s;
+      latest.endMin = en;
+      latest.dayIndex = di;
       setDrag({ taskId: placed.task.id, mode, dayIndex: di, startMin: s, endMin: en, moved });
     };
 
     const onUp = () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
-      setDrag((cur) => {
-        if (!cur) return null;
-        if (!moved) {
-          onTaskClick?.(placed.task.id);
-        } else {
-          const day = days[cur.dayIndex] ?? days[dayIndex];
-          onTaskTimeChange?.(
-            placed.task.id,
-            isoFromDayMinute(day, cur.startMin, userTz),
-            isoFromDayMinute(day, cur.endMin, userTz)
-          );
-        }
-        return null;
-      });
+      // 先清掉拖曳狀態（單純值），父層回呼在 updater 外、於事件時呼叫，避免渲染期更新他元件。
+      setDrag(null);
+      if (!moved) {
+        onTaskClick?.(placed.task.id);
+      } else {
+        const day = days[latest.dayIndex] ?? days[dayIndex];
+        onTaskTimeChange?.(
+          placed.task.id,
+          isoFromDayMinute(day, latest.startMin, userTz),
+          isoFromDayMinute(day, latest.endMin, userTz)
+        );
+      }
     };
 
     window.addEventListener("pointermove", onMove);
@@ -211,7 +216,10 @@ export function CalendarTimeGrid({
     onSlotClick?.(localKey(day), hour);
   };
 
-  const hourLineBg = `repeating-linear-gradient(to bottom, transparent, transparent ${HOUR_H - 1}px, var(--border-subtle, var(--border-default)) ${HOUR_H - 1}px, var(--border-subtle, var(--border-default)) ${HOUR_H}px)`;
+  // 每小時一條清晰的分隔線（用 --border-strong 才看得出格子；半小時處再加一條更淡的輔助線）。
+  const hourLineBg =
+    `repeating-linear-gradient(to bottom, transparent, transparent ${HOUR_H - 1}px, var(--border-strong, var(--border-default)) ${HOUR_H - 1}px, var(--border-strong, var(--border-default)) ${HOUR_H}px),` +
+    `repeating-linear-gradient(to bottom, transparent, transparent ${HOUR_H / 2 - 1}px, var(--border-default) ${HOUR_H / 2 - 1}px, var(--border-default) ${HOUR_H / 2}px)`;
 
   return (
     <div
@@ -251,9 +259,16 @@ export function CalendarTimeGrid({
                 style={{
                   position: "relative",
                   height: 24 * HOUR_H,
-                  borderLeft: "1px solid var(--border-subtle, var(--border-default))",
+                  borderLeft: "1px solid var(--border-strong, var(--border-default))",
                   backgroundImage: hourLineBg,
-                  background: dayKey === todayKey ? "var(--status-success-bg)" : undefined,
+                  // 今日：用「淡底色 + 左側強調線」標示，而非整欄塗滿綠色（過去太刺眼）。
+                  // 注意：用 backgroundColor（非 background 簡寫）才不會把 backgroundImage 的時刻線洗掉。
+                  backgroundColor:
+                    dayKey === todayKey
+                      ? "color-mix(in srgb, var(--status-success-bg) 35%, transparent)"
+                      : undefined,
+                  boxShadow:
+                    dayKey === todayKey ? "inset 2px 0 0 0 var(--status-success-fg)" : undefined,
                   cursor: "pointer",
                 }}
               >
@@ -264,10 +279,12 @@ export function CalendarTimeGrid({
                   // 拖曳移動時可能換欄（週視圖）；只在「目標欄」畫拖曳中的塊，避免重複。
                   if (isDragging && drag!.mode === "move" && drag!.dayIndex !== dayIndex) return null;
                   const c = barColors(p.task);
-                  const gap = 2;
+                  // 任務塊四周留小縫隙，讓周圍空白時段仍可點擊新增（gap=左右、vGap=上下）。
+                  const gap = 3;
+                  const vGap = 2;
                   const widthPct = 100 / p.cols;
-                  const top = (sMin / 60) * HOUR_H;
-                  const height = Math.max(((eMin - sMin) / 60) * HOUR_H, 14);
+                  const top = (sMin / 60) * HOUR_H + vGap;
+                  const height = Math.max(((eMin - sMin) / 60) * HOUR_H - vGap * 2, 12);
                   return (
                     <div
                       key={p.task.id}
