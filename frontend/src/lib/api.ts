@@ -1673,6 +1673,28 @@ export async function askNoteSelection(
   return r.data ?? null;
 }
 
+/**
+ * 框選提問（便利貼模式）：以「整篇筆記 + 框選文字」為脈絡向 AI 提問，
+ * 只取回答案文字（不建答案筆記），由前端放進便利貼浮層。
+ */
+export async function askNoteSelectionAnswer(
+  noteId: string,
+  input: {
+    anchorText: string;
+    anchorStart: number;
+    anchorEnd: number;
+    anchorPrefix: string;
+    anchorSuffix: string;
+    question: string;
+  }
+): Promise<string | null> {
+  const r = await fetchJson<{ answer: string }>(
+    `/api/notes/${encodeURIComponent(noteId)}/ask-selection-answer`,
+    { method: 'POST', body: JSON.stringify(input) }
+  );
+  return r.data?.answer ?? null;
+}
+
 /** 列出某筆記的所有文字標註。 */
 export async function listNoteMarks(noteId: string): Promise<NoteMark[]> {
   const r = await fetchJson<NoteMark[]>(`/api/notes/${encodeURIComponent(noteId)}/marks`);

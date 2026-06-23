@@ -17,6 +17,12 @@ import { pushUndo } from '@/lib/undoManager';
 const STICKY_COLORS = ['#fff9c4', '#ffe0b2', '#c8e6c9', '#bbdefb', '#f8bbd0', '#e1bee7'];
 
 /**
+ * 事件：框選提問的答案要放進「就在原處旁邊」的便利貼（由 NoteMarksLayer 派發、NoteOverlay 接收建立）。
+ * detail：{ x, y, text }（x/y 為相對內文容器的座標）。
+ */
+export const NOTE_ASK_STICKY_EVENT = 'zonwiki:note-ask-sticky';
+
+/**
  * 繪圖工具。null＝不繪圖（一般互動：可選文字、拖便利貼）。
  * erase-stroke＝整筆刪除（點一筆即刪整筆）；erase-area＝局部擦除（擦到哪、那裏消失）。
  */
@@ -73,6 +79,33 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
       if (alive) setItems(list);
     });
     return () => { alive = false; };
+  }, [noteId]);
+
+  // 以 ref 持有最新 items，供事件監聽器計算 zIndex（避免 stale closure）。
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+
+  // 接收「框選提問答案 → 便利貼」事件：在指定座標建立便利貼並加入浮層（取代開新筆記）。
+  useEffect(() => {
+    const onAskSticky = (e: Event) => {
+      const detail = (e as CustomEvent<{ x: number; y: number; text: string }>).detail;
+      if (!detail) return;
+      const z = itemsRef.current.reduce((m, i) => Math.max(m, i.zIndex), 0) + 1;
+      createNoteOverlay(noteId, {
+        kind: 'sticky',
+        x: Math.max(0, detail.x),
+        y: Math.max(0, detail.y),
+        width: 300,
+        height: 220,
+        zIndex: z,
+        color: STICKY_COLORS[2],
+        text: detail.text,
+      }).then((created) => {
+        if (created) setItems((prev) => [...prev, created]);
+      });
+    };
+    window.addEventListener(NOTE_ASK_STICKY_EVENT, onAskSticky);
+    return () => window.removeEventListener(NOTE_ASK_STICKY_EVENT, onAskSticky);
   }, [noteId]);
 
   // 量測內文容器尺寸（繪圖 SVG 用）

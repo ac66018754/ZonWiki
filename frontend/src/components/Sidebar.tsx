@@ -51,6 +51,9 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
   const searchParams = useSearchParams();
 
   const [activeTab, setActiveTab] = useState<"categories" | "tags">("categories");
+  // 目前正在閱讀的筆記所屬分類（由筆記詳情頁透過事件提供），用來在側欄標示「📍 此筆記在這」，
+  // 即使網址沒有 ?categoryId 也能讓使用者知道目前內容的分類，不會迷路。
+  const [activeNoteCats, setActiveNoteCats] = useState<string[]>([]);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [categories, setCategories] = useState<NoteCategory[]>([]);
   const [tags, setTags] = useState<NoteTag[]>([]);
@@ -140,6 +143,38 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
     }, 60);
     return () => clearTimeout(timer);
   }, [searchParams, categories]);
+
+  // 監聽筆記詳情頁送來的「目前筆記所屬分類」事件，供側欄標示目前位置。
+  useEffect(() => {
+    const onActiveCats = (e: Event) => {
+      const ids = (e as CustomEvent<{ categoryIds?: string[] }>).detail?.categoryIds ?? [];
+      setActiveNoteCats(ids);
+    };
+    window.addEventListener("zonwiki:note-active-category", onActiveCats);
+    return () => window.removeEventListener("zonwiki:note-active-category", onActiveCats);
+  }, []);
+
+  // 目前筆記所屬分類變更時，自動展開其所有祖先，讓「📍 此筆記在這」可見。
+  useEffect(() => {
+    if (activeNoteCats.length === 0 || categories.length === 0) return;
+    const byId = new Map(categories.map((c) => [c.id, c] as const));
+    const toExpand = new Set<string>();
+    for (const id of activeNoteCats) {
+      let cur = byId.get(id);
+      while (cur?.parentId) {
+        toExpand.add(cur.parentId);
+        cur = byId.get(cur.parentId);
+      }
+    }
+    setCollapsed((prev) => {
+      let changed = false;
+      const next = new Set(prev);
+      toExpand.forEach((id) => {
+        if (next.delete(id)) changed = true;
+      });
+      return changed ? next : prev;
+    });
+  }, [activeNoteCats, categories]);
 
   // ─────────── 樹工具 ───────────
   const childrenOf = (parentId: string | null) =>
@@ -696,6 +731,9 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
     const kids = childrenOf(cat.id);
     const isCollapsed = collapsed.has(cat.id);
     const isSelected = selectedCategoryId === cat.id;
+    // 目前閱讀的筆記所屬分類（網址未帶 categoryId 時，用此標示目前位置）。
+    const isCurrentNote = !selectedCategoryId && activeNoteCats.includes(cat.id);
+    const highlighted = isSelected || isCurrentNote;
     return (
       <div key={cat.id}>
         <div
@@ -812,10 +850,15 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
               if (kids.length > 0) toggleCollapse(cat.id);
             }}
             style={{
-              fontWeight: isSelected ? 600 : 400,
-              color: isSelected ? "var(--action-secondary-fg)" : "var(--text-secondary)",
+              fontWeight: highlighted ? 600 : 400,
+              color: highlighted ? "var(--action-secondary-fg)" : "var(--text-secondary)",
+              background: isCurrentNote ? "var(--action-secondary-bg)" : undefined,
+              borderRadius: isCurrentNote ? "var(--radius-sm)" : undefined,
             }}
           >
+            {isCurrentNote && (
+              <span title="目前閱讀的筆記在此分類" style={{ marginRight: 2 }}>📍</span>
+            )}
             <span className="nt-name-text">{cat.name}</span>
             <span className="nt-count">
               {kids.length > 0

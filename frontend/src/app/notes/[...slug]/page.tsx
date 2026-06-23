@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { enhanceCodeBlocks } from '@/lib/codeBlocks';
 import {
   getNote,
@@ -56,6 +56,7 @@ export default function NotesDetailPage() {
   const slug = Array.isArray(routeParams.slug)
     ? routeParams.slug.map((s) => decodeURIComponent(s)).join('/')
     : decodeURIComponent(String(routeParams.slug ?? ''));
+  const router = useRouter();
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [note, setNote] = useState<NoteDetail | null>(null);
   const [comments, setComments] = useState<Comment[]>([]);
@@ -106,6 +107,21 @@ export default function NotesDetailPage() {
     if (activeTab !== 'preview' || !previewRef.current) return;
     enhanceCodeBlocks(previewRef.current);
   }, [activeTab, note?.contentHtml]);
+
+  // 把「目前筆記所屬分類」廣播給左側欄，讓它標示「📍 此筆記在這」（避免迷路）。
+  // 用分類 id 串接當相依，分類載入/切換筆記時更新；離開時清空。
+  const noteCatIdsKey = (note?.categories ?? []).map((c) => c.id).join(',');
+  useEffect(() => {
+    const ids = noteCatIdsKey ? noteCatIdsKey.split(',') : [];
+    window.dispatchEvent(
+      new CustomEvent('zonwiki:note-active-category', { detail: { categoryIds: ids } })
+    );
+    return () => {
+      window.dispatchEvent(
+        new CustomEvent('zonwiki:note-active-category', { detail: { categoryIds: [] } })
+      );
+    };
+  }, [noteCatIdsKey]);
 
   // AI 操作回調：AI（排版/美化/撤銷）只更新編輯器內容，不寫 DB、也不重抓筆記
   // （後端已改為純轉換、不落地）。先前的 getNote 重抓會把編輯器內容蓋回 DB 版，
@@ -277,6 +293,21 @@ export default function NotesDetailPage() {
   return (
     <div className="note-detail-page">
       <div className="note-detail__container">
+        {/* 返回上一個瀏覽的地方（瀏覽器歷史；例如從分類清單/別篇筆記/關聯跳來） */}
+        <button
+          onClick={() => router.back()}
+          className="btn-secondary"
+          title="返回上一個瀏覽的地方"
+          style={{
+            marginBottom: 'var(--spacing-3)',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 'var(--spacing-1)',
+          }}
+        >
+          ← 返回
+        </button>
+
         {/* 錯誤提示 */}
         {error && (
           <div
