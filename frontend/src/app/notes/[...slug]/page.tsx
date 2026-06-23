@@ -91,7 +91,7 @@ export default function NotesDetailPage() {
   const [isPostingComment, setIsPostingComment] = useState(false);
 
   // 標籤頁
-  const [activeTab, setActiveTab] = useState<'preview' | 'comments' | 'history' | 'backlinks'>('preview');
+  const [activeTab, setActiveTab] = useState<'preview' | 'comments' | 'history' | 'backlinks' | 'links'>('preview');
 
   // 共用「復原 / 重做」：手繪塗鴉與畫重點共用同一條 Ctrl+Z 堆疊，僅在預覽分頁掛上單一鍵盤監聽。
   useUndoHotkeys(activeTab === 'preview');
@@ -293,26 +293,65 @@ export default function NotesDetailPage() {
   return (
     <div className="note-detail-page">
       <div className="note-detail__container">
-        {/* 返回上一個瀏覽的地方（瀏覽器歷史）。置頂（sticky）不隨內文捲走。 */}
+        {/* 置頂工具列（sticky，不隨內文捲走）：返回 + 標題 + 編輯 / 匯出 PDF / 刪除，同一行。 */}
         <div
           style={{
             position: 'sticky',
             top: 0,
             zIndex: 30,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 'var(--spacing-3)',
             marginBottom: 'var(--spacing-3)',
             paddingTop: 'var(--spacing-2)',
             paddingBottom: 'var(--spacing-2)',
             background: 'var(--bg-canvas)',
+            borderBottom: '1px solid var(--border-default)',
           }}
         >
           <button
             onClick={() => router.back()}
             className="btn-secondary"
             title="返回上一個瀏覽的地方"
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--spacing-1)' }}
+            style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 'var(--spacing-1)' }}
           >
             ← 返回
           </button>
+          <h1
+            style={{
+              margin: 0,
+              flex: 1,
+              minWidth: 0,
+              fontSize: 'var(--text-xl)',
+              fontWeight: 700,
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
+            title={note.title}
+          >
+            {note.title}
+          </h1>
+          <div style={{ display: 'flex', gap: 'var(--spacing-2)', flexShrink: 0 }}>
+            <button
+              onClick={() => {
+                setEditTitle(note.title);
+                setEditContent(note.contentRaw);
+                setEditCatIds((note.categories ?? []).map((c) => c.id));
+                setEditTagIds((note.tags ?? []).map((t) => t.id));
+                setIsEditing(true);
+              }}
+              className="btn-primary"
+            >
+              ✏️ 編輯
+            </button>
+            <button onClick={handleExportPdf} className="btn-secondary" title="以瀏覽器列印（可另存為 PDF）">
+              📄 匯出 PDF
+            </button>
+            <button onClick={handleDelete} className="btn-danger">
+              🗑️ 刪除
+            </button>
+          </div>
         </div>
 
         {/* 錯誤提示 */}
@@ -331,10 +370,7 @@ export default function NotesDetailPage() {
           </div>
         )}
 
-        {/* 關聯列：此筆記關聯的任務/子任務/節點，可搜尋既有項目來關聯（點任務→回到當天行事曆） */}
-        <div style={{ marginBottom: 'var(--spacing-4)' }}>
-          <LinkedEntitiesBar type="note" id={note.id} sourceTitle={note.title} />
-        </div>
+        {/* 關聯內容已移到下方「關聯」分頁（見標籤頁） */}
 
         {/* 編輯模式 */}
         {isEditing ? (
@@ -483,61 +519,18 @@ export default function NotesDetailPage() {
         ) : (
           /* 查看模式 */
           <>
-            {/* 筆記頭：標題與「編輯／設為草稿／刪除」同行 */}
-            <div style={{ marginBottom: 'var(--spacing-6)' }}>
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'flex-start',
-                  gap: 'var(--spacing-3)',
-                }}
-              >
-                <h1
-                  style={{
-                    margin: 0,
-                    fontSize: 'var(--text-3xl)',
-                    fontWeight: 700,
-                    flex: 1,
-                    minWidth: 0,
-                  }}
-                >
-                  {note.title}
-                </h1>
-                <div style={{ display: 'flex', gap: 'var(--spacing-2)', flexShrink: 0 }}>
-                  <button
-                    onClick={() => {
-                      // 進入編輯前以目前筆記內容重設各編輯欄位（含分類/標籤）。
-                      setEditTitle(note.title);
-                      setEditContent(note.contentRaw);
-                      setEditCatIds((note.categories ?? []).map((c) => c.id));
-                      setEditTagIds((note.tags ?? []).map((t) => t.id));
-                      setIsEditing(true);
-                    }}
-                    className="btn-primary"
-                  >
-                    ✏️ 編輯
-                  </button>
-                  <button onClick={handleExportPdf} className="btn-secondary" title="以瀏覽器列印（可另存為 PDF）">
-                    📄 匯出 PDF
-                  </button>
-                  <button onClick={handleDelete} className="btn-danger">
-                    🗑️ 刪除
-                  </button>
-                </div>
-              </div>
-              <div
-                style={{
-                  marginTop: 'var(--spacing-3)',
-                  display: 'flex',
-                  gap: 'var(--spacing-4)',
-                  fontSize: 'var(--text-sm)',
-                  color: 'var(--text-secondary)',
-                }}
-              >
-                <span>建立：{formatNoteFullDateTime(note.createdDateTime)}</span>
-                <span>更新：{formatNoteFullDateTime(note.updatedDateTime)}</span>
-              </div>
+            {/* 建立／更新時間（標題與動作鈕已移至上方置頂工具列） */}
+            <div
+              style={{
+                marginBottom: 'var(--spacing-5)',
+                display: 'flex',
+                gap: 'var(--spacing-4)',
+                fontSize: 'var(--text-sm)',
+                color: 'var(--text-secondary)',
+              }}
+            >
+              <span>建立：{formatNoteFullDateTime(note.createdDateTime)}</span>
+              <span>更新：{formatNoteFullDateTime(note.updatedDateTime)}</span>
             </div>
 
             {/* 標籤頁 */}
@@ -634,7 +627,33 @@ export default function NotesDetailPage() {
               >
                 🔗 反向連結
               </button>
+              <button
+                onClick={() => setActiveTab('links')}
+                style={{
+                  padding: 'var(--spacing-2) var(--spacing-4)',
+                  border: 'none',
+                  background: 'transparent',
+                  cursor: 'pointer',
+                  borderBottom:
+                    activeTab === 'links'
+                      ? '2px solid var(--action-primary-bg)'
+                      : '2px solid transparent',
+                  color:
+                    activeTab === 'links' ? 'var(--action-primary-bg)' : 'var(--text-secondary)',
+                  fontWeight: activeTab === 'links' ? 600 : 400,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                🧷 關聯
+              </button>
             </div>
+
+            {/* 關聯分頁：此筆記關聯的任務/子任務/節點，可搜尋既有項目來關聯（點任務→回到當天行事曆） */}
+            {activeTab === 'links' && (
+              <div>
+                <LinkedEntitiesBar type="note" id={note.id} sourceTitle={note.title} />
+              </div>
+            )}
 
             {/* 預覽標籤：框選文字畫重點/做關聯/寫備註（NoteMarksLayer）＋ 浮層便利貼/塗鴉/輪播（NoteOverlay，疊最上層） */}
             {activeTab === 'preview' && (

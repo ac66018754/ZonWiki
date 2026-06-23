@@ -73,6 +73,18 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
 
   useEffect(() => setMounted(true), []);
 
+  // 畫筆色盤：點空白處（色盤與色票鈕以外）才關閉，方便連續調色。
+  useEffect(() => {
+    if (!showPenColor) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t?.closest('[data-overlay-colorpop]') || t?.closest('[data-overlay-colorbtn]')) return;
+      setShowPenColor(false);
+    };
+    document.addEventListener('mousedown', onDown, true);
+    return () => document.removeEventListener('mousedown', onDown, true);
+  }, [showPenColor]);
+
   useEffect(() => {
     let alive = true;
     listNoteOverlay(noteId).then((list) => {
@@ -566,6 +578,7 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
                 title="畫筆顏色"
                 onClick={() => setShowPenColor((v) => !v)}
                 data-testid="overlay-pen-color"
+                data-overlay-colorbtn
                 style={{ width: 18, height: 18, flexShrink: 0, borderRadius: '50%', background: penColor, border: '1px solid var(--border-strong, #999)', cursor: 'pointer' }}
               />
             )}
@@ -611,14 +624,18 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
           </div>
 
           {showPenColor && isPenTool && (
-            <div style={{
-              width: 220, background: 'var(--bg-surface)', border: '1px solid var(--border-default)',
-              borderRadius: 'var(--radius-md)', boxShadow: 'var(--shadow-lg)', padding: 8,
-            }}>
+            <div
+              data-overlay-colorpop
+              style={{
+                width: 220, background: 'var(--bg-surface)', border: '1px solid var(--border-default)',
+                borderRadius: 'var(--radius-md)', boxShadow: 'var(--shadow-lg)', padding: 8,
+              }}
+            >
+              {/* 選色後不關閉色盤（連續調色）；點空白處才關 */}
               <ColorPickerInline
                 initial={penColor}
                 onChange={(hex) => changePenColor(hex)}
-                onPick={(hex) => { changePenColor(hex); setShowPenColor(false); }}
+                onPick={(hex) => changePenColor(hex)}
               />
             </div>
           )}

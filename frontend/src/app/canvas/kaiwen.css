@@ -317,14 +317,9 @@ html[data-theme='night'],
   box-shadow: 0 0 0 2px var(--kw-ring);
 }
 
-.react-flow__edge {
-  stroke: var(--kw-edge);
-  stroke-width: 2;
-}
-
-.react-flow__edge.selected {
-  stroke: var(--kw-ring);
-}
+/* 連線樣式一律交給 DeletableEdge 元件（內聯設定描邊），與原版開問啦一致。
+   不要在此加 .react-flow__edge / .react-flow__edge.selected 全域描邊——
+   它會把 React Flow「選取時」連同那條很寬的隱形互動路徑一起染色，產生一條醜醜的寬高亮帶。 */
 
 /* 右下角縮圖地圖：套主題色（預設淺色在暗色畫布上很突兀），節點與遮罩皆隨主題。
    移植自原版開問啦 index.css，修正「小地圖在暗色主題仍是白色」的問題。 */
