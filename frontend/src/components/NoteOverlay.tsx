@@ -492,7 +492,7 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
               }}
             >
               <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)' }}>
-                {item.kind === 'sticky' ? '便利貼' : '輪播'}
+                {item.kind === 'sticky' ? '便利貼' : '圖片板'}
               </span>
               <button
                 onClick={() => remove(item.id)}
@@ -517,10 +517,6 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
                   const json = JSON.stringify(imgs);
                   patchLocal(item.id, { dataJson: json });
                   persist(item.id, { dataJson: json });
-                }}
-                onResize={(w, h) => {
-                  patchLocal(item.id, { width: w, height: h });
-                  persist(item.id, { width: w, height: h });
                 }}
               />
             )}
@@ -555,7 +551,7 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
             borderRadius: 'var(--radius-md)', padding: 4, boxShadow: 'var(--shadow-md)', maxWidth: 380,
           }}>
             <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={addSticky} title="新增便利貼" data-testid="overlay-add-sticky">＋便利貼</button>
-            <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={addSlide} title="新增圖片輪播" data-testid="overlay-add-slide">＋輪播</button>
+            <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={addSlide} title="新增圖片板（可放多張圖、手動切換）" data-testid="overlay-add-slide">＋圖片板</button>
             {/* 繪圖工具：點同一鈕可再關閉 */}
             {([
               ['pen', '✏️', '自由筆'],
@@ -726,22 +722,22 @@ function StickyBody({
   );
 }
 
-/** 圖片輪播內容。 */
+/**
+ * 圖片板內容：固定大小（可手動拖曳調整）、可放多張圖片、手動切換（不自動輪播）。
+ * 框不會自適應圖片——由使用者決定框的大小，圖片以 contain 顯示。
+ */
 function SlideBody({
-  item, onImagesChange, onResize,
+  item, onImagesChange,
 }: {
   item: NoteOverlayItem;
   onImagesChange: (imgs: string[]) => void;
-  /** 依圖片實際比例調整輪播框高度（讓框適應圖片，不留黑邊）。 */
-  onResize: (width: number, height: number) => void;
 }) {
   const images: string[] = item.dataJson ? safeParse<string[]>(item.dataJson, []) : [];
   const [idx, setIdx] = useState(0);
   const [url, setUrl] = useState('');
-  const [adding, setAdding] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  /** 直接上傳/貼上圖片：讀成 data URL 後加入輪播（不需網址）。 */
+  /** 直接上傳/貼上圖片：讀成 data URL 後加入圖片板（不需網址）。 */
   const addImageFile = (file: File) => {
     if (!file.type.startsWith('image/')) return;
     const reader = new FileReader();
@@ -753,12 +749,6 @@ function SlideBody({
     };
     reader.readAsDataURL(file);
   };
-
-  useEffect(() => {
-    if (images.length <= 1 || adding) return;
-    const t = window.setInterval(() => setIdx((i) => (i + 1) % images.length), 3000);
-    return () => window.clearInterval(t);
-  }, [images.length, adding]);
 
   const safeIdx = images.length ? idx % images.length : 0;
 
@@ -782,17 +772,8 @@ function SlideBody({
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={images[safeIdx]}
-            alt={`slide-${safeIdx}`}
+            alt={`board-${safeIdx}`}
             style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
-            onLoad={(e) => {
-              // 依圖片實際比例調整輪播框高度，讓框「適應圖片大小」、不留黑邊。
-              const img = e.currentTarget;
-              if (!img.naturalWidth || !img.naturalHeight) return;
-              const CHROME = 52; // 標題列 + 控制列約略高度
-              const desired = Math.round(item.width * (img.naturalHeight / img.naturalWidth)) + CHROME;
-              const clamped = Math.max(120, Math.min(700, desired));
-              if (Math.abs(clamped - item.height) > 4) onResize(item.width, clamped);
-            }}
           />
         )}
         {images.length > 1 && (
@@ -827,8 +808,6 @@ function SlideBody({
         <input
           value={url}
           onChange={(e) => setUrl(e.target.value)}
-          onFocus={() => setAdding(true)}
-          onBlur={() => setAdding(false)}
           onPaste={(e) => {
             const item = Array.from(e.clipboardData?.items ?? []).find((it) => it.type.startsWith('image/'));
             const f = item?.getAsFile();
