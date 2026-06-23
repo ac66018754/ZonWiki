@@ -431,8 +431,8 @@ function CanvasInner({
       // 祖先脈絡＋框選文字組 Prompt）。舊版誤接 askFollowup，會丟失框選脈絡且不產生連線。
       onAskInline: (text, start, end, prefix, suffix, question) =>
         actions.askInlineLink(node.Node_Id, text, start, end, prefix, suffix, question, childPosition(node.Node_Id)),
-      onHighlight: (text, start, end, prefix, suffix, color) =>
-        actions.createHighlight({
+      onHighlight: async (text, start, end, prefix, suffix, color) => {
+        const created = await actions.createHighlight({
           nodeId: node.Node_Id,
           anchorText: text,
           start,
@@ -440,7 +440,10 @@ function CanvasInner({
           anchorPrefix: prefix,
           anchorSuffix: suffix,
           color,
-        }),
+        })
+        return created?.Highlight_Id ?? null
+      },
+      onUpdateHighlight: (highlightId, color) => actions.updateHighlight(highlightId, color),
       onLinkToNode: (text, start, end, prefix, suffix, targetNodeId) =>
         actions.createInlineLink({
           sourceNodeId: node.Node_Id,

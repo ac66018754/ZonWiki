@@ -172,6 +172,9 @@ export const kaiwenApi = {
     }
   ) => http<HighlightDto>('POST', `/nodes/${encodeURIComponent(nodeId)}/highlights`, body),
 
+  updateHighlight: (highlightId: string, color: string) =>
+    http<HighlightDto>('PATCH', `/highlights/${encodeURIComponent(highlightId)}`, { Color: color }),
+
   deleteHighlight: (highlightId: string) =>
     http<unknown>('DELETE', `/highlights/${encodeURIComponent(highlightId)}`),
 

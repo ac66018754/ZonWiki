@@ -139,6 +139,12 @@ public static class KaiWenCanvasEndpoints
             .Produces<ApiResponse<HighlightDto>>(StatusCodes.Status201Created)
             .Produces<ApiResponse<object>>(StatusCodes.Status404NotFound);
 
+        group.MapPatch("/highlights/{highlightId}", UpdateHighlight)
+            .WithName("UpdateHighlight")
+            .WithOpenApi()
+            .Produces<ApiResponse<HighlightDto>>(StatusCodes.Status200OK)
+            .Produces<ApiResponse<object>>(StatusCodes.Status404NotFound);
+
         group.MapDelete("/highlights/{highlightId}", DeleteHighlight)
             .WithName("DeleteHighlight")
             .WithOpenApi()
@@ -1648,6 +1654,60 @@ public static class KaiWenCanvasEndpoints
             highlight.Detached);
 
         return CanvasJsonHelper.JsonOk(ApiResponse<HighlightDto>.Ok(dto), StatusCodes.Status201Created);
+    }
+
+    /// <summary>
+    /// 更新重點顏色（供「畫重點後不滿意，直接在工具面板改色」即時調整）。
+    /// </summary>
+    private static async Task<IResult> UpdateHighlight(
+        string highlightId,
+        ICurrentUser currentUser,
+        ZonWikiDbContext db,
+        UpdateHighlightRequest req,
+        CancellationToken ct)
+    {
+        if (currentUser.UserId == Guid.Empty)
+        {
+            return CanvasJsonHelper.JsonError(
+                ApiResponse<HighlightDto>.Fail("Authentication required", 401),
+                StatusCodes.Status401Unauthorized);
+        }
+
+        if (!Guid.TryParse(highlightId, out var highlightGuid))
+        {
+            return CanvasJsonHelper.JsonError(ApiResponse<HighlightDto>.Fail("Invalid highlight ID"), StatusCodes.Status400BadRequest);
+        }
+
+        if (string.IsNullOrWhiteSpace(req.Color))
+        {
+            return CanvasJsonHelper.JsonError(ApiResponse<HighlightDto>.Fail("Color is required"), StatusCodes.Status400BadRequest);
+        }
+
+        // 經節點所屬畫布驗證擁有者（與 DeleteHighlight 相同隔離方式）。
+        var highlight = await db.Highlight
+            .Where(h => db.Node.Where(n => n.Canvas != null && n.Canvas.UserId == currentUser.UserId).Select(n => n.Id).Contains(h.NodeId))
+            .FirstOrDefaultAsync(h => h.Id == highlightGuid, ct);
+
+        if (highlight is null)
+        {
+            return CanvasJsonHelper.JsonError(ApiResponse<HighlightDto>.Fail("Highlight not found", 404), StatusCodes.Status404NotFound);
+        }
+
+        highlight.Color = req.Color;
+        await db.SaveChangesAsync(ct);
+
+        var dto = new HighlightDto(
+            highlight.Id.ToString(),
+            highlight.NodeId.ToString(),
+            highlight.AnchorText,
+            highlight.Start,
+            highlight.End,
+            highlight.AnchorPrefix,
+            highlight.AnchorSuffix,
+            highlight.Color,
+            highlight.Detached);
+
+        return CanvasJsonHelper.JsonOk(ApiResponse<HighlightDto>.Ok(dto), StatusCodes.Status200OK);
     }
 
     /// <summary>

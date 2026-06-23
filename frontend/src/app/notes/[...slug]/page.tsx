@@ -837,7 +837,10 @@ export default function NotesDetailPage() {
           text-decoration: underline;
         }
 
-        .markdown-prose code {
+        /* 只套用到「行內程式碼」（直接父層不是 pre）。
+           否則這個 inline 樣式（背景＋padding）會落到區塊程式碼的 <code> 上，
+           讓多行內容每一行各自出現一塊灰底（看起來變成一行一行的）。區塊程式碼樣式見 globals.css。 */
+        .markdown-prose :not(pre) > code {
           background: var(--code-bg);
           padding: 2px 6px;
           border-radius: var(--radius-sm);
@@ -845,30 +848,8 @@ export default function NotesDetailPage() {
           font-size: 0.9em;
         }
 
-        .markdown-prose pre {
-          position: relative;
-          background: var(--code-bg);
-          border: 1px solid var(--border-strong, var(--border-default));
-          border-left: 4px solid var(--action-primary-bg);
-          padding: var(--spacing-4);
-          padding-top: calc(var(--spacing-4) + 4px);
-          border-radius: var(--radius-md);
-          box-shadow: var(--shadow-sm);
-          overflow-x: auto;
-          margin: var(--spacing-4) 0;
-        }
-
-        .markdown-prose pre code {
-          display: block;
-          background: transparent;
-          padding: 0;
-          font-family: var(--font-mono);
-          font-size: 0.9em;
-          /* 長行自動換行（依需求要有換行），而非只能水平捲動 */
-          white-space: pre-wrap;
-          word-break: break-word;
-          overflow-wrap: anywhere;
-        }
+        /* 程式碼區塊（pre / pre code）樣式改由 globals.css 全域定義，
+           以確保套用到「以 HTML 注入」的內容、且在所有主題都醒目（見 .markdown-prose pre）。 */
 
         .markdown-prose ul,
         .markdown-prose ol {

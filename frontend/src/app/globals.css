@@ -883,7 +883,9 @@ html[data-route="login"] .main-content {
 .md-preview pre,
 .markdown-prose pre {
   position: relative;
-  background: var(--code-bg);
+  /* 用 surface-secondary 當底（各主題都與筆記表面 bg-surface 有差異），
+     不要用 --code-bg——它在 明亮/暗色/夜間 幾乎等於表面色，會讓區塊看不出來。 */
+  background: var(--bg-surface-secondary);
   border: 1px solid var(--border-strong, var(--border-default));
   border-left: 4px solid var(--action-primary-bg);
   border-radius: var(--radius-md);

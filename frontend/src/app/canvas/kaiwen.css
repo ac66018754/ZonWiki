@@ -570,3 +570,27 @@ html[data-theme='night'],
   margin-top: 0.25rem;
   padding-top: 0.25rem;
 }
+
+/* ──────────────────────────────────────────────────────────────
+   節點內文「行內連結」(InlineLink) 的可見樣式
+   先前未定義，導致沒畫重點的連結文字看不出來（只能在右側抽屜看到）。
+   現在以「顏色 + 波浪底線」標示，滑入有淡底；失效連結改虛線灰色。
+   ────────────────────────────────────────────────────────────── */
+.kw-inline-link {
+  color: var(--kw-primary);
+  text-decoration: underline;
+  text-decoration-style: wavy;
+  text-decoration-color: var(--kw-primary);
+  text-underline-offset: 2px;
+  cursor: pointer;
+  border-radius: 2px;
+}
+.kw-inline-link:hover {
+  background: var(--kw-primary-soft-bg);
+}
+.kw-inline-link-detached {
+  color: var(--kw-muted);
+  text-decoration-style: dotted;
+  text-decoration-color: var(--kw-muted);
+  cursor: not-allowed;
+}

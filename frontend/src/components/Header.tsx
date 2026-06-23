@@ -17,6 +17,7 @@ import {
   loadShortcutOverrides,
   SHORTCUTS_UPDATED_EVENT,
 } from "@/lib/shortcuts";
+import { THEME_CHANGED_EVENT } from "@/components/ShortcutRuntime";
 
 /**
  * Header 元件
@@ -75,25 +76,6 @@ export function Header({ user }: { user: CurrentUser | null }) {
     document.documentElement.setAttribute("data-theme", newTheme);
   };
 
-  // 判斷某主題是否屬於「暗色系」（dark / night）。
-  const isDarkTheme = (t: string) => t === "dark" || t === "night";
-
-  // 亮／暗快速切換：在「亮色系」與「暗色系」之間切換，並記住各系最後選擇的主題，
-  // 讓使用 暖紙 的人切到暗色再切回時仍回到暖紙（而非固定的 light）。
-  const toggleLightDark = () => {
-    if (isDarkTheme(theme)) {
-      localStorage.setItem("zonwiki:lastDarkTheme", theme);
-      const next =
-        (localStorage.getItem("zonwiki:lastLightTheme") as typeof theme) || "warmpaper";
-      handleThemeChange(next);
-    } else {
-      localStorage.setItem("zonwiki:lastLightTheme", theme);
-      const next =
-        (localStorage.getItem("zonwiki:lastDarkTheme") as typeof theme) || "dark";
-      handleThemeChange(next);
-    }
-  };
-
   // 切換「顯示快捷鍵提示」並持久化。
   const toggleHints = () => {
     setShowHints((prev) => {
@@ -148,7 +130,7 @@ export function Header({ user }: { user: CurrentUser | null }) {
     window.location.href = "/login";
   };
 
-  // 在掛載時應用保存的主題
+  // 在掛載時應用保存的主題，並監聽「主題已由快捷鍵切換」事件以同步顯示（V 鍵循環主題）。
   useEffect(() => {
     const stored = localStorage.getItem("zonwiki:theme") as
       | "warmpaper"
@@ -159,6 +141,15 @@ export function Header({ user }: { user: CurrentUser | null }) {
     const themeToApply = stored || "warmpaper";
     document.documentElement.setAttribute("data-theme", themeToApply);
     setTheme(themeToApply);
+
+    const onThemeChanged = (e: Event) => {
+      const next = (e as CustomEvent<{ theme?: string }>).detail?.theme;
+      if (next === "warmpaper" || next === "light" || next === "dark" || next === "night") {
+        setTheme(next);
+      }
+    };
+    window.addEventListener(THEME_CHANGED_EVENT, onThemeChanged);
+    return () => window.removeEventListener(THEME_CHANGED_EVENT, onThemeChanged);
   }, []);
 
   // 帳號選單：點外部自動關閉
@@ -249,16 +240,6 @@ export function Header({ user }: { user: CurrentUser | null }) {
         <Link href="/trash" className="icon-btn hide-mobile" title="垃圾桶" aria-label="垃圾桶">
           🗑️
         </Link>
-
-        {/* 亮／暗快速切換：一鍵在亮色系與暗色系之間切換（保留 4 主題下拉做完整選擇） */}
-        <button
-          className="icon-btn"
-          title={isDarkTheme(theme) ? "切換為亮色模式" : "切換為暗色模式"}
-          aria-label="亮暗模式快速切換"
-          onClick={toggleLightDark}
-        >
-          {isDarkTheme(theme) ? "☀️" : "🌙"}
-        </button>
 
         {/* 主題切換 */}
         <div ref={themeMenuRef} style={{ position: "relative", display: "inline-block" }}>

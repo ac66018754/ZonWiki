@@ -232,6 +232,12 @@ public sealed record CreateHighlightRequest(
     string Color);
 
 /// <summary>
+/// 更新重點顏色的請求（供「畫重點後即時改色」）。
+/// </summary>
+/// <param name="Color">新的顏色（hex）。</param>
+public sealed record UpdateHighlightRequest(string Color);
+
+/// <summary>
 /// 節點修訂（版本）資料傳輸物件。
 /// </summary>
 /// <param name="NodeRevision_Id">修訂識別碼。</param>

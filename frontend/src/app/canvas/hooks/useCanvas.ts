@@ -140,6 +140,11 @@ export interface CanvasActions {
   }) => Promise<HighlightDto | null>
 
   /**
+   * 更新高亮顏色（畫重點後即時改色，不必刪除重畫）
+   */
+  updateHighlight: (highlightId: string, color: string) => Promise<void>
+
+  /**
    * 刪除高亮
    */
   deleteHighlight: (highlightId: string) => Promise<void>
@@ -709,6 +714,20 @@ export function useCanvas(
         const message = err instanceof Error ? err.message : '無法畫重點'
         setError(message)
         return null
+      }
+    },
+
+    updateHighlight: async (highlightId: string, color: string) => {
+      // 樂觀更新顏色（即時可見）；失敗則回報錯誤。後端 PATCH /highlights/{id}。
+      setHighlights((prev) =>
+        prev.map((h) => (h.Highlight_Id === highlightId ? { ...h, Highlight_Color: color } : h))
+      )
+      try {
+        await kaiwenApi.updateHighlight(highlightId, color)
+        setError(null)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : '無法更新重點顏色'
+        setError(message)
       }
     },
 

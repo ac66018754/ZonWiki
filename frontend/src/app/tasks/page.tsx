@@ -151,10 +151,6 @@ export default function TasksPage() {
           setView("calendar");
           setCalendarView("day");
           break;
-        case "cycleView":
-          // 清單 → 看板 → 行事曆 → 清單 循環
-          setView((v) => (v === "list" ? "board" : v === "board" ? "calendar" : "list"));
-          break;
         case "newTodo":
           // 彈出「新增任務」表單（不預填時間，純快速新增）
           setQuickCreateInitial({ plannedDateTime: null, dueDateTime: null });
