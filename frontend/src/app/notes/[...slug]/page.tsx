@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { enhanceCodeBlocks } from '@/lib/codeBlocks';
@@ -101,12 +101,20 @@ export default function NotesDetailPage() {
     return () => resetUndo();
   }, [note?.id]);
 
-  // 為閱讀檢視中的程式碼區塊注入「一鍵複製」按鈕（內容為注入 HTML，故以 DOM 後處理）。
-  // 內容（contentHtml）或分頁變更後重跑；已處理的區塊有 data-cb 標記不會重複加。
-  useEffect(() => {
-    if (activeTab !== 'preview' || !previewRef.current) return;
-    enhanceCodeBlocks(previewRef.current);
-  }, [activeTab, note?.contentHtml]);
+  // 預覽容器的 callback ref：掛載當下就為程式碼區塊注入「複製」鈕，並以 MutationObserver
+  // 持續處理之後才出現/重繪的區塊（取代原本相依 previewRef 時序的 useEffect——實測它不一定跑到）。
+  // 同時把 node 存回 previewRef，供 NoteMarksLayer / NoteOverlay 使用。
+  const previewObsRef = useRef<MutationObserver | null>(null);
+  const setPreviewNode = useCallback((node: HTMLDivElement | null) => {
+    previewRef.current = node;
+    previewObsRef.current?.disconnect();
+    previewObsRef.current = null;
+    if (!node) return;
+    enhanceCodeBlocks(node);
+    const obs = new MutationObserver(() => enhanceCodeBlocks(node));
+    obs.observe(node, { childList: true, subtree: true });
+    previewObsRef.current = obs;
+  }, []);
 
   // 把「目前筆記所屬分類」廣播給左側欄，讓它標示「📍 此筆記在這」（避免迷路）。
   // 用分類 id 串接當相依，分類載入/切換筆記時更新；離開時清空。
@@ -651,6 +659,22 @@ export default function NotesDetailPage() {
             {/* 關聯分頁：此筆記關聯的任務/子任務/節點，可搜尋既有項目來關聯（點任務→回到當天行事曆） */}
             {activeTab === 'links' && (
               <div>
+                <div
+                  style={{
+                    marginBottom: 'var(--spacing-3)',
+                    padding: 'var(--spacing-3)',
+                    background: 'var(--bg-surface-secondary, var(--bg-surface))',
+                    border: '1px solid var(--border-default)',
+                    borderRadius: 'var(--radius-md)',
+                    fontSize: 'var(--text-sm)',
+                    color: 'var(--text-secondary)',
+                    lineHeight: 'var(--line-height-normal)',
+                  }}
+                >
+                  <strong style={{ color: 'var(--text-primary)' }}>🧷 關聯</strong>
+                  ＝你<strong>手動</strong>把這篇筆記綁到其他「任務 / 開問啦節點 / 其他筆記」，
+                  兩邊都看得到、可互相點擊跳轉。用下方「＋關聯」搜尋並加入既有項目即可。
+                </div>
                 <LinkedEntitiesBar type="note" id={note.id} sourceTitle={note.title} />
               </div>
             )}
@@ -659,7 +683,7 @@ export default function NotesDetailPage() {
             {activeTab === 'preview' && (
               <div style={{ position: 'relative' }}>
                 <div
-                  ref={previewRef}
+                  ref={setPreviewNode}
                   className="markdown-prose"
                   style={{
                     background: 'var(--bg-surface)',
@@ -816,14 +840,32 @@ export default function NotesDetailPage() {
 
             {/* 反向連結標籤 */}
             {activeTab === 'backlinks' && (
-              <div
-                style={{
-                  background: 'var(--bg-surface)',
-                  borderRadius: 'var(--radius-lg)',
-                  border: '1px solid var(--border-default)',
-                }}
-              >
-                <NoteBacklinks noteId={note.id} />
+              <div>
+                <div
+                  style={{
+                    marginBottom: 'var(--spacing-3)',
+                    padding: 'var(--spacing-3)',
+                    background: 'var(--bg-surface-secondary, var(--bg-surface))',
+                    border: '1px solid var(--border-default)',
+                    borderRadius: 'var(--radius-md)',
+                    fontSize: 'var(--text-sm)',
+                    color: 'var(--text-secondary)',
+                    lineHeight: 'var(--line-height-normal)',
+                  }}
+                >
+                  <strong style={{ color: 'var(--text-primary)' }}>🔗 反向連結</strong>
+                  ＝系統<strong>自動</strong>偵測「哪些<strong>其他筆記</strong>用 <code>[[本篇標題]]</code> 連到這篇」。
+                  你不用手動建立——只要在別的筆記內文寫 <code>[[{note.title}]]</code>，那篇就會出現在這裡。
+                </div>
+                <div
+                  style={{
+                    background: 'var(--bg-surface)',
+                    borderRadius: 'var(--radius-lg)',
+                    border: '1px solid var(--border-default)',
+                  }}
+                >
+                  <NoteBacklinks noteId={note.id} />
+                </div>
               </div>
             )}
 
@@ -844,8 +886,12 @@ export default function NotesDetailPage() {
       </div>
 
       <style jsx>{`
+        /* 讓本頁自己成為「固定高度的捲動容器」，而非整頁(body)捲動——
+           否則上方 sticky 工具列因為祖先(main-content)雖有 overflow:auto 卻不真的捲動，
+           sticky 便失效、會被一起捲走。高度扣掉全站固定標題列(--header-height)。 */
         .note-detail-page {
           width: 100%;
+          height: calc(100vh - var(--header-height));
           overflow-y: auto;
         }
 
