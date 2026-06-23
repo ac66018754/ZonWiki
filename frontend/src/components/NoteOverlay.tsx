@@ -518,6 +518,10 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
                   patchLocal(item.id, { dataJson: json });
                   persist(item.id, { dataJson: json });
                 }}
+                onResize={(w, h) => {
+                  patchLocal(item.id, { width: w, height: h });
+                  persist(item.id, { width: w, height: h });
+                }}
               />
             )}
 
@@ -724,10 +728,12 @@ function StickyBody({
 
 /** 圖片輪播內容。 */
 function SlideBody({
-  item, onImagesChange,
+  item, onImagesChange, onResize,
 }: {
   item: NoteOverlayItem;
   onImagesChange: (imgs: string[]) => void;
+  /** 依圖片實際比例調整輪播框高度（讓框適應圖片，不留黑邊）。 */
+  onResize: (width: number, height: number) => void;
 }) {
   const images: string[] = item.dataJson ? safeParse<string[]>(item.dataJson, []) : [];
   const [idx, setIdx] = useState(0);
@@ -758,7 +764,7 @@ function SlideBody({
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-      <div style={{ flex: 1, position: 'relative', minHeight: 0, background: '#000', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ flex: 1, position: 'relative', minHeight: 0, background: 'var(--bg-surface-secondary, #1118)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         {images.length === 0 ? (
           <span
             style={{ color: '#aaa', fontSize: 'var(--text-xs)', textAlign: 'center', cursor: 'pointer', padding: '0 8px' }}
@@ -774,7 +780,20 @@ function SlideBody({
           </span>
         ) : (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={images[safeIdx]} alt={`slide-${safeIdx}`} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
+          <img
+            src={images[safeIdx]}
+            alt={`slide-${safeIdx}`}
+            style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
+            onLoad={(e) => {
+              // 依圖片實際比例調整輪播框高度，讓框「適應圖片大小」、不留黑邊。
+              const img = e.currentTarget;
+              if (!img.naturalWidth || !img.naturalHeight) return;
+              const CHROME = 52; // 標題列 + 控制列約略高度
+              const desired = Math.round(item.width * (img.naturalHeight / img.naturalWidth)) + CHROME;
+              const clamped = Math.max(120, Math.min(700, desired));
+              if (Math.abs(clamped - item.height) > 4) onResize(item.width, clamped);
+            }}
+          />
         )}
         {images.length > 1 && (
           <>
