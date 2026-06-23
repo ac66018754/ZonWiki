@@ -293,20 +293,27 @@ export default function NotesDetailPage() {
   return (
     <div className="note-detail-page">
       <div className="note-detail__container">
-        {/* 返回上一個瀏覽的地方（瀏覽器歷史；例如從分類清單/別篇筆記/關聯跳來） */}
-        <button
-          onClick={() => router.back()}
-          className="btn-secondary"
-          title="返回上一個瀏覽的地方"
+        {/* 返回上一個瀏覽的地方（瀏覽器歷史）。置頂（sticky）不隨內文捲走。 */}
+        <div
           style={{
+            position: 'sticky',
+            top: 0,
+            zIndex: 30,
             marginBottom: 'var(--spacing-3)',
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 'var(--spacing-1)',
+            paddingTop: 'var(--spacing-2)',
+            paddingBottom: 'var(--spacing-2)',
+            background: 'var(--bg-canvas)',
           }}
         >
-          ← 返回
-        </button>
+          <button
+            onClick={() => router.back()}
+            className="btn-secondary"
+            title="返回上一個瀏覽的地方"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--spacing-1)' }}
+          >
+            ← 返回
+          </button>
+        </div>
 
         {/* 錯誤提示 */}
         {error && (

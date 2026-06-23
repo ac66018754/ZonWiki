@@ -547,8 +547,10 @@ public sealed class AskOrchestrator
             TargetNodeId = targetNodeId,
             Kind = "default",
             Label = string.Empty,
-            SourceHandle = null,
-            TargetHandle = null,
+            // 接點：父節點底部（b）→ 子節點頂部（t），讓父子連線往下走、較順眼
+            // （取代過去 null 接點被自動接到節點上緣、線往上繞的醜樣）。
+            SourceHandle = "b",
+            TargetHandle = "t",
             DataJson = "{}",
         };
 

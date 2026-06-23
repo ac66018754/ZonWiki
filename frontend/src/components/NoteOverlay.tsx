@@ -26,7 +26,7 @@ export const NOTE_ASK_STICKY_EVENT = 'zonwiki:note-ask-sticky';
  * 繪圖工具。null＝不繪圖（一般互動：可選文字、拖便利貼）。
  * erase-stroke＝整筆刪除（點一筆即刪整筆）；erase-area＝局部擦除（擦到哪、那裏消失）。
  */
-type DrawTool = 'pen' | 'line' | 'rect' | 'ellipse' | 'erase-stroke' | 'erase-area' | null;
+type DrawTool = 'pen' | 'line' | 'rect' | 'ellipse' | 'erase-stroke' | 'erase-area' | 'erase-box' | null;
 
 /** 一個繪圖形狀。free＝多點折線；line/rect/ellipse＝起訖兩點。 */
 interface Shape {
@@ -191,6 +191,7 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
   const shapes: Shape[] = drawing?.dataJson ? normalizeShapes(safeParse<unknown[]>(drawing.dataJson, [])) : [];
   const curShape = useRef<Shape | null>(null);
   const eraseWork = useRef<Shape[] | null>(null); // 局部擦除進行中的暫存結果
+  const eraseBox = useRef<{ x0: number; y0: number; x1: number; y1: number } | null>(null); // 框選擦除進行中的選取框
   const [, forceRerender] = useState(0);
 
   // 以 ref 持有最新狀態，避免復原 / 重做的閉包鎖死過時物件（例如尚未建立的繪圖項目）。
@@ -257,6 +258,11 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
       forceRerender((n) => n + 1);
       return;
     }
+    if (tool === 'erase-box') {
+      eraseBox.current = { x0: p[0], y0: p[1], x1: p[0], y1: p[1] };
+      forceRerender((n) => n + 1);
+      return;
+    }
     curShape.current =
       tool === 'pen'
         ? { type: 'free', color: penColor, width: penWidth, dash: penDash, points: [p] }
@@ -267,6 +273,12 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
     if (tool === 'erase-area' && eraseWork.current) {
       const p = relPoint(e);
       eraseWork.current = eraseAt(eraseWork.current, p[0], p[1], eraseRadius);
+      forceRerender((n) => n + 1);
+      return;
+    }
+    if (tool === 'erase-box' && eraseBox.current) {
+      const p = relPoint(e);
+      eraseBox.current = { ...eraseBox.current, x1: p[0], y1: p[1] };
       forceRerender((n) => n + 1);
       return;
     }
@@ -281,6 +293,23 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
       const next = eraseWork.current;
       eraseWork.current = null;
       // 只有真的擦掉東西才記錄一步（拖過空白不留下空的復原項）
+      if (JSON.stringify(next) !== JSON.stringify(shapes)) commitShapes(next);
+      else forceRerender((n) => n + 1);
+      return;
+    }
+    if (eraseBox.current) {
+      const b = eraseBox.current;
+      eraseBox.current = null;
+      const minX = Math.min(b.x0, b.x1);
+      const maxX = Math.max(b.x0, b.x1);
+      const minY = Math.min(b.y0, b.y1);
+      const maxY = Math.max(b.y0, b.y1);
+      // 太小的框視為誤點，不擦。
+      if (maxX - minX < 4 && maxY - minY < 4) {
+        forceRerender((n) => n + 1);
+        return;
+      }
+      const next = eraseInBox(shapes, minX, minY, maxX, maxY);
       if (JSON.stringify(next) !== JSON.stringify(shapes)) commitShapes(next);
       else forceRerender((n) => n + 1);
       return;
@@ -380,9 +409,6 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
       : shapes;
   const drawingActive = tool !== null;
 
-  // 是否可選取形狀做即時調整（非擦除中、非繪製中）。
-  const canSelectShape = !eraseWork.current && !curShape.current;
-
   return (
     <>
       {/* 撐高內文容器的占位元素（正常流）：讓繪圖區與便利貼/輪播可向下延伸到加高後的區域。 */}
@@ -413,9 +439,22 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
               s={s}
               erasable={tool === 'erase-stroke'}
               onErase={() => eraseShape(i)}
-              selected={canSelectShape && i === selectedShapeIdx}
             />
           ))}
+          {/* 框選擦除進行中的選取框（虛線；放開後框內內容被擦除） */}
+          {eraseBox.current && (
+            <rect
+              x={Math.min(eraseBox.current.x0, eraseBox.current.x1)}
+              y={Math.min(eraseBox.current.y0, eraseBox.current.y1)}
+              width={Math.abs(eraseBox.current.x1 - eraseBox.current.x0)}
+              height={Math.abs(eraseBox.current.y1 - eraseBox.current.y0)}
+              fill="rgba(120,120,120,0.12)"
+              stroke="var(--text-secondary, #888)"
+              strokeWidth={1}
+              strokeDasharray="5 4"
+              style={{ pointerEvents: 'none' }}
+            />
+          )}
         </svg>
 
         {/* 便利貼 / 輪播 元件（繪圖中暫不可互動，讓 SVG 捕捉） */}
@@ -509,6 +548,7 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
               ['ellipse', '◯', '橢圓'],
               ['erase-stroke', '🧹', '橡皮擦：整筆刪除（點一筆即刪整筆）'],
               ['erase-area', '🧽', '橡皮擦：局部擦除（擦到哪、那裏消失）'],
+              ['erase-box', '⬚', '橡皮擦：框選擦除（框到哪、那裏消失，同一形狀不連帶整個刪除）'],
             ] as [Exclude<DrawTool, null>, string, string][]).map(([t, icon, label]) => (
               <button
                 key={t}
@@ -605,14 +645,13 @@ function renderShapeWith(
   return <ellipse cx={(a[0] + b[0]) / 2} cy={(a[1] + b[1]) / 2} rx={Math.abs(b[0] - a[0]) / 2} ry={Math.abs(b[1] - a[1]) / 2} {...props} />;
 }
 
-/** 渲染單一形狀；selected＝顯示「可即時調整」的淡色光暈外框。 */
+/** 渲染單一形狀（不畫任何外框/光暈——避免被誤判成線條粗度）。 */
 function ShapeEl({
-  s, erasable, onErase, selected,
+  s, erasable, onErase,
 }: {
   s: Shape;
   erasable: boolean;
   onErase: () => void;
-  selected?: boolean;
 }) {
   const common = {
     fill: 'none' as const,
@@ -624,24 +663,7 @@ function ShapeEl({
     style: { pointerEvents: (erasable ? 'stroke' : 'none') as React.CSSProperties['pointerEvents'], cursor: erasable ? 'cell' : 'default' },
     onPointerDown: erasable ? onErase : undefined,
   };
-  const shapeNode = renderShapeWith(s, common);
-  if (!selected) return shapeNode;
-  // 選取光暈：相同形狀、較寬且半透明的藍色描邊墊在底層，標示「正在調整這個圖形」。
-  const halo = renderShapeWith(s, {
-    fill: 'none',
-    stroke: 'var(--action-primary-bg, #3b82f6)',
-    strokeWidth: s.width + 8,
-    strokeLinecap: 'round',
-    strokeLinejoin: 'round',
-    opacity: 0.25,
-    style: { pointerEvents: 'none' },
-  });
-  return (
-    <g>
-      {halo}
-      {shapeNode}
-    </g>
-  );
+  return renderShapeWith(s, common);
 }
 
 /** 便利貼內容：可編輯文字 + 底色選擇。 */
@@ -841,18 +863,16 @@ function shapeToPoints(s: Shape): [number, number][] {
   return pts;
 }
 
-/** 對一條點折線移除半徑內的點並斷開成多段，把結果（型別一律 free）推入 out。 */
+/** 對一條點折線，移除「符合 shouldRemove 的點」並斷開成多段，把結果（型別一律 free）推入 out。 */
 function erodeFreePoints(
   template: Shape,
   points: [number, number][],
-  x: number,
-  y: number,
-  r2: number,
+  shouldRemove: (p: [number, number]) => boolean,
   out: Shape[]
 ): void {
   let seg: [number, number][] = [];
   for (const p of points) {
-    if (dist2(p[0], p[1], x, y) <= r2) {
+    if (shouldRemove(p)) {
       if (seg.length > 1) out.push({ ...template, type: 'free', points: seg });
       seg = [];
     } else {
@@ -863,31 +883,46 @@ function erodeFreePoints(
 }
 
 /**
- * 局部擦除：在 (x,y) 半徑 r 內移除內容（真正「擦到哪、那裏消失」）。
- * - free（自由筆）：移除半徑內的點並斷開成多段（產生破洞）。
- * - line / rect / ellipse：先判斷橡皮擦是否真的碰到描邊；沒碰到 → 保留原向量圖形（不退化）；
- *   碰到 → 攤平成密集點折線後套用與 free 相同的「移除＋斷開」邏輯，於是橢圓/矩形/直線也能被局部擦出缺口。
- * @returns 擦除後的新形狀陣列（不可變，回新陣列）。
+ * 以「點判定函式」擦除：把符合 shouldRemove 的點移除、斷開成多段（真正「擦到哪、那裏消失」）。
+ * - free：直接逐點處理。
+ * - line / rect / ellipse：先看是否真的碰到描邊；沒碰到 → 保留原向量圖形（不退化）；
+ *   碰到 → 攤平成密集點折線再套用同一套移除＋斷開邏輯（於是橢圓/矩形/直線也能被擦出缺口、其餘部分保留）。
  */
-function eraseAt(list: Shape[], x: number, y: number, r: number): Shape[] {
-  const r2 = r * r;
+function eraseByPredicate(list: Shape[], shouldRemove: (p: [number, number]) => boolean): Shape[] {
   const out: Shape[] = [];
   for (const s of list) {
     if (s.type === 'free') {
-      erodeFreePoints(s, s.points, x, y, r2, out);
+      erodeFreePoints(s, s.points, shouldRemove, out);
       continue;
     }
-    // 幾何形狀：先看橡皮擦是否真的碰到此形狀的描邊
     const points = shapeToPoints(s);
-    const touched = points.some((p) => dist2(p[0], p[1], x, y) <= r2);
-    if (!touched) {
-      out.push(s); // 沒碰到 → 保留原向量圖形（避免無謂退化成折線）
+    if (!points.some(shouldRemove)) {
+      out.push(s); // 沒碰到 → 保留原向量圖形
       continue;
     }
-    // 碰到 → 攤平成折線並局部擦除（自此這個形狀變成自由筆近似）
-    erodeFreePoints(s, points, x, y, r2, out);
+    erodeFreePoints(s, points, shouldRemove, out);
   }
   return out;
+}
+
+/** 局部擦除：在 (x,y) 半徑 r 內移除內容。 */
+function eraseAt(list: Shape[], x: number, y: number, r: number): Shape[] {
+  const r2 = r * r;
+  return eraseByPredicate(list, (p) => dist2(p[0], p[1], x, y) <= r2);
+}
+
+/** 框選擦除：移除落在矩形 [minX,maxX]×[minY,maxY] 內的內容（同樣只擦框到的部分，不連帶刪整個形狀）。 */
+function eraseInBox(
+  list: Shape[],
+  minX: number,
+  minY: number,
+  maxX: number,
+  maxY: number
+): Shape[] {
+  return eraseByPredicate(
+    list,
+    (p) => p[0] >= minX && p[0] <= maxX && p[1] >= minY && p[1] <= maxY
+  );
 }
 
 /** 安全解析 JSON，失敗回退預設值。 */

@@ -617,12 +617,30 @@ export function useCanvas(
 
     reconnectEdge: async (edgeId: string, params) => {
       try {
-        await kaiwenApi.reconnectEdge(edgeId, {
+        const updated = await kaiwenApi.reconnectEdge(edgeId, {
           SourceNodeId: params.sourceNodeId,
           TargetNodeId: params.targetNodeId,
           SourceHandle: params.sourceHandle,
           TargetHandle: params.targetHandle,
         })
+        // 樂觀更新本地邊：否則 rfEdges 會以舊的 edges 重建，導致拖曳改接點/父子後「彈回原接點」。
+        if (updated?.Edge_Id) {
+          setEdges((prev) => prev.map((e) => (e.Edge_Id === edgeId ? updated : e)))
+        } else {
+          setEdges((prev) =>
+            prev.map((e) =>
+              e.Edge_Id === edgeId
+                ? {
+                    ...e,
+                    Edge_SourceNodeId: params.sourceNodeId,
+                    Edge_TargetNodeId: params.targetNodeId,
+                    Edge_SourceHandle: params.sourceHandle ?? null,
+                    Edge_TargetHandle: params.targetHandle ?? null,
+                  }
+                : e
+            )
+          )
+        }
         setError(null)
       } catch (err) {
         const message = err instanceof Error ? err.message : '無法重新連接邊'
