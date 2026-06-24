@@ -71,10 +71,12 @@ interface Props {
  * - 繪圖時用一層覆蓋全畫布的「擷取面」接所有筆畫/擦除；三種橡皮擦皆以純函式在畫布座標命中。
  */
 export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props) {
-  const { screenToFlowPosition } = useReactFlow();
+  const { screenToFlowPosition, setViewport, getViewport } = useReactFlow();
   const { x: vx, y: vy, zoom } = useViewport();
   const zoomRef = useRef(zoom);
   zoomRef.current = zoom;
+  // 畫筆模式下用右鍵 / 中鍵拖曳平移畫布（左鍵才是畫畫）：記住按下時的滑鼠位置與當下視窗位移。
+  const panRef = useRef<{ sx: number; sy: number; vx: number; vy: number; zoom: number } | null>(null);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const [items, setItems] = useState<AnnoItem[]>([]);
@@ -304,6 +306,14 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
 
   const onCaptureDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!tool) return;
+    // 右鍵 / 中鍵：拖曳平移畫布（不畫畫）；左鍵才是畫畫。
+    if (e.button === 2 || e.button === 1) {
+      const vp = getViewport();
+      panRef.current = { sx: e.clientX, sy: e.clientY, vx: vp.x, vy: vp.y, zoom: vp.zoom };
+      try { (e.currentTarget as Element).setPointerCapture?.(e.pointerId); } catch { /* ignore */ }
+      return;
+    }
+    if (e.button !== 0) return; // 其它按鍵忽略
     setSelectedShapeIdx(null);
     try { (e.currentTarget as Element).setPointerCapture?.(e.pointerId); } catch { /* ignore */ }
     const p = flowPoint(e);
@@ -331,6 +341,12 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
   };
 
   const onCaptureMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    // 右鍵 / 中鍵拖曳中：平移畫布（螢幕位移 1:1 對應視窗位移，zoom 不變）。
+    if (panRef.current) {
+      const p = panRef.current;
+      setViewport({ x: p.vx + (e.clientX - p.sx), y: p.vy + (e.clientY - p.sy), zoom: p.zoom });
+      return;
+    }
     if (tool === 'erase-area' && eraseWork.current) {
       const p = flowPoint(e);
       eraseWork.current = eraseAt(eraseWork.current, p[0], p[1], eraseRadius);
@@ -351,6 +367,7 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
   };
 
   const onCaptureUp = () => {
+    if (panRef.current) { panRef.current = null; return; }
     if (eraseWork.current) {
       const next = eraseWork.current;
       eraseWork.current = null;
@@ -547,6 +564,7 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
           onPointerMove={onCaptureMove}
           onPointerUp={onCaptureUp}
           onPointerLeave={onCaptureUp}
+          onContextMenu={(e) => e.preventDefault()}
           data-testid="canvas-annotation-capture"
         />
       )}
