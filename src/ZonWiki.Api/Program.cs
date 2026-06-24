@@ -37,6 +37,7 @@ builder.Services.AddSingleton<SseHub>();
 builder.Services.AddScoped<AskCancellationRegistry>();
 builder.Services.AddScoped<AncestryService>();
 builder.Services.AddScoped<AskOrchestrator>();
+builder.Services.AddScoped<AskQueueService>();
 
 var connectionString = builder.Configuration.GetConnectionString(
     DependencyInjection.PostgresConnectionName)
@@ -126,6 +127,7 @@ app.MapCategoryEndpoints();
 app.MapNoteEndpoints();
 app.MapTagEndpoints();
 app.MapNoteWriteEndpoints(authConfigured);
+app.MapAskQueueEndpoints(authConfigured);
 app.MapCommentEndpoints(authConfigured);
 app.MapTaskEndpoints();
 app.MapTaskGroupEndpoints();

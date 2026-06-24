@@ -1,10 +1,10 @@
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.RegularExpressions;
 using Markdig;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ZonWiki.Api.Auth;
+using ZonWiki.Api.Notes;
+using ZonWiki.Api.Services;
 using ZonWiki.Domain.Common;
 using ZonWiki.Domain.Dtos;
 using ZonWiki.Domain.Entities;
@@ -20,15 +20,6 @@ namespace ZonWiki.Api.Endpoints;
 /// </summary>
 public static class NoteWriteEndpoints
 {
-    /// <summary>
-    /// Markdown 渲染管線（禁用 raw HTML 以防 XSS）。
-    /// </summary>
-    private static readonly MarkdownPipeline MarkdownPipeline = new MarkdownPipelineBuilder()
-        .UseAdvancedExtensions()
-        .UseAutoLinks()
-        .DisableHtml()
-        .Build();
-
     /// <summary>
     /// Wiki 連結比對：擷取 [[X]] 形式。
     /// </summary>
@@ -117,10 +108,11 @@ public static class NoteWriteEndpoints
     /// <summary>
     /// 框選提問：以選取文字為脈絡請 AI 回答，建立一則「答案筆記」，並從來源筆記的選取範圍
     /// 建立 NoteMark 關聯指向答案筆記（與開問啦節點「框選提問→產生回答節點+行內連結」對應）。
+    /// 流程委由 AskQueueService 處理，並自動記錄 AiSession。
     /// </summary>
     private static async Task<IResult> AskSelectionHandler(
         HttpContext http,
-        ZonWikiDbContext db,
+        AskQueueService queueService,
         ILogger<object> logger,
         INoteAiService aiService,
         Guid id,
@@ -135,91 +127,18 @@ public static class NoteWriteEndpoints
                 statusCode: StatusCodes.Status401Unauthorized);
         }
 
-        var sourceNote = await db.Note
-            .FirstOrDefaultAsync(n => n.Id == id && n.ValidFlag && n.UserId == userId, ct);
-        if (sourceNote is null)
+        try
+        {
+            var dto = await queueService.ExecuteAskSelectionAsync(userId, id, request, aiService, ct);
+            return Results.Ok(ApiResponse<AskSelectionResultDto>.Ok(dto));
+        }
+        catch (KeyNotFoundException)
         {
             return Results.NotFound(ApiResponse<AskSelectionResultDto>.Fail("Note not found", 404));
         }
-
-        var question = (request.Question ?? "").Trim();
-        var selected = (request.AnchorText ?? "").Trim();
-        if (string.IsNullOrEmpty(question))
+        catch (ArgumentException ex)
         {
-            return Results.BadRequest(ApiResponse<AskSelectionResultDto>.Fail("缺少問題", 400));
-        }
-
-        try
-        {
-            // 1) 請 AI 回答。
-            var answer = await aiService.AskAboutAsync(selected, question, ct);
-
-            // 2) 組答案筆記內容（含來源出處引言 + 問題 + 回答）。
-            var titleBase = question.Length <= 40 ? question : question[..40] + "…";
-            var answerContent =
-                $"> 來源：[[{sourceNote.Title}]]\n> 選取：「{selected}」\n\n" +
-                $"**問題**：{question}\n\n**回答**：\n\n{answer}";
-
-            // 3) 建答案筆記（slug 去重、Markdig 渲染、建立 create 版本）。
-            var baseSlug = GenerateSlug(titleBase);
-            if (string.IsNullOrEmpty(baseSlug)) baseSlug = "note";
-            var slug = baseSlug;
-            for (var i = 2;
-                 await db.Note.AnyAsync(n => n.UserId == userId && n.Slug == slug && n.ValidFlag, ct);
-                 i++)
-            {
-                slug = $"{baseSlug}-{i}";
-            }
-
-            var answerNote = new Note
-            {
-                UserId = userId,
-                Title = titleBase,
-                Slug = slug,
-                ContentRaw = answerContent,
-                ContentHtml = Markdown.ToHtml(answerContent, MarkdownPipeline),
-                ContentHash = ComputeContentHash(answerContent),
-                Kind = "note",
-                IsDraft = false,
-                CreatedUser = userId.ToString(),
-                UpdatedUser = userId.ToString(),
-            };
-            db.Note.Add(answerNote);
-            await db.SaveChangesAsync(ct);
-
-            db.NoteRevision.Add(new NoteRevision
-            {
-                UserId = userId,
-                NoteId = answerNote.Id,
-                RevisionNo = 1,
-                ChangeKind = "create",
-                Title = answerNote.Title,
-                ContentRaw = answerNote.ContentRaw,
-                CreatedUser = userId.ToString(),
-                UpdatedUser = userId.ToString(),
-            });
-
-            // 4) 從來源筆記的選取範圍建立 NoteMark 關聯 → 答案筆記。
-            var mark = new NoteMark
-            {
-                UserId = userId,
-                NoteId = sourceNote.Id,
-                Kind = "link",
-                AnchorText = request.AnchorText ?? "",
-                AnchorStart = request.AnchorStart,
-                AnchorEnd = request.AnchorEnd,
-                AnchorPrefix = request.AnchorPrefix ?? "",
-                AnchorSuffix = request.AnchorSuffix ?? "",
-                TargetType = "note",
-                TargetId = answerNote.Id,
-                CreatedUser = userId.ToString(),
-                UpdatedUser = userId.ToString(),
-            };
-            db.NoteMark.Add(mark);
-            await db.SaveChangesAsync(ct);
-
-            var dto = new AskSelectionResultDto(answerNote.Id, answerNote.Slug, mark.Id);
-            return Results.Ok(ApiResponse<AskSelectionResultDto>.Ok(dto));
+            return Results.BadRequest(ApiResponse<AskSelectionResultDto>.Fail(ex.Message, 400));
         }
         catch (Exception ex)
         {
@@ -307,7 +226,7 @@ public static class NoteWriteEndpoints
         try
         {
             // 產生 Slug（去除特殊字元、轉小寫、用連字號分隔）；全被濾掉就以 "note" 墊底。
-            var baseSlug = GenerateSlug(request.Title);
+            var baseSlug = NoteContentHelpers.GenerateSlug(request.Title);
             if (string.IsNullOrEmpty(baseSlug))
             {
                 baseSlug = "note";
@@ -324,8 +243,8 @@ public static class NoteWriteEndpoints
 
             // 內容允許為空（先建立、再編輯）；null 一律轉空字串避免後續 NPE。
             var contentRaw = request.ContentRaw ?? string.Empty;
-            var contentHtml = Markdown.ToHtml(contentRaw, MarkdownPipeline);
-            var contentHash = ComputeContentHash(contentRaw);
+            var contentHtml = Markdown.ToHtml(contentRaw, NoteContentHelpers.MarkdownPipeline);
+            var contentHash = NoteContentHelpers.ComputeContentHash(contentRaw);
 
             // 建立筆記實體
             var note = new Note
@@ -444,8 +363,8 @@ public static class NoteWriteEndpoints
             if (!string.IsNullOrWhiteSpace(request.ContentRaw))
             {
                 note.ContentRaw = request.ContentRaw;
-                note.ContentHtml = Markdown.ToHtml(request.ContentRaw, MarkdownPipeline);
-                note.ContentHash = ComputeContentHash(request.ContentRaw);
+                note.ContentHtml = Markdown.ToHtml(request.ContentRaw, NoteContentHelpers.MarkdownPipeline);
+                note.ContentHash = NoteContentHelpers.ComputeContentHash(request.ContentRaw);
                 contentChanged = true;
             }
 
@@ -1116,7 +1035,7 @@ public static class NoteWriteEndpoints
         {
             // 對「請求帶來的目前內容」做 AI 轉換（不是讀 DB 內容）。
             var transformed = await transform(input);
-            var html = Markdown.ToHtml(transformed, MarkdownPipeline);
+            var html = Markdown.ToHtml(transformed, NoteContentHelpers.MarkdownPipeline);
 
             var dto = new AiTransformResultDto(transformed, html);
             return Results.Ok(ApiResponse<AiTransformResultDto>.Ok(dto));
@@ -1164,26 +1083,6 @@ public static class NoteWriteEndpoints
         return null;
     }
 
-    /// <summary>
-    /// 產生 slug（從標題移除特殊字元、轉小寫、用連字號分隔）。
-    /// </summary>
-    private static string GenerateSlug(string title)
-    {
-        var slug = Regex.Replace(title.ToLowerInvariant(), @"[^\w\s-]", string.Empty);
-        slug = Regex.Replace(slug, @"[\s]+", "-");
-        slug = Regex.Replace(slug, @"-+", "-").Trim('-');
-        return slug;
-    }
-
-    /// <summary>
-    /// 計算內容雜湊（SHA-256）。
-    /// </summary>
-    private static string ComputeContentHash(string content)
-    {
-        using var sha256 = SHA256.Create();
-        var hash = sha256.ComputeHash(Encoding.UTF8.GetBytes(content));
-        return Convert.ToHexString(hash);
-    }
 
     /// <summary>
     /// 設定筆記的分類（整組取代；reconcile）。
@@ -1324,7 +1223,7 @@ public static class NoteWriteEndpoints
             var targetNote = await db.Note
                 .FirstOrDefaultAsync(
                     n => n.UserId == userId && n.ValidFlag &&
-                         (n.Slug == GenerateSlug(anchorText) || n.Title == anchorText),
+                         (n.Slug == NoteContentHelpers.GenerateSlug(anchorText) || n.Title == anchorText),
                     ct);
 
             if (targetNote != null)

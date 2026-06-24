@@ -238,6 +238,42 @@ public sealed record AskSelectionResultDto(
 public sealed record AskSelectionAnswerDto(string Answer);
 
 /// <summary>
+/// 提問佇列項目資料傳輸物件（展示一筆 AiSession 的佇列狀態）。
+/// 含來源筆記與答案筆記的關聯資訊（佇列導航用）。
+/// </summary>
+/// <param name="SessionId">AiSession 識別碼。</param>
+/// <param name="Status">狀態：Running / Completed / Failed。</param>
+/// <param name="Kind">提問種類：node / floatingnote。</param>
+/// <param name="QuestionText">使用者提問文字。</param>
+/// <param name="AnchorText">框選文字（floatingnote 時有值）。</param>
+/// <param name="NoteId">來源筆記識別碼（floatingnote 時有值；可空若筆記已刪）。</param>
+/// <param name="NoteSlug">來源筆記 slug（供前端導航；null 若筆記不存）。</param>
+/// <param name="NoteTitle">來源筆記標題（佇列顯示；null 若筆記不存）。</param>
+/// <param name="AnswerNoteId">答案筆記識別碼（Completed 時有值；可空）。</param>
+/// <param name="AnswerNoteSlug">答案筆記 slug（Completed 時供導航；null 若筆記已刪）。</param>
+/// <param name="MarkId">NoteMark 識別碼（來源筆記上的錨點；可空）。</param>
+/// <param name="CanvasId">所屬畫布識別碼（node 提問時有值；可空）。</param>
+/// <param name="AskNodeId">提問來源節點識別碼（node 提問時有值；可空）。</param>
+/// <param name="CreatedDateTime">建立時間（UTC；佇列排序用）。</param>
+/// <param name="ErrorText">失敗訊息（Failed 時有值；可空）。</param>
+public sealed record AskQueueItemDto(
+    Guid SessionId,
+    string Status,
+    string Kind,
+    string? QuestionText,
+    string? AnchorText,
+    Guid? NoteId,
+    string? NoteSlug,
+    string? NoteTitle,
+    Guid? AnswerNoteId,
+    string? AnswerNoteSlug,
+    Guid? MarkId,
+    Guid? CanvasId,
+    Guid? AskNodeId,
+    DateTime CreatedDateTime,
+    string? ErrorText = null);
+
+/// <summary>
 /// 筆記文字標註資料傳輸物件（重點 / 關聯 / 備註）。
 /// </summary>
 /// <param name="Id">標註識別碼。</param>

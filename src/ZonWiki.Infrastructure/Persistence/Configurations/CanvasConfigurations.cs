@@ -441,6 +441,9 @@ public sealed class AiSessionConfiguration : IEntityTypeConfiguration<AiSession>
         builder.Property(ai => ai.PromptText).IsRequired();
         builder.Property(ai => ai.Status).IsRequired().HasMaxLength(32);
         builder.Property(ai => ai.TokenUsageJson).IsRequired();
+        builder.Property(ai => ai.QuestionText).HasMaxLength(2000);
+        builder.Property(ai => ai.AnchorText).HasMaxLength(2000);
+        builder.Property(ai => ai.ErrorText).HasMaxLength(1000);
         builder.Property(ai => ai.CreatedUser).IsRequired().HasMaxLength(128);
         builder.Property(ai => ai.UpdatedUser).IsRequired().HasMaxLength(128);
 
