@@ -300,7 +300,7 @@ export const kaiwenApi = {
   createCanvasAnnotation: (
     canvasId: string,
     body: {
-      Kind: 'sticky' | 'drawing' | 'slide'
+      Kind: 'sticky' | 'drawing' | 'slide' | 'text'
       X: number
       Y: number
       Width: number

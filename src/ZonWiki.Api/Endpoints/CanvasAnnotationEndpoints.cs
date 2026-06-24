@@ -116,7 +116,8 @@ public static class CanvasAnnotationEndpoints
         }
 
         var kind = (req.Kind ?? string.Empty).Trim().ToLowerInvariant();
-        if (kind != "sticky" && kind != "drawing" && kind != "slide")
+        // text＝純文字框（Snipaste 風格）：Text 存內容、Color 存字色、DataJson 存 { bg, fontSize, rotation }。
+        if (kind != "sticky" && kind != "drawing" && kind != "slide" && kind != "text")
         {
             return CanvasJsonHelper.JsonError(
                 ApiResponse<CanvasAnnotationDto>.Fail("未知的標註型別", 400),

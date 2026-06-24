@@ -24,7 +24,8 @@ public class CanvasAnnotation : AuditableEntity, IUserOwned
     public Guid CanvasId { get; set; }
 
     /// <summary>
-    /// 元件型別："sticky"（便利貼）/ "drawing"（塗鴉層）/ "slide"（圖片板）。
+    /// 元件型別："sticky"（便利貼）/ "drawing"（塗鴉層）/ "slide"（圖片板）/ "text"（純文字框）。
+    /// text 用 Text 存內容、Color 存字色、DataJson 存 { bg, fontSize, rotation }。
     /// </summary>
     public string Kind { get; set; } = string.Empty;
 

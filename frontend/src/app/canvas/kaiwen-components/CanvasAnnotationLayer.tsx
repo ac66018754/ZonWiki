@@ -22,11 +22,15 @@ import { ShapeEl } from '@/lib/drawing/ShapeEl';
 import { StickyBody } from '@/components/overlay/StickyBody';
 import { SlideBody } from '@/components/overlay/SlideBody';
 import { STICKY_COLORS } from '@/components/overlay/overlayShared';
+import { CanvasTextBox, parseTextExtra, type TextExtra } from './CanvasTextBox';
+
+/** 純文字框的字色 / 背景常用色票。 */
+const TEXT_COLORS = ['#ef4444', '#f59e0b', '#22c55e', '#3b82f6', '#a855f7', '#ec4899', '#000000', '#ffffff'];
 
 /** 畫布標註的前端內部表示（由 CanvasAnnotationDto 正規化而來，欄位採 camelCase）。 */
 interface AnnoItem {
   id: string;
-  kind: 'sticky' | 'drawing' | 'slide';
+  kind: 'sticky' | 'drawing' | 'slide' | 'text';
   x: number;
   y: number;
   width: number;
@@ -80,7 +84,13 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
 
   const rootRef = useRef<HTMLDivElement>(null);
   const [items, setItems] = useState<AnnoItem[]>([]);
+  // 以 ref 持有最新 items，供事件監聽器（如刪除空文字框）避免 stale closure。
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
   const [mounted, setMounted] = useState(false);
+  // 純文字框：目前選取 / 編輯中的文字框 id。
+  const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
+  const [editingTextId, setEditingTextId] = useState<string | null>(null);
 
   // 繪圖工具狀態（與筆記版相同）
   const [tool, setTool] = useState<DrawTool>(null);
@@ -216,6 +226,76 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
   const remove = async (id: string) => {
     setItems((prev) => prev.filter((i) => i.id !== id));
     await kaiwenApi.deleteCanvasAnnotation(id);
+  };
+
+  // ── 純文字框（Snipaste 風格）──
+  /** 螢幕座標 → 畫布座標（供純文字框縮放/旋轉換算）。 */
+  const toFlow = (clientX: number, clientY: number) => screenToFlowPosition({ x: clientX, y: clientY });
+
+  const addTextBox = async () => {
+    if (!canvasId) return;
+    const c = viewCenter();
+    const created = await kaiwenApi.createCanvasAnnotation(canvasId, {
+      Kind: 'text', X: c.x - 90, Y: c.y - 24, Width: 180, Height: 48, ZIndex: maxZ + 1,
+      Color: '#ef4444', Text: '', DataJson: JSON.stringify({ bg: null, fontSize: 20, rotation: 0 }),
+    });
+    if (created) {
+      const it = fromDto(created);
+      setItems((prev) => [...prev, it]);
+      setToolbarOpen(true);
+      setSelectedTextId(it.id);
+      setEditingTextId(it.id);
+    }
+  };
+
+  /** 若指定文字框內容為空 → 刪除（避免留下看不見的空框）。回傳是否刪除。 */
+  const deleteIfEmpty = (id: string): boolean => {
+    const it = itemsRef.current.find((x) => x.id === id);
+    if (it && it.kind === 'text' && !(it.text ?? '').trim()) {
+      setItems((prev) => prev.filter((x) => x.id !== id));
+      kaiwenApi.deleteCanvasAnnotation(id);
+      return true;
+    }
+    return false;
+  };
+
+  // 點文字框與其屬性面板以外的地方 → 取消選取（空框順手刪除）。
+  useEffect(() => {
+    if (!selectedTextId) return;
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t?.closest('[data-testid="canvas-anno-text"]') || t?.closest('[data-canvas-textprops]')) return;
+      const id = selectedTextId;
+      setSelectedTextId(null);
+      setEditingTextId(null);
+      deleteIfEmpty(id);
+    };
+    document.addEventListener('pointerdown', onDown, true);
+    return () => document.removeEventListener('pointerdown', onDown, true);
+  }, [selectedTextId]);
+
+  // 屬性面板用：目前選取的文字框 + 其額外屬性。
+  const selectedTextItem = items.find((i) => i.id === selectedTextId && i.kind === 'text') ?? null;
+  /** 更新選取文字框的額外屬性（bg / fontSize / rotation）並持久化。 */
+  const updateTextExtra = (patch: Partial<TextExtra>) => {
+    if (!selectedTextItem) return;
+    const cur = parseTextExtra(selectedTextItem.dataJson);
+    const json = JSON.stringify({ ...cur, ...patch });
+    patchLocal(selectedTextItem.id, { dataJson: json });
+    persist(selectedTextItem.id, { dataJson: json });
+  };
+  /** 設定選取文字框的字體顏色。 */
+  const setTextColor = (c: string) => {
+    if (!selectedTextItem) return;
+    patchLocal(selectedTextItem.id, { color: c });
+    persist(selectedTextItem.id, { color: c });
+  };
+  /** 刪除目前選取的文字框。 */
+  const deleteSelectedText = () => {
+    const id = selectedTextId;
+    setSelectedTextId(null);
+    setEditingTextId(null);
+    if (id) remove(id);
   };
 
   // ── 拖曳 / 縮放（螢幕位移 ÷ zoom = 畫布位移）──
@@ -491,7 +571,7 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
           </svg>
 
           {/* 便利貼 / 圖片板（繪圖中暫不可互動，讓擷取面接管） */}
-          {items.filter((i) => i.kind !== 'drawing').map((item) => (
+          {items.filter((i) => i.kind === 'sticky' || i.kind === 'slide').map((item) => (
             <div
               key={item.id}
               style={{
@@ -553,6 +633,23 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
               />
             </div>
           ))}
+
+          {/* 純文字框（Snipaste 風格：可打字、設背景、旋轉縮放） */}
+          {items.filter((i) => i.kind === 'text').map((item) => (
+            <CanvasTextBox
+              key={item.id}
+              item={item}
+              zoomRef={zoomRef}
+              toFlow={toFlow}
+              selected={selectedTextId === item.id}
+              editing={editingTextId === item.id}
+              onSelect={() => { bringToFront(item); setSelectedTextId(item.id); }}
+              onStartEdit={() => { setSelectedTextId(item.id); setEditingTextId(item.id); }}
+              onStopEdit={() => { setEditingTextId(null); deleteIfEmpty(item.id); }}
+              onChange={(patch) => patchLocal(item.id, patch)}
+              onCommit={(patch) => persist(item.id, patch)}
+            />
+          ))}
         </div>
       </div>
 
@@ -588,6 +685,7 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
             <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={collapseToolbar} title="收合工具箱" data-testid="canvas-anno-collapse">🧰</button>
             <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={addSticky} title="新增便利貼" data-testid="canvas-anno-add-sticky">＋便利貼</button>
             <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={addSlide} title="新增圖片板（可放多張圖、手動切換）" data-testid="canvas-anno-add-slide">＋圖片板</button>
+            <button className="tk-btn" style={{ cursor: 'pointer', fontWeight: 700 }} onClick={addTextBox} title="新增純文字框（可打字、設背景顏色/透明、旋轉縮放、調字級字色）" data-testid="canvas-anno-add-text">T</button>
             {([
               ['pen', '✏️', '自由筆'],
               ['line', '／', '直線'],
@@ -667,6 +765,74 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
               />
             </div>
           )}
+
+          {/* 純文字框屬性面板（選取文字框時出現）：字級 / 字色 / 背景（含透明）/ 刪除。 */}
+          {selectedTextItem && (() => {
+            const te = parseTextExtra(selectedTextItem.dataJson);
+            const curFont = selectedTextItem.color || '#ef4444';
+            return (
+              <div
+                data-canvas-textprops
+                data-testid="canvas-anno-textprops"
+                style={{
+                  display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end',
+                  background: 'var(--bg-surface)', border: '1px solid var(--border-default)',
+                  borderRadius: 'var(--radius-md)', padding: '4px 6px', boxShadow: 'var(--shadow-md)',
+                  maxWidth: 360, fontSize: 'var(--text-xs)',
+                }}
+              >
+                <span style={{ color: 'var(--text-secondary)' }}>字級</span>
+                <input
+                  type="range" min={10} max={80} value={te.fontSize}
+                  onChange={(e) => updateTextExtra({ fontSize: Number(e.target.value) })}
+                  style={{ width: 64 }}
+                  data-testid="canvas-anno-text-fontsize"
+                />
+                <span style={{ color: 'var(--text-secondary)' }}>字色</span>
+                {TEXT_COLORS.map((c) => (
+                  <button
+                    key={`fc-${c}`}
+                    onClick={() => setTextColor(c)}
+                    title="字體顏色"
+                    style={{
+                      width: 14, height: 14, borderRadius: '50%', background: c, cursor: 'pointer',
+                      border: curFont === c ? '2px solid var(--text-primary)' : '1px solid rgba(0,0,0,0.25)',
+                    }}
+                  />
+                ))}
+                <span style={{ color: 'var(--text-secondary)' }}>底</span>
+                <button
+                  className="tk-btn"
+                  style={{ cursor: 'pointer', fontSize: 'var(--text-xs)', padding: '1px 5px' }}
+                  onClick={() => updateTextExtra({ bg: null })}
+                  title="背景透明"
+                  data-testid="canvas-anno-text-bg-none"
+                >
+                  透明
+                </button>
+                {TEXT_COLORS.map((c) => (
+                  <button
+                    key={`bg-${c}`}
+                    onClick={() => updateTextExtra({ bg: c })}
+                    title="背景顏色"
+                    style={{
+                      width: 14, height: 14, borderRadius: 3, background: c, cursor: 'pointer',
+                      border: te.bg === c ? '2px solid var(--text-primary)' : '1px solid rgba(0,0,0,0.25)',
+                    }}
+                  />
+                ))}
+                <button
+                  className="tk-btn"
+                  style={{ cursor: 'pointer', fontSize: 'var(--text-xs)', padding: '1px 5px' }}
+                  onClick={deleteSelectedText}
+                  title="刪除此文字框"
+                  data-testid="canvas-anno-text-delete"
+                >
+                  刪除
+                </button>
+              </div>
+            );
+          })()}
         </div>
         ) : (
           <button
