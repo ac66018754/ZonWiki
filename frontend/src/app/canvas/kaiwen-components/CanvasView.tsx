@@ -592,7 +592,16 @@ function CanvasInner({
           navigateTo(id)
         }}
       />
-      <div className="relative h-full flex-1">
+      <div
+        className="relative h-full flex-1"
+        // 畫布上不要跳出瀏覽器原生右鍵選單（按住右鍵/中鍵拖曳平移後放開很惱人）；
+        // 但便利貼等文字輸入框保留右鍵（貼上/選取）。
+        onContextMenu={(e) => {
+          const t = e.target as HTMLElement
+          if (t.closest('textarea, input, [contenteditable="true"]')) return
+          e.preventDefault()
+        }}
+      >
         <ReactFlow
           nodes={rfNodes}
           edges={rfEdges}
@@ -629,7 +638,8 @@ function CanvasInner({
           maxZoom={MAX_ZOOM}
           zoomOnDoubleClick={false}
           // 標註繪圖中：鎖住畫布所有平移/縮放/節點互動，讓筆畫不會連帶移動畫布。
-          panOnDrag={!annoDrawing}
+          // 否則：左鍵/中鍵/右鍵在空白處拖曳皆可平移畫布（[0,1,2]＝三個按鍵都行）。
+          panOnDrag={annoDrawing ? false : [0, 1, 2]}
           nodesDraggable={!annoDrawing}
           nodesConnectable={!annoDrawing}
           elementsSelectable={!annoDrawing}

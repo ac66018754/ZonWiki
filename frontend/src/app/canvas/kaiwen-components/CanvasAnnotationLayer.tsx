@@ -87,8 +87,26 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
   const [penDash, setPenDash] = useState(false);
   const [showPenColor, setShowPenColor] = useState(false);
   const [selectedShapeIdx, setSelectedShapeIdx] = useState<number | null>(null);
+  // 工具列收合狀態（收合時只剩一顆 🧰 工具箱圖示）；記憶於 localStorage。
+  const [toolbarOpen, setToolbarOpen] = useState<boolean>(() =>
+    typeof window !== 'undefined' ? localStorage.getItem('kaiwen:annoToolbarOpen') !== '0' : true
+  );
 
   const drawingActive = tool !== null;
+
+  /** 收合工具列（順手結束繪圖，避免工具列收起來、畫布卻還鎖著）。 */
+  const collapseToolbar = () => {
+    setTool(null);
+    setSelectedShapeIdx(null);
+    setShowPenColor(false);
+    setToolbarOpen(false);
+    if (typeof window !== 'undefined') localStorage.setItem('kaiwen:annoToolbarOpen', '0');
+  };
+  /** 展開工具列。 */
+  const expandToolbar = () => {
+    setToolbarOpen(true);
+    if (typeof window !== 'undefined') localStorage.setItem('kaiwen:annoToolbarOpen', '1');
+  };
 
   useEffect(() => setMounted(true), []);
 
@@ -533,8 +551,10 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
         />
       )}
 
-      {/* 工具列：portal 至 body、固定右下角（往上墊高避開小地圖）；不含 ＋高/−高。 */}
+      {/* 工具列：portal 至 body、固定右下角（往上墊高避開小地圖）；不含 ＋高/−高。
+          可收合：收合後只剩一顆 🧰 工具箱圖示，點它再展開。 */}
       {mounted && createPortal(
+        toolbarOpen ? (
         <div
           style={{
             position: 'fixed', bottom: 168, right: 16, zIndex: 1400, pointerEvents: 'auto',
@@ -547,6 +567,7 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
             background: 'var(--bg-surface)', border: '1px solid var(--border-default)',
             borderRadius: 'var(--radius-md)', padding: 4, boxShadow: 'var(--shadow-md)', maxWidth: 360,
           }}>
+            <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={collapseToolbar} title="收合工具箱" data-testid="canvas-anno-collapse">🧰</button>
             <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={addSticky} title="新增便利貼" data-testid="canvas-anno-add-sticky">＋便利貼</button>
             <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={addSlide} title="新增圖片板（可放多張圖、手動切換）" data-testid="canvas-anno-add-slide">＋圖片板</button>
             {([
@@ -628,7 +649,22 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
               />
             </div>
           )}
-        </div>,
+        </div>
+        ) : (
+          <button
+            onClick={expandToolbar}
+            data-testid="canvas-annotation-toolbox"
+            title="展開畫布工具箱（便利貼 / 圖片板 / 畫筆 / 橡皮擦）"
+            style={{
+              position: 'fixed', bottom: 168, right: 16, zIndex: 1400, pointerEvents: 'auto',
+              width: 40, height: 40, borderRadius: 'var(--radius-md)',
+              background: 'var(--bg-surface)', border: '1px solid var(--border-default)',
+              boxShadow: 'var(--shadow-md)', cursor: 'pointer', fontSize: 20, lineHeight: 1,
+            }}
+          >
+            🧰
+          </button>
+        ),
         document.body,
       )}
     </>
