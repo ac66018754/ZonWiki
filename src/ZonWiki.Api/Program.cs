@@ -138,6 +138,9 @@ app.MapCanvasEndpoints();
 // 開問啦 Canvas REST API（P4 - 完整 CRUD）
 app.MapKaiWenCanvasEndpoints();
 
+// 開問啦畫布標註（便利貼 / 塗鴉 / 圖片板）— 與筆記浮層對等、綁定畫布
+app.MapCanvasAnnotationEndpoints();
+
 // 畫布設定：System Prompt CRUD、畫布分類與關聯、單一畫布系統設定
 app.MapCanvasSystemEndpoints();
 

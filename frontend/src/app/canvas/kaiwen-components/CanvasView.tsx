@@ -35,6 +35,7 @@ import { edgeTypes } from './DeletableEdge'
 import { RightDrawer } from './RightDrawer'
 import { SelectionPopover } from './SelectionPopover'
 import { LeftSidebar } from './LeftSidebar'
+import { CanvasAnnotationLayer } from './CanvasAnnotationLayer'
 
 /**
  * 畫布視圖 Props
@@ -188,6 +189,8 @@ function CanvasInner({
 
   // 右側編輯面板狀態
   const [drawerOpen, setDrawerOpen] = useState(false)
+  // 標註層是否正在使用繪圖工具：true 時鎖住畫布平移/縮放/選取，避免一邊畫一邊移動。
+  const [annoDrawing, setAnnoDrawing] = useState(false)
 
   // 文字選取狀態
   const [selection, setSelection] = useState<{
@@ -625,8 +628,13 @@ function CanvasInner({
           minZoom={MIN_ZOOM}
           maxZoom={MAX_ZOOM}
           zoomOnDoubleClick={false}
-          panOnScroll={panOnScroll}
-          zoomOnScroll={!panOnScroll}
+          // 標註繪圖中：鎖住畫布所有平移/縮放/節點互動，讓筆畫不會連帶移動畫布。
+          panOnDrag={!annoDrawing}
+          nodesDraggable={!annoDrawing}
+          nodesConnectable={!annoDrawing}
+          elementsSelectable={!annoDrawing}
+          panOnScroll={annoDrawing ? false : panOnScroll}
+          zoomOnScroll={annoDrawing ? false : !panOnScroll}
           proOptions={{ hideAttribution: true }}
         >
           <Background />
@@ -643,6 +651,9 @@ function CanvasInner({
         >
           ＋ 新增節點
         </button>
+
+        {/* 畫布標註層（便利貼 / 圖片板 / 手繪塗鴉 + 橡皮擦）——工具列固定右下角，繪圖時鎖住畫布。 */}
+        <CanvasAnnotationLayer canvasId={canvasId} onDrawingActiveChange={setAnnoDrawing} />
       </div>
 
       {/* 右側編輯面板 */}

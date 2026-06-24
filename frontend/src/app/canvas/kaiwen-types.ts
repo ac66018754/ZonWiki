@@ -83,6 +83,24 @@ export interface HighlightDto {
   Highlight_Detached: boolean
 }
 
+/**
+ * 畫布標註（便利貼 / 塗鴉 / 圖片板）資料傳輸物件。
+ * 座標為畫布座標 (flow coordinates)；欄位採後端 {Table}_{Field} PascalCase。
+ */
+export interface CanvasAnnotationDto {
+  CanvasAnnotation_Id: string
+  /** "sticky" | "drawing" | "slide" */
+  CanvasAnnotation_Kind: string
+  CanvasAnnotation_X: number
+  CanvasAnnotation_Y: number
+  CanvasAnnotation_Width: number
+  CanvasAnnotation_Height: number
+  CanvasAnnotation_ZIndex: number
+  CanvasAnnotation_Color?: string | null
+  CanvasAnnotation_Text?: string | null
+  CanvasAnnotation_DataJson?: string | null
+}
+
 export interface AiModelConfigDto {
   Key: string
   Label: string
