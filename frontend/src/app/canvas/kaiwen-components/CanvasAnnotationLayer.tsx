@@ -24,8 +24,8 @@ import { SlideBody } from '@/components/overlay/SlideBody';
 import { STICKY_COLORS } from '@/components/overlay/overlayShared';
 import { CanvasTextBox, parseTextExtra, type TextExtra } from './CanvasTextBox';
 
-/** 純文字框的字色 / 背景常用色票。 */
-const TEXT_COLORS = ['#ef4444', '#f59e0b', '#22c55e', '#3b82f6', '#a855f7', '#ec4899', '#000000', '#ffffff'];
+/** 純文字框的字色 / 背景「快選」常用色（只放 4 個；其餘點色盤球球展開挑）。 */
+const TEXT_PRESET_COLORS = ['#ef4444', '#f59e0b', '#22c55e', '#3b82f6'];
 
 /** 畫布標註的前端內部表示（由 CanvasAnnotationDto 正規化而來，欄位採 camelCase）。 */
 interface AnnoItem {
@@ -98,6 +98,9 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
   const [penWidth, setPenWidth] = useState(3);
   const [penDash, setPenDash] = useState(false);
   const [showPenColor, setShowPenColor] = useState(false);
+  // 純文字框色盤球球：分別控制「字色」與「背景」的完整色盤是否展開。
+  const [showTextFontPop, setShowTextFontPop] = useState(false);
+  const [showTextBgPop, setShowTextBgPop] = useState(false);
   const [selectedShapeIdx, setSelectedShapeIdx] = useState<number | null>(null);
   // 工具列收合狀態（收合時只剩一顆 🧰 工具箱圖示）；記憶於 localStorage。
   const [toolbarOpen, setToolbarOpen] = useState<boolean>(() =>
@@ -259,12 +262,16 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
     return false;
   };
 
-  // 點文字框與其屬性面板以外的地方 → 取消選取（空框順手刪除）。
+  // 點文字框與其屬性面板 / 色盤以外的地方 → 取消選取（空框順手刪除）。
   useEffect(() => {
     if (!selectedTextId) return;
     const onDown = (e: PointerEvent) => {
       const t = e.target as HTMLElement | null;
-      if (t?.closest('[data-testid="canvas-anno-text"]') || t?.closest('[data-canvas-textprops]')) return;
+      if (
+        t?.closest('[data-testid="canvas-anno-text"]') ||
+        t?.closest('[data-canvas-textprops]') ||
+        t?.closest('[data-canvas-textpop]')
+      ) return;
       const id = selectedTextId;
       setSelectedTextId(null);
       setEditingTextId(null);
@@ -273,6 +280,25 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
     document.addEventListener('pointerdown', onDown, true);
     return () => document.removeEventListener('pointerdown', onDown, true);
   }, [selectedTextId]);
+
+  // 換選取對象 / 取消選取時，把展開的色盤收起來。
+  useEffect(() => {
+    setShowTextFontPop(false);
+    setShowTextBgPop(false);
+  }, [selectedTextId]);
+
+  // 點色盤與球球以外的地方 → 收起展開中的文字色盤。
+  useEffect(() => {
+    if (!showTextFontPop && !showTextBgPop) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t?.closest('[data-canvas-textpop]') || t?.closest('[data-canvas-textcolorbtn]')) return;
+      setShowTextFontPop(false);
+      setShowTextBgPop(false);
+    };
+    document.addEventListener('mousedown', onDown, true);
+    return () => document.removeEventListener('mousedown', onDown, true);
+  }, [showTextFontPop, showTextBgPop]);
 
   // 屬性面板用：目前選取的文字框 + 其額外屬性。
   const selectedTextItem = items.find((i) => i.id === selectedTextId && i.kind === 'text') ?? null;
@@ -766,73 +792,137 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
             </div>
           )}
 
-          {/* 純文字框屬性面板（選取文字框時出現）：字級 / 字色 / 背景（含透明）/ 刪除。 */}
+          {/* 純文字框屬性面板（選取文字框時出現）：字級 ｜ 字色 ｜ 底 ｜ 刪除。
+              顏色各只放 4 個快選＋一顆球球，點球球展開完整色盤（與畫筆色盤同邏輯）。 */}
           {selectedTextItem && (() => {
             const te = parseTextExtra(selectedTextItem.dataJson);
             const curFont = selectedTextItem.color || '#ef4444';
+            const lbl: React.CSSProperties = { color: 'var(--text-secondary)', whiteSpace: 'nowrap', marginLeft: 2 };
+            const dividerStyle: React.CSSProperties = { width: 1, alignSelf: 'stretch', background: 'var(--border-default)', margin: '2px 3px' };
             return (
               <div
                 data-canvas-textprops
                 data-testid="canvas-anno-textprops"
                 style={{
-                  display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end',
+                  display: 'flex', gap: 5, flexWrap: 'nowrap', alignItems: 'center', justifyContent: 'flex-end',
                   background: 'var(--bg-surface)', border: '1px solid var(--border-default)',
-                  borderRadius: 'var(--radius-md)', padding: '4px 6px', boxShadow: 'var(--shadow-md)',
-                  maxWidth: 360, fontSize: 'var(--text-xs)',
+                  borderRadius: 'var(--radius-md)', padding: '5px 8px', boxShadow: 'var(--shadow-md)',
+                  fontSize: 'var(--text-xs)',
                 }}
               >
-                <span style={{ color: 'var(--text-secondary)' }}>字級</span>
+                {/* 字級 */}
+                <span style={lbl}>字級</span>
                 <input
                   type="range" min={10} max={80} value={te.fontSize}
                   onChange={(e) => updateTextExtra({ fontSize: Number(e.target.value) })}
-                  style={{ width: 64 }}
+                  style={{ width: 72 }}
+                  title={`字級：${te.fontSize}`}
                   data-testid="canvas-anno-text-fontsize"
                 />
-                <span style={{ color: 'var(--text-secondary)' }}>字色</span>
-                {TEXT_COLORS.map((c) => (
+
+                <span style={dividerStyle} />
+                {/* 字色：4 快選 + 球球展開完整色盤 */}
+                <span style={lbl}>字色</span>
+                {TEXT_PRESET_COLORS.map((c) => (
                   <button
-                    key={`fc-${c}`}
-                    onClick={() => setTextColor(c)}
-                    title="字體顏色"
+                    key={`fc-${c}`} onClick={() => setTextColor(c)} title="字體顏色"
                     style={{
-                      width: 14, height: 14, borderRadius: '50%', background: c, cursor: 'pointer',
+                      width: 16, height: 16, flexShrink: 0, borderRadius: '50%', background: c, cursor: 'pointer', padding: 0,
                       border: curFont === c ? '2px solid var(--text-primary)' : '1px solid rgba(0,0,0,0.25)',
                     }}
                   />
                 ))}
-                <span style={{ color: 'var(--text-secondary)' }}>底</span>
                 <button
-                  className="tk-btn"
-                  style={{ cursor: 'pointer', fontSize: 'var(--text-xs)', padding: '1px 5px' }}
+                  data-canvas-textcolorbtn data-testid="canvas-anno-text-fontball" title="更多字色（展開色盤）"
+                  onClick={() => { setShowTextBgPop(false); setShowTextFontPop((v) => !v); }}
+                  style={{
+                    width: 18, height: 18, flexShrink: 0, borderRadius: '50%', background: curFont,
+                    border: '2px solid var(--text-tertiary)', cursor: 'pointer', padding: 0,
+                  }}
+                />
+
+                <span style={dividerStyle} />
+                {/* 底：透明 + 4 快選 + 球球 */}
+                <span style={lbl}>底</span>
+                <button
+                  className={`tk-btn ${te.bg ? '' : 'tk-btn--primary'}`}
+                  style={{ cursor: 'pointer', fontSize: 'var(--text-xs)', padding: '1px 6px', flexShrink: 0 }}
                   onClick={() => updateTextExtra({ bg: null })}
                   title="背景透明"
                   data-testid="canvas-anno-text-bg-none"
                 >
                   透明
                 </button>
-                {TEXT_COLORS.map((c) => (
+                {TEXT_PRESET_COLORS.map((c) => (
                   <button
-                    key={`bg-${c}`}
-                    onClick={() => updateTextExtra({ bg: c })}
-                    title="背景顏色"
+                    key={`bg-${c}`} onClick={() => updateTextExtra({ bg: c })} title="背景顏色"
                     style={{
-                      width: 14, height: 14, borderRadius: 3, background: c, cursor: 'pointer',
+                      width: 16, height: 16, flexShrink: 0, borderRadius: 4, background: c, cursor: 'pointer', padding: 0,
                       border: te.bg === c ? '2px solid var(--text-primary)' : '1px solid rgba(0,0,0,0.25)',
                     }}
                   />
                 ))}
                 <button
+                  data-canvas-textcolorbtn data-testid="canvas-anno-text-bgball" title="更多背景色（展開色盤）"
+                  onClick={() => { setShowTextFontPop(false); setShowTextBgPop((v) => !v); }}
+                  style={{
+                    width: 18, height: 18, flexShrink: 0, borderRadius: '50%', cursor: 'pointer', padding: 0,
+                    border: '2px solid var(--text-tertiary)',
+                    background: te.bg ?? 'transparent',
+                    // 透明時用棋盤格表示「無背景」
+                    backgroundImage: te.bg ? undefined
+                      : 'linear-gradient(45deg, #bbb 25%, transparent 25%, transparent 75%, #bbb 75%), linear-gradient(45deg, #bbb 25%, #fff 25%, #fff 75%, #bbb 75%)',
+                    backgroundSize: '8px 8px', backgroundPosition: '0 0, 4px 4px',
+                  }}
+                />
+
+                <span style={dividerStyle} />
+                {/* 刪除 */}
+                <button
                   className="tk-btn"
-                  style={{ cursor: 'pointer', fontSize: 'var(--text-xs)', padding: '1px 5px' }}
+                  style={{ cursor: 'pointer', fontSize: 'var(--text-sm)', padding: '1px 6px', flexShrink: 0 }}
                   onClick={deleteSelectedText}
                   title="刪除此文字框"
                   data-testid="canvas-anno-text-delete"
                 >
-                  刪除
+                  🗑
                 </button>
               </div>
             );
           })()}
+
+          {/* 字色完整色盤（點球球展開） */}
+          {selectedTextItem && showTextFontPop && (
+            <div
+              data-canvas-textpop data-testid="canvas-anno-text-fontpop"
+              style={{
+                width: 220, background: 'var(--bg-surface)', border: '1px solid var(--border-default)',
+                borderRadius: 'var(--radius-md)', boxShadow: 'var(--shadow-lg)', padding: 8,
+              }}
+            >
+              <ColorPickerInline
+                initial={selectedTextItem.color || '#ef4444'}
+                onChange={(hex) => setTextColor(hex)}
+                onPick={(hex) => setTextColor(hex)}
+              />
+            </div>
+          )}
+          {/* 背景完整色盤（點球球展開） */}
+          {selectedTextItem && showTextBgPop && (
+            <div
+              data-canvas-textpop data-testid="canvas-anno-text-bgpop"
+              style={{
+                width: 220, background: 'var(--bg-surface)', border: '1px solid var(--border-default)',
+                borderRadius: 'var(--radius-md)', boxShadow: 'var(--shadow-lg)', padding: 8,
+              }}
+            >
+              <ColorPickerInline
+                initial={parseTextExtra(selectedTextItem.dataJson).bg ?? '#ffffff'}
+                onChange={(hex) => updateTextExtra({ bg: hex })}
+                onPick={(hex) => updateTextExtra({ bg: hex })}
+              />
+            </div>
+          )}
         </div>
         ) : (
           <button
