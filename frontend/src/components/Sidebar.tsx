@@ -4,8 +4,10 @@ import {
   CurrentUser,
   NoteCategory,
   NoteTag,
+  NoteSummary,
   listNoteCategories,
   listNoteTags,
+  listNotes,
   createNoteCategory,
   updateNoteCategory,
   deleteNoteCategory,
@@ -19,7 +21,7 @@ import {
 } from "@/lib/api";
 import { NOTE_DND_MIME } from "@/lib/constants";
 import { logger } from "@/lib/logger";
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { NoteCreateModal } from "./NoteCreateModal";
@@ -57,6 +59,8 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [categories, setCategories] = useState<NoteCategory[]>([]);
   const [tags, setTags] = useState<NoteTag[]>([]);
+  // 全部筆記（用來在分類樹下「像 VS Code 一樣」列出每個分類底下的筆記＝檔案）。
+  const [notes, setNotes] = useState<NoteSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -89,25 +93,55 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
     }
   }, []);
 
+  // 筆記是否已至少抓過一次（供「預設收合」初始化時機判斷；空清單也算抓過）。
+  const [notesLoaded, setNotesLoaded] = useState(false);
+
+  // 載入全部筆記（供分類樹列出各分類底下的筆記）。獨立於 reload，較輕量，可單獨刷新。
+  const loadNotes = useCallback(async () => {
+    try {
+      setNotes(await listNotes());
+    } catch (err) {
+      logger.error("Failed to load notes for sidebar tree:", err);
+    } finally {
+      setNotesLoaded(true);
+    }
+  }, []);
+
   useEffect(() => {
     reload();
-  }, [reload]);
+    loadNotes();
+  }, [reload, loadNotes]);
+
+  // 筆記被拖入某分類（本側欄派發 zonwiki:note-categorized）時，重抓筆記讓樹即時反映歸屬變化。
+  useEffect(() => {
+    const onCategorized = () => loadNotes();
+    window.addEventListener("zonwiki:note-categorized", onCategorized);
+    return () => window.removeEventListener("zonwiki:note-categorized", onCategorized);
+  }, [loadNotes]);
+
+  // 切換路由（例如新增/刪除/編輯筆記後導覽）時，刷新樹中的筆記清單，保持與內容一致。
+  useEffect(() => {
+    loadNotes();
+  }, [pathname, loadNotes]);
 
   // 換頁時自動關閉行動版側欄抽屜（手機點側欄連結導到新頁後，抽屜不應殘留開啟）。
   useEffect(() => {
     closeMobileNav();
   }, [pathname]);
 
-  // 預設「全部收合」：分類首次載入時，把所有「有子分類的分類」放進收合集合（只做一次）。
-  // 之後使用者自由展開/收合；分類 CRUD 重抓不會重設（didInitCollapse 守衛）。
+  // 預設「全部收合」：分類與筆記首次載入後，把所有「可展開（有子分類或底下有筆記）的分類」
+  // 放進收合集合（只做一次）。之後使用者自由展開/收合；CRUD 重抓不會重設（didInitCollapse 守衛）。
   const didInitCollapse = useRef(false);
   useEffect(() => {
-    if (didInitCollapse.current || categories.length === 0) return;
+    if (didInitCollapse.current || categories.length === 0 || !notesLoaded) return;
     didInitCollapse.current = true;
-    const haveChildren = new Set<string>();
-    for (const c of categories) if (c.parentId) haveChildren.add(c.parentId);
-    setCollapsed(haveChildren);
-  }, [categories]);
+    const expandable = new Set<string>();
+    // 有子分類者
+    for (const c of categories) if (c.parentId) expandable.add(c.parentId);
+    // 底下有筆記者（一篇筆記可屬多個分類）
+    for (const note of notes) for (const cat of note.categories ?? []) expandable.add(cat.id);
+    setCollapsed(expandable);
+  }, [categories, notes, notesLoaded]);
 
   // 點選某分類（?categoryId=…）時，自動展開其「所有祖先」，確保該分類在樹中可見並捲動到視野。
   // 注意：刻意「不展開該分類本身」——它本身的展開/收合改由點名稱（＝點三角形）切換，
@@ -180,6 +214,24 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
   const childrenOf = (parentId: string | null) =>
     categories.filter((c) => (c.parentId ?? null) === parentId);
 
+  // 依分類分組的筆記（一篇筆記可屬多個分類 → 會出現在每個所屬分類下），標題排序。
+  const notesByCat = useMemo(() => {
+    const map = new Map<string, NoteSummary[]>();
+    for (const note of notes) {
+      for (const cat of note.categories ?? []) {
+        const list = map.get(cat.id) ?? [];
+        list.push(note);
+        map.set(cat.id, list);
+      }
+    }
+    for (const list of map.values()) {
+      list.sort((a, b) => a.title.localeCompare(b.title, "zh-Hant"));
+    }
+    return map;
+  }, [notes]);
+
+  const notesOf = (categoryId: string) => notesByCat.get(categoryId) ?? [];
+
   const descendantIds = (id: string): Set<string> => {
     const out = new Set<string>();
     const walk = (pid: string) =>
@@ -199,8 +251,10 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
       return next;
     });
 
-  // 有子分類的節點（用於「全部展開/收合」與是否顯示該控制列）
-  const parentIds = categories.filter((c) => childrenOf(c.id).length > 0).map((c) => c.id);
+  // 可展開的節點（有「子分類」或「底下有筆記」者；用於「全部展開/收合」與是否顯示該控制列）
+  const parentIds = categories
+    .filter((c) => childrenOf(c.id).length > 0 || notesOf(c.id).length > 0)
+    .map((c) => c.id);
   const allExpanded = collapsed.size === 0;
   const toggleExpandAll = () =>
     setCollapsed(allExpanded ? new Set(parentIds) : new Set());
@@ -726,9 +780,44 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
     </div>
   );
 
-  // 遞迴渲染分類節點（無限階層）
+  // 目前正在閱讀的筆記路徑（用來在樹中高亮該「檔案」）。slug 可能含「/」，路徑直接比對即可。
+  const currentNotePath = decodeURIComponent(pathname);
+
+  // 渲染一列「筆記（檔案）」：點擊即開啟該筆記。縮排比所屬分類深一層。
+  const renderNoteRow = (note: NoteSummary, depth: number): React.ReactNode => {
+    const isActive = currentNotePath === `/notes/${note.slug}`;
+    return (
+      <div
+        key={`note-${note.id}`}
+        className="nt-row nt-row--note"
+        style={{ paddingLeft: `${depth * 14}px` }}
+      >
+        <span className="nt-caret nt-caret--spacer" />
+        <Link
+          href={`/notes/${note.slug}`}
+          prefetch
+          className="nt-name nt-name--note"
+          title={note.title}
+          style={{
+            fontWeight: isActive ? 600 : 400,
+            color: isActive ? "var(--action-secondary-fg)" : "var(--text-secondary)",
+            background: isActive ? "var(--action-secondary-bg)" : undefined,
+            borderRadius: isActive ? "var(--radius-sm)" : undefined,
+          }}
+        >
+          <span aria-hidden="true" style={{ marginRight: 4, opacity: 0.7 }}>📄</span>
+          <span className="nt-name-text">{note.title || "(無標題筆記)"}</span>
+        </Link>
+      </div>
+    );
+  };
+
+  // 遞迴渲染分類節點（無限階層）；展開後像 VS Code 一樣顯示「子分類（資料夾）＋筆記（檔案）」。
   const renderNode = (cat: NoteCategory, depth: number): React.ReactNode => {
     const kids = childrenOf(cat.id);
+    const catNotes = notesOf(cat.id);
+    // 有子分類或底下有筆記 → 可展開（顯示三角形、點名稱可收合）。
+    const expandable = kids.length > 0 || catNotes.length > 0;
     const isCollapsed = collapsed.has(cat.id);
     const isSelected = selectedCategoryId === cat.id;
     // 目前閱讀的筆記所屬分類（網址未帶 categoryId 時，用此標示目前位置）。
@@ -825,7 +914,7 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
               ⠿
             </span>
           )}
-          {kids.length > 0 ? (
+          {expandable ? (
             <button
               className="nt-caret"
               onClick={() => toggleCollapse(cat.id)}
@@ -847,7 +936,7 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
                 return;
               }
               // 點分類名稱＝點左側三角形：切換展開/收合（同時照常導覽/篩選該分類）。
-              if (kids.length > 0) toggleCollapse(cat.id);
+              if (expandable) toggleCollapse(cat.id);
             }}
             style={{
               fontWeight: highlighted ? 600 : 400,
@@ -860,11 +949,6 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
               <span title="目前閱讀的筆記在此分類" style={{ marginRight: 2 }}>📍</span>
             )}
             <span className="nt-name-text">{cat.name}</span>
-            <span className="nt-count">
-              {kids.length > 0
-                ? `(子類: ${kids.length}, 筆記: ${cat.noteCount})`
-                : `(筆記: ${cat.noteCount})`}
-            </span>
           </Link>
           {(cat.tags ?? []).slice(0, 1).map((t) => (
             <span key={t.id} className="nt-chip">
@@ -887,7 +971,13 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
           ((catEditor.mode === "edit" && catEditor.id === cat.id) ||
             (catEditor.mode === "add" && catEditor.parentId === cat.id)) &&
           renderCatEditor()}
-        {!isCollapsed && kids.map((k) => renderNode(k, depth + 1))}
+        {!isCollapsed && (
+          <>
+            {/* 先列「子分類（資料夾）」，再列「本分類的筆記（檔案）」，與 VS Code 一致。 */}
+            {kids.map((k) => renderNode(k, depth + 1))}
+            {catNotes.map((note) => renderNoteRow(note, depth + 1))}
+          </>
+        )}
       </div>
     );
   };
@@ -959,7 +1049,7 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
                 ⇅ 排序{sortMode ? "中" : ""}
               </button>
               <button className="nt-tool nt-tool--primary" onClick={() => openAddCategory(null)} title="新增分類">
-                ＋ 新增
+                ＋ 新增分類
               </button>
             </>
           ) : (
@@ -973,7 +1063,7 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
                 ⇅ 排序{sortMode ? "中" : ""}
               </button>
               <button className="nt-tool nt-tool--primary" onClick={openAddTag} title="新增標籤">
-                ＋ 新增
+                ＋ 新增標籤
               </button>
             </>
           )}

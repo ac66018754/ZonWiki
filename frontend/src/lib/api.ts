@@ -1695,6 +1695,18 @@ export async function askNoteSelectionAnswer(
   return r.data?.answer ?? null;
 }
 
+/**
+ * 通用 AI 提問（不綁定筆記/節點）：以呼叫端組好的 context + question 請 AI 回答。
+ * 用於開問啦畫布便利貼的「繼續問」（沒有單一筆記脈絡）。
+ */
+export async function askAi(context: string, question: string): Promise<string | null> {
+  const r = await fetchJson<{ answer: string }>('/api/ai/ask', {
+    method: 'POST',
+    body: JSON.stringify({ context, question }),
+  });
+  return r.data?.answer ?? null;
+}
+
 /** 列出某筆記的所有文字標註。 */
 export async function listNoteMarks(noteId: string): Promise<NoteMark[]> {
   const r = await fetchJson<NoteMark[]>(`/api/notes/${encodeURIComponent(noteId)}/marks`);
@@ -2072,6 +2084,8 @@ export interface TrashItem {
   preview?: string | null;
   /** 刪除時間 (UTC) */
   deletedDateTime: string;
+  /** 還原後會回到哪裡（例：「筆記《X》」「畫布《Y》」「排程於 6/24」；可空） */
+  context?: string | null;
 }
 
 /**

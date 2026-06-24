@@ -5,7 +5,7 @@
 export interface TocItem {
   id: string;
   text: string;
-  level: 2 | 3;
+  level: 1 | 2 | 3;
 }
 
 export interface TocResult {
@@ -13,7 +13,7 @@ export interface TocResult {
   toc: TocItem[];
 }
 
-const HEADING = /<h([23])\b([^>]*)>([\s\S]*?)<\/h\1>/gi;
+const HEADING = /<h([123])\b([^>]*)>([\s\S]*?)<\/h\1>/gi;
 const EXISTING_ID = /\bid\s*=\s*["']([^"']+)["']/i;
 
 function slugify(text: string): string {
@@ -33,7 +33,7 @@ export function buildToc(html: string): TocResult {
   const used = new Set<string>();
 
   const out = html.replace(HEADING, (match, lvl: string, attrs: string, inner: string) => {
-    const level = (Number(lvl) === 3 ? 3 : 2) as 2 | 3;
+    const level = Number(lvl) as 1 | 2 | 3;
     const text = inner
       .replace(/<[^>]+>/g, "")
       .replace(/\s+/g, " ")

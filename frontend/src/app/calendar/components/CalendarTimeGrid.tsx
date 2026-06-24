@@ -8,6 +8,8 @@ import { localKey, barColors, taskRangeKeys } from "./calendarBars";
 const SNAP_MIN = 15; // 拖曳 / 縮放對齊的分鐘格
 const MIN_DUR = 15; // 最短時長（分）
 const MINUTES_PER_DAY = 24 * 60;
+// 任務塊最多佔欄位寬度的比例；其餘（右側）留白給「點擊新增此時段任務」（Google Calendar 風）。
+const BLOCK_AREA_RATIO = 0.8;
 
 /** 取某 UTC ISO 在指定時區的「當日分鐘數」(0~1439)。 */
 function minutesInTz(iso: string, tz: string): number {
@@ -282,7 +284,11 @@ export function CalendarTimeGrid({
                   // 任務塊四周留小縫隙，讓周圍空白時段仍可點擊新增（gap=左右、vGap=上下）。
                   const gap = 3;
                   const vGap = 2;
-                  const widthPct = 100 / p.cols;
+                  // 任務塊最多只佔「該欄位寬度」的 80%，右側固定留 20% 空白條給「點擊新增此時段任務」。
+                  // lane 仍依「完整寬度（100%）」分欄定位，只是塊本身縮成 80%——故重疊任務排列不變，
+                  // 但每欄右緣一定留有可點擊的空白（避免任務塊填滿整格、沒地方點來新增）。
+                  const fullWidthPct = 100 / p.cols; // 該 lane 的完整可用寬（%）
+                  const blockWidthPct = fullWidthPct * BLOCK_AREA_RATIO; // 塊實際寬（= 80% 完整寬）
                   const top = (sMin / 60) * HOUR_H + vGap;
                   const height = Math.max(((eMin - sMin) / 60) * HOUR_H - vGap * 2, 12);
                   return (
@@ -295,8 +301,8 @@ export function CalendarTimeGrid({
                         position: "absolute",
                         top,
                         height,
-                        left: `calc(${p.lane * widthPct}% + ${gap}px)`,
-                        width: `calc(${widthPct}% - ${gap * 2}px)`,
+                        left: `calc(${p.lane * fullWidthPct}% + ${gap}px)`,
+                        width: `calc(${blockWidthPct}% - ${gap * 2}px)`,
                         background: c.bg,
                         color: c.fg,
                         border: `1px solid ${c.border}`,

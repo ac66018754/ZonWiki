@@ -7,14 +7,25 @@ import {
   createNoteOverlay,
   updateNoteOverlay,
   deleteNoteOverlay,
+  askNoteSelectionAnswer,
   type NoteOverlayItem,
 } from '@/lib/api';
 import { logger } from '@/lib/logger';
 import { ColorPickerInline } from '@/components/ColorPicker';
 import { pushUndo } from '@/lib/undoManager';
-
-/** 便利貼可選底色。 */
-const STICKY_COLORS = ['#fff9c4', '#ffe0b2', '#c8e6c9', '#bbdefb', '#f8bbd0', '#e1bee7'];
+import {
+  type DrawTool,
+  type Shape,
+  normalizeShapes,
+  safeParse,
+  samePoint,
+  eraseAt,
+  eraseInBox,
+} from '@/lib/drawing/shapes';
+import { ShapeEl } from '@/lib/drawing/ShapeEl';
+import { StickyBody } from '@/components/overlay/StickyBody';
+import { SlideBody } from '@/components/overlay/SlideBody';
+import { STICKY_COLORS } from '@/components/overlay/overlayShared';
 
 /**
  * 事件：框選提問的答案要放進「就在原處旁邊」的便利貼（由 NoteMarksLayer 派發、NoteOverlay 接收建立）。
@@ -22,26 +33,25 @@ const STICKY_COLORS = ['#fff9c4', '#ffe0b2', '#c8e6c9', '#bbdefb', '#f8bbd0', '#
  */
 export const NOTE_ASK_STICKY_EVENT = 'zonwiki:note-ask-sticky';
 
-/**
- * 繪圖工具。null＝不繪圖（一般互動：可選文字、拖便利貼）。
- * erase-stroke＝整筆刪除（點一筆即刪整筆）；erase-area＝局部擦除（擦到哪、那裏消失）。
- */
-type DrawTool = 'pen' | 'line' | 'rect' | 'ellipse' | 'erase-stroke' | 'erase-area' | 'erase-box' | null;
-
-/** 一個繪圖形狀。free＝多點折線；line/rect/ellipse＝起訖兩點。 */
-interface Shape {
-  type: 'free' | 'line' | 'rect' | 'ellipse';
-  color: string;
-  width: number;
-  dash?: boolean;
-  points: [number, number][];
-}
+/** 便利貼/圖片板標題列上的小圖示按鈕樣式（－ 收合、🗑 刪除）。 */
+const chromeBtnStyle: React.CSSProperties = {
+  flexShrink: 0,
+  border: 'none',
+  background: 'transparent',
+  cursor: 'pointer',
+  color: 'var(--text-tertiary)',
+  fontSize: 'var(--text-sm)',
+  lineHeight: 1,
+  padding: '0 2px',
+};
 
 interface Props {
   /** 筆記 ID。 */
   noteId: string;
   /** 內文容器（.markdown-prose）參考；浮層覆蓋其上。 */
   containerRef: React.RefObject<HTMLDivElement | null>;
+  /** 點右下角工具列「📖 目錄」時呼叫（重新開啟章節目錄表）。 */
+  onRequestToc?: () => void;
 }
 
 /**
@@ -56,7 +66,7 @@ interface Props {
  * 浮層容器 pointer-events:none；繪圖中時 SVG 捕捉指標、便利貼暫不可拖；未繪圖時指標穿透、便利貼可互動，
  * 故不影響底下文字選取（#5 標註）。
  */
-export function NoteOverlay({ noteId, containerRef }: Props) {
+export function NoteOverlay({ noteId, containerRef, onRequestToc }: Props) {
   const [items, setItems] = useState<NoteOverlayItem[]>([]);
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [mounted, setMounted] = useState(false);
@@ -72,6 +82,19 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
   const [selectedShapeIdx, setSelectedShapeIdx] = useState<number | null>(null);
 
   useEffect(() => setMounted(true), []);
+
+  // 便利貼/圖片板：收合（只剩標題）的項目集合；正在編輯標題的項目與其草稿值。
+  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
+  const [editingTitleId, setEditingTitleId] = useState<string | null>(null);
+  const [titleDraft, setTitleDraft] = useState('');
+
+  const toggleCollapse = (id: string) =>
+    setCollapsedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
 
   // 畫筆色盤：點空白處（色盤與色票鈕以外）才關閉，方便連續調色。
   useEffect(() => {
@@ -103,6 +126,7 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
       const detail = (e as CustomEvent<{ x: number; y: number; text: string }>).detail;
       if (!detail) return;
       const z = itemsRef.current.reduce((m, i) => Math.max(m, i.zIndex), 0) + 1;
+      // detail.x/y 為「相對內文容器」座標；新便利貼預設跟著內文（absolute），直接沿用即可。
       createNoteOverlay(noteId, {
         kind: 'sticky',
         x: Math.max(0, detail.x),
@@ -118,7 +142,7 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
     };
     window.addEventListener(NOTE_ASK_STICKY_EVENT, onAskSticky);
     return () => window.removeEventListener(NOTE_ASK_STICKY_EVENT, onAskSticky);
-  }, [noteId]);
+  }, [noteId, containerRef]);
 
   // 量測內文容器尺寸（繪圖 SVG 用）
   useEffect(() => {
@@ -152,16 +176,24 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
   };
 
   // ── 新增便利貼 / 輪播 ──
+  // 新元件預設「跟著內文捲動」（pinned=false、相對內文座標），出現在內文左上、稍微階梯錯開避免完全重疊；
+  // 之後可用標題列的「📌」切換成「釘住浮動、可拖到任何地方」。
+  const spawnPos = () => {
+    const step = (items.filter((i) => i.kind !== 'drawing').length % 6) * 18;
+    return { x: 36 + step, y: 36 + step };
+  };
   const addSticky = async () => {
+    const p = spawnPos();
     const created = await createNoteOverlay(noteId, {
-      kind: 'sticky', x: 24, y: 24, width: 180, height: 120, zIndex: maxZ + 1,
+      kind: 'sticky', x: p.x, y: p.y, width: 220, height: 200, zIndex: maxZ + 1,
       color: STICKY_COLORS[0], text: '',
     });
     if (created) setItems((prev) => [...prev, created]);
   };
   const addSlide = async () => {
+    const p = spawnPos();
     const created = await createNoteOverlay(noteId, {
-      kind: 'slide', x: 24, y: 24, width: 260, height: 200, zIndex: maxZ + 1,
+      kind: 'slide', x: p.x, y: p.y, width: 260, height: 200, zIndex: maxZ + 1,
       dataJson: JSON.stringify([]),
     });
     if (created) setItems((prev) => [...prev, created]);
@@ -169,6 +201,100 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
   const remove = async (id: string) => {
     setItems((prev) => prev.filter((i) => i.id !== id));
     await deleteNoteOverlay(id);
+  };
+
+  // ── 便利貼「繼續問」：脈絡＝筆記內容（後端自動帶）＋前一張便利貼＋本便利貼，答案變成新便利貼 ──
+  const askFromSticky = async (item: NoteOverlayItem, question: string) => {
+    // 「前一張便利貼」＝便利貼清單中、排在本貼之前的那一張（依顯示/建立順序）。
+    const stickies = itemsRef.current.filter((i) => i.kind === 'sticky');
+    const idx = stickies.findIndex((s) => s.id === item.id);
+    const prev = idx > 0 ? stickies[idx - 1] : null;
+    const anchorText =
+      (prev ? `【前一張便利貼】\n${prev.text ?? ''}\n\n` : '') +
+      `【目前便利貼】\n${item.text ?? ''}`;
+    const answer = await askNoteSelectionAnswer(noteId, {
+      anchorText,
+      anchorStart: 0,
+      anchorEnd: 0,
+      anchorPrefix: '',
+      anchorSuffix: '',
+      question,
+    });
+    if (!answer) return;
+    const z = itemsRef.current.reduce((m, i) => Math.max(m, i.zIndex), 0) + 1;
+    const created = await createNoteOverlay(noteId, {
+      kind: 'sticky',
+      x: Math.max(0, item.x + 28),
+      y: Math.max(0, item.y + 28),
+      width: Math.max(240, item.width),
+      height: Math.max(180, item.height),
+      zIndex: z,
+      color: STICKY_COLORS[2],
+      text: `Q：${question}\n\nA：${answer}`,
+    });
+    if (created) setItems((prev2) => [...prev2, created]);
+  };
+
+  // ── 便利貼 dataJson 結構 { title?, highlights? }：標題與重點共存於同一欄，互不覆蓋 ──
+  const stickyDataObj = (item: NoteOverlayItem): Record<string, unknown> => {
+    try {
+      const parsed = JSON.parse(item.dataJson || '');
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+    } catch { /* 舊格式（純陣列）或空 → 視為無標題 */ }
+    return {};
+  };
+  const stickyTitle = (item: NoteOverlayItem): string => {
+    const title = stickyDataObj(item).title;
+    return typeof title === 'string' ? title : '';
+  };
+  /** 合併寫入便利貼 dataJson（保留另一欄）。 */
+  const writeStickyData = (item: NoteOverlayItem, patch: Record<string, unknown>) => {
+    const json = JSON.stringify({ ...stickyDataObj(item), ...patch });
+    patchLocal(item.id, { dataJson: json });
+    persist(item.id, { dataJson: json });
+  };
+  /** 刪除浮層項目（先確認；軟刪除 → 進垃圾桶可還原）。 */
+  const confirmRemove = (item: NoteOverlayItem) => {
+    const label = item.kind === 'sticky' ? '便利貼' : '圖片板';
+    if (window.confirm(`刪除這張${label}？（之後可在「垃圾桶 → 便利貼」還原）`)) remove(item.id);
+  };
+
+  // ── 「釘住浮動 / 跟著內文」切換（#5）──
+  // pinned=true：position:fixed、portal 到 body、可拖到整個畫面（含側欄），但不隨內文捲動（像章節目錄表）。
+  // pinned=false（預設）：position:absolute 疊在內文上，隨內文捲動、被內文區裁切（原本的便利貼行為）。
+  // x/y 的意義隨 pinned 改變（fixed＝視窗座標、absolute＝相對內文座標），切換時換算座標讓它停在原地。
+  const isPinned = (item: NoteOverlayItem): boolean => stickyDataObj(item).pinned === true;
+  const togglePin = (item: NoteOverlayItem) => {
+    const pinned = !isPinned(item);
+    const rect = containerRef.current?.getBoundingClientRect();
+    let nx = item.x;
+    let ny = item.y;
+    if (rect) {
+      // 釘住：內文座標 → 視窗座標；取消：視窗座標 → 內文座標。
+      nx = pinned ? rect.left + item.x : item.x - rect.left;
+      ny = pinned ? rect.top + item.y : item.y - rect.top;
+    }
+    patchLocal(item.id, { x: nx, y: ny });
+    persist(item.id, { x: nx, y: ny });
+    writeStickyData(item, { pinned });
+  };
+
+  /**
+   * 「便利貼歸位」救援：把所有便利貼/圖片板移回內文左上角階梯排列、並取消釘住——
+   * 救回被拖到看不見（標題列被裁切、抓不回來）的元件。
+   */
+  const gatherStrayItems = () => {
+    items
+      .filter((i) => i.kind !== 'drawing')
+      .forEach((item, i) => {
+        const x = 28 + (i % 8) * 26;
+        const y = 28 + (i % 8) * 26;
+        patchLocal(item.id, { x, y });
+        persist(item.id, { x, y });
+        if (item.kind === 'sticky' && isPinned(item)) {
+          writeStickyData(item, { pinned: false });
+        }
+      });
   };
 
   // ── 拖曳 / 縮放 ──
@@ -182,7 +308,23 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
     const onMove = (ev: PointerEvent) => {
       const dx = ev.clientX - sx, dy = ev.clientY - sy;
       if (mode === 'move') {
-        next = { x: Math.max(0, ox + dx), y: Math.max(0, oy + dy), width: ow, height: oh };
+        let nx = ox + dx;
+        let ny = oy + dy;
+        if (isPinned(item)) {
+          // 釘住（視窗座標）：夾在畫面內，至少保留標題列可抓，避免拖到完全看不到。
+          const maxX = (typeof window !== 'undefined' ? window.innerWidth : 2000) - 40;
+          const maxY = (typeof window !== 'undefined' ? window.innerHeight : 2000) - 28;
+          nx = Math.min(maxX, Math.max(0, nx));
+          ny = Math.min(maxY, Math.max(0, ny));
+        } else {
+          // 跟著內文（相對座標）：夾在內文範圍內，至少保留 40px 寬＋標題列高度可見，
+          // 避免被內文區（overflow:hidden）裁切到「整條標題列＋按鈕都看不到、抓不回來」。
+          const maxX = Math.max(0, size.w - 40);
+          const maxY = Math.max(0, size.h + extraHeight - 28);
+          nx = Math.min(maxX, Math.max(0, nx));
+          ny = Math.min(maxY, Math.max(0, ny));
+        }
+        next = { x: nx, y: ny, width: ow, height: oh };
         patchLocal(item.id, { x: next.x, y: next.y });
       } else {
         next = { x: ox, y: oy, width: Math.max(120, ow + dx), height: Math.max(80, oh + dy) };
@@ -421,6 +563,148 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
       : shapes;
   const drawingActive = tool !== null;
 
+  /**
+   * 渲染單張便利貼 / 圖片板。pinned 者用 position:fixed（由 portal 掛到 body，可拖到整個畫面）；
+   * 非 pinned 者用 position:absolute（疊在內文上、隨內文捲動、被內文區裁切）。
+   */
+  const renderOverlayItem = (item: NoteOverlayItem): React.ReactNode => {
+    const collapsed = collapsedIds.has(item.id);
+    const isSticky = item.kind === 'sticky';
+    const pinned = isPinned(item);
+    return (
+      <div
+        key={item.id}
+        style={{
+          position: pinned ? 'fixed' : 'absolute', left: item.x, top: item.y, width: item.width,
+          height: collapsed ? 'auto' : item.height,
+          zIndex: pinned ? 1100 + item.zIndex : item.zIndex,
+          pointerEvents: drawingActive ? 'none' : 'auto',
+          display: 'flex', flexDirection: 'column',
+          borderRadius: 'var(--radius-md)', boxShadow: 'var(--shadow-md)', overflow: 'hidden',
+          border: '1px solid var(--border-default)',
+          background: isSticky ? (item.color || STICKY_COLORS[0]) : 'var(--bg-surface)',
+        }}
+        onPointerDown={() => bringToFront(item)}
+        data-testid={`overlay-item-${item.kind}`}
+      >
+        <div
+          className="overlay-item-chrome"
+          onPointerDown={(e) => startDrag(e, item, 'move')}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 4,
+            padding: '2px 4px 2px 6px', cursor: 'move', background: 'rgba(0,0,0,0.06)', flexShrink: 0,
+          }}
+        >
+          {/* 標題：便利貼可點擊自訂；圖片板固定。 */}
+          {editingTitleId === item.id && isSticky ? (
+            <input
+              value={titleDraft}
+              autoFocus
+              onChange={(e) => setTitleDraft(e.target.value)}
+              onPointerDown={(e) => e.stopPropagation()}
+              onBlur={() => { writeStickyData(item, { title: titleDraft.trim() }); setEditingTitleId(null); }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') e.currentTarget.blur();
+                if (e.key === 'Escape') setEditingTitleId(null);
+              }}
+              placeholder="便利貼標題…"
+              style={{
+                flex: 1, minWidth: 0, border: '1px solid rgba(0,0,0,0.2)', borderRadius: 3,
+                padding: '0 4px', fontSize: 'var(--text-xs)', background: 'rgba(255,255,255,0.8)', color: '#333', outline: 'none',
+              }}
+            />
+          ) : (
+            <span
+              onClick={(e) => {
+                if (!isSticky) return;
+                e.stopPropagation();
+                setTitleDraft(stickyTitle(item));
+                setEditingTitleId(item.id);
+              }}
+              onPointerDown={(e) => { if (isSticky) e.stopPropagation(); }}
+              title={isSticky ? '點擊修改標題' : undefined}
+              style={{
+                flex: '0 1 auto', maxWidth: '50%', minWidth: 0, fontSize: 'var(--text-xs)', color: 'var(--text-secondary)',
+                cursor: isSticky ? 'text' : 'move', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              }}
+            >
+              {isSticky ? (stickyTitle(item) || '便利貼') : '圖片板'}
+            </span>
+          )}
+          {/* 可拖曳的留白（標題與按鈕之間）：讓人好抓著拖曳整張便利貼。 */}
+          {editingTitleId !== item.id && (
+            <span aria-hidden="true" style={{ flex: 1, alignSelf: 'stretch', cursor: 'move' }} />
+          )}
+          {/* 📌 釘住浮動 / 跟著內文 切換（便利貼專屬） */}
+          {isSticky && (
+            <button
+              onClick={() => togglePin(item)}
+              onPointerDown={(e) => e.stopPropagation()}
+              title={pinned ? '已釘住浮動（可拖到任何地方）；點擊改為跟著內文捲動' : '跟著內文捲動；點擊改為釘住浮動、可拖到任何地方'}
+              data-testid="overlay-item-pin"
+              style={{ ...chromeBtnStyle, opacity: pinned ? 1 : 0.5 }}
+            >
+              📌
+            </button>
+          )}
+          {/* － 收合（只剩標題） */}
+          <button
+            onClick={() => toggleCollapse(item.id)}
+            onPointerDown={(e) => e.stopPropagation()}
+            title={collapsed ? '展開' : '收合（只剩標題）'}
+            data-testid="overlay-item-collapse"
+            style={chromeBtnStyle}
+          >
+            {collapsed ? '＋' : '－'}
+          </button>
+          {/* 🗑 刪除（先確認；進垃圾桶可還原） */}
+          <button
+            onClick={() => confirmRemove(item)}
+            onPointerDown={(e) => e.stopPropagation()}
+            title="刪除（進垃圾桶可還原）"
+            data-testid="overlay-item-delete"
+            style={chromeBtnStyle}
+          >
+            🗑
+          </button>
+        </div>
+
+        {!collapsed && (isSticky ? (
+          <StickyBody
+            item={item}
+            onText={(t) => patchLocal(item.id, { text: t })}
+            onTextCommit={(t) => persist(item.id, { text: t })}
+            onColor={(c) => { patchLocal(item.id, { color: c }); persist(item.id, { color: c }); }}
+            onHighlightsChange={(highlights) => writeStickyData(item, { highlights })}
+            onAsk={(q) => askFromSticky(item, q)}
+          />
+        ) : (
+          <SlideBody
+            item={item}
+            onImagesChange={(imgs) => {
+              const json = JSON.stringify(imgs);
+              patchLocal(item.id, { dataJson: json });
+              persist(item.id, { dataJson: json });
+            }}
+          />
+        ))}
+
+        {!collapsed && (
+          <div
+            className="overlay-item-chrome"
+            onPointerDown={(e) => startDrag(e, item, 'resize')}
+            title="拖曳調整大小"
+            style={{
+              position: 'absolute', right: 0, bottom: 0, width: 14, height: 14,
+              cursor: 'nwse-resize', background: 'transparent',
+              borderRight: '2px solid var(--border-strong, #999)', borderBottom: '2px solid var(--border-strong, #999)',
+            }}
+          />
+        )}
+      </div>
+    );
+  };
+
   return (
     <>
       {/* 撐高內文容器的占位元素（正常流）：讓繪圖區與便利貼/輪播可向下延伸到加高後的區域。 */}
@@ -468,71 +752,15 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
             />
           )}
         </svg>
-
-        {/* 便利貼 / 輪播 元件（繪圖中暫不可互動，讓 SVG 捕捉） */}
-        {items.filter((i) => i.kind !== 'drawing').map((item) => (
-          <div
-            key={item.id}
-            style={{
-              position: 'absolute', left: item.x, top: item.y, width: item.width, height: item.height,
-              zIndex: item.zIndex, pointerEvents: drawingActive ? 'none' : 'auto',
-              display: 'flex', flexDirection: 'column',
-              borderRadius: 'var(--radius-md)', boxShadow: 'var(--shadow-md)', overflow: 'hidden',
-              border: '1px solid var(--border-default)',
-              background: item.kind === 'sticky' ? (item.color || STICKY_COLORS[0]) : 'var(--bg-surface)',
-            }}
-            onPointerDown={() => bringToFront(item)}
-            data-testid={`overlay-item-${item.kind}`}
-          >
-            <div
-              onPointerDown={(e) => startDrag(e, item, 'move')}
-              style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                padding: '2px 6px', cursor: 'move', background: 'rgba(0,0,0,0.06)', flexShrink: 0,
-              }}
-            >
-              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)' }}>
-                {item.kind === 'sticky' ? '便利貼' : '圖片板'}
-              </span>
-              <button
-                onClick={() => remove(item.id)}
-                title="刪除"
-                style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text-tertiary)', fontSize: 'var(--text-sm)' }}
-              >
-                ✕
-              </button>
-            </div>
-
-            {item.kind === 'sticky' ? (
-              <StickyBody
-                item={item}
-                onText={(t) => patchLocal(item.id, { text: t })}
-                onTextCommit={(t) => persist(item.id, { text: t })}
-                onColor={(c) => { patchLocal(item.id, { color: c }); persist(item.id, { color: c }); }}
-              />
-            ) : (
-              <SlideBody
-                item={item}
-                onImagesChange={(imgs) => {
-                  const json = JSON.stringify(imgs);
-                  patchLocal(item.id, { dataJson: json });
-                  persist(item.id, { dataJson: json });
-                }}
-              />
-            )}
-
-            <div
-              onPointerDown={(e) => startDrag(e, item, 'resize')}
-              title="拖曳調整大小"
-              style={{
-                position: 'absolute', right: 0, bottom: 0, width: 14, height: 14,
-                cursor: 'nwse-resize', background: 'transparent',
-                borderRight: '2px solid var(--border-strong, #999)', borderBottom: '2px solid var(--border-strong, #999)',
-              }}
-            />
-          </div>
-        ))}
+        {/* 非 pinned 便利貼/圖片板：position:absolute 疊在內文上、隨內文捲動、被內文區裁切（原本行為）。 */}
+        {items.filter((i) => i.kind !== 'drawing' && !isPinned(i)).map(renderOverlayItem)}
       </div>
+
+      {/* pinned 便利貼/圖片板：portal 至 body、position:fixed → 可自由拖到整個畫面（含側欄），不隨內文捲動。 */}
+      {mounted && createPortal(
+        <>{items.filter((i) => i.kind !== 'drawing' && isPinned(i)).map(renderOverlayItem)}</>,
+        document.body,
+      )}
 
       {/* 工具列：portal 至 body 並 position:fixed → 捲動內文時固定不動，不會被滑掉（#6）。
           固定在右下角（浮動工具盤），避免蓋住內文頂端的「編輯 / 匯出 PDF / 刪除」按鈕。
@@ -550,8 +778,14 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
             background: 'var(--bg-surface)', border: '1px solid var(--border-default)',
             borderRadius: 'var(--radius-md)', padding: 4, boxShadow: 'var(--shadow-md)', maxWidth: 380,
           }}>
+            {onRequestToc && (
+              <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={onRequestToc} title="顯示章節目錄表" data-testid="overlay-toggle-toc">📖 目錄</button>
+            )}
             <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={addSticky} title="新增便利貼" data-testid="overlay-add-sticky">＋便利貼</button>
             <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={addSlide} title="新增圖片板（可放多張圖、手動切換）" data-testid="overlay-add-slide">＋圖片板</button>
+            {items.some((i) => i.kind !== 'drawing') && (
+              <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={gatherStrayItems} title="便利貼歸位：把所有便利貼/圖片板拉回左上角（救回被拖到看不見、抓不回來的）" data-testid="overlay-gather">↺ 歸位</button>
+            )}
             {/* 繪圖工具：點同一鈕可再關閉 */}
             {([
               ['pen', '✏️', '自由筆'],
@@ -644,353 +878,4 @@ export function NoteOverlay({ noteId, containerRef }: Props) {
       )}
     </>
   );
-}
-
-/** 依給定描邊屬性渲染單一形狀（free/line→polyline、rect→rect、ellipse→ellipse）。 */
-function renderShapeWith(
-  s: Shape,
-  props: React.SVGProps<SVGPolylineElement & SVGRectElement & SVGEllipseElement>
-): React.ReactElement | null {
-  if (s.type === 'free' || s.type === 'line') {
-    return <polyline points={s.points.map((p) => `${p[0]},${p[1]}`).join(' ')} {...props} />;
-  }
-  const [a, b] = s.points;
-  if (!a || !b) return null;
-  if (s.type === 'rect') {
-    return <rect x={Math.min(a[0], b[0])} y={Math.min(a[1], b[1])} width={Math.abs(b[0] - a[0])} height={Math.abs(b[1] - a[1])} {...props} />;
-  }
-  return <ellipse cx={(a[0] + b[0]) / 2} cy={(a[1] + b[1]) / 2} rx={Math.abs(b[0] - a[0]) / 2} ry={Math.abs(b[1] - a[1]) / 2} {...props} />;
-}
-
-/** 渲染單一形狀（不畫任何外框/光暈——避免被誤判成線條粗度）。 */
-function ShapeEl({
-  s, erasable, onErase,
-}: {
-  s: Shape;
-  erasable: boolean;
-  onErase: () => void;
-}) {
-  const common = {
-    fill: 'none' as const,
-    stroke: s.color,
-    strokeWidth: s.width,
-    strokeLinecap: 'round' as const,
-    strokeLinejoin: 'round' as const,
-    strokeDasharray: s.dash ? '6 4' : undefined,
-    style: { pointerEvents: (erasable ? 'stroke' : 'none') as React.CSSProperties['pointerEvents'], cursor: erasable ? 'cell' : 'default' },
-    onPointerDown: erasable ? onErase : undefined,
-  };
-  return renderShapeWith(s, common);
-}
-
-/** 便利貼內容：可編輯文字 + 底色選擇。 */
-function StickyBody({
-  item, onText, onTextCommit, onColor,
-}: {
-  item: NoteOverlayItem;
-  onText: (t: string) => void;
-  onTextCommit: (t: string) => void;
-  onColor: (c: string) => void;
-}) {
-  return (
-    <>
-      <textarea
-        value={item.text ?? ''}
-        onChange={(e) => onText(e.target.value)}
-        onBlur={(e) => onTextCommit(e.target.value)}
-        placeholder="便利貼…"
-        style={{
-          flex: 1, width: '100%', boxSizing: 'border-box', resize: 'none', border: 'none',
-          background: 'transparent', padding: '6px', fontSize: 'var(--text-sm)', color: '#333', outline: 'none',
-        }}
-        data-testid="sticky-text"
-      />
-      <div style={{ display: 'flex', gap: 3, padding: '2px 6px', flexShrink: 0 }}>
-        {STICKY_COLORS.map((c) => (
-          <button
-            key={c}
-            onClick={() => onColor(c)}
-            title="底色"
-            style={{
-              width: 14, height: 14, borderRadius: '50%', background: c, cursor: 'pointer',
-              border: item.color === c ? '2px solid #333' : '1px solid rgba(0,0,0,0.2)',
-            }}
-          />
-        ))}
-      </div>
-    </>
-  );
-}
-
-/**
- * 圖片板內容：固定大小（可手動拖曳調整）、可放多張圖片、手動切換（不自動輪播）。
- * 框不會自適應圖片——由使用者決定框的大小，圖片以 contain 顯示。
- */
-function SlideBody({
-  item, onImagesChange,
-}: {
-  item: NoteOverlayItem;
-  onImagesChange: (imgs: string[]) => void;
-}) {
-  const images: string[] = item.dataJson ? safeParse<string[]>(item.dataJson, []) : [];
-  const [idx, setIdx] = useState(0);
-  const [url, setUrl] = useState('');
-  const fileRef = useRef<HTMLInputElement>(null);
-
-  /** 直接上傳/貼上圖片：讀成 data URL 後加入圖片板（不需網址）。 */
-  const addImageFile = (file: File) => {
-    if (!file.type.startsWith('image/')) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        onImagesChange([...images, reader.result]);
-        setIdx(images.length);
-      }
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const safeIdx = images.length ? idx % images.length : 0;
-
-  return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-      <div style={{ flex: 1, position: 'relative', minHeight: 0, background: 'var(--bg-surface-secondary, #1118)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        {images.length === 0 ? (
-          <span
-            style={{ color: '#aaa', fontSize: 'var(--text-xs)', textAlign: 'center', cursor: 'pointer', padding: '0 8px' }}
-            onClick={() => fileRef.current?.click()}
-            title="點此上傳圖片"
-            onPaste={(e) => {
-              const item = Array.from(e.clipboardData?.items ?? []).find((it) => it.type.startsWith('image/'));
-              const f = item?.getAsFile();
-              if (f) { e.preventDefault(); addImageFile(f); }
-            }}
-          >
-            尚無圖片，點此上傳或下方貼上/加網址
-          </span>
-        ) : (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={images[safeIdx]}
-            alt={`board-${safeIdx}`}
-            style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
-          />
-        )}
-        {images.length > 1 && (
-          <>
-            <button onClick={() => setIdx((i) => (i - 1 + images.length) % images.length)} style={navBtn('left')} title="上一張">‹</button>
-            <button onClick={() => setIdx((i) => (i + 1) % images.length)} style={navBtn('right')} title="下一張">›</button>
-            <div style={{ position: 'absolute', bottom: 4, left: 0, right: 0, display: 'flex', gap: 4, justifyContent: 'center' }}>
-              {images.map((_, i) => (
-                <span key={i} style={{ width: 6, height: 6, borderRadius: '50%', background: i === safeIdx ? '#fff' : 'rgba(255,255,255,0.4)' }} />
-              ))}
-            </div>
-          </>
-        )}
-      </div>
-      <div style={{ display: 'flex', gap: 3, padding: '3px', flexShrink: 0 }}>
-        <input
-          ref={fileRef}
-          type="file"
-          accept="image/*"
-          style={{ display: 'none' }}
-          onChange={(e) => { const f = e.target.files?.[0]; if (f) addImageFile(f); e.target.value = ''; }}
-        />
-        <button
-          className="tk-btn"
-          style={{ cursor: 'pointer', fontSize: 'var(--text-xs)', padding: '2px 6px', flexShrink: 0 }}
-          onClick={() => fileRef.current?.click()}
-          title="上傳圖片（直接放圖，不需網址）"
-          data-testid="slide-upload"
-        >
-          📁 上傳
-        </button>
-        <input
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          onPaste={(e) => {
-            const item = Array.from(e.clipboardData?.items ?? []).find((it) => it.type.startsWith('image/'));
-            const f = item?.getAsFile();
-            if (f) { e.preventDefault(); addImageFile(f); }
-          }}
-          placeholder="或貼上圖片 / 網址…"
-          style={{ flex: 1, minWidth: 0, fontSize: 'var(--text-xs)', padding: '2px 4px', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-sm)' }}
-          data-testid="slide-url"
-        />
-        <button
-          className="tk-btn"
-          style={{ cursor: 'pointer', fontSize: 'var(--text-xs)', padding: '2px 6px' }}
-          disabled={!/^https?:\/\//.test(url.trim())}
-          onClick={() => { onImagesChange([...images, url.trim()]); setUrl(''); setIdx(images.length); }}
-          data-testid="slide-add"
-        >
-          加入
-        </button>
-        {images.length > 0 && (
-          <button
-            className="tk-btn"
-            style={{ cursor: 'pointer', fontSize: 'var(--text-xs)', padding: '2px 6px' }}
-            onClick={() => { const next = images.filter((_, i) => i !== safeIdx); onImagesChange(next); setIdx(0); }}
-            title="移除目前這張"
-          >
-            移除
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function navBtn(side: 'left' | 'right'): React.CSSProperties {
-  return {
-    position: 'absolute', top: '50%', transform: 'translateY(-50%)', [side]: 4,
-    width: 22, height: 22, borderRadius: '50%', border: 'none', cursor: 'pointer',
-    background: 'rgba(0,0,0,0.5)', color: '#fff', fontSize: 16, lineHeight: '1',
-  } as React.CSSProperties;
-}
-
-/** 把（可能是舊版只有 points 的）資料正規化成 Shape（缺 type 視為 free）。 */
-function normalizeShapes(raw: unknown[]): Shape[] {
-  return (raw || [])
-    .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
-    .map((s) => ({
-      type: (['free', 'line', 'rect', 'ellipse'].includes(s.type as string) ? s.type : 'free') as Shape['type'],
-      color: typeof s.color === 'string' ? s.color : '#ef4444',
-      width: typeof s.width === 'number' ? s.width : 3,
-      dash: !!s.dash,
-      points: Array.isArray(s.points) ? (s.points as [number, number][]) : [],
-    }));
-}
-
-/** 兩點是否幾乎相同（用於判斷形狀是否有實際拖出大小）。 */
-function samePoint(a?: [number, number], b?: [number, number]): boolean {
-  if (!a || !b) return true;
-  return Math.abs(a[0] - b[0]) < 2 && Math.abs(a[1] - b[1]) < 2;
-}
-
-/** 平方距離（避免開根號）。 */
-function dist2(ax: number, ay: number, bx: number, by: number): number {
-  const dx = ax - bx, dy = ay - by;
-  return dx * dx + dy * dy;
-}
-
-/** 把折線各段以約 2px 間距加密取樣，讓局部橡皮擦能可靠命中描邊。 */
-function densifyPolyline(corners: [number, number][], stepPx = 2): [number, number][] {
-  const out: [number, number][] = [];
-  for (let i = 0; i < corners.length - 1; i++) {
-    const [ax, ay] = corners[i];
-    const [bx, by] = corners[i + 1];
-    const segLen = Math.hypot(bx - ax, by - ay);
-    const steps = Math.max(1, Math.ceil(segLen / stepPx));
-    for (let k = 0; k < steps; k++) {
-      const t = k / steps;
-      out.push([ax + (bx - ax) * t, ay + (by - ay) * t]);
-    }
-  }
-  if (corners.length > 0) out.push(corners[corners.length - 1]);
-  return out;
-}
-
-/**
- * 把幾何形狀（line/rect/ellipse）攤平成密集點折線，供局部橡皮擦做「部分擦除」。
- * 自由筆（free）已是點折線，直接回傳其點。
- */
-function shapeToPoints(s: Shape): [number, number][] {
-  if (s.type === 'free') return s.points;
-  const [a, b] = s.points;
-  if (!a || !b) return [];
-  if (s.type === 'line') {
-    return densifyPolyline([a, b]);
-  }
-  if (s.type === 'rect') {
-    const x0 = Math.min(a[0], b[0]);
-    const y0 = Math.min(a[1], b[1]);
-    const x1 = Math.max(a[0], b[0]);
-    const y1 = Math.max(a[1], b[1]);
-    return densifyPolyline([[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]);
-  }
-  // ellipse：以參數式取樣（Ramanujan 周長近似決定取樣點數）
-  const cx = (a[0] + b[0]) / 2;
-  const cy = (a[1] + b[1]) / 2;
-  const rx = Math.abs(b[0] - a[0]) / 2;
-  const ry = Math.abs(b[1] - a[1]) / 2;
-  const circumference = Math.PI * (3 * (rx + ry) - Math.sqrt((3 * rx + ry) * (rx + 3 * ry)));
-  const n = Math.max(24, Math.ceil(circumference / 2));
-  const pts: [number, number][] = [];
-  for (let i = 0; i <= n; i++) {
-    const t = (i / n) * Math.PI * 2;
-    pts.push([cx + rx * Math.cos(t), cy + ry * Math.sin(t)]);
-  }
-  return pts;
-}
-
-/** 對一條點折線，移除「符合 shouldRemove 的點」並斷開成多段，把結果（型別一律 free）推入 out。 */
-function erodeFreePoints(
-  template: Shape,
-  points: [number, number][],
-  shouldRemove: (p: [number, number]) => boolean,
-  out: Shape[]
-): void {
-  let seg: [number, number][] = [];
-  for (const p of points) {
-    if (shouldRemove(p)) {
-      if (seg.length > 1) out.push({ ...template, type: 'free', points: seg });
-      seg = [];
-    } else {
-      seg.push(p);
-    }
-  }
-  if (seg.length > 1) out.push({ ...template, type: 'free', points: seg });
-}
-
-/**
- * 以「點判定函式」擦除：把符合 shouldRemove 的點移除、斷開成多段（真正「擦到哪、那裏消失」）。
- * - free：直接逐點處理。
- * - line / rect / ellipse：先看是否真的碰到描邊；沒碰到 → 保留原向量圖形（不退化）；
- *   碰到 → 攤平成密集點折線再套用同一套移除＋斷開邏輯（於是橢圓/矩形/直線也能被擦出缺口、其餘部分保留）。
- */
-function eraseByPredicate(list: Shape[], shouldRemove: (p: [number, number]) => boolean): Shape[] {
-  const out: Shape[] = [];
-  for (const s of list) {
-    if (s.type === 'free') {
-      erodeFreePoints(s, s.points, shouldRemove, out);
-      continue;
-    }
-    const points = shapeToPoints(s);
-    if (!points.some(shouldRemove)) {
-      out.push(s); // 沒碰到 → 保留原向量圖形
-      continue;
-    }
-    erodeFreePoints(s, points, shouldRemove, out);
-  }
-  return out;
-}
-
-/** 局部擦除：在 (x,y) 半徑 r 內移除內容。 */
-function eraseAt(list: Shape[], x: number, y: number, r: number): Shape[] {
-  const r2 = r * r;
-  return eraseByPredicate(list, (p) => dist2(p[0], p[1], x, y) <= r2);
-}
-
-/** 框選擦除：移除落在矩形 [minX,maxX]×[minY,maxY] 內的內容（同樣只擦框到的部分，不連帶刪整個形狀）。 */
-function eraseInBox(
-  list: Shape[],
-  minX: number,
-  minY: number,
-  maxX: number,
-  maxY: number
-): Shape[] {
-  return eraseByPredicate(
-    list,
-    (p) => p[0] >= minX && p[0] <= maxX && p[1] >= minY && p[1] <= maxY
-  );
-}
-
-/** 安全解析 JSON，失敗回退預設值。 */
-function safeParse<T>(json: string, fallback: T): T {
-  try {
-    return JSON.parse(json) as T;
-  } catch {
-    return fallback;
-  }
 }

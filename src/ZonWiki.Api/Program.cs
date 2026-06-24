@@ -89,6 +89,18 @@ using (var scope = app.Services.CreateScope())
             app.Logger.LogInformation("Development seed: Created dev user {UserId} ({Email})", devUser.Id, devUser.Email);
         }
     }
+
+    // AI 模型種子：若內容根目錄存在 ai-models.json（已 gitignore、不含於公開 repo），
+    // 把其中的「共用預設模型」等補種進 DB，讓 clone 下來的人不必先手動設定就能用 AI 功能。
+    // 檔案不存在則略過（不是錯誤）。詳見 AiModelJsonSeeder 與 ai-models.example.json。
+    var aiModelsPath = Path.Combine(app.Environment.ContentRootPath, "ai-models.json");
+    var protectionProvider = scope.ServiceProvider
+        .GetRequiredService<Microsoft.AspNetCore.DataProtection.IDataProtectionProvider>();
+    await ZonWiki.Infrastructure.Ai.AiModelJsonSeeder.SeedAsync(
+        dbContext,
+        protectionProvider,
+        app.Logger,
+        aiModelsPath);
 }
 
 if (app.Environment.IsDevelopment())
@@ -146,6 +158,9 @@ app.MapCanvasSystemEndpoints();
 
 // 全站搜尋端點（I6 - 納入筆記、任務、畫布、節點）
 app.MapSearchEndpoints();
+
+// 通用 AI 提問（供開問啦畫布便利貼「繼續問」等無筆記脈絡場景）
+app.MapAiEndpoints();
 
 app.Run();
 

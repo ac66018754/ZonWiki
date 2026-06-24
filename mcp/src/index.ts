@@ -8,7 +8,11 @@
  * 所有寫入皆呼叫 ZonWiki 的 Web API（預設 http://localhost:5009）。
  * 設定環境變數 ZONWIKI_API_BASE 來指向自訂後端位置。
  *
- * 認證：目前須確保呼叫時的 HTTP 請求會自動帶上認證資訊（cookie、bearer token）。
+ * 認證（ZonWiki 後端為 Cookie 認證、強制登入）：
+ * - 設定 ZONWIKI_API_COOKIE＝瀏覽器登入後的完整 Cookie 字串（例如 "ZonWikiAuth=...."），
+ *   呼叫時會以 Cookie 標頭帶上；這是本機 / 自架最常用的方式。
+ * - 或設定 ZONWIKI_API_TOKEN＝Bearer token（若後端改採 token 認證時）。
+ * 兩者皆未設定時，請求不帶認證——只適用於未開啟認證的後端，否則會收到 401。
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
@@ -16,6 +20,19 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 
 const API_BASE = process.env.ZONWIKI_API_BASE ?? 'http://localhost:5009'
+const API_COOKIE = process.env.ZONWIKI_API_COOKIE
+const API_TOKEN = process.env.ZONWIKI_API_TOKEN
+
+/**
+ * 組出每次請求要帶的標頭：Content-Type（有 body 時）+ 認證（Cookie 或 Bearer）。
+ */
+function buildHeaders(hasBody: boolean): Record<string, string> {
+  const headers: Record<string, string> = {}
+  if (hasBody) headers['Content-Type'] = 'application/json'
+  if (API_COOKIE) headers['Cookie'] = API_COOKIE
+  if (API_TOKEN) headers['Authorization'] = `Bearer ${API_TOKEN}`
+  return headers
+}
 
 /**
  * 呼叫 ZonWiki API 的通用函式（GET/POST/PUT/DELETE）。
@@ -29,7 +46,7 @@ const API_BASE = process.env.ZONWIKI_API_BASE ?? 'http://localhost:5009'
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     method,
-    headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+    headers: buildHeaders(body !== undefined),
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
   const json = (await res.json()) as { Success: boolean; Data: T; Error?: string }

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { enhanceCodeBlocks } from '@/lib/codeBlocks';
@@ -32,6 +32,8 @@ import { MarkdownEditor } from '@/components/MarkdownEditor';
 import { LinkedEntitiesBar } from '@/components/LinkedEntitiesBar';
 import { NoteMarksLayer } from '@/components/NoteMarksLayer';
 import { NoteOverlay } from '@/components/NoteOverlay';
+import { TocPanel } from '@/components/TocPanel';
+import { buildToc } from '@/lib/toc';
 import { useUndoHotkeys, resetUndo } from '@/lib/undoManager';
 
 /**
@@ -92,6 +94,14 @@ export default function NotesDetailPage() {
 
   // 標籤頁
   const [activeTab, setActiveTab] = useState<'preview' | 'comments' | 'history' | 'backlinks' | 'links'>('preview');
+
+  // 章節目錄表（浮動、可拖曳、可關閉）：進入筆記頁預設開啟（重新整理＝重新開啟）。
+  const [tocOpen, setTocOpen] = useState(true);
+  // 由內文 HTML 萃取章節（h1/h2/h3）並為各標題補上錨點 id（供目錄點擊捲動）。
+  const { html: previewHtml, toc } = useMemo(
+    () => (note ? buildToc(note.contentHtml) : { html: '', toc: [] }),
+    [note],
+  );
 
   // 共用「復原 / 重做」：手繪塗鴉與畫重點共用同一條 Ctrl+Z 堆疊，僅在預覽分頁掛上單一鍵盤監聽。
   useUndoHotkeys(activeTab === 'preview');
@@ -205,10 +215,14 @@ export default function NotesDetailPage() {
     }
   };
 
-  // 匯出 PDF：用瀏覽器原生列印（另存為 PDF）。以 @media print 只保留筆記內容區，
+  // 匯出 PDF：用瀏覽器原生列印（另存為 PDF）。
+  // 列印的是「實際預覽區」（含手繪塗鴉/便利貼/畫重點），@media print 會隱藏全站外殼、
+  // 右下角工具列與章節目錄表，只留標題＋內容＋浮層（手繪等）。
+  // 先切到「預覽」分頁確保浮層（含手繪 SVG）已掛載，否則塗鴉印不出來；
   // 並把文件標題暫時改成筆記標題，讓「另存 PDF」的預設檔名即為筆記標題。
   const handleExportPdf = () => {
     if (!note) return;
+    setActiveTab('preview');
     const prevTitle = document.title;
     document.title = note.title || '筆記';
     // 等標題套用後再叫出列印對話框；列印結束後還原標題。
@@ -217,7 +231,8 @@ export default function NotesDetailPage() {
       window.removeEventListener('afterprint', restore);
     };
     window.addEventListener('afterprint', restore);
-    setTimeout(() => window.print(), 50);
+    // 稍候讓「預覽分頁＋浮層（手繪）」完成渲染再列印。
+    setTimeout(() => window.print(), 200);
   };
 
   // 刪除筆記
@@ -679,9 +694,12 @@ export default function NotesDetailPage() {
               </div>
             )}
 
-            {/* 預覽標籤：框選文字畫重點/做關聯/寫備註（NoteMarksLayer）＋ 浮層便利貼/塗鴉/輪播（NoteOverlay，疊最上層） */}
+            {/* 預覽標籤：框選文字畫重點/做關聯/寫備註（NoteMarksLayer）＋ 浮層便利貼/塗鴉/輪播（NoteOverlay，疊最上層）
+                ＋ 浮動章節目錄表（TocPanel）。此區也是「匯出 PDF」實際列印的區塊（含手繪等浮層）。 */}
             {activeTab === 'preview' && (
-              <div style={{ position: 'relative' }}>
+              <div className="note-live-preview" style={{ position: 'relative' }}>
+                {/* 列印用標題：螢幕上隱藏，@media print 顯示（內文區本身不含標題）。 */}
+                <h1 className="note-print-title" aria-hidden="true">{note.title}</h1>
                 <div
                   ref={setPreviewNode}
                   className="markdown-prose"
@@ -691,15 +709,22 @@ export default function NotesDetailPage() {
                     borderRadius: 'var(--radius-lg)',
                     border: '1px solid var(--border-default)',
                   }}
-                  dangerouslySetInnerHTML={{ __html: note.contentHtml }}
+                  dangerouslySetInnerHTML={{ __html: previewHtml }}
                 />
                 <NoteMarksLayer
                   noteId={note.id}
                   containerRef={previewRef}
-                  contentHtml={note.contentHtml}
+                  contentHtml={previewHtml}
                   active={activeTab === 'preview'}
                 />
-                <NoteOverlay noteId={note.id} containerRef={previewRef} />
+                <NoteOverlay
+                  noteId={note.id}
+                  containerRef={previewRef}
+                  onRequestToc={() => setTocOpen(true)}
+                />
+                {tocOpen && toc.length > 0 && (
+                  <TocPanel noteId={note.id} toc={toc} onClose={() => setTocOpen(false)} />
+                )}
               </div>
             )}
 
@@ -869,18 +894,6 @@ export default function NotesDetailPage() {
               </div>
             )}
 
-            {/*
-              列印 / 匯出 PDF 專用區塊：螢幕上隱藏（display:none），僅在 @media print 顯示。
-              點「匯出 PDF」→ window.print()，列印 CSS（globals.css）會隱藏整頁其餘內容，
-              只留這塊（標題＋內容），不受目前在哪個分頁影響。
-            */}
-            <div className="note-print-only" aria-hidden="true">
-              <h1 className="note-print-title">{note.title}</h1>
-              <div
-                className="markdown-prose"
-                dangerouslySetInnerHTML={{ __html: note.contentHtml }}
-              />
-            </div>
           </>
         )}
       </div>
@@ -917,6 +930,8 @@ export default function NotesDetailPage() {
           margin: var(--spacing-4) 0 var(--spacing-2);
           font-weight: 600;
           color: var(--text-primary);
+          /* 章節目錄表點擊捲動時，讓標題不要被頂端置頂工具列遮住。 */
+          scroll-margin-top: 64px;
         }
 
         .markdown-prose h1 {
