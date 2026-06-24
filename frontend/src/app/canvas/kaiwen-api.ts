@@ -9,6 +9,7 @@ import type {
   AiModelConfigDto,
   AiModelDto,
   ApiResponse,
+  CanvasAnnotationDto,
   CanvasDto,
   CanvasGraphDto,
   CanvasSystemConfigDto,
@@ -292,4 +293,37 @@ export const kaiwenApi = {
     http<unknown>('PUT', `/canvases/${encodeURIComponent(canvasId)}/categories`, { Ids: ids }),
   setCanvasOwnPrompts: (canvasId: string, ids: string[]) =>
     http<unknown>('PUT', `/canvases/${encodeURIComponent(canvasId)}/system-prompts`, { Ids: ids }),
+
+  // 畫布標註（便利貼 / 塗鴉 / 圖片板）— 與筆記浮層對等，座標為畫布座標 (flow coords)
+  listCanvasAnnotations: (canvasId: string) =>
+    http<CanvasAnnotationDto[]>('GET', `/canvases/${encodeURIComponent(canvasId)}/annotations`),
+  createCanvasAnnotation: (
+    canvasId: string,
+    body: {
+      Kind: 'sticky' | 'drawing' | 'slide' | 'text'
+      X: number
+      Y: number
+      Width: number
+      Height: number
+      ZIndex: number
+      Color?: string | null
+      Text?: string | null
+      DataJson?: string | null
+    }
+  ) => http<CanvasAnnotationDto>('POST', `/canvases/${encodeURIComponent(canvasId)}/annotations`, body),
+  updateCanvasAnnotation: (
+    annotationId: string,
+    patch: {
+      X?: number
+      Y?: number
+      Width?: number
+      Height?: number
+      ZIndex?: number
+      Color?: string | null
+      Text?: string | null
+      DataJson?: string | null
+    }
+  ) => http<CanvasAnnotationDto>('PATCH', `/annotations/${encodeURIComponent(annotationId)}`, patch),
+  deleteCanvasAnnotation: (annotationId: string) =>
+    http<unknown>('DELETE', `/annotations/${encodeURIComponent(annotationId)}`),
 }

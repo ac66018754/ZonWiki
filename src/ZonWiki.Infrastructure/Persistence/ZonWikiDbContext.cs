@@ -96,6 +96,7 @@ public sealed class ZonWikiDbContext(
     public DbSet<CanvasSystemPrompt> CanvasSystemPrompt => Set<CanvasSystemPrompt>();
     public DbSet<AiSession> AiSession => Set<AiSession>();
     public DbSet<AiMessage> AiMessage => Set<AiMessage>();
+    public DbSet<CanvasAnnotation> CanvasAnnotation => Set<CanvasAnnotation>();
 
     // --- 通用實體關聯（任務/子任務/筆記/節點 互連）---------------------------------
     public DbSet<EntityLink> EntityLink => Set<EntityLink>();
