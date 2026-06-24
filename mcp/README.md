@@ -59,14 +59,15 @@ dotnet run --project src/ZonWiki.Api --launch-profile http
       "command": "node",
       "args": ["<ZonWiki-repo>/mcp/dist/index.js"],
       "env": {
-        "ZONWIKI_API_BASE": "http://localhost:5009"
+        "ZONWIKI_API_BASE": "http://localhost:5009",
+        "ZONWIKI_API_COOKIE": "ZonWikiAuth=貼上你瀏覽器登入後的 Cookie"
       }
     }
   }
 }
 ```
 
-（將路徑改成你的實際路徑）
+（將路徑改成你的實際絕對路徑；`ZONWIKI_API_COOKIE` 見下方「認證」）
 
 ### 3. 設定 Claude Code
 
@@ -85,15 +86,22 @@ Claude 會自動呼叫 `list_tasks` 並解析結果。
 ## 環境變數
 
 - `ZONWIKI_API_BASE` — ZonWiki API 的基礎 URL（預設 `http://localhost:5009`）
+- `ZONWIKI_API_COOKIE` — 登入後的完整 Cookie 字串（ZonWiki 為 Cookie 認證，最常用）
+- `ZONWIKI_API_TOKEN` — Bearer token（若後端改採 token 認證時）
 
 ## 認證
 
-目前 MCP Server 假設 HTTP 呼叫會自動帶上認證資訊（Cookie 或 Bearer token）。
+ZonWiki 後端是 **Cookie 認證、強制登入**；MCP Server 與瀏覽器是不同行程、不會自動共用登入狀態，
+因此要把認證資訊透過環境變數傳入：
 
-若要自訂認證：
-1. 編輯 `src/index.ts` 中的 `call()` 函式
-2. 加入自訂的 Authorization header
-3. 重新編譯：`npm run build`
+- 設定 `ZONWIKI_API_COOKIE`＝瀏覽器登入後的 Cookie 字串（開發者工具 → Application → Cookies 取得，
+  名稱通常以 `ZonWikiAuth` / `.AspNetCore` 開頭），呼叫時會自動以 `Cookie` 標頭帶上。
+- 或設定 `ZONWIKI_API_TOKEN`＝Bearer token。
+- 兩者都未設定時請求不帶認證，只適用於未開啟認證的後端，否則會收到 401。
+
+> ⚠️ Cookie/Token 等同登入憑證，請勿外洩或提交進版控；過期後重新取得即可。
+>
+> 完整使用說明見 [`docs/MCP使用說明.md`](../docs/MCP使用說明.md)。
 
 ## API 相容性
 

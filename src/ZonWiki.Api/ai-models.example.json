@@ -1,0 +1,58 @@
+{
+  // ===========================================================================
+  // ZonWiki AI 模型設定範本（ai-models.example.json）
+  // ---------------------------------------------------------------------------
+  // 用途：讓「clone 下來自己跑」的人，啟動時能自動有一個「共用預設 AI 模型」，
+  //       否則筆記的「調整排版 / 美化內容」、開問啦節點對話等 AI 功能會無法使用。
+  //
+  // 怎麼用（任選一種）：
+  //   (A) 複製本檔為 src/ZonWiki.Api/ai-models.json（此檔已被 .gitignore，不會進版控），
+  //       填入金鑰或保留 ${GEMINI_API_KEY} 佔位，啟動後端即自動把模型種進資料庫。
+  //   (B) 完全不用本檔，登入後到「設定 → AI 模型管理」用網頁自行新增自己的金鑰。
+  //
+  // 金鑰安全：
+  //   - apiKey 可直接填明碼，或用 ${ENV_VAR} 佔位（推薦）——執行時由環境變數解析，
+  //     金鑰本身就不會落在檔案裡。範例用 ${GEMINI_API_KEY}，啟動前先設好該環境變數即可。
+  //   - 種進資料庫時一律以 ASP.NET Core Data Protection「加密」儲存（DB 不存明碼）。
+  //
+  // 欄位說明：
+  //   key         穩定識別鍵（前端下拉 value、節點記錄使用）。需唯一。
+  //   label       顯示名稱。
+  //   provider    "OpenAiCompatible"（任何 OpenAI 相容 HTTP 端點，如 Gemini/OpenAI/Groq）
+  //               或 "ClaudeCli"（本機 claude CLI，免金鑰；僅本機環境可用）。
+  //   kind        "chat"（文字問答，預設）或 "image"（圖片生成）。
+  //   modelId     傳給供應者的模型代號。
+  //   baseUrl     OpenAiCompatible 的端點基底 URL（需含 /v1 等正確前綴）。ClaudeCli 不需要。
+  //   apiKey      金鑰或 ${ENV_VAR} 佔位；ClaudeCli 留空。
+  //   isDefault   true＝以「系統共用」身分種一份，所有使用者免設定即可用為預設模型。
+  //               （共用模型不會出現在任何人的設定頁，金鑰只存一份。）
+  //   enabled     是否啟用（false 不會出現在下拉、也不能被選用）。
+  // ===========================================================================
+  "models": [
+    {
+      "key": "banana-gemini-lite",
+      "label": "Gemini Flash Lite（共用預設）",
+      "provider": "OpenAiCompatible",
+      "kind": "chat",
+      "modelId": "gemini-2.0-flash-lite",
+      "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "apiKey": "${GEMINI_API_KEY}",
+      "isDefault": true,
+      "enabled": true,
+      "notes": "免費取得金鑰：https://aistudio.google.com/apikey 。設好環境變數 GEMINI_API_KEY 後啟動即可。"
+    }
+
+    // 範例：你也可以再加自己的 OpenAI / 任何相容端點（非共用、掛在第一位使用者名下）
+    // ,{
+    //   "key": "my-openai",
+    //   "label": "我的 OpenAI GPT-4o-mini",
+    //   "provider": "OpenAiCompatible",
+    //   "kind": "chat",
+    //   "modelId": "gpt-4o-mini",
+    //   "baseUrl": "https://api.openai.com/v1",
+    //   "apiKey": "${OPENAI_API_KEY}",
+    //   "isDefault": false,
+    //   "enabled": true
+    // }
+  ]
+}

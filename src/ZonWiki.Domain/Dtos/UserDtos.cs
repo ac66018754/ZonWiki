@@ -31,10 +31,12 @@ public sealed record UpdateUserSettingsRequest(
 /// <param name="Title">項目標題或名稱。</param>
 /// <param name="Preview">內容預覽片段（可空）。</param>
 /// <param name="DeletedDateTime">刪除時間（UTC），前端依使用者時區顯示。</param>
+/// <param name="Context">還原後會回到哪裡（例：「筆記《X》」「畫布《Y》」「排程於 6/24」）。可空。</param>
 public sealed record TrashItemDto(
     Guid Id,
     string Type,
     string Group,
     string Title,
     string? Preview,
-    DateTime DeletedDateTime);
+    DateTime DeletedDateTime,
+    string? Context = null);

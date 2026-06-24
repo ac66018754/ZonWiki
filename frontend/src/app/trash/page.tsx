@@ -29,7 +29,7 @@ const GROUP_ORDER: { name: string; icon: string }[] = [
   { name: "任務分類", icon: "📁" },
   { name: "快速記錄", icon: "⚡" },
   { name: "常用連結", icon: "🔗" },
-  { name: "筆記白板", icon: "🧩" },
+  { name: "便利貼", icon: "🗒️" },
   { name: "開問啦・畫布", icon: "🎨" },
   { name: "開問啦・節點", icon: "🔵" },
 ];
@@ -175,6 +175,11 @@ export default function TrashPage() {
                             <div className="trash-item-main">
                               <div className="trash-item-title">{item.title}</div>
                               {item.preview && <div className="trash-item-preview">{item.preview}</div>}
+                              {item.context && (
+                                <div className="trash-item-context" title="按「還原」後會回到這裡">
+                                  ↩ 還原到 {item.context}
+                                </div>
+                              )}
                               <div className="trash-item-time">🕓 刪除於 {formatDateTime(item.deletedDateTime, tz)}</div>
                             </div>
                             <div className="trash-item-actions">

@@ -1551,6 +1551,23 @@ button:disabled,
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* 便利貼文字框：隱藏捲軸，讓「文字框」與其下「重點底圖」的換行寬度一致，重點色塊才會對齊
+   （捲軸會吃掉文字寬度造成換行不同 → 重點錯位）。仍可用滾輪/觸控捲動。 */
+.sticky-textarea {
+  scrollbar-width: none; /* Firefox */
+}
+.sticky-textarea::-webkit-scrollbar {
+  display: none; /* WebKit */
+}
+
+/* 筆記（檔案）列：比分類（資料夾）列略矮、字略小，icon 與文字置中對齊。 */
+.nt-row--note {
+  min-height: 26px;
+}
+.nt-name--note {
+  align-items: center;
+  font-size: var(--text-xs);
+}
 .nt-count {
   flex-shrink: 0;
   margin-left: auto; /* 推到分類列最右側 */
@@ -3637,6 +3654,15 @@ html[data-route="trash"] .sidebar-toggle {
   font-size: var(--text-xs);
   color: var(--text-tertiary);
 }
+/* 「還原後會回到哪裡」提示（筆記/畫布/排程日）。 */
+.trash-item-context {
+  margin-top: 3px;
+  font-size: var(--text-xs);
+  color: var(--action-secondary-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .trash-item-actions {
   display: flex;
   gap: var(--spacing-2);
@@ -3837,10 +3863,13 @@ html[data-route="trash"] .sidebar-toggle {
 }
 
 /* ============================================================================
-   筆記匯出 PDF（瀏覽器列印）：螢幕上隱藏列印專用區；列印時只顯示該區（標題＋內容），
-   其餘整頁外殼與互動元件全部隱藏。詳情頁的「📄 匯出 PDF」會呼叫 window.print()。
+   筆記匯出 PDF（瀏覽器列印）：列印的是「實際預覽區（.note-live-preview）」——
+   故「手繪塗鴉 / 便利貼 / 畫重點」等浮層都會一起印出（之前的列印複製區不含浮層、塗鴉印不出來）。
+   列印時隱藏全站外殼、右下角工具列、章節目錄表，與便利貼/圖片板的互動外框（移動列、縮放把手）。
+   詳情頁的「📄 匯出 PDF」會先切到預覽分頁再呼叫 window.print()。
    ============================================================================ */
-.note-print-only {
+/* 列印用標題：螢幕上隱藏，僅 @media print 顯示（內文區本身不含標題）。 */
+.note-print-title {
   display: none;
 }
 
@@ -3854,11 +3883,18 @@ html[data-route="trash"] .sidebar-toggle {
     display: none !important;
   }
 
-  /* 筆記詳情頁：隱藏所有螢幕內容，只保留列印專用區 */
+  /* 隱藏浮動互動元件：右下角工具列、畫筆色盤、章節目錄表（皆不該出現在 PDF 裡） */
+  [data-testid="overlay-toolbar"],
+  [data-overlay-colorpop],
+  [data-testid="note-toc-panel"] {
+    display: none !important;
+  }
+
+  /* 筆記詳情頁：隱藏所有螢幕內容，只保留「實際預覽區」（含手繪等浮層） */
   .note-detail__container > * {
     display: none !important;
   }
-  .note-detail__container .note-print-only {
+  .note-detail__container > .note-live-preview {
     display: block !important;
   }
 
@@ -3878,31 +3914,43 @@ html[data-route="trash"] .sidebar-toggle {
     overflow: visible !important;
   }
 
-  .note-print-only {
-    padding: 0 4mm !important;
-    background: #fff !important;
-    color: #111 !important;
-  }
-  .note-print-only .note-print-title {
+  /* 列印用標題顯示 */
+  .note-live-preview .note-print-title {
+    display: block !important;
     font-size: 20pt;
     font-weight: 700;
     margin: 0 0 8pt;
     color: #111 !important;
   }
-  /* 內容區：列印一律黑字白底（不受深色主題影響），連結顯示底線 */
-  .note-print-only .markdown-prose,
-  .note-print-only .markdown-prose * {
+
+  /* 內容區：白底黑字、移除外框/陰影/內距，連結顯示底線（不受深色主題影響） */
+  .note-live-preview .markdown-prose {
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+  }
+  .note-live-preview .markdown-prose,
+  .note-live-preview .markdown-prose * {
     color: #111 !important;
     background: transparent !important;
   }
-  .note-print-only .markdown-prose a {
+  .note-live-preview .markdown-prose a {
     color: #111 !important;
     text-decoration: underline;
   }
-  .note-print-only .markdown-prose pre,
-  .note-print-only .markdown-prose code {
+  .note-live-preview .markdown-prose pre,
+  .note-live-preview .markdown-prose code {
     background: #f4f4f4 !important;
     border: 1px solid #ddd;
+  }
+
+  /* 手繪塗鴉層保留可見、且不裁切（依原座標印在內文上）；
+     便利貼/圖片板的互動外框（移動列、縮放把手）隱藏，只留內容。 */
+  .note-live-preview [data-testid="note-overlay"] {
+    overflow: visible !important;
+  }
+  .note-live-preview .overlay-item-chrome {
+    display: none !important;
   }
 
   @page {

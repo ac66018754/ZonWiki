@@ -37,6 +37,52 @@ public static class TrashEndpoints
     }
 
     /// <summary>
+    /// 從便利貼的 dataJson（{ title?, highlights? }）取自訂標題；無則回 null。
+    /// </summary>
+    private static string? StickyTitleFromDataJson(string? dataJson)
+    {
+        if (string.IsNullOrWhiteSpace(dataJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(dataJson);
+            if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                doc.RootElement.TryGetProperty("title", out var titleEl) &&
+                titleEl.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+                var title = titleEl.GetString();
+                return string.IsNullOrWhiteSpace(title) ? null : title.Trim();
+            }
+        }
+        catch
+        {
+            // 舊格式（純陣列）或壞 JSON → 無自訂標題
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 把 UTC 時間以指定時區格式化為「M/d」（給「排程於 …」用）；時區解析失敗則退回 UTC。
+    /// </summary>
+    private static string FormatDateInTz(DateTime utc, string? timeZoneId)
+    {
+        try
+        {
+            var tz = TimeZoneInfo.FindSystemTimeZoneById(string.IsNullOrWhiteSpace(timeZoneId) ? "Asia/Taipei" : timeZoneId);
+            var local = TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(utc, DateTimeKind.Utc), tz);
+            return local.ToString("M/d");
+        }
+        catch
+        {
+            return utc.ToString("M/d");
+        }
+    }
+
+    /// <summary>
     /// 取節點顯示標題：優先用 Title，否則用內容首段，皆無則給預設字樣。
     /// </summary>
     private static string NodeTitle(string? title, string? content)
@@ -72,6 +118,12 @@ public static class TrashEndpoints
 
             var items = new List<TrashItemDto>();
 
+            // 使用者時區（給「排程於 …」這類日期 context 用；存 UTC、依使用者時區顯示）。
+            var userTimeZone = await db.User
+                .Where(u => u.Id == userGuid)
+                .Select(u => u.TimeZone)
+                .FirstOrDefaultAsync(ct);
+
             // 註：列「所有軟刪除列」(!ValidFlag)，刪除時間用 DeletedDateTime ?? UpdatedDateTime——
             // 早期刪除（修正前）未寫 DeletedDateTime，仍要能在垃圾桶看到（以更新時間近似刪除時間）。
 
@@ -104,12 +156,18 @@ public static class TrashEndpoints
             // --- 任務 ---
             var taskCards = await db.TaskCard.IgnoreQueryFilters()
                 .Where(tc => tc.UserId == userGuid && !tc.ValidFlag)
-                .Select(tc => new { tc.Id, tc.Title, tc.Content, D = tc.DeletedDateTime ?? tc.UpdatedDateTime })
+                .Select(tc => new { tc.Id, tc.Title, tc.Content, tc.PlannedDateTime, tc.DueDateTime, D = tc.DeletedDateTime ?? tc.UpdatedDateTime })
                 .ToListAsync(ct);
-            items.AddRange(taskCards.Select(tc => new TrashItemDto(
-                tc.Id, "TaskCard", "任務",
-                string.IsNullOrWhiteSpace(tc.Title) ? "(無標題任務)" : tc.Title,
-                Snip(tc.Content), tc.D)));
+            items.AddRange(taskCards.Select(tc =>
+            {
+                // 還原後回到哪：有排程/截止日 → 「排程於 M/D」（行事曆該天）；否則「未排程任務」。
+                var when = tc.PlannedDateTime ?? tc.DueDateTime;
+                var ctx = when.HasValue ? $"排程於 {FormatDateInTz(when.Value, userTimeZone)}" : "未排程任務";
+                return new TrashItemDto(
+                    tc.Id, "TaskCard", "任務",
+                    string.IsNullOrWhiteSpace(tc.Title) ? "(無標題任務)" : tc.Title,
+                    Snip(tc.Content), tc.D, ctx);
+            }));
 
             // --- 任務分類 ---
             var taskGroups = await db.TaskGroup.IgnoreQueryFilters()
@@ -156,11 +214,64 @@ public static class TrashEndpoints
                     db.Canvas.IgnoreQueryFilters().Where(c => c.UserId == userGuid && c.ValidFlag),
                     n => n.CanvasId,
                     c => c.Id,
-                    (n, c) => new { n.Id, n.Title, n.Content, D = n.DeletedDateTime ?? n.UpdatedDateTime })
+                    (n, c) => new { n.Id, n.Title, n.Content, CanvasTitle = c.Title, D = n.DeletedDateTime ?? n.UpdatedDateTime })
                 .ToListAsync(ct);
             items.AddRange(nodes.Select(n => new TrashItemDto(
                 n.Id, "Node", "開問啦・節點",
-                NodeTitle(n.Title, n.Content), Snip(n.Content), n.D)));
+                NodeTitle(n.Title, n.Content), Snip(n.Content), n.D,
+                string.IsNullOrWhiteSpace(n.CanvasTitle) ? "畫布" : $"畫布《{n.CanvasTitle}》")));
+
+            // --- 筆記浮層元件（便利貼 / 手繪塗鴉 / 圖片板）---
+            // 歸入「便利貼」分區（使用者最直覺找得到；前端 GROUP_ORDER 對應此名）。
+            // 標題：便利貼用文字片段；塗鴉/圖片板無文字，給人類可讀名稱。
+            var overlayItems = await db.NoteOverlayItem.IgnoreQueryFilters()
+                .Where(oi => oi.UserId == userGuid && !oi.ValidFlag)
+                .Select(oi => new { oi.Id, oi.Kind, oi.Text, oi.DataJson, oi.NoteId, D = oi.DeletedDateTime ?? oi.UpdatedDateTime })
+                .ToListAsync(ct);
+            // 各便利貼所屬筆記標題（還原後回到哪篇筆記）。
+            var overlayNoteIds = overlayItems.Select(oi => oi.NoteId).Distinct().ToList();
+            var overlayNoteTitleMap = (await db.Note.IgnoreQueryFilters()
+                .Where(n => overlayNoteIds.Contains(n.Id))
+                .Select(n => new { n.Id, n.Title })
+                .ToListAsync(ct))
+                .ToDictionary(n => n.Id, n => n.Title);
+            items.AddRange(overlayItems.Select(oi => new TrashItemDto(
+                oi.Id, "NoteOverlayItem", "便利貼",
+                oi.Kind == "sticky"
+                    ? (StickyTitleFromDataJson(oi.DataJson) ?? Snip(oi.Text, 40) ?? "(空白便利貼)")
+                    : oi.Kind == "drawing"
+                        ? "手繪塗鴉"
+                        : "圖片板",
+                oi.Kind == "sticky" ? Snip(oi.Text) : null,
+                oi.D,
+                overlayNoteTitleMap.TryGetValue(oi.NoteId, out var nt) && !string.IsNullOrWhiteSpace(nt)
+                    ? $"筆記《{nt}》"
+                    : "（筆記已不存在）")));
+
+            // --- 開問啦畫布便利貼（與筆記便利貼同一「便利貼」分區）---
+            var canvasAnnos = await db.CanvasAnnotation.IgnoreQueryFilters()
+                .Where(a => a.UserId == userGuid && !a.ValidFlag)
+                .Select(a => new { a.Id, a.Kind, a.Text, a.DataJson, a.CanvasId, D = a.DeletedDateTime ?? a.UpdatedDateTime })
+                .ToListAsync(ct);
+            // 各畫布便利貼所屬畫布標題（還原後回到哪張畫布）。
+            var annoCanvasIds = canvasAnnos.Select(a => a.CanvasId).Distinct().ToList();
+            var annoCanvasTitleMap = (await db.Canvas.IgnoreQueryFilters()
+                .Where(c => annoCanvasIds.Contains(c.Id))
+                .Select(c => new { c.Id, c.Title })
+                .ToListAsync(ct))
+                .ToDictionary(c => c.Id, c => c.Title);
+            items.AddRange(canvasAnnos.Select(a => new TrashItemDto(
+                a.Id, "CanvasAnnotation", "便利貼",
+                a.Kind == "sticky"
+                    ? (StickyTitleFromDataJson(a.DataJson) ?? Snip(a.Text, 40) ?? "(空白便利貼)")
+                    : a.Kind == "drawing"
+                        ? "手繪塗鴉"
+                        : "圖片板",
+                a.Kind == "sticky" ? Snip(a.Text) : null,
+                a.D,
+                annoCanvasTitleMap.TryGetValue(a.CanvasId, out var cvt) && !string.IsNullOrWhiteSpace(cvt)
+                    ? $"畫布《{cvt}》"
+                    : "（畫布已不存在）")));
 
             var result = items
                 .OrderByDescending(x => x.DeletedDateTime)
@@ -199,6 +310,8 @@ public static class TrashEndpoints
                 "CaptureItem" => await RestoreOwnedAsync(db, db.CaptureItem, id, userGuid, userId, ct),
                 "QuickLink" => await RestoreOwnedAsync(db, db.QuickLink, id, userGuid, userId, ct),
                 "Canvas" => await RestoreOwnedAsync(db, db.Canvas, id, userGuid, userId, ct),
+                "NoteOverlayItem" => await RestoreOwnedAsync(db, db.NoteOverlayItem, id, userGuid, userId, ct),
+                "CanvasAnnotation" => await RestoreOwnedAsync(db, db.CanvasAnnotation, id, userGuid, userId, ct),
                 // 開問啦節點：非 IUserOwned，經其 Canvas 判擁，特例處理。
                 "Node" => await RestoreNodeAsync(db, id, userGuid, userId, ct),
                 _ => Results.BadRequest(ApiResponse<object>.Fail($"不支援的型別：{type}", 400)),
@@ -233,6 +346,8 @@ public static class TrashEndpoints
                 "CaptureItem" => await PurgeOwnedAsync(db, db.CaptureItem, id, userGuid, ct),
                 "QuickLink" => await PurgeOwnedAsync(db, db.QuickLink, id, userGuid, ct),
                 "Canvas" => await PurgeOwnedAsync(db, db.Canvas, id, userGuid, ct),
+                "NoteOverlayItem" => await PurgeOwnedAsync(db, db.NoteOverlayItem, id, userGuid, ct),
+                "CanvasAnnotation" => await PurgeOwnedAsync(db, db.CanvasAnnotation, id, userGuid, ct),
                 // 開問啦節點：非 IUserOwned，經其 Canvas 判擁，特例處理。
                 "Node" => await PurgeNodeAsync(db, id, userGuid, ct),
                 _ => Results.BadRequest(ApiResponse<object>.Fail($"不支援的型別：{type}", 400)),

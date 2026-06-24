@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import { useReactFlow, useViewport } from '@xyflow/react';
 import { kaiwenApi } from '../kaiwen-api';
 import type { CanvasAnnotationDto } from '../kaiwen-types';
+import { askAi } from '@/lib/api';
 import { logger } from '@/lib/logger';
 import { ColorPickerInline } from '@/components/ColorPicker';
 import { pushUndo, useUndoHotkeys } from '@/lib/undoManager';
@@ -26,6 +27,18 @@ import { CanvasTextBox, parseTextExtra, type TextExtra } from './CanvasTextBox';
 
 /** 純文字框的字色 / 背景「快選」常用色（只放 4 個；其餘點色盤球球展開挑）。 */
 const TEXT_PRESET_COLORS = ['#ef4444', '#f59e0b', '#22c55e', '#3b82f6'];
+
+/** 便利貼/圖片板標題列上的小圖示按鈕樣式（－ 收合、🗑 刪除）；與筆記便利貼一致。 */
+const annoChromeBtnStyle: React.CSSProperties = {
+  flexShrink: 0,
+  border: 'none',
+  background: 'transparent',
+  cursor: 'pointer',
+  color: 'var(--text-tertiary)',
+  fontSize: 'var(--text-sm)',
+  lineHeight: 1,
+  padding: '0 2px',
+};
 
 /** 畫布標註的前端內部表示（由 CanvasAnnotationDto 正規化而來，欄位採 camelCase）。 */
 interface AnnoItem {
@@ -84,6 +97,17 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
 
   const rootRef = useRef<HTMLDivElement>(null);
   const [items, setItems] = useState<AnnoItem[]>([]);
+  // 便利貼/圖片板：收合（只剩標題）的項目集合；正在編輯標題者與草稿值（與筆記便利貼一致）。
+  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
+  const [editingTitleId, setEditingTitleId] = useState<string | null>(null);
+  const [titleDraft, setTitleDraft] = useState('');
+  const toggleCollapse = (id: string) =>
+    setCollapsedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   // 以 ref 持有最新 items，供事件監聽器（如刪除空文字框）避免 stale closure。
   const itemsRef = useRef(items);
   itemsRef.current = items;
@@ -229,6 +253,49 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
   const remove = async (id: string) => {
     setItems((prev) => prev.filter((i) => i.id !== id));
     await kaiwenApi.deleteCanvasAnnotation(id);
+  };
+
+  // ── 便利貼 dataJson 結構 { title?, highlights? }：與筆記便利貼完全一致 ──
+  const annoStickyDataObj = (item: AnnoItem): Record<string, unknown> => {
+    try {
+      const parsed = JSON.parse(item.dataJson || '');
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+    } catch { /* 舊格式或空 */ }
+    return {};
+  };
+  const annoStickyTitle = (item: AnnoItem): string => {
+    const title = annoStickyDataObj(item).title;
+    return typeof title === 'string' ? title : '';
+  };
+  const writeAnnoStickyData = (item: AnnoItem, patch: Record<string, unknown>) => {
+    const json = JSON.stringify({ ...annoStickyDataObj(item), ...patch });
+    patchLocal(item.id, { dataJson: json });
+    persist(item.id, { dataJson: json });
+  };
+  /** 刪除畫布便利貼（先確認；軟刪除 → 進「垃圾桶 → 便利貼」可還原，與筆記一致）。 */
+  const confirmRemove = (item: AnnoItem) => {
+    const label = item.kind === 'sticky' ? '便利貼' : '圖片板';
+    if (window.confirm(`刪除這張${label}？（之後可在「垃圾桶 → 便利貼」還原）`)) remove(item.id);
+  };
+
+  // ── 便利貼「繼續問」：脈絡＝前一張便利貼＋本便利貼（畫布無單一筆記，故用通用 /api/ai/ask）──
+  const askFromCanvasSticky = async (item: AnnoItem, question: string) => {
+    if (!canvasId) return;
+    const stickies = items.filter((i) => i.kind === 'sticky');
+    const idx = stickies.findIndex((s) => s.id === item.id);
+    const prev = idx > 0 ? stickies[idx - 1] : null;
+    const context =
+      (prev ? `【前一張便利貼】\n${prev.text ?? ''}\n\n` : '') +
+      `【目前便利貼】\n${item.text ?? ''}`;
+    const answer = await askAi(context, question);
+    if (!answer) return;
+    const z = items.reduce((m, i) => Math.max(m, i.zIndex), 0) + 1;
+    const created = await kaiwenApi.createCanvasAnnotation(canvasId, {
+      Kind: 'sticky', X: item.x + 28, Y: item.y + 28,
+      Width: Math.max(240, item.width), Height: Math.max(180, item.height), ZIndex: z,
+      Color: STICKY_COLORS[2], Text: `Q：${question}\n\nA：${answer}`,
+    });
+    if (created) setItems((prev2) => [...prev2, fromDto(created)]);
   };
 
   // ── 純文字框（Snipaste 風格）──
@@ -597,16 +664,20 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
           </svg>
 
           {/* 便利貼 / 圖片板（繪圖中暫不可互動，讓擷取面接管） */}
-          {items.filter((i) => i.kind === 'sticky' || i.kind === 'slide').map((item) => (
+          {items.filter((i) => i.kind === 'sticky' || i.kind === 'slide').map((item) => {
+            const collapsed = collapsedIds.has(item.id);
+            const isSticky = item.kind === 'sticky';
+            return (
             <div
               key={item.id}
               style={{
-                position: 'absolute', left: item.x, top: item.y, width: item.width, height: item.height,
+                position: 'absolute', left: item.x, top: item.y, width: item.width,
+                height: collapsed ? 'auto' : item.height,
                 zIndex: item.zIndex, pointerEvents: drawingActive ? 'none' : 'auto',
                 display: 'flex', flexDirection: 'column',
                 borderRadius: 'var(--radius-md)', boxShadow: 'var(--shadow-md)', overflow: 'hidden',
                 border: '1px solid var(--border-default)',
-                background: item.kind === 'sticky' ? (item.color || STICKY_COLORS[0]) : 'var(--bg-surface)',
+                background: isSticky ? (item.color || STICKY_COLORS[0]) : 'var(--bg-surface)',
               }}
               onPointerDown={() => bringToFront(item)}
               data-testid={`canvas-anno-${item.kind}`}
@@ -614,28 +685,77 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
               <div
                 onPointerDown={(e) => startDrag(e, item, 'move')}
                 style={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                  padding: '2px 6px', cursor: 'move', background: 'rgba(0,0,0,0.06)', flexShrink: 0,
+                  display: 'flex', alignItems: 'center', gap: 4,
+                  padding: '2px 4px 2px 6px', cursor: 'move', background: 'rgba(0,0,0,0.06)', flexShrink: 0,
                 }}
               >
-                <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)' }}>
-                  {item.kind === 'sticky' ? '便利貼' : '圖片板'}
-                </span>
+                {/* 標題：便利貼可點擊自訂；圖片板固定。 */}
+                {editingTitleId === item.id && isSticky ? (
+                  <input
+                    value={titleDraft}
+                    autoFocus
+                    onChange={(e) => setTitleDraft(e.target.value)}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onBlur={() => { writeAnnoStickyData(item, { title: titleDraft.trim() }); setEditingTitleId(null); }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') e.currentTarget.blur();
+                      if (e.key === 'Escape') setEditingTitleId(null);
+                    }}
+                    placeholder="便利貼標題…"
+                    style={{
+                      flex: 1, minWidth: 0, border: '1px solid rgba(0,0,0,0.2)', borderRadius: 3,
+                      padding: '0 4px', fontSize: 'var(--text-xs)', background: 'rgba(255,255,255,0.8)', color: '#333', outline: 'none',
+                    }}
+                  />
+                ) : (
+                  <span
+                    onClick={(e) => {
+                      if (!isSticky) return;
+                      e.stopPropagation();
+                      setTitleDraft(annoStickyTitle(item));
+                      setEditingTitleId(item.id);
+                    }}
+                    onPointerDown={(e) => { if (isSticky) e.stopPropagation(); }}
+                    title={isSticky ? '點擊修改標題' : undefined}
+                    style={{
+                      flex: '0 1 auto', maxWidth: '55%', minWidth: 0, fontSize: 'var(--text-xs)', color: 'var(--text-secondary)',
+                      cursor: isSticky ? 'text' : 'move', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {isSticky ? (annoStickyTitle(item) || '便利貼') : '圖片板'}
+                  </span>
+                )}
+                {editingTitleId !== item.id && (
+                  <span aria-hidden="true" style={{ flex: 1, alignSelf: 'stretch', cursor: 'move' }} />
+                )}
                 <button
-                  onClick={() => remove(item.id)}
-                  title="刪除"
-                  style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text-tertiary)', fontSize: 'var(--text-sm)' }}
+                  onClick={() => toggleCollapse(item.id)}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  title={collapsed ? '展開' : '收合（只剩標題）'}
+                  data-testid="canvas-anno-collapse-item"
+                  style={annoChromeBtnStyle}
                 >
-                  ✕
+                  {collapsed ? '＋' : '－'}
+                </button>
+                <button
+                  onClick={() => confirmRemove(item)}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  title="刪除（進垃圾桶可還原）"
+                  data-testid="canvas-anno-delete-item"
+                  style={annoChromeBtnStyle}
+                >
+                  🗑
                 </button>
               </div>
 
-              {item.kind === 'sticky' ? (
+              {!collapsed && (isSticky ? (
                 <StickyBody
                   item={item}
                   onText={(t) => patchLocal(item.id, { text: t })}
                   onTextCommit={(t) => persist(item.id, { text: t })}
                   onColor={(c) => { patchLocal(item.id, { color: c }); persist(item.id, { color: c }); }}
+                  onHighlightsChange={(highlights) => writeAnnoStickyData(item, { highlights })}
+                  onAsk={(q) => askFromCanvasSticky(item, q)}
                 />
               ) : (
                 <SlideBody
@@ -646,19 +766,22 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
                     persist(item.id, { dataJson: json });
                   }}
                 />
-              )}
+              ))}
 
-              <div
-                onPointerDown={(e) => startDrag(e, item, 'resize')}
-                title="拖曳調整大小"
-                style={{
-                  position: 'absolute', right: 0, bottom: 0, width: 14, height: 14,
-                  cursor: 'nwse-resize', background: 'transparent',
-                  borderRight: '2px solid var(--border-strong, #999)', borderBottom: '2px solid var(--border-strong, #999)',
-                }}
-              />
+              {!collapsed && (
+                <div
+                  onPointerDown={(e) => startDrag(e, item, 'resize')}
+                  title="拖曳調整大小"
+                  style={{
+                    position: 'absolute', right: 0, bottom: 0, width: 14, height: 14,
+                    cursor: 'nwse-resize', background: 'transparent',
+                    borderRight: '2px solid var(--border-strong, #999)', borderBottom: '2px solid var(--border-strong, #999)',
+                  }}
+                />
+              )}
             </div>
-          ))}
+            );
+          })}
 
           {/* 純文字框（Snipaste 風格：可打字、設背景、旋轉縮放） */}
           {items.filter((i) => i.kind === 'text').map((item) => (
