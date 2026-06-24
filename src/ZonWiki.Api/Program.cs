@@ -37,6 +37,7 @@ builder.Services.AddSingleton<SseHub>();
 builder.Services.AddScoped<AskCancellationRegistry>();
 builder.Services.AddScoped<AncestryService>();
 builder.Services.AddScoped<AskOrchestrator>();
+builder.Services.AddScoped<AskQueueService>();
 
 var connectionString = builder.Configuration.GetConnectionString(
     DependencyInjection.PostgresConnectionName)
@@ -68,6 +69,22 @@ using (var scope = app.Services.CreateScope())
             app.Logger.LogInformation(
                 "Prod 啟動：自動停用 {Count} 筆 ClaudeCli 模型（本機才有 CLI）", disabledClaudeCli);
         }
+    }
+
+    // 啟動清理：把任何殘留的 Running AiSession 標記為 Failed。
+    // 同步式 AI 工作（便利貼／美化／排版／節點提問）無法跨「行程重啟」存活——
+    // 啟動時仍是 Running 的，必是上次中斷／當掉留下的孤兒，否則會永遠卡在「AI 處理中」灌水。
+    var orphanedRunning = await dbContext.AiSession
+        .IgnoreQueryFilters()
+        .Where(s => s.Status == "Running")
+        .ExecuteUpdateAsync(setters => setters
+            .SetProperty(s => s.Status, "Failed")
+            .SetProperty(s => s.ErrorText, "伺服器重啟前未完成（已自動標記為失敗）")
+            .SetProperty(s => s.UpdatedDateTime, DateTime.UtcNow));
+    if (orphanedRunning > 0)
+    {
+        app.Logger.LogInformation(
+            "啟動清理：將 {Count} 筆殘留 Running AiSession 標記為 Failed", orphanedRunning);
     }
 
     // 開發用 seed：若 DB 無任何使用者，建立一個開發使用者便於匯入/匯出測試
@@ -126,6 +143,7 @@ app.MapCategoryEndpoints();
 app.MapNoteEndpoints();
 app.MapTagEndpoints();
 app.MapNoteWriteEndpoints(authConfigured);
+app.MapAskQueueEndpoints(authConfigured);
 app.MapCommentEndpoints(authConfigured);
 app.MapTaskEndpoints();
 app.MapTaskGroupEndpoints();

@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { enhanceCodeBlocks } from '@/lib/codeBlocks';
 import {
   getNote,
@@ -147,6 +147,41 @@ export default function NotesDetailPage() {
   const handleAiContentUpdate = (contentRaw: string) => {
     setEditContent(contentRaw);
   };
+
+  // 讀取查詢參數（?mark= 用來從提問佇列跳轉到框選位置）
+  const searchParams = useSearchParams();
+  const markId = searchParams.get('mark');
+
+  // 滾動到標記位置（當標記 ID 有效且預覽容器已掛載時觸發）
+  // 這部分在預覽 HTML 與標記層載入後執行，以確保 DOM 已準備好
+  useEffect(() => {
+    if (!markId || !previewRef.current) return;
+
+    // 延遲執行，確保 DOM 已完全渲染
+    const timer = setTimeout(() => {
+      // 尋找標記對應的 DOM 元素（預期由 NoteMarksLayer 建立的標記視覺化）
+      // 標記通常在 previewRef 内部的某個高亮元素或標註 UI
+      const markElement = previewRef.current?.querySelector(
+        `[data-mark-id="${CSS.escape(markId)}"]`
+      ) as HTMLElement | null;
+
+      if (markElement) {
+        // 滾動到該元素
+        markElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+        // 短暫高亮（添加視覺反饋）
+        const originalBackground = markElement.style.backgroundColor;
+        markElement.style.backgroundColor = 'rgba(255, 193, 7, 0.3)';
+        const highlightTimer = setTimeout(() => {
+          markElement.style.backgroundColor = originalBackground;
+        }, 2000);
+
+        return () => clearTimeout(highlightTimer);
+      }
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [markId, previewHtml]);
 
   // 載入筆記詳細
   useEffect(() => {

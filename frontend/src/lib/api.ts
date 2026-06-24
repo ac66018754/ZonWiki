@@ -9,6 +9,8 @@
  * 回應格式: { success: boolean, data: T, error?: string, statusCode?: number }
  */
 
+import { withAiQueueNotify } from './aiQueue';
+
 const BROWSER_API_BASE =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5009";
 
@@ -1666,11 +1668,13 @@ export async function askNoteSelection(
     question: string;
   }
 ): Promise<AskSelectionResult | null> {
-  const r = await fetchJson<AskSelectionResult>(
-    `/api/notes/${encodeURIComponent(noteId)}/ask-selection`,
-    { method: 'POST', body: JSON.stringify(input) }
-  );
-  return r.data ?? null;
+  return withAiQueueNotify(async () => {
+    const r = await fetchJson<AskSelectionResult>(
+      `/api/notes/${encodeURIComponent(noteId)}/ask-selection`,
+      { method: 'POST', body: JSON.stringify(input) }
+    );
+    return r.data ?? null;
+  });
 }
 
 /**
@@ -1688,11 +1692,13 @@ export async function askNoteSelectionAnswer(
     question: string;
   }
 ): Promise<string | null> {
-  const r = await fetchJson<{ answer: string }>(
-    `/api/notes/${encodeURIComponent(noteId)}/ask-selection-answer`,
-    { method: 'POST', body: JSON.stringify(input) }
-  );
-  return r.data?.answer ?? null;
+  return withAiQueueNotify(async () => {
+    const r = await fetchJson<{ answer: string }>(
+      `/api/notes/${encodeURIComponent(noteId)}/ask-selection-answer`,
+      { method: 'POST', body: JSON.stringify(input) }
+    );
+    return r.data?.answer ?? null;
+  });
 }
 
 /**
@@ -1700,11 +1706,13 @@ export async function askNoteSelectionAnswer(
  * 用於開問啦畫布便利貼的「繼續問」（沒有單一筆記脈絡）。
  */
 export async function askAi(context: string, question: string): Promise<string | null> {
-  const r = await fetchJson<{ answer: string }>('/api/ai/ask', {
-    method: 'POST',
-    body: JSON.stringify({ context, question }),
+  return withAiQueueNotify(async () => {
+    const r = await fetchJson<{ answer: string }>('/api/ai/ask', {
+      method: 'POST',
+      body: JSON.stringify({ context, question }),
+    });
+    return r.data?.answer ?? null;
   });
-  return r.data?.answer ?? null;
 }
 
 /** 列出某筆記的所有文字標註。 */
@@ -1842,14 +1850,16 @@ export async function reformatNote(
   noteId: string,
   contentRaw: string
 ): Promise<AiTransformResult | null> {
-  const r = await fetchJson<AiTransformResult>(
-    `/api/notes/${encodeURIComponent(noteId)}/reformat`,
-    {
-      method: 'POST',
-      body: JSON.stringify({ contentRaw }),
-    }
-  );
-  return r.data ?? null;
+  return withAiQueueNotify(async () => {
+    const r = await fetchJson<AiTransformResult>(
+      `/api/notes/${encodeURIComponent(noteId)}/reformat`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ contentRaw }),
+      }
+    );
+    return r.data ?? null;
+  });
 }
 
 /**
@@ -1861,14 +1871,80 @@ export async function beautifyNote(
   noteId: string,
   contentRaw: string
 ): Promise<AiTransformResult | null> {
-  const r = await fetchJson<AiTransformResult>(
-    `/api/notes/${encodeURIComponent(noteId)}/beautify`,
-    {
-      method: 'POST',
-      body: JSON.stringify({ contentRaw }),
-    }
-  );
-  return r.data ?? null;
+  return withAiQueueNotify(async () => {
+    const r = await fetchJson<AiTransformResult>(
+      `/api/notes/${encodeURIComponent(noteId)}/beautify`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ contentRaw }),
+      }
+    );
+    return r.data ?? null;
+  });
+}
+
+// ============================================================================
+// API 方法 — Ask Queue (提問佇列)
+// ============================================================================
+
+/**
+ * 提問佇列項目（來自 AiSession）
+ *
+ * 注意：後端使用 .NET System.Text.Json 預設的 camelCase 命名（PascalCase property 轉 camelCase JSON）。
+ * 因此 JSON 中是 camelCase，但 TypeScript interface 仍使用 camelCase 以符合習慣。
+ */
+export interface AskQueueItemDto {
+  /** 工作階段 ID */
+  sessionId: string;
+  /** 狀態："Running" | "Completed" | "Failed" */
+  status: 'Running' | 'Completed' | 'Failed';
+  /** 提問種類："floatingnote" | "node" */
+  kind: 'floatingnote' | 'node';
+  /** 提問文字（來源框選提問內容） */
+  questionText: string | null;
+  /** 框選片段文字 */
+  anchorText: string | null;
+  /** 來源筆記 ID */
+  noteId?: string | null;
+  /** 來源筆記 slug（用於導航；筆記被刪時為 null） */
+  noteSlug?: string | null;
+  /** 來源筆記標題（用於顯示；筆記被刪時為 null） */
+  noteTitle?: string | null;
+  /** 答案筆記 ID（Completed 才有） */
+  answerNoteId?: string | null;
+  /** 答案筆記 slug（用於「看答案」連結；筆記被刪時為 null） */
+  answerNoteSlug?: string | null;
+  /** 來源筆記上的錨點 mark ID（用於跳轉到框選位置） */
+  markId?: string | null;
+  /** 畫布 ID（node 提問用） */
+  canvasId?: string | null;
+  /** 畫布上的 ask 節點 ID（node 提問用，用於聚焦） */
+  askNodeId?: string | null;
+  /** 建立時間 (UTC ISO 字串) */
+  createdDateTime: string;
+  /** 失敗錯誤訊息（Failed 狀態時） */
+  errorText?: string | null;
+}
+
+/**
+ * 取得提問佇列（已認證使用者的 AiSession 記錄）
+ * @param status 狀態篩選（可選："Running" | "Completed" | "Failed"）
+ * @param kind 種類篩選（可選："floatingnote" | "node"）
+ * @param limit 返回筆數（預設 50，上限 200）
+ */
+export async function getAskQueue(params?: {
+  status?: 'Running' | 'Completed' | 'Failed';
+  kind?: 'floatingnote' | 'node';
+  limit?: number;
+}): Promise<AskQueueItemDto[]> {
+  const query = new URLSearchParams();
+  if (params?.status) query.append('status', params.status);
+  if (params?.kind) query.append('kind', params.kind);
+  if (params?.limit) query.append('limit', String(params.limit));
+
+  const path = `/api/ask-queue${query.toString() ? `?${query.toString()}` : ''}`;
+  const r = await fetchJson<AskQueueItemDto[]>(path);
+  return r.success ? r.data ?? [] : [];
 }
 
 // ============================================================================

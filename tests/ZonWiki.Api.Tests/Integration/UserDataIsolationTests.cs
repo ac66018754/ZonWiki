@@ -808,6 +808,108 @@ public sealed class UserDataIsolationTests : IAsyncLifetime
         await db.SaveChangesAsync();
     }
 
+    // ==================== AI Session 隔離測試 ====================
+
+    /// <summary>
+    /// 測試：使用者 A 看不到使用者 B 的 AI Session。
+    /// </summary>
+    [Fact]
+    public async Task AiSession_UserACannotSeeUserBAiSessions_WhenQueryFiltersApplied()
+    {
+        // Arrange：建立兩個使用者及各自的 AI Session。
+        using (var db = new ZonWikiDbContext(_dbOptions!, null))
+        {
+            var now = DateTime.UtcNow;
+
+            var userA = new User
+            {
+                Id = _userAId,
+                Email = "usera@example.com",
+                DisplayName = "User A",
+                GoogleSub = "sub-a",
+                CreatedDateTime = now,
+                UpdatedDateTime = now
+            };
+            var userB = new User
+            {
+                Id = _userBId,
+                Email = "userb@example.com",
+                DisplayName = "User B",
+                GoogleSub = "sub-b",
+                CreatedDateTime = now,
+                UpdatedDateTime = now
+            };
+
+            db.User.Add(userA);
+            db.User.Add(userB);
+            await db.SaveChangesAsync();
+
+            // 使用者 A 的 AI Session。
+            var sessionA = new AiSession
+            {
+                Id = Guid.NewGuid(),
+                UserId = _userAId,
+                Kind = "floatingnote",
+                Status = "Running",
+                PromptText = "User A's prompt",
+                QuestionText = "What is A?",
+                AnchorText = "A's text",
+                TokenUsageJson = "{}",
+                CreatedDateTime = now,
+                UpdatedDateTime = now,
+                CreatedUser = "system",
+                UpdatedUser = "system",
+                ValidFlag = true
+            };
+
+            // 使用者 B 的 AI Session。
+            var sessionB = new AiSession
+            {
+                Id = Guid.NewGuid(),
+                UserId = _userBId,
+                Kind = "floatingnote",
+                Status = "Completed",
+                PromptText = "User B's prompt",
+                QuestionText = "What is B?",
+                AnchorText = "B's text",
+                TokenUsageJson = "{}",
+                CreatedDateTime = now,
+                UpdatedDateTime = now,
+                CreatedUser = "system",
+                UpdatedUser = "system",
+                ValidFlag = true
+            };
+
+            db.AiSession.Add(sessionA);
+            db.AiSession.Add(sessionB);
+            await db.SaveChangesAsync();
+        }
+
+        // Act：以使用者 A 的身分查詢 AI Session。
+        var currentUserA = new FakeCurrentUser(_userAId, "usera@example.com");
+        using (var db = new ZonWikiDbContext(_dbOptions!, currentUserA))
+        {
+            var sessions = await db.AiSession.ToListAsync();
+
+            // Assert：使用者 A 應該只看到自己的 Session。
+            sessions.Should().HaveCount(1);
+            sessions.First().QuestionText.Should().Be("What is A?");
+            sessions.First().UserId.Should().Be(_userAId);
+        }
+
+        // Act：以使用者 B 的身分查詢 AI Session。
+        var currentUserB = new FakeCurrentUser(_userBId, "userb@example.com");
+        using (var db = new ZonWikiDbContext(_dbOptions!, currentUserB))
+        {
+            var sessions = await db.AiSession.ToListAsync();
+
+            // Assert：使用者 B 應該只看到自己的 Session。
+            sessions.Should().HaveCount(1);
+            sessions.First().QuestionText.Should().Be("What is B?");
+            sessions.First().UserId.Should().Be(_userBId);
+        }
+    }
+
     // ==================== 虛擬 ICurrentUser 實作 ====================
 
     /// <summary>

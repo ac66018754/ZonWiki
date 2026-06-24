@@ -4,6 +4,7 @@ import { CurrentUser, getLogoutUrl, getLoginUrl } from "@/lib/api";
 import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { GlobalSearch } from "./GlobalSearch";
+import { AiProcessingMenu } from "./AiProcessingMenu";
 import { useCanvasToolbar } from "./CanvasToolbarContext";
 import {
   toggleMobileNav,
@@ -224,6 +225,10 @@ export function Header({ user }: { user: CurrentUser | null }) {
           </Link>
         </nav>
       </div>
+
+      {/* 「AI處理中(n)」下拉：位於「筆記」與「搜尋框」之間；點開就地展開清單、不跳頁。
+          僅登入後顯示（提問佇列 API 需驗證）。 */}
+      {user && <AiProcessingMenu />}
 
       {/* 中央：搜尋框 */}
       <div className="search-box" style={{ flex: 1, maxWidth: "400px", margin: "0 var(--spacing-6)" }}>

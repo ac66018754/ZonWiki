@@ -28,6 +28,36 @@ public class AiSession : AuditableEntity, IUserOwned
     public Guid? ResultNodeId { get; set; }
 
     /// <summary>
+    /// 框選提問的來源筆記外鍵（可空；只在框選提問時設定）。
+    /// </summary>
+    public Guid? NoteId { get; set; }
+
+    /// <summary>
+    /// 產生的答案筆記外鍵（可空；框選提問成功時設定）。
+    /// </summary>
+    public Guid? AnswerNoteId { get; set; }
+
+    /// <summary>
+    /// 來源筆記上的 NoteMark（錨點）外鍵（可空；框選提問成功時設定）。
+    /// </summary>
+    public Guid? MarkId { get; set; }
+
+    /// <summary>
+    /// 使用者提問文字（可空；框選提問時用以在佇列上顯示，毋須解析 PromptText）。
+    /// </summary>
+    public string? QuestionText { get; set; }
+
+    /// <summary>
+    /// 框選的文字片段（可空；框選提問時填入，佇列上顯示選取上下文用）。
+    /// </summary>
+    public string? AnchorText { get; set; }
+
+    /// <summary>
+    /// 失敗訊息（可空；僅在 Status=Failed 時填入；不含堆疊/檔案路徑等敏感資訊）。
+    /// </summary>
+    public string? ErrorText { get; set; }
+
+    /// <summary>
     /// 提問種類：node（對整個節點提問）或 floatingnote（對選取片段提問）。
     /// </summary>
     public string Kind { get; set; } = "node";
