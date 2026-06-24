@@ -9,6 +9,8 @@
  * 回應格式: { success: boolean, data: T, error?: string, statusCode?: number }
  */
 
+import { withAiQueueNotify } from './aiQueue';
+
 const BROWSER_API_BASE =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5009";
 
@@ -1666,11 +1668,13 @@ export async function askNoteSelection(
     question: string;
   }
 ): Promise<AskSelectionResult | null> {
-  const r = await fetchJson<AskSelectionResult>(
-    `/api/notes/${encodeURIComponent(noteId)}/ask-selection`,
-    { method: 'POST', body: JSON.stringify(input) }
-  );
-  return r.data ?? null;
+  return withAiQueueNotify(async () => {
+    const r = await fetchJson<AskSelectionResult>(
+      `/api/notes/${encodeURIComponent(noteId)}/ask-selection`,
+      { method: 'POST', body: JSON.stringify(input) }
+    );
+    return r.data ?? null;
+  });
 }
 
 /**
@@ -1688,11 +1692,13 @@ export async function askNoteSelectionAnswer(
     question: string;
   }
 ): Promise<string | null> {
-  const r = await fetchJson<{ answer: string }>(
-    `/api/notes/${encodeURIComponent(noteId)}/ask-selection-answer`,
-    { method: 'POST', body: JSON.stringify(input) }
-  );
-  return r.data?.answer ?? null;
+  return withAiQueueNotify(async () => {
+    const r = await fetchJson<{ answer: string }>(
+      `/api/notes/${encodeURIComponent(noteId)}/ask-selection-answer`,
+      { method: 'POST', body: JSON.stringify(input) }
+    );
+    return r.data?.answer ?? null;
+  });
 }
 
 /**
@@ -1700,11 +1706,13 @@ export async function askNoteSelectionAnswer(
  * 用於開問啦畫布便利貼的「繼續問」（沒有單一筆記脈絡）。
  */
 export async function askAi(context: string, question: string): Promise<string | null> {
-  const r = await fetchJson<{ answer: string }>('/api/ai/ask', {
-    method: 'POST',
-    body: JSON.stringify({ context, question }),
+  return withAiQueueNotify(async () => {
+    const r = await fetchJson<{ answer: string }>('/api/ai/ask', {
+      method: 'POST',
+      body: JSON.stringify({ context, question }),
+    });
+    return r.data?.answer ?? null;
   });
-  return r.data?.answer ?? null;
 }
 
 /** 列出某筆記的所有文字標註。 */
@@ -1842,14 +1850,16 @@ export async function reformatNote(
   noteId: string,
   contentRaw: string
 ): Promise<AiTransformResult | null> {
-  const r = await fetchJson<AiTransformResult>(
-    `/api/notes/${encodeURIComponent(noteId)}/reformat`,
-    {
-      method: 'POST',
-      body: JSON.stringify({ contentRaw }),
-    }
-  );
-  return r.data ?? null;
+  return withAiQueueNotify(async () => {
+    const r = await fetchJson<AiTransformResult>(
+      `/api/notes/${encodeURIComponent(noteId)}/reformat`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ contentRaw }),
+      }
+    );
+    return r.data ?? null;
+  });
 }
 
 /**
@@ -1861,14 +1871,16 @@ export async function beautifyNote(
   noteId: string,
   contentRaw: string
 ): Promise<AiTransformResult | null> {
-  const r = await fetchJson<AiTransformResult>(
-    `/api/notes/${encodeURIComponent(noteId)}/beautify`,
-    {
-      method: 'POST',
-      body: JSON.stringify({ contentRaw }),
-    }
-  );
-  return r.data ?? null;
+  return withAiQueueNotify(async () => {
+    const r = await fetchJson<AiTransformResult>(
+      `/api/notes/${encodeURIComponent(noteId)}/beautify`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ contentRaw }),
+      }
+    );
+    return r.data ?? null;
+  });
 }
 
 // ============================================================================

@@ -154,6 +154,7 @@ public static class NoteWriteEndpoints
     private static async Task<IResult> AskSelectionAnswerHandler(
         HttpContext http,
         ZonWikiDbContext db,
+        AskQueueService queueService,
         ILogger<object> logger,
         INoteAiService aiService,
         Guid id,
@@ -188,7 +189,16 @@ public static class NoteWriteEndpoints
             var context =
                 $"【整篇筆記內容】\n{sourceNote.ContentRaw}\n\n" +
                 $"【使用者特別框選、想聚焦的段落】\n「{selected}」";
-            var answer = await aiService.AskAboutAsync(context, question, ct);
+            // 便利貼模式：仍把這次提問追蹤成 AiSession 進「AI 處理中」佇列
+            //（Kind=floatingnote，無答案筆記/錨點；點佇列項目導回此來源筆記）。
+            var answer = await queueService.TrackAiAsync(
+                userId,
+                id,
+                "floatingnote",
+                question,
+                selected,
+                ctk => aiService.AskAboutAsync(context, question, ctk),
+                ct);
             return Results.Ok(ApiResponse<AskSelectionAnswerDto>.Ok(new AskSelectionAnswerDto(answer)));
         }
         catch (Exception ex)
@@ -969,12 +979,13 @@ public static class NoteWriteEndpoints
     private static async Task<IResult> ReformatNoteHandler(
         HttpContext http,
         ZonWikiDbContext db,
+        AskQueueService queueService,
         ILogger<object> logger,
         INoteAiService aiService,
         Guid id,
         AiTransformRequest request,
         CancellationToken ct)
-        => await TransformNoteContentAsync(http, db, logger, id, request, ct,
+        => await TransformNoteContentAsync(http, db, queueService, logger, id, request, ct,
             (content) => aiService.ReformatAsync(content, ct), "reformat");
 
     // ==================== AI Beautify ====================
@@ -982,12 +993,13 @@ public static class NoteWriteEndpoints
     private static async Task<IResult> BeautifyNoteHandler(
         HttpContext http,
         ZonWikiDbContext db,
+        AskQueueService queueService,
         ILogger<object> logger,
         INoteAiService aiService,
         Guid id,
         AiTransformRequest request,
         CancellationToken ct)
-        => await TransformNoteContentAsync(http, db, logger, id, request, ct,
+        => await TransformNoteContentAsync(http, db, queueService, logger, id, request, ct,
             (content) => aiService.BeautifyAsync(content, ct), "beautify");
 
     /// <summary>
@@ -1007,6 +1019,7 @@ public static class NoteWriteEndpoints
     private static async Task<IResult> TransformNoteContentAsync(
         HttpContext http,
         ZonWikiDbContext db,
+        AskQueueService queueService,
         ILogger<object> logger,
         Guid id,
         AiTransformRequest request,
@@ -1031,10 +1044,26 @@ public static class NoteWriteEndpoints
 
         var input = request?.ContentRaw ?? string.Empty;
 
+        // 佇列顯示標籤（美化／整理排版）。
+        var label = opName switch
+        {
+            "beautify" => "美化筆記",
+            "reformat" => "整理排版",
+            _ => opName,
+        };
+
         try
         {
-            // 對「請求帶來的目前內容」做 AI 轉換（不是讀 DB 內容）。
-            var transformed = await transform(input);
+            // 對「請求帶來的目前內容」做 AI 轉換（不是讀 DB 內容）；
+            // 透過 TrackAiAsync 追蹤成 AiSession，讓「美化／排版」也進「AI 處理中」佇列。
+            var transformed = await queueService.TrackAiAsync(
+                userId,
+                id,
+                opName,
+                label,
+                null,
+                _ => transform(input),
+                ct);
             var html = Markdown.ToHtml(transformed, NoteContentHelpers.MarkdownPipeline);
 
             var dto = new AiTransformResultDto(transformed, html);

@@ -18,6 +18,13 @@ public sealed class AskQueueService
     private readonly ILogger<AskQueueService> _logger;
 
     /// <summary>
+    /// Running 逾時門檻（分鐘）：Running 但建立後超過此時間仍未完成者，
+    /// 視為已中斷／逾時（佇列顯示為失敗、不再計入「進行中」），避免孤兒永遠卡在等待中。
+    /// 同步式 AI 工作正常應遠快於此。開機時的清理另見 Program.cs。
+    /// </summary>
+    private const int StaleRunningMinutes = 5;
+
+    /// <summary>
     /// 初始化提問佇列服務。
     /// </summary>
     /// <param name="db">資料庫內容。</param>
@@ -69,9 +76,9 @@ public sealed class AskQueueService
     /// 更新 Status、AnswerNoteId、MarkId；同時刷新 UpdatedDateTime 與 UpdatedUser。
     /// </summary>
     /// <param name="session">要更新的 AiSession（已存在資料庫）。</param>
-    /// <param name="answerNoteId">產生的答案筆記識別碼。</param>
-    /// <param name="markId">建立的 NoteMark 識別碼（來源筆記上的錨點）。</param>
-    public static void ApplyCompleted(AiSession session, Guid answerNoteId, Guid markId)
+    /// <param name="answerNoteId">產生的答案筆記識別碼（便利貼模式無，為 null）。</param>
+    /// <param name="markId">建立的 NoteMark 識別碼（來源筆記上的錨點；便利貼模式無，為 null）。</param>
+    public static void ApplyCompleted(AiSession session, Guid? answerNoteId = null, Guid? markId = null)
     {
         session.Status = "Completed";
         session.AnswerNoteId = answerNoteId;
@@ -129,7 +136,7 @@ public sealed class AskQueueService
         var filterByStatus = !string.IsNullOrWhiteSpace(status) && validStatuses.Contains(status);
 
         // 驗證 kind 值（忽略無效值）。
-        var validKinds = new[] { "node", "floatingnote" };
+        var validKinds = new[] { "node", "floatingnote", "beautify", "reformat" };
         var filterByKind = !string.IsNullOrWhiteSpace(kind) && validKinds.Contains(kind);
 
         // 建立查詢。
@@ -154,24 +161,37 @@ public sealed class AskQueueService
         // 取用。
         var results = await query.Take(effectiveLimit).ToListAsync(ct);
 
+        // 逾時保護：Running 但已超過門檻（AI 卡住或請求中斷而未經重啟）→ 顯示為失敗，
+        // 不再計入「進行中」、也不會永遠卡在等待中。
+        var now = DateTime.UtcNow;
+
         // 投影至 DTO。
         return results
-            .Select(r => new AskQueueItemDto(
-                SessionId: r.Session.Id,
-                Status: r.Session.Status,
-                Kind: r.Session.Kind,
-                QuestionText: r.Session.QuestionText,
-                AnchorText: r.Session.AnchorText,
-                NoteId: r.Session.NoteId,
-                NoteSlug: r.SourceNote?.Slug,
-                NoteTitle: r.SourceNote?.Title,
-                AnswerNoteId: r.Session.AnswerNoteId,
-                AnswerNoteSlug: r.AnswerNote?.Slug,
-                MarkId: r.Session.MarkId,
-                CanvasId: r.Session.CanvasId,
-                AskNodeId: r.Session.AskNodeId,
-                CreatedDateTime: r.Session.CreatedDateTime,
-                ErrorText: r.Session.ErrorText))
+            .Select(r =>
+            {
+                var isStale = r.Session.Status == "Running"
+                    && (now - r.Session.CreatedDateTime).TotalMinutes > StaleRunningMinutes;
+                var status = isStale ? "Failed" : r.Session.Status;
+                var errorText = isStale
+                    ? "逾時（可能已中斷，未在時限內完成）"
+                    : r.Session.ErrorText;
+                return new AskQueueItemDto(
+                    SessionId: r.Session.Id,
+                    Status: status,
+                    Kind: r.Session.Kind,
+                    QuestionText: r.Session.QuestionText,
+                    AnchorText: r.Session.AnchorText,
+                    NoteId: r.Session.NoteId,
+                    NoteSlug: r.SourceNote?.Slug,
+                    NoteTitle: r.SourceNote?.Title,
+                    AnswerNoteId: r.Session.AnswerNoteId,
+                    AnswerNoteSlug: r.AnswerNote?.Slug,
+                    MarkId: r.Session.MarkId,
+                    CanvasId: r.Session.CanvasId,
+                    AskNodeId: r.Session.AskNodeId,
+                    CreatedDateTime: r.Session.CreatedDateTime,
+                    ErrorText: errorText);
+            })
             .ToList()
             .AsReadOnly();
     }
@@ -309,6 +329,75 @@ public sealed class AskQueueService
             }
 
             // 向上拋出原異常讓 handler 回 500。
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// 通用「AI 工作追蹤」包裝器：先建一筆 Running AiSession，執行傳入的 AI 呼叫，
+    /// 成功 → Completed、失敗 → Failed（記錄安全摘要）後把原例外向上拋。
+    /// 讓「便利貼提問／美化筆記／整理排版」等任何 AI 生成動作都能進「AI 處理中」佇列。
+    /// 注意：本方法「不」驗證筆記擁有權，呼叫端須先自行驗證。
+    /// </summary>
+    /// <typeparam name="T">AI 呼叫的回傳型別。</typeparam>
+    /// <param name="userId">使用者識別碼。</param>
+    /// <param name="noteId">關聯的筆記識別碼（可空）。</param>
+    /// <param name="kind">工作種類（floatingnote／beautify／reformat／node…）。</param>
+    /// <param name="label">佇列顯示用的標籤或問題（例如「美化筆記」或使用者的提問）。</param>
+    /// <param name="anchorText">框選片段（無則 null）。</param>
+    /// <param name="aiCall">實際的 AI 呼叫。</param>
+    /// <param name="ct">取消權杖。</param>
+    /// <returns>AI 呼叫的結果。</returns>
+    public async Task<T> TrackAiAsync<T>(
+        Guid userId,
+        Guid? noteId,
+        string kind,
+        string? label,
+        string? anchorText,
+        Func<CancellationToken, Task<T>> aiCall,
+        CancellationToken ct)
+    {
+        static string? Trunc(string? s) => s is null ? null : (s.Length > 2000 ? s[..2000] : s);
+
+        var session = new AiSession
+        {
+            UserId = userId,
+            NoteId = noteId,
+            Kind = kind,
+            QuestionText = Trunc(label),
+            AnchorText = Trunc(anchorText),
+            PromptText = label ?? kind,
+            Status = "Running",
+            CreatedUser = userId.ToString(),
+            UpdatedUser = userId.ToString(),
+        };
+        _db.AiSession.Add(session);
+        await _db.SaveChangesAsync(ct);
+
+        try
+        {
+            var result = await aiCall(ct);
+            ApplyCompleted(session);
+            await _db.SaveChangesAsync(ct);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Tracked AI failed (userId={UserId}, noteId={NoteId}, kind={Kind})",
+                userId,
+                noteId,
+                kind);
+            try
+            {
+                ApplyFailed(session, ex.Message);
+                await _db.SaveChangesAsync(ct);
+            }
+            catch (Exception logEx)
+            {
+                _logger.LogError(logEx, "Failed to log AiSession failure state");
+            }
             throw;
         }
     }

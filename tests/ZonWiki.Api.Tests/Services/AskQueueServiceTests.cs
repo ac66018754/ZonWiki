@@ -861,6 +861,121 @@ public sealed class AskQueueServiceTests : IAsyncLifetime
         exception.Message.Should().Contain("Question");
     }
 
+    // ==================== TrackAiAsync（便利貼／美化／排版共用追蹤）測試 ====================
+
+    /// <summary>
+    /// 測試：TrackAiAsync 成功時建立 Completed AiSession，並回傳 AI 結果。
+    /// </summary>
+    [Fact]
+    public async Task TrackAiAsync_Success_CreatesCompletedSession()
+    {
+        // Act
+        var result = await _service.TrackAiAsync(
+            _testUserId,
+            Guid.NewGuid(),
+            "beautify",
+            "美化筆記",
+            null,
+            _ => Task.FromResult("beautified content"),
+            CancellationToken.None);
+
+        // Assert
+        result.Should().Be("beautified content");
+        var session = await _db.AiSession.FirstOrDefaultAsync(s => s.UserId == _testUserId);
+        session.Should().NotBeNull();
+        session!.Status.Should().Be("Completed");
+        session.Kind.Should().Be("beautify");
+        session.QuestionText.Should().Be("美化筆記");
+        session.AnswerNoteId.Should().BeNull();
+        session.MarkId.Should().BeNull();
+    }
+
+    /// <summary>
+    /// 測試：TrackAiAsync 失敗時留下 Failed AiSession（含 ErrorText）並向上拋出原例外。
+    /// </summary>
+    [Fact]
+    public async Task TrackAiAsync_Failure_CreatesFailedSessionAndRethrows()
+    {
+        // Act & Assert
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _service.TrackAiAsync<string>(
+                _testUserId,
+                Guid.NewGuid(),
+                "floatingnote",
+                "這段是什麼意思?",
+                "框選文字",
+                _ => Task.FromException<string>(new InvalidOperationException("AI down")),
+                CancellationToken.None));
+        exception.Message.Should().Be("AI down");
+
+        var session = await _db.AiSession.FirstOrDefaultAsync(s => s.UserId == _testUserId);
+        session.Should().NotBeNull();
+        session!.Status.Should().Be("Failed");
+        session.Kind.Should().Be("floatingnote");
+        session.ErrorText.Should().Contain("AI down");
+    }
+
+    // ==================== 逾時保護（孤兒 Running）測試 ====================
+
+    /// <summary>
+    /// 測試：Running 但已超過逾時門檻的孤兒，GetQueueAsync 應顯示為 Failed（逾時），不再計入進行中。
+    /// </summary>
+    [Fact]
+    public async Task GetQueueAsync_StaleRunningSession_ShownAsTimedOutFailed()
+    {
+        // Arrange：10 分鐘前建立、仍 Running 的孤兒（同步 AI 工作不該卡這麼久）。
+        var now = DateTime.UtcNow;
+        _db.AiSession.Add(new AiSession
+        {
+            UserId = _testUserId,
+            Kind = "floatingnote",
+            Status = "Running",
+            PromptText = "p",
+            QuestionText = "卡住的提問",
+            CreatedDateTime = now.AddMinutes(-10),
+            CreatedUser = _testUserId.ToString(),
+            UpdatedUser = _testUserId.ToString(),
+        });
+        await _db.SaveChangesAsync();
+
+        // Act
+        var items = await _service.GetQueueAsync(_testUserId, ct: CancellationToken.None);
+
+        // Assert：顯示為 Failed（逾時），而非 Running。
+        items.Should().HaveCount(1);
+        items[0].Status.Should().Be("Failed");
+        items[0].ErrorText.Should().Contain("逾時");
+    }
+
+    /// <summary>
+    /// 測試：Running 且在門檻內（剛建立）的 session，GetQueueAsync 應維持 Running。
+    /// </summary>
+    [Fact]
+    public async Task GetQueueAsync_RecentRunningSession_StaysRunning()
+    {
+        // Arrange
+        var now = DateTime.UtcNow;
+        _db.AiSession.Add(new AiSession
+        {
+            UserId = _testUserId,
+            Kind = "floatingnote",
+            Status = "Running",
+            PromptText = "p",
+            QuestionText = "剛問的",
+            CreatedDateTime = now,
+            CreatedUser = _testUserId.ToString(),
+            UpdatedUser = _testUserId.ToString(),
+        });
+        await _db.SaveChangesAsync();
+
+        // Act
+        var items = await _service.GetQueueAsync(_testUserId, ct: CancellationToken.None);
+
+        // Assert
+        items.Should().HaveCount(1);
+        items[0].Status.Should().Be("Running");
+    }
+
     /// <summary>
     /// 測試替身：可設定的假 AI 服務。
     /// 依建構參數回傳固定答案，或在被呼叫時丟出指定例外（不引入 Moq 等 mock 套件）。
