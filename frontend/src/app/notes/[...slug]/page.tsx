@@ -14,13 +14,16 @@ import {
   listNoteTags,
   createNoteCategory,
   createNoteTag,
+  listTaskGroups,
   type NoteDetail,
   type NoteCategory,
   type NoteTag,
   type Comment,
   type CurrentUser,
+  type TaskGroup,
   getCurrentUser,
 } from '@/lib/api';
+import { TaskEditorModal } from '@/app/tasks/components/TaskEditorModal';
 import { formatFullDateTime, formatDateTime as formatDateTimeUtil } from '@/lib/formatters';
 import { DEFAULT_TIMEZONE } from '@/lib/constants';
 import { SkeletonCard } from '@/components/Skeleton';
@@ -95,8 +98,68 @@ export default function NotesDetailPage() {
   // 標籤頁
   const [activeTab, setActiveTab] = useState<'preview' | 'comments' | 'history' | 'backlinks' | 'links'>('preview');
 
-  // 章節目錄表（浮動、可拖曳、可關閉）：進入筆記頁預設開啟（重新整理＝重新開啟）。
+  // 章節目錄表（浮動、可拖曳、可關閉）：每次載入頁面「預設打開」，位置固定在左側（不記憶、不壓內文）。
   const [tocOpen, setTocOpen] = useState(true);
+
+  // 本頁捲動容器（.note-detail-page）：記住閱讀位置、下次打開自動捲回（N1）。
+  const noteScrollRef = useRef<HTMLDivElement | null>(null);
+  const scrollSaveRaf = useRef<number | null>(null);
+  const scrollRestoredFor = useRef<string | null>(null);
+  const noteScrollKey = (noteId: string) => `zonwiki:note-scroll:${noteId}`;
+
+  // 任務編輯彈窗（從框選關聯點任務時，在筆記頁就地開啟，不離開頁面）（N4）。
+  const [taskGroups, setTaskGroups] = useState<TaskGroup[]>([]);
+  const [taskEditorStack, setTaskEditorStack] = useState<string[]>([]);
+  const taskEditorId = taskEditorStack.length ? taskEditorStack[taskEditorStack.length - 1] : null;
+  useEffect(() => {
+    listTaskGroups().then(setTaskGroups).catch(() => {});
+  }, []);
+  useEffect(() => {
+    const onOpenTask = (e: Event) => {
+      const id = (e as CustomEvent<{ taskId: string }>).detail?.taskId;
+      if (id) setTaskEditorStack((prev) => (prev.length ? [...prev, id] : [id]));
+    };
+    window.addEventListener('zonwiki:open-task', onOpenTask);
+    return () => window.removeEventListener('zonwiki:open-task', onOpenTask);
+  }, []);
+
+  // 捲動時節流存目前位置（每幀最多存一次）。
+  const handleNoteScroll = useCallback(() => {
+    const nid = note?.id;
+    if (!nid) return;
+    if (scrollSaveRaf.current != null) return;
+    scrollSaveRaf.current = requestAnimationFrame(() => {
+      scrollSaveRaf.current = null;
+      const el = noteScrollRef.current;
+      if (el) {
+        try { localStorage.setItem(noteScrollKey(nid), String(Math.round(el.scrollTop))); } catch { /* ignore */ }
+      }
+    });
+  }, [note?.id]);
+
+  // 載入完成後，把捲動位置還原到上次離開處（每篇只還原一次；等內文渲染後再捲）。
+  useEffect(() => {
+    const nid = note?.id;
+    if (!nid || loading) return;
+    if (scrollRestoredFor.current === nid) return;
+    let saved = 0;
+    try { saved = Number(localStorage.getItem(noteScrollKey(nid)) || '0'); } catch { /* ignore */ }
+    if (!saved) { scrollRestoredFor.current = nid; return; }
+    const timer = setTimeout(() => {
+      const el = noteScrollRef.current;
+      if (el) el.scrollTop = saved;
+      scrollRestoredFor.current = nid;
+    }, 250);
+    return () => clearTimeout(timer);
+    // 內文渲染後再捲；用 250ms 緩衝，不相依 previewHtml（它宣告於後方，避免 TDZ）。
+  }, [note?.id, loading]);
+
+  // 記住「最後看的筆記」slug：之後從 Header 點「筆記」會直接回到這篇（N1：打開筆記功能＝回到該篇該位置）。
+  useEffect(() => {
+    if (note?.id && slug) {
+      try { localStorage.setItem('zonwiki:last-note-slug', slug); } catch { /* ignore */ }
+    }
+  }, [note?.id, slug]);
   // 由內文 HTML 萃取章節（h1/h2/h3）並為各標題補上錨點 id（供目錄點擊捲動）。
   const { html: previewHtml, toc } = useMemo(
     () => (note ? buildToc(note.contentHtml) : { html: '', toc: [] }),
@@ -349,7 +412,7 @@ export default function NotesDetailPage() {
   }
 
   return (
-    <div className="note-detail-page">
+    <div className="note-detail-page" ref={noteScrollRef} onScroll={handleNoteScroll}>
       <div className="note-detail__container">
         {/* 置頂工具列（sticky，不隨內文捲走）：返回 + 標題 + 編輯 / 匯出 PDF / 刪除，同一行。 */}
         <div
@@ -390,26 +453,29 @@ export default function NotesDetailPage() {
           >
             {note.title}
           </h1>
-          <div style={{ display: 'flex', gap: 'var(--spacing-2)', flexShrink: 0 }}>
-            <button
-              onClick={() => {
-                setEditTitle(note.title);
-                setEditContent(note.contentRaw);
-                setEditCatIds((note.categories ?? []).map((c) => c.id));
-                setEditTagIds((note.tags ?? []).map((t) => t.id));
-                setIsEditing(true);
-              }}
-              className="btn-primary"
-            >
-              ✏️ 編輯
-            </button>
-            <button onClick={handleExportPdf} className="btn-secondary" title="以瀏覽器列印（可另存為 PDF）">
-              📄 匯出 PDF
-            </button>
-            <button onClick={handleDelete} className="btn-danger">
-              🗑️ 刪除
-            </button>
-          </div>
+          {/* 編輯中時隱藏「編輯 / 匯出 / 刪除」（避免與下方編輯區的取消/保存混淆）；編輯區自有取消/保存。 */}
+          {!isEditing && (
+            <div style={{ display: 'flex', gap: 'var(--spacing-2)', flexShrink: 0 }}>
+              <button
+                onClick={() => {
+                  setEditTitle(note.title);
+                  setEditContent(note.contentRaw);
+                  setEditCatIds((note.categories ?? []).map((c) => c.id));
+                  setEditTagIds((note.tags ?? []).map((t) => t.id));
+                  setIsEditing(true);
+                }}
+                className="btn-primary"
+              >
+                ✏️ 編輯
+              </button>
+              <button onClick={handleExportPdf} className="btn-secondary" title="以瀏覽器列印（可另存為 PDF）">
+                📄 匯出 PDF
+              </button>
+              <button onClick={handleDelete} className="btn-danger">
+                🗑️ 刪除
+              </button>
+            </div>
+          )}
         </div>
 
         {/* 錯誤提示 */}
@@ -755,7 +821,8 @@ export default function NotesDetailPage() {
                 <NoteOverlay
                   noteId={note.id}
                   containerRef={previewRef}
-                  onRequestToc={() => setTocOpen(true)}
+                  onToggleToc={() => setTocOpen((v) => !v)}
+                  tocOpen={tocOpen}
                 />
                 {tocOpen && toc.length > 0 && (
                   <TocPanel noteId={note.id} toc={toc} onClose={() => setTocOpen(false)} />
@@ -932,6 +999,20 @@ export default function NotesDetailPage() {
           </>
         )}
       </div>
+
+      {/* 框選關聯到任務時：在筆記頁就地開啟任務編輯彈窗（不離開頁面）（N4）。 */}
+      {taskEditorId && (
+        <TaskEditorModal
+          taskId={taskEditorId}
+          groups={taskGroups}
+          user={user}
+          canGoBack={taskEditorStack.length > 1}
+          onClose={() => setTaskEditorStack((prev) => prev.slice(0, -1))}
+          onSaved={() => { /* 任務存檔後不需重載筆記 */ }}
+          onDeleted={() => setTaskEditorStack((prev) => prev.slice(0, -1))}
+          onNavigateToSubtask={(id) => setTaskEditorStack((prev) => [...prev, id])}
+        />
+      )}
 
       <style jsx>{`
         /* 讓本頁自己成為「固定高度的捲動容器」，而非整頁(body)捲動——

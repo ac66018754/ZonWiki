@@ -29,9 +29,11 @@ interface NoteCreateModalProps {
   onClose: () => void;
   /** 建立成功後的回呼（例如讓側欄重載分類/標籤計數）。 */
   onCreated?: () => void;
+  /** 開啟時預先選取的分類 id（例如從側欄某分類的「＋ → 在此分類下新增筆記」帶入）。 */
+  presetCategoryIds?: string[];
 }
 
-export function NoteCreateModal({ open, onClose, onCreated }: NoteCreateModalProps) {
+export function NoteCreateModal({ open, onClose, onCreated, presetCategoryIds }: NoteCreateModalProps) {
   const router = useRouter();
 
   const [title, setTitle] = useState("");
@@ -45,12 +47,12 @@ export function NoteCreateModal({ open, onClose, onCreated }: NoteCreateModalPro
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // 開啟時載入分類/標籤並重設表單
+  // 開啟時載入分類/標籤並重設表單（若有帶入預設分類則預先選取）
   useEffect(() => {
     if (!open) return;
     setTitle("");
     setContent("");
-    setSelectedCats(new Set());
+    setSelectedCats(new Set(presetCategoryIds ?? []));
     setSelectedTags(new Set());
     setError(null);
     Promise.all([listNoteCategories(), listNoteTags()])
@@ -59,6 +61,7 @@ export function NoteCreateModal({ open, onClose, onCreated }: NoteCreateModalPro
         setTags(tgs);
       })
       .catch((err) => logger.error("Failed to load categories/tags:", err));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   const handleCreate = useCallback(async () => {

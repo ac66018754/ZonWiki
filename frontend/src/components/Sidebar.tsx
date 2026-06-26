@@ -57,6 +57,10 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
   // 即使網址沒有 ?categoryId 也能讓使用者知道目前內容的分類，不會迷路。
   const [activeNoteCats, setActiveNoteCats] = useState<string[]>([]);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  // 新增筆記彈窗的預設分類（從某分類的「＋ → 在此分類下新增筆記」帶入）。
+  const [presetCatForNewNote, setPresetCatForNewNote] = useState<string[]>([]);
+  // 點分類「＋」時開啟的中央彈窗：問要「在此分類下新增筆記」還是「新增子分類」。
+  const [categoryActionFor, setCategoryActionFor] = useState<NoteCategory | null>(null);
   const [categories, setCategories] = useState<NoteCategory[]>([]);
   const [tags, setTags] = useState<NoteTag[]>([]);
   // 全部筆記（用來在分類樹下「像 VS Code 一樣」列出每個分類底下的筆記＝檔案）。
@@ -940,7 +944,8 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
             }}
             style={{
               fontWeight: highlighted ? 600 : 400,
-              color: highlighted ? "var(--action-secondary-fg)" : "var(--text-secondary)",
+              // 分類名稱用主要文字色（夜間 --text-secondary 的灰在深色底下對比太低、幾乎看不到）。
+              color: highlighted ? "var(--action-secondary-fg)" : "var(--text-primary)",
               background: isCurrentNote ? "var(--action-secondary-bg)" : undefined,
               borderRadius: isCurrentNote ? "var(--radius-sm)" : undefined,
             }}
@@ -959,7 +964,7 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
             <button title="編輯分類" onClick={() => openEditCategory(cat)}>
               ✎
             </button>
-            <button title="新增子分類" onClick={() => openAddCategory(cat.id)}>
+            <button title="新增（在此分類下新增筆記 / 新增子分類）" onClick={() => setCategoryActionFor(cat)}>
               ＋
             </button>
             <button title="刪除分類" onClick={() => handleDeleteCategory(cat)}>
@@ -1006,7 +1011,7 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
         {/* 標題列：筆記 + 新增筆記（同一行） */}
         <div className="nt-header">
           <h2 className="nt-title">筆記</h2>
-          <button className="nt-newnote" onClick={() => setShowCreateModal(true)} data-testid="new-note-button">
+          <button className="nt-newnote" onClick={() => { setPresetCatForNewNote([]); setShowCreateModal(true); }} data-testid="new-note-button">
             ＋ 新增筆記
           </button>
         </div>
@@ -1206,10 +1211,63 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
         )}
       </div>
     </aside>
+    {/* 分類「＋」中央彈窗：在此分類下新增筆記 / 新增子分類 */}
+    {categoryActionFor && (
+      <div
+        onMouseDown={(e) => { if (e.target === e.currentTarget) setCategoryActionFor(null); }}
+        style={{
+          position: 'fixed', inset: 0, zIndex: 2000, background: 'rgba(0,0,0,0.4)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}
+      >
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="分類操作"
+          style={{
+            background: 'var(--bg-surface)', border: '1px solid var(--border-default)',
+            borderRadius: 'var(--radius-lg)', boxShadow: 'var(--shadow-lg)',
+            padding: 'var(--spacing-5)', width: 320, maxWidth: '90vw',
+          }}
+        >
+          <h3 style={{ margin: '0 0 var(--spacing-1)', fontSize: 'var(--text-lg)', fontWeight: 700 }}>
+            「{categoryActionFor.name}」
+          </h3>
+          <p style={{ margin: '0 0 var(--spacing-4)', fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>
+            要在這個分類下做什麼？
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--spacing-2)' }}>
+            <button
+              className="btn-primary"
+              onClick={() => {
+                setPresetCatForNewNote([categoryActionFor.id]);
+                setShowCreateModal(true);
+                setCategoryActionFor(null);
+              }}
+            >
+              📝 在此分類下新增筆記
+            </button>
+            <button
+              className="btn-secondary"
+              onClick={() => {
+                openAddCategory(categoryActionFor.id);
+                setCategoryActionFor(null);
+              }}
+            >
+              📁 新增子分類
+            </button>
+            <button className="btn-secondary" onClick={() => setCategoryActionFor(null)}>
+              取消
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
     <NoteCreateModal
       open={showCreateModal}
-      onClose={() => setShowCreateModal(false)}
+      onClose={() => { setShowCreateModal(false); setPresetCatForNewNote([]); }}
       onCreated={reload}
+      presetCategoryIds={presetCatForNewNote}
     />
     </>
   );

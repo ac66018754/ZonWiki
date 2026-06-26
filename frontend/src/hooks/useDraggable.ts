@@ -40,7 +40,14 @@ interface DragOrigin {
  * viewport and persisted to localStorage under a stable key. Hydration is
  * deferred to the client to avoid SSR markup mismatches.
  */
-export function useDraggable(key: string, defaultPos: Position) {
+export function useDraggable(
+  key: string,
+  defaultPos: Position,
+  options?: { persist?: boolean },
+) {
+  // persist=false：不讀也不寫 localStorage —— 每次掛載都用 defaultPos（例如章節目錄表，
+  // 不要記憶上次被拖到的位置，避免「每次打開都壓在某處」）。
+  const persist = options?.persist !== false;
   const [pos, setPos] = useState<Position>(defaultPos);
   const [dragging, setDragging] = useState(false);
   const [hydrated, setHydrated] = useState(false);
@@ -62,11 +69,11 @@ export function useDraggable(key: string, defaultPos: Position) {
   // localStorage is client-only, so this deliberately runs as a post-mount
   // pass to keep the SSR and first client render identical.
   useEffect(() => {
-    const stored = readStored(key);
+    const stored = persist ? readStored(key) : null;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional one-time client hydration
     setPos(constrain(stored ?? defaultRef.current));
     setHydrated(true);
-  }, [key, constrain]);
+  }, [key, constrain, persist]);
 
   const onPointerDown = useCallback(
     (e: React.PointerEvent) => {
@@ -112,13 +119,13 @@ export function useDraggable(key: string, defaultPos: Position) {
 
   // Persist resting position; keep panels on-screen across viewport resizes.
   useEffect(() => {
-    if (!hydrated || dragging) return;
+    if (!persist || !hydrated || dragging) return;
     try {
       window.localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(pos));
     } catch {
       /* storage full or blocked — position simply won't persist */
     }
-  }, [pos, hydrated, dragging, key]);
+  }, [pos, hydrated, dragging, key, persist]);
 
   useEffect(() => {
     if (!hydrated) return;

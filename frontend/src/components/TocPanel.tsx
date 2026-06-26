@@ -31,17 +31,16 @@ export function TocPanel({
   /** 關閉面板（由父層管理開關狀態）。 */
   onClose: () => void;
 }) {
-  // 預設位置：右上角（避開頂端置頂工具列）。useDraggable 會在掛載後夾到視窗內並記憶位置。
+  // 預設位置：左側（左側欄一帶）；不記憶位置，每次打開都回到這裡（避開頂端置頂工具列）。
   const defaultPos = useMemo(
-    () => ({
-      x: typeof window !== 'undefined' ? Math.max(8, window.innerWidth - 286) : 1000,
-      y: 84,
-    }),
+    () => ({ x: 16, y: 84 }),
     [],
   );
+  // persist:false → 不記憶位置，每次打開都用預設（右上角，不壓到左側欄）。
   const { pos, dragging, hydrated, panelRef, onPointerDown } = useDraggable(
     `toc-note-${noteId}`,
     defaultPos,
+    { persist: false },
   );
 
   // 目前正在閱讀的章節 id（IntersectionObserver 追蹤）。
