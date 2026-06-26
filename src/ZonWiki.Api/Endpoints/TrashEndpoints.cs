@@ -129,7 +129,7 @@ public static class TrashEndpoints
 
             // --- 筆記 ---
             var notes = await db.Note.IgnoreQueryFilters()
-                .Where(n => n.UserId == userGuid && !n.ValidFlag)
+                .Where(n => n.UserId == userGuid && !n.ValidFlag && n.PurgedDateTime == null)
                 .Select(n => new { n.Id, n.Title, n.ContentRaw, D = n.DeletedDateTime ?? n.UpdatedDateTime })
                 .ToListAsync(ct);
             items.AddRange(notes.Select(n => new TrashItemDto(
@@ -139,7 +139,7 @@ public static class TrashEndpoints
 
             // --- 筆記分類 ---
             var categories = await db.Category.IgnoreQueryFilters()
-                .Where(c => c.UserId == userGuid && !c.ValidFlag)
+                .Where(c => c.UserId == userGuid && !c.ValidFlag && c.PurgedDateTime == null)
                 .Select(c => new { c.Id, c.Name, D = c.DeletedDateTime ?? c.UpdatedDateTime })
                 .ToListAsync(ct);
             items.AddRange(categories.Select(c => new TrashItemDto(
@@ -147,7 +147,7 @@ public static class TrashEndpoints
 
             // --- 標籤（與筆記/任務/常用連結共用） ---
             var tags = await db.Tag.IgnoreQueryFilters()
-                .Where(t => t.UserId == userGuid && !t.ValidFlag)
+                .Where(t => t.UserId == userGuid && !t.ValidFlag && t.PurgedDateTime == null)
                 .Select(t => new { t.Id, t.Name, D = t.DeletedDateTime ?? t.UpdatedDateTime })
                 .ToListAsync(ct);
             items.AddRange(tags.Select(t => new TrashItemDto(
@@ -155,7 +155,7 @@ public static class TrashEndpoints
 
             // --- 任務 ---
             var taskCards = await db.TaskCard.IgnoreQueryFilters()
-                .Where(tc => tc.UserId == userGuid && !tc.ValidFlag)
+                .Where(tc => tc.UserId == userGuid && !tc.ValidFlag && tc.PurgedDateTime == null)
                 .Select(tc => new { tc.Id, tc.Title, tc.Content, tc.PlannedDateTime, tc.DueDateTime, D = tc.DeletedDateTime ?? tc.UpdatedDateTime })
                 .ToListAsync(ct);
             items.AddRange(taskCards.Select(tc =>
@@ -171,7 +171,7 @@ public static class TrashEndpoints
 
             // --- 任務分類 ---
             var taskGroups = await db.TaskGroup.IgnoreQueryFilters()
-                .Where(tg => tg.UserId == userGuid && !tg.ValidFlag)
+                .Where(tg => tg.UserId == userGuid && !tg.ValidFlag && tg.PurgedDateTime == null)
                 .Select(tg => new { tg.Id, tg.Name, D = tg.DeletedDateTime ?? tg.UpdatedDateTime })
                 .ToListAsync(ct);
             items.AddRange(taskGroups.Select(tg => new TrashItemDto(
@@ -179,7 +179,7 @@ public static class TrashEndpoints
 
             // --- 快速記錄 ---
             var captures = await db.CaptureItem.IgnoreQueryFilters()
-                .Where(ci => ci.UserId == userGuid && !ci.ValidFlag)
+                .Where(ci => ci.UserId == userGuid && !ci.ValidFlag && ci.PurgedDateTime == null)
                 .Select(ci => new { ci.Id, ci.RawContent, D = ci.DeletedDateTime ?? ci.UpdatedDateTime })
                 .ToListAsync(ct);
             items.AddRange(captures.Select(ci => new TrashItemDto(
@@ -189,7 +189,7 @@ public static class TrashEndpoints
 
             // --- 常用連結 ---
             var quickLinks = await db.QuickLink.IgnoreQueryFilters()
-                .Where(ql => ql.UserId == userGuid && !ql.ValidFlag)
+                .Where(ql => ql.UserId == userGuid && !ql.ValidFlag && ql.PurgedDateTime == null)
                 .Select(ql => new { ql.Id, ql.Title, ql.Url, D = ql.DeletedDateTime ?? ql.UpdatedDateTime })
                 .ToListAsync(ct);
             items.AddRange(quickLinks.Select(ql => new TrashItemDto(
@@ -199,7 +199,7 @@ public static class TrashEndpoints
 
             // --- 開問啦・畫布 ---
             var canvases = await db.Canvas.IgnoreQueryFilters()
-                .Where(cv => cv.UserId == userGuid && !cv.ValidFlag)
+                .Where(cv => cv.UserId == userGuid && !cv.ValidFlag && cv.PurgedDateTime == null)
                 .Select(cv => new { cv.Id, cv.Title, D = cv.DeletedDateTime ?? cv.UpdatedDateTime })
                 .ToListAsync(ct);
             items.AddRange(canvases.Select(cv => new TrashItemDto(
@@ -209,7 +209,7 @@ public static class TrashEndpoints
             // --- 開問啦・節點（Node 非 IUserOwned，經其 Canvas 判擁；只列「畫布仍在、節點被刪」者，
             //     避免與「整張畫布被刪」重複） ---
             var nodes = await db.Node.IgnoreQueryFilters()
-                .Where(n => !n.ValidFlag)
+                .Where(n => !n.ValidFlag && n.PurgedDateTime == null)
                 .Join(
                     db.Canvas.IgnoreQueryFilters().Where(c => c.UserId == userGuid && c.ValidFlag),
                     n => n.CanvasId,
@@ -225,7 +225,7 @@ public static class TrashEndpoints
             // 歸入「便利貼」分區（使用者最直覺找得到；前端 GROUP_ORDER 對應此名）。
             // 標題：便利貼用文字片段；塗鴉/圖片板無文字，給人類可讀名稱。
             var overlayItems = await db.NoteOverlayItem.IgnoreQueryFilters()
-                .Where(oi => oi.UserId == userGuid && !oi.ValidFlag)
+                .Where(oi => oi.UserId == userGuid && !oi.ValidFlag && oi.PurgedDateTime == null)
                 .Select(oi => new { oi.Id, oi.Kind, oi.Text, oi.DataJson, oi.NoteId, D = oi.DeletedDateTime ?? oi.UpdatedDateTime })
                 .ToListAsync(ct);
             // 各便利貼所屬筆記標題（還原後回到哪篇筆記）。
@@ -250,7 +250,7 @@ public static class TrashEndpoints
 
             // --- 開問啦畫布便利貼（與筆記便利貼同一「便利貼」分區）---
             var canvasAnnos = await db.CanvasAnnotation.IgnoreQueryFilters()
-                .Where(a => a.UserId == userGuid && !a.ValidFlag)
+                .Where(a => a.UserId == userGuid && !a.ValidFlag && a.PurgedDateTime == null)
                 .Select(a => new { a.Id, a.Kind, a.Text, a.DataJson, a.CanvasId, D = a.DeletedDateTime ?? a.UpdatedDateTime })
                 .ToListAsync(ct);
             // 各畫布便利貼所屬畫布標題（還原後回到哪張畫布）。
@@ -302,7 +302,8 @@ public static class TrashEndpoints
             // （FindAsync 會套用全域 ValidFlag 過濾、找不到軟刪除列，故不可用）。
             return type switch
             {
-                "Note" => await RestoreOwnedAsync(db, db.Note, id, userGuid, userId, ct),
+                // Note 特例：還原時需處理 slug 唯一索引（partial）衝突，故走專屬流程。
+                "Note" => await RestoreNoteAsync(db, id, userGuid, userId, ct),
                 "Category" => await RestoreOwnedAsync(db, db.Category, id, userGuid, userId, ct),
                 "Tag" => await RestoreOwnedAsync(db, db.Tag, id, userGuid, userId, ct),
                 "TaskCard" => await RestoreOwnedAsync(db, db.TaskCard, id, userGuid, userId, ct),
@@ -376,6 +377,7 @@ public static class TrashEndpoints
 
         entity.ValidFlag = true;
         entity.DeletedDateTime = null;
+        entity.PurgedDateTime = null; // 還原時一併清除清除標記（即使是已 purged 的列也能救回）
         entity.UpdatedDateTime = DateTime.UtcNow;
         entity.UpdatedUser = userId;
         await db.SaveChangesAsync(ct);
@@ -384,7 +386,56 @@ public static class TrashEndpoints
     }
 
     /// <summary>
-    /// 永久刪除一個 IUserOwned 實體（以 IgnoreQueryFilters + 明確 UserId 載入軟刪除列後從 DB 移除）。
+    /// 還原筆記（Note 特例）：除一般還原外，因 slug 唯一索引為 partial（只對「有效」筆記強制唯一），
+    /// 若被還原筆記的 slug 在「還原當下」已被另一篇有效筆記佔用，會自動為被還原者的 slug 加序號
+    /// （-2、-3…）以避免違反唯一索引（否則還原會回 500）。
+    /// </summary>
+    /// <param name="db">資料庫內容。</param>
+    /// <param name="id">要還原的筆記識別碼。</param>
+    /// <param name="userGuid">使用者識別碼（擁有權驗證）。</param>
+    /// <param name="userId">使用者識別字串（寫入 UpdatedUser）。</param>
+    /// <param name="ct">取消權杖。</param>
+    private static async Task<IResult> RestoreNoteAsync(
+        ZonWikiDbContext db,
+        Guid id,
+        Guid userGuid,
+        string userId,
+        CancellationToken ct)
+    {
+        var note = await db.Note.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(n => n.Id == id && n.UserId == userGuid, ct);
+        if (note is null)
+        {
+            return Results.NotFound(ApiResponse<object>.Fail($"找不到該項目（ID：{id}）", 404));
+        }
+
+        // slug 衝突保護：若同使用者已有「有效」筆記用了相同 slug，為被還原者加序號避免撞唯一索引。
+        var baseSlug = note.Slug;
+        var slug = baseSlug;
+        for (var i = 2;
+             await db.Note.IgnoreQueryFilters()
+                 .AnyAsync(n => n.UserId == userGuid && n.ValidFlag && n.Slug == slug && n.Id != id, ct);
+             i++)
+        {
+            slug = $"{baseSlug}-{i}";
+        }
+        note.Slug = slug;
+
+        note.ValidFlag = true;
+        note.DeletedDateTime = null;
+        note.PurgedDateTime = null;
+        note.UpdatedDateTime = DateTime.UtcNow;
+        note.UpdatedUser = userId;
+        await db.SaveChangesAsync(ct);
+
+        return Results.Ok(ApiResponse<object>.Ok(new { message = "還原成功" }));
+    }
+
+    /// <summary>
+    /// 永久刪除一個 IUserOwned 實體。
+    /// 決策（「絕不硬刪除、一切可復原」）：不從 DB 移除實體列，改為標記 PurgedDateTime，
+    /// ValidFlag 維持 false（仍是已刪除狀態），垃圾桶清單會排除已 purged 者 → 使用者看不到、
+    /// 但資料仍留在 DB（必要時可由 DB 將 ValidFlag 壓回 true 復活）。
     /// </summary>
     private static async Task<IResult> PurgeOwnedAsync<T>(
         ZonWikiDbContext db,
@@ -401,7 +452,10 @@ public static class TrashEndpoints
             return Results.NotFound(ApiResponse<object>.Fail($"找不到該項目（ID：{id}）", 404));
         }
 
-        set.Remove(entity);
+        // 軟性永久刪除：標記清除時間，列留在 DB、可復原（非 set.Remove 硬刪）。
+        entity.PurgedDateTime = DateTime.UtcNow;
+        entity.UpdatedDateTime = DateTime.UtcNow;
+        entity.UpdatedUser = userGuid.ToString();
         await db.SaveChangesAsync(ct);
 
         return Results.NoContent();
@@ -428,6 +482,7 @@ public static class TrashEndpoints
 
         node.ValidFlag = true;
         node.DeletedDateTime = null;
+        node.PurgedDateTime = null; // 還原時一併清除清除標記
         node.UpdatedDateTime = DateTime.UtcNow;
         node.UpdatedUser = userId;
 
@@ -437,7 +492,8 @@ public static class TrashEndpoints
     }
 
     /// <summary>
-    /// 永久刪除開問啦節點：經其所屬 Canvas 驗證擁有者後從 DB 移除。
+    /// 永久刪除開問啦節點：經其所屬 Canvas 驗證擁有者後，標記 PurgedDateTime（列留 DB、可復原），
+    /// 同樣不做硬刪（與 <see cref="PurgeOwnedAsync{T}"/> 一致的「絕不硬刪除」原則）。
     /// </summary>
     private static async Task<IResult> PurgeNodeAsync(
         ZonWikiDbContext db,
@@ -454,7 +510,10 @@ public static class TrashEndpoints
             return Results.NotFound(ApiResponse<object>.Fail($"找不到該節點（ID：{nodeId}）", 404));
         }
 
-        db.Node.Remove(node);
+        // 軟性永久刪除：標記清除時間，列留在 DB、可復原（非 db.Node.Remove 硬刪）。
+        node.PurgedDateTime = DateTime.UtcNow;
+        node.UpdatedDateTime = DateTime.UtcNow;
+        node.UpdatedUser = userGuid.ToString();
         await db.SaveChangesAsync(ct);
 
         return Results.NoContent();

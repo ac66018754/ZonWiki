@@ -45,7 +45,8 @@ public static class NoteOverlayEndpoints
             if (!owns) return Results.NotFound(ApiResponse<NoteOverlayItemDto>.Fail("Note not found", 404));
 
             var kind = (req.Kind ?? "").Trim().ToLowerInvariant();
-            if (kind != "sticky" && kind != "drawing" && kind != "slide")
+            // text＝純文字框（Snipaste 風格），與開問啦畫布共用同一套標註型別。
+            if (kind != "sticky" && kind != "drawing" && kind != "slide" && kind != "text")
                 return Results.BadRequest(ApiResponse<NoteOverlayItemDto>.Fail("未知的浮層型別", 400));
 
             var item = new NoteOverlayItem

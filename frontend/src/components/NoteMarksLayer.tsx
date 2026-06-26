@@ -17,6 +17,7 @@ import {
 } from '@/lib/api';
 import { ColorPickerInline, resolveColor } from '@/components/ColorPicker';
 import { pushUndo } from '@/lib/undoManager';
+import { showToast } from '@/lib/toast';
 import { NOTE_ASK_STICKY_EVENT } from '@/components/NoteOverlay';
 
 /** 目標型別 → 中文標籤（hover 浮窗顯示）。 */
@@ -251,11 +252,26 @@ export function NoteMarksLayer({ noteId, containerRef, contentHtml, active }: Pr
     if (m.targetType === 'note' && m.targetSlug) {
       router.push(`/notes/${m.targetSlug.split('/').map(encodeURIComponent).join('/')}`);
     } else if (m.targetType === 'taskcard') {
-      router.push(`/tasks`);
+      // 在筆記頁就地開任務彈窗（不離開頁面）；筆記頁有監聽 zonwiki:open-task。
+      if (m.targetId) {
+        window.dispatchEvent(new CustomEvent('zonwiki:open-task', { detail: { taskId: m.targetId } }));
+      } else {
+        router.push(`/tasks`);
+      }
     } else if (m.targetType === 'node') {
       router.push(`/canvas`);
     } else if (m.targetType === 'url' && m.targetUrl) {
-      window.open(m.targetUrl, '_blank', 'noopener');
+      const u = m.targetUrl;
+      if (/^https?:\/\//i.test(u)) {
+        window.open(u, '_blank', 'noopener');
+      } else {
+        // 瀏覽器基於安全，不允許從網頁直接開啟 file:// 等本機協定（避免網頁存取你的檔案系統）。
+        // 折衷：把連結複製到剪貼簿，請使用者自行貼到瀏覽器網址列開啟。
+        navigator.clipboard?.writeText(u).then(
+          () => showToast('已複製連結（瀏覽器安全限制無法直接開啟本機檔案，請貼到網址列開啟）', { type: 'info', durationMs: 3500 }),
+          () => showToast(u, { type: 'info', durationMs: 4000 }),
+        );
+      }
     }
   };
 
@@ -376,12 +392,16 @@ function NoteSelectionPopover({
   const [askQ, setAskQ] = useState('');
   const [asking, setAsking] = useState(false);
 
-  // 關聯：搜尋既有筆記/任務/節點。
+  // 關聯：搜尋既有筆記/任務/節點。不預先列出——打了字才搜（避免一打開就一長串）。
+  // 搜尋範圍由後端決定：筆記用標題、任務用 Title、開問啦節點用內容。
   useEffect(() => {
     if (tab !== 'link') return;
+    const term = q.trim();
+    // 空字串不搜（也不在 effect 內同步 setState，避免級聯重繪）；顯示端用 q 過濾陳舊候選。
+    if (!term) return;
     let alive = true;
     const id = window.setTimeout(async () => {
-      const res = await searchLinkCandidates('note', noteId, q);
+      const res = await searchLinkCandidates('note', noteId, term);
       if (alive) setCands(res);
     }, 200);
     return () => {
@@ -461,24 +481,25 @@ function NoteSelectionPopover({
             style={inputStyle}
             data-testid="note-link-search"
           />
-          <div style={{ maxHeight: 140, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2 }}>
-            {cands.map((c) => (
+          <div style={{ maxHeight: 200, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {/* 只在有輸入時顯示候選；空字串時不顯示陳舊結果（effect 不同步清狀態）。最多顯示 8 筆，避免一次太多。 */}
+            {(q.trim() ? cands : []).slice(0, 8).map((c) => (
               <button
                 key={`${c.type}-${c.id}`}
                 onClick={() => onLink(c.type, c.id)}
-                title={`關聯到此${TARGET_LABEL[c.type] ?? ''}`}
+                title={`關聯到此${TARGET_LABEL[c.type] ?? ''}：${c.title}`}
                 style={{
-                  textAlign: 'left', cursor: 'pointer', background: 'transparent',
+                  display: 'flex', alignItems: 'center', gap: 6, width: '100%', boxSizing: 'border-box',
+                  textAlign: 'left', cursor: 'pointer', background: 'var(--bg-surface-secondary, var(--bg-surface))',
                   border: '1px solid var(--border-default)', borderRadius: 'var(--radius-sm)',
-                  padding: '4px 8px', fontSize: 'var(--text-sm)', color: 'var(--text-primary)',
-                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  padding: '6px 8px', fontSize: 'var(--text-sm)', color: 'var(--text-primary)', minHeight: 30,
                 }}
                 data-testid="note-link-candidate"
               >
-                <span style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)' }}>
+                <span style={{ flexShrink: 0, color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)' }}>
                   [{TARGET_LABEL[c.type] ?? c.type}]
-                </span>{' '}
-                {c.title}
+                </span>
+                <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.title}</span>
               </button>
             ))}
           </div>
@@ -493,7 +514,9 @@ function NoteSelectionPopover({
             <button
               className="tk-btn tk-btn--primary"
               style={{ cursor: 'pointer' }}
-              disabled={!/^https?:\/\//.test(url.trim())}
+              // 放行任意「scheme://」協定（http/https/file/ftp…），例如 file:///D:/...；
+              // 注意：瀏覽器基於安全通常會擋住從網頁開啟 file://，但仍可儲存此關聯供記錄/複製。
+              disabled={!/^[a-z][a-z0-9+.\-]*:\/\//i.test(url.trim())}
               onClick={() => onLink('url', undefined, url.trim())}
             >
               連結

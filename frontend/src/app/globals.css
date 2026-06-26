@@ -15,6 +15,7 @@
   /* — 背景 / 表面 — */
   --bg-canvas:          #faf9f7;  /* 柔和奶油白 */
   --bg-surface:         #fefcfa;  /* 主要卡片/面板 */
+  --bg-default:         #fefcfa;  /* 別名：等同 surface（修補 var(--bg-default) 未定義） */
   --bg-surface-secondary: #f5f3f0; /* 抽屜/次級面板 */
   --bg-elevated:        #ffffff;  /* 浮動面板/模態 */
 
@@ -109,6 +110,9 @@
 :root[data-theme="light"] {
   --bg-canvas:            #ffffff;
   --bg-surface:           #f6f8fa;
+  /* --bg-default：多處 CSS/inline 用 var(--bg-default) 卻從未定義 → 深色主題下變透明、
+     下拉選單/彈窗背景看不到。在每個主題各自定義為該主題 surface（放每塊內才會被正確輸出）。 */
+  --bg-default:           #f6f8fa;
   --bg-surface-secondary: #eaeef2;
   --bg-elevated:          #ffffff;
 
@@ -146,6 +150,7 @@
 :root[data-theme="dark"] {
   --bg-canvas:            #0d1117;
   --bg-surface:           #161b22;
+  --bg-default:           #161b22;
   --bg-surface-secondary: #1c2128;
   --bg-elevated:          #21262d;
 
@@ -183,6 +188,7 @@
 :root[data-theme="night"] {
   --bg-canvas:            #010409;
   --bg-surface:           #0d1117;
+  --bg-default:           #0d1117;
   --bg-surface-secondary: #161b22;
   --bg-elevated:          #1c2128;
 
@@ -1633,7 +1639,7 @@ button:disabled,
   font-size: var(--text-sm);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-sm);
-  background: var(--bg-default);
+  background: var(--bg-surface);
   color: var(--text-primary);
   box-sizing: border-box;
 }
@@ -1714,7 +1720,7 @@ button:disabled,
   width: 100%;
   max-width: 880px;
   max-height: 90vh;
-  background: var(--bg-default);
+  background: var(--bg-surface);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg, 0 20px 60px rgba(0, 0, 0, 0.4));

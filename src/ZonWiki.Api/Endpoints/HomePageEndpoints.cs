@@ -58,7 +58,17 @@ public static class HomePageEndpoints
                     t.DueDateTime,
                     t.GroupId,
                     t.SortOrder,
-                    t.CreatedDateTime))
+                    t.CreatedDateTime,
+                    0,
+                    0,
+                    null,
+                    null,
+                    null,
+                    t.IsLongTerm,
+                    t.TargetDateTime,
+                    t.TargetGranularity,
+                    t.IsPinnedToHome,
+                    t.HomeSortOrder))
                 .ToListAsync(ct);
 
             var weeklyJournals = await db.Note
@@ -100,7 +110,17 @@ public static class HomePageEndpoints
                     t.DueDateTime,
                     t.GroupId,
                     t.SortOrder,
-                    t.CreatedDateTime))
+                    t.CreatedDateTime,
+                    0,
+                    0,
+                    null,
+                    null,
+                    null,
+                    t.IsLongTerm,
+                    t.TargetDateTime,
+                    t.TargetGranularity,
+                    t.IsPinnedToHome,
+                    t.HomeSortOrder))
                 .ToListAsync(ct);
 
             // 3. 常用連結卡（依排序序號）
@@ -129,11 +149,24 @@ public static class HomePageEndpoints
                     ci.CreatedDateTime))
                 .ToListAsync(ct);
 
+            // 5. 釘選到首頁的任務卡片（含標籤與子任務計數）
+            var pinnedTaskEntities = await db.TaskCard
+                .Where(t => t.UserId == userGuid && t.IsPinnedToHome && t.ValidFlag)
+                .Include(t => t.Children)
+                .Include(t => t.TaskTags)
+                    .ThenInclude(tt => tt.Tag)
+                .OrderBy(t => t.HomeSortOrder)
+                .ThenBy(t => t.CreatedDateTime)
+                .ToListAsync(ct);
+
+            var pinnedTasks = pinnedTaskEntities.Select(TaskEndpoints.MapToSummaryDtoPublic).ToList();
+
             var result = new HomePageAggregateDto(
                 weeklyCalendar,
                 todayTodos,
                 quickLinks,
-                recentCaptures);
+                recentCaptures,
+                pinnedTasks);
 
             return Results.Ok(ApiResponse<HomePageAggregateDto>.Ok(result));
         });

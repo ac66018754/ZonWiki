@@ -3,6 +3,7 @@
 import { CurrentUser, getLogoutUrl, getLoginUrl } from "@/lib/api";
 import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { GlobalSearch } from "./GlobalSearch";
 import { AiProcessingMenu } from "./AiProcessingMenu";
 import { useCanvasToolbar } from "./CanvasToolbarContext";
@@ -30,8 +31,25 @@ import { THEME_CHANGED_EVENT } from "@/components/ShortcutRuntime";
  * - 手機版漢堡菜單
  */
 export function Header({ user }: { user: CurrentUser | null }) {
+  const router = useRouter();
   // 開問啦工具列（由 /canvas 的 KaiWenCanvas 透過 Context 上送；其他頁為 null）
   const { node: canvasToolbar } = useCanvasToolbar();
+
+  /**
+   * 點「筆記」導覽：若記得「最後看的筆記」就直接回到那篇（含捲動位置），
+   * 否則退回筆記清單 /notes。每次點擊都即時讀 localStorage，確保拿到最新一篇。
+   */
+  const handleNotesNav = (e: React.MouseEvent) => {
+    try {
+      const slug = localStorage.getItem("zonwiki:last-note-slug");
+      if (slug) {
+        e.preventDefault();
+        router.push(`/notes/${slug.split("/").map(encodeURIComponent).join("/")}`);
+      }
+    } catch {
+      /* localStorage 不可用 → 用預設 href 進清單 */
+    }
+  };
   // 僅在掛載後才渲染工具列：SSR 與首次 hydration 都輸出 null（與伺服器一致），
   // 避免「伺服器渲染主題鈕、客戶端已渲染工具列」的 hydration 不一致 (#418)。
   const [toolbarHydrated, setToolbarHydrated] = useState(false);
@@ -217,7 +235,7 @@ export function Header({ user }: { user: CurrentUser | null }) {
               <span className="nav-hint">({hintKeys.openCanvas})</span>
             )}
           </Link>
-          <Link href="/notes" className="nav-item">
+          <Link href="/notes" className="nav-item" onClick={handleNotesNav}>
             筆記
             {showHints && hintKeys.openNotes && (
               <span className="nav-hint">({hintKeys.openNotes})</span>

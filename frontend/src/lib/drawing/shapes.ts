@@ -13,6 +13,7 @@
  */
 export type DrawTool =
   | 'pen'
+  | 'highlight'
   | 'line'
   | 'rect'
   | 'ellipse'
@@ -21,12 +22,17 @@ export type DrawTool =
   | 'erase-box'
   | null;
 
-/** 一個繪圖形狀。free＝多點折線；line/rect/ellipse＝起訖兩點。 */
+/**
+ * 一個繪圖形狀。free＝多點折線；line/rect/ellipse＝起訖兩點。
+ * opacity（0~1）＝描邊透明度，供「螢光筆」用（未設＝1＝不透明，沿用一般畫筆）。
+ */
 export interface Shape {
   type: 'free' | 'line' | 'rect' | 'ellipse';
   color: string;
   width: number;
   dash?: boolean;
+  /** 描邊透明度（0~1）；undefined 視為 1（不透明）。螢光筆會給較低值（半透明）。 */
+  opacity?: number;
   points: [number, number][];
 }
 
@@ -39,6 +45,10 @@ export function normalizeShapes(raw: unknown[]): Shape[] {
       color: typeof s.color === 'string' ? s.color : '#ef4444',
       width: typeof s.width === 'number' ? s.width : 3,
       dash: !!s.dash,
+      // 只有合法範圍 (0,1] 的數值才視為透明度；其餘（含舊資料無此欄）回退不透明。
+      ...(typeof s.opacity === 'number' && s.opacity > 0 && s.opacity <= 1
+        ? { opacity: s.opacity }
+        : {}),
       points: Array.isArray(s.points) ? (s.points as [number, number][]) : [],
     }));
 }

@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using ZonWiki.Infrastructure.Persistence;
@@ -11,9 +12,11 @@ using ZonWiki.Infrastructure.Persistence;
 namespace ZonWiki.Infrastructure.Migrations
 {
     [DbContext(typeof(ZonWikiDbContext))]
-    partial class ZonWikiDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260626045915_AddTaskCardLongTermAndHomePin")]
+    partial class AddTaskCardLongTermAndHomePin
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -2897,26 +2900,6 @@ namespace ZonWiki.Infrastructure.Migrations
                     b.Property<bool>("ValidFlag")
                         .HasColumnType("boolean")
                         .HasColumnName("TaskCard_ValidFlag");
-
-                    b.Property<bool>("IsLongTerm")
-                        .HasColumnType("boolean")
-                        .HasColumnName("TaskCard_IsLongTerm");
-
-                    b.Property<DateTime?>("TargetDateTime")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("TaskCard_TargetDateTime");
-
-                    b.Property<string>("TargetGranularity")
-                        .HasColumnType("text")
-                        .HasColumnName("TaskCard_TargetGranularity");
-
-                    b.Property<bool>("IsPinnedToHome")
-                        .HasColumnType("boolean")
-                        .HasColumnName("TaskCard_IsPinnedToHome");
-
-                    b.Property<int>("HomeSortOrder")
-                        .HasColumnType("integer")
-                        .HasColumnName("TaskCard_HomeSortOrder");
 
                     b.HasKey("Id")
                         .HasName("PK_TaskCard");

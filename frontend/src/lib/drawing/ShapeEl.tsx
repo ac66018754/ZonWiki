@@ -28,14 +28,21 @@ export function ShapeEl({
   erasable: boolean;
   onErase: () => void;
 }) {
+  // 螢光筆＝半透明描邊（opacity<1）；用 multiply 混色讓底下文字/內容透出，更像真實螢光筆。
+  const isHighlight = typeof s.opacity === 'number' && s.opacity < 1;
   const common = {
     fill: 'none' as const,
     stroke: s.color,
     strokeWidth: s.width,
+    strokeOpacity: s.opacity ?? 1,
     strokeLinecap: 'round' as const,
     strokeLinejoin: 'round' as const,
     strokeDasharray: s.dash ? '6 4' : undefined,
-    style: { pointerEvents: (erasable ? 'stroke' : 'none') as React.CSSProperties['pointerEvents'], cursor: erasable ? 'cell' : 'default' },
+    style: {
+      pointerEvents: (erasable ? 'stroke' : 'none') as React.CSSProperties['pointerEvents'],
+      cursor: erasable ? 'cell' : 'default',
+      mixBlendMode: (isHighlight ? 'multiply' : 'normal') as React.CSSProperties['mixBlendMode'],
+    },
     onPointerDown: erasable ? onErase : undefined,
   };
   return renderShapeWith(s, common);

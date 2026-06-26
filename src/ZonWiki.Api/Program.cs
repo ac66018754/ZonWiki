@@ -1,4 +1,6 @@
 using Microsoft.EntityFrameworkCore;
+using Serilog;
+using Serilog.Events;
 using ZonWiki.Api.Auth;
 using ZonWiki.Api.Endpoints;
 using ZonWiki.Api.Realtime;
@@ -11,6 +13,26 @@ using ZonWiki.Infrastructure.Notes;
 using ZonWiki.Infrastructure.Persistence;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// 結構化日誌（Serilog）：一律寫 Console（沿用 tmp/backend.log 導向），
+// 並在設定有 Seq:ServerUrl 時額外送往本機 Seq（GUI 查詢、可跨專案；以 Application 屬性區分專案）。
+// 決策：Seq sink 對「Seq 未啟動」具韌性（背景緩衝、不丟例外），故設了 URL 也不影響後端啟動。
+var seqServerUrl = builder.Configuration["Seq:ServerUrl"];
+builder.Services.AddSerilog((services, loggerConfiguration) =>
+{
+    loggerConfiguration
+        .MinimumLevel.Information()
+        .MinimumLevel.Override("Microsoft.AspNetCore", LogEventLevel.Information)
+        .MinimumLevel.Override("Microsoft.EntityFrameworkCore", LogEventLevel.Warning)
+        .Enrich.FromLogContext()
+        .Enrich.WithProperty("Application", "ZonWiki.Api")
+        .WriteTo.Console();
+
+    if (!string.IsNullOrWhiteSpace(seqServerUrl))
+    {
+        loggerConfiguration.WriteTo.Seq(seqServerUrl);
+    }
+});
 
 const string CorsPolicyName = "ZonWikiCors";
 var allowedOrigins = builder.Configuration

@@ -70,6 +70,31 @@ public class TaskCard : AuditableEntity, IUserOwned
     public DateTime? CompletedDateTime { get; set; }
 
     /// <summary>
+    /// 是否為長期任務（不強制截止日、不列入逾期）。
+    /// </summary>
+    public bool IsLongTerm { get; set; }
+
+    /// <summary>
+    /// 粗粒度目標期的代表日（UTC，可空）。存該月/季/年的「起始日」，搭配 TargetGranularity 解讀與顯示。
+    /// </summary>
+    public DateTime? TargetDateTime { get; set; }
+
+    /// <summary>
+    /// 目標期粒度："month" | "quarter" | "year"；null＝未設粗粒度目標。
+    /// </summary>
+    public string? TargetGranularity { get; set; }
+
+    /// <summary>
+    /// 是否釘選到首頁「我的任務」區塊。
+    /// </summary>
+    public bool IsPinnedToHome { get; set; }
+
+    /// <summary>
+    /// 首頁釘選區的排序序號（越小越前）。
+    /// </summary>
+    public int HomeSortOrder { get; set; }
+
+    /// <summary>
     /// 導覽屬性：所屬群組（前端以「分類」呈現）。
     /// </summary>
     public TaskGroup? Group { get; set; }

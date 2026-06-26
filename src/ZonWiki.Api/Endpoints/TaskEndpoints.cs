@@ -69,6 +69,16 @@ public static class TaskEndpoints
                 return Results.Unauthorized();
             }
 
+            // 如果 IsPinnedToHome==true 且未指定 HomeSortOrder，查該使用者目前釘選任務的最大 HomeSortOrder。
+            int homeSortOrder = 0;
+            if (request.IsPinnedToHome)
+            {
+                var maxSortOrder = await db.TaskCard
+                    .Where(t => t.UserId == userGuid && t.IsPinnedToHome && t.ValidFlag)
+                    .MaxAsync(t => (int?)t.HomeSortOrder, ct);
+                homeSortOrder = (maxSortOrder ?? -1) + 1;
+            }
+
             var card = new TaskCard
             {
                 Id = Guid.NewGuid(),
@@ -85,6 +95,11 @@ public static class TaskEndpoints
                 ParentId = request.ParentId,
                 // 建立時即為 done → 記下完成時間。
                 CompletedDateTime = request.Status == "done" ? DateTime.UtcNow : null,
+                IsLongTerm = request.IsLongTerm,
+                TargetDateTime = request.TargetDateTime,
+                TargetGranularity = request.TargetGranularity,
+                IsPinnedToHome = request.IsPinnedToHome,
+                HomeSortOrder = homeSortOrder,
                 CreatedDateTime = DateTime.UtcNow,
                 UpdatedDateTime = DateTime.UtcNow,
                 CreatedUser = userId,
@@ -195,6 +210,33 @@ public static class TaskEndpoints
                 card.SortOrder = request.SortOrder.Value;
             if (request.RecurrenceRule != null)
                 card.RecurrenceRule = request.RecurrenceRule;
+            // 新增欄位更新邏輯
+            if (request.IsLongTerm.HasValue)
+                card.IsLongTerm = request.IsLongTerm.Value;
+            if (request.TargetDateTime != null)
+                card.TargetDateTime = request.TargetDateTime;
+            else if (request.ClearTargetDateTime)
+                card.TargetDateTime = null;
+            if (request.TargetGranularity != null)
+                card.TargetGranularity = request.TargetGranularity;
+            else if (request.ClearTargetGranularity)
+                card.TargetGranularity = null;
+            // IsPinnedToHome：傳值＝更新；当由 false 變 true 且未同時指定 HomeSortOrder 時，自動指派。
+            if (request.IsPinnedToHome.HasValue)
+            {
+                var wasPinned = card.IsPinnedToHome;
+                card.IsPinnedToHome = request.IsPinnedToHome.Value;
+                // 若由 false 變 true 且未指定 HomeSortOrder，自動指派為最大 + 1。
+                if (!wasPinned && request.IsPinnedToHome.Value && !request.HomeSortOrder.HasValue)
+                {
+                    var maxSortOrder = await db.TaskCard
+                        .Where(t => t.UserId == userGuid && t.IsPinnedToHome && t.ValidFlag)
+                        .MaxAsync(t => (int?)t.HomeSortOrder, ct);
+                    card.HomeSortOrder = (maxSortOrder ?? -1) + 1;
+                }
+            }
+            if (request.HomeSortOrder.HasValue)
+                card.HomeSortOrder = request.HomeSortOrder.Value;
 
             card.UpdatedDateTime = DateTime.UtcNow;
             card.UpdatedUser = userId;
@@ -414,6 +456,12 @@ public static class TaskEndpoints
     /// 從卡片的 TaskTags 導覽（需先 Include）萃取標籤參照清單。
     /// 全域過濾器已濾掉無效關聯/標籤；仍防呆 null 與 ValidFlag。
     /// </summary>
+    /// <summary>
+    /// 對外公開的投影方式（供 HomePageEndpoints 使用）。
+    /// </summary>
+    public static TaskCardSummaryDto MapToSummaryDtoPublic(TaskCard card) =>
+        MapToSummaryDto(card);
+
     private static List<TagRefDto> MapTags(TaskCard card) =>
         (card.TaskTags ?? new List<TaskTag>())
             .Where(tt => tt.ValidFlag && tt.Tag != null && tt.Tag.ValidFlag)
@@ -456,7 +504,12 @@ public static class TaskEndpoints
             done,
             MapTags(card),
             MapSubTasks(card),
-            card.ParentId);
+            card.ParentId,
+            card.IsLongTerm,
+            card.TargetDateTime,
+            card.TargetGranularity,
+            card.IsPinnedToHome,
+            card.HomeSortOrder);
     }
 
     private static TaskCardDetailDto MapToDetailDto(TaskCard card)
@@ -477,6 +530,11 @@ public static class TaskEndpoints
             card.UpdatedDateTime,
             subTasks,
             MapTags(card),
-            card.ParentId);
+            card.ParentId,
+            card.IsLongTerm,
+            card.TargetDateTime,
+            card.TargetGranularity,
+            card.IsPinnedToHome,
+            card.HomeSortOrder);
     }
 }

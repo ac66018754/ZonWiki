@@ -6,8 +6,9 @@ import {
   FALLBACK_TZ,
   PRIORITY_META,
   formatDisplay,
-  isOverdue,
+  isTaskOverdue,
   isToday,
+  formatTargetPeriod,
 } from "../taskUtils";
 import { CardSubtasks } from "./CardSubtasks";
 
@@ -46,8 +47,9 @@ export function TaskCardItem({
 }) {
   const tz = user?.timeZone || FALLBACK_TZ;
   const done = task.status === "done";
-  const overdue = !done && isOverdue(task.dueDateTime);
+  const overdue = !done && isTaskOverdue(task);
   const today = !done && isToday(task.dueDateTime, tz);
+  const targetText = formatTargetPeriod(task.targetDateTime, task.targetGranularity);
 
   const total = task.subTaskTotal ?? 0;
   const priorityMeta = PRIORITY_META[task.priority ?? 0];
@@ -107,7 +109,7 @@ export function TaskCardItem({
         )}
       </div>
 
-      {(group || (task.tags && task.tags.length > 0) || task.dueDateTime) && (
+      {(group || (task.tags && task.tags.length > 0) || task.dueDateTime || task.isLongTerm) && (
         <div className="tk-card-meta">
           {group && (
             <span
@@ -131,6 +133,15 @@ export function TaskCardItem({
               #{tg.name}
             </span>
           ))}
+          {task.isLongTerm && (
+            <span
+              className="tk-chip"
+              style={{ background: "var(--action-secondary-bg)", color: "var(--action-secondary-fg)" }}
+              title={targetText ? `長期任務・目標 ${targetText}` : "長期任務"}
+            >
+              ♾️ 長期{targetText ? `・${targetText}` : ""}
+            </span>
+          )}
           {task.dueDateTime && (
             <span
               className={[

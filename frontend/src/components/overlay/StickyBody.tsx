@@ -1,6 +1,8 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { STICKY_COLORS, type OverlayItemView } from './overlayShared';
 import { PRESET_COLORS, resolveColor } from '@/lib/highlightColor';
 import { ColorPickerInline } from '@/components/ColorPicker';
@@ -108,6 +110,8 @@ export function StickyBody({
   const [hlColor, setHlColor] = useState<string>(PRESET_COLORS[0]);
   const [showHlPalette, setShowHlPalette] = useState(false);
   const [showBgPalette, setShowBgPalette] = useState(false);
+  // 預覽模式：把內文當 Markdown 渲染（唯讀）；關閉時為一般編輯（文字框＋畫重點）。
+  const [preview, setPreview] = useState(false);
 
   // 「繼續問」輸入狀態。
   const [asking, setAsking] = useState(false);
@@ -178,9 +182,26 @@ export function StickyBody({
 
   return (
     <>
-      {/* 內容區：文字框（永遠顯示清晰文字）＋ 其下「重點底圖」（只畫重點色塊、文字透明）。
+      {/* 預覽模式：把內文當 Markdown 渲染（唯讀，點一下回編輯）。 */}
+      {preview ? (
+        <div
+          className="sticky-markdown markdown-prose"
+          onClick={() => setPreview(false)}
+          title="點擊回到編輯"
+          data-testid="sticky-markdown"
+          style={{
+            flex: 1, minHeight: 0, overflow: 'auto', padding: '6px', cursor: 'text',
+            fontSize: 'var(--text-sm)', lineHeight: 1.5, color: '#333', wordBreak: 'break-word',
+          }}
+        >
+          {text.trim()
+            ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+            : <span style={{ color: '#999' }}>（空白便利貼，點擊編輯）</span>}
+        </div>
+      ) : (
+      /* 編輯模式：文字框（永遠顯示清晰文字）＋ 其下「重點底圖」（只畫重點色塊、文字透明）。
           關鍵：底圖文字一律透明，只露出 <mark> 的底色方塊；真正可見的文字一律由上層文字框呈現，
-          故不會出現「兩層文字錯位疊影」（之前 bug 的成因）。 */}
+          故不會出現「兩層文字錯位疊影」（之前 bug 的成因）。 */
       <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
         <div
           ref={backdropRef}
@@ -234,6 +255,7 @@ export function StickyBody({
           }}
         />
       </div>
+      )}
 
       {/* 重點色盤（點小球展開）：完整色盤（react-colorful，無斷點）；選色不關閉，點空白才關閉。 */}
       {showHlPalette && onHighlightsChange && (
@@ -290,9 +312,18 @@ export function StickyBody({
         </div>
       )}
 
-      {/* 底部工具列：標重點 ｜ 顏色小球 ｜ 移除重點 ｜ 繼續問 ｜（空白）｜ 背景顏色 */}
+      {/* 底部工具列：預覽 ｜ 標重點 ｜ 顏色小球 ｜ 移除重點 ｜ 繼續問 ｜（空白）｜ 背景顏色 */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '2px 6px', flexShrink: 0, flexWrap: 'wrap' }}>
-        {onHighlightsChange && (
+        <button
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => setPreview((v) => !v)}
+          title={preview ? '回到編輯' : '預覽（把內文當 Markdown 渲染）'}
+          data-testid="sticky-preview-toggle"
+          style={{ ...toolBtnStyle, background: preview ? 'rgba(0,0,0,0.12)' : 'transparent' }}
+        >
+          {preview ? '✏️ 編輯' : '👁 預覽'}
+        </button>
+        {onHighlightsChange && !preview && (
           <>
             <button
               onMouseDown={(e) => e.preventDefault()}

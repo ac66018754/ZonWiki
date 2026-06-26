@@ -19,6 +19,7 @@ import { QuickLinksSection } from "@/components/QuickLinksSection";
 import { CaptureFilingModal } from "@/components/CaptureFilingModal";
 import { TaskListView } from "@/app/tasks/components/TaskListView";
 import { TaskEditorModal } from "@/app/tasks/components/TaskEditorModal";
+import { formatTargetPeriod, isTaskOverdue } from "@/app/tasks/taskUtils";
 import {
   formatDateTime as formatDateTimeUtil,
   formatDate as formatDateUtil,
@@ -642,6 +643,103 @@ export function HomePageClient({ user }: HomePageClientProps) {
             );
           })()}
         </section>
+
+        {/* 我的任務（釘選到首頁的任務；可在任務編輯彈窗或這裡取消釘選） */}
+        {(data.pinnedTasks?.length ?? 0) > 0 && (
+          <section className="home-section">
+            <h2
+              style={{
+                fontSize: "var(--text-lg)",
+                fontWeight: 600,
+                margin: 0,
+                marginBottom: "var(--spacing-4)",
+              }}
+            >
+              📌 我的任務
+            </h2>
+            <div style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-2)" }}>
+              {(data.pinnedTasks ?? []).map((task) => {
+                const done = task.status === "done";
+                const overdue = !done && isTaskOverdue(task);
+                const target = formatTargetPeriod(task.targetDateTime, task.targetGranularity);
+                return (
+                  <div
+                    key={task.id}
+                    onClick={() => openTask(task.id)}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "var(--spacing-3)",
+                      padding: "var(--spacing-3)",
+                      background: "var(--bg-surface)",
+                      border: "1px solid var(--border-default)",
+                      borderRadius: "var(--radius-md)",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <span style={{ fontSize: "var(--text-base)" }}>{done ? "✅" : "📌"}</span>
+                    <span
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        fontWeight: 500,
+                        color: "var(--text-primary)",
+                        textDecoration: done ? "line-through" : "none",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {task.title}
+                    </span>
+                    {task.isLongTerm && (
+                      <span
+                        className="tk-chip"
+                        style={{
+                          background: "var(--action-secondary-bg)",
+                          color: "var(--action-secondary-fg)",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        ♾️ 長期{target ? `・${target}` : ""}
+                      </span>
+                    )}
+                    {task.dueDateTime && (
+                      <span
+                        style={{
+                          fontSize: "var(--text-xs)",
+                          color: overdue ? "var(--status-danger-fg)" : "var(--text-tertiary)",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        ⏰ {formatDateTimeUtil(task.dueDateTime, userTimeZone)}
+                        {overdue ? "（逾期）" : ""}
+                      </span>
+                    )}
+                    <button
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        await updateTaskCard(task.id, { isPinnedToHome: false });
+                        reloadHome();
+                      }}
+                      title="取消釘選"
+                      style={{
+                        border: "none",
+                        background: "transparent",
+                        cursor: "pointer",
+                        color: "var(--text-tertiary)",
+                        fontSize: "var(--text-xs)",
+                        flexShrink: 0,
+                      }}
+                    >
+                      ✕ 取消釘選
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
 
         {/* 常用連結卡（分類 + 共用標籤） */}
         <QuickLinksSection links={data.quickLinks} onChanged={reloadHome} />

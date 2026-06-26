@@ -40,8 +40,10 @@ interface TextItem {
 }
 
 /**
- * 開問啦畫布上的「純文字框」（Snipaste 風格）：可自由打字、設定背景（含透明）、字級、字色，
- * 並可拖曳移動、右下角縮放、上方握把旋轉。座標皆為畫布座標 (flow coordinates)。
+ * 共用的「純文字框」（Snipaste 風格）：可自由打字、設定背景（含透明）、字級、字色，
+ * 並可拖曳移動、右下角縮放、上方握把旋轉。座標系與縮放由呼叫端決定：
+ * - 開問啦畫布：座標＝畫布座標 (flow coordinates)、zoom＝畫布縮放、toFlow＝screenToFlowPosition。
+ * - 筆記頁：座標＝相對內文容器像素、zoom＝1、toFlow＝（螢幕座標 − 容器左上角）。
  *
  * 互動：
  * - 未選取：只顯示文字（與背景）。點一下選取。
@@ -50,17 +52,19 @@ interface TextItem {
  *
  * 旋轉以「中心」為樞紐；縮放以「對角（左上）固定」計算，皆考慮目前旋轉角度。
  */
-export function CanvasTextBox({
-  item, zoomRef, toFlow, selected, editing,
+export function DrawingTextBox({
+  item, zoomRef, toFlow, selected, editing, interactive = true,
   onSelect, onStartEdit, onStopEdit, onChange, onCommit,
 }: {
   item: TextItem;
-  /** 目前畫布縮放（用 ref 取最新值，供拖曳換算）。 */
+  /** 目前縮放（用 ref 取最新值，供拖曳換算）。筆記頁固定為 1。 */
   zoomRef: React.RefObject<number>;
-  /** 螢幕座標 → 畫布座標。 */
+  /** 螢幕座標 → 內容座標（畫布座標或內文相對座標）。 */
   toFlow: (clientX: number, clientY: number) => { x: number; y: number };
   selected: boolean;
   editing: boolean;
+  /** 是否可互動（false＝整個文字框 pointer-events:none，讓底下的繪圖擷取面接管，預設 true）。 */
+  interactive?: boolean;
   onSelect: () => void;
   onStartEdit: () => void;
   onStopEdit: () => void;
@@ -89,7 +93,7 @@ export function CanvasTextBox({
   const cos = Math.cos(rad);
   const sin = Math.sin(rad);
 
-  // ── 拖曳移動（螢幕位移 ÷ zoom = 畫布位移）──
+  // ── 拖曳移動（螢幕位移 ÷ zoom = 內容位移）──
   const startMove = (e: React.PointerEvent) => {
     if (editing) return;
     e.preventDefault();
@@ -116,7 +120,7 @@ export function CanvasTextBox({
     e.preventDefault();
     e.stopPropagation();
     const c0x = item.x + item.width / 2, c0y = item.y + item.height / 2;
-    // 左上角（縮放時固定）的 flow 座標：中心 + R(deg)·(-w/2,-h/2)
+    // 左上角（縮放時固定）的內容座標：中心 + R(deg)·(-w/2,-h/2)
     const tlx = c0x + (-item.width / 2) * cos - (-item.height / 2) * sin;
     const tly = c0y + (-item.width / 2) * sin + (-item.height / 2) * cos;
     let next = { x: item.x, y: item.y, width: item.width, height: item.height };
@@ -172,9 +176,9 @@ export function CanvasTextBox({
       style={{
         position: 'absolute', left: item.x, top: item.y, width: item.width, height: item.height,
         zIndex: item.zIndex, transform: `rotate(${deg}deg)`, transformOrigin: 'center center',
-        pointerEvents: 'auto',
+        pointerEvents: interactive ? 'auto' : 'none',
       }}
-      data-testid="canvas-anno-text"
+      data-testid="anno-text"
       onPointerDown={(e) => { if (!editing) { onSelect(); startMove(e); } }}
       onDoubleClick={(e) => { e.stopPropagation(); onStartEdit(); }}
     >
@@ -193,7 +197,7 @@ export function CanvasTextBox({
           fontFamily: 'inherit', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
           pointerEvents: editing ? 'auto' : 'none', cursor: editing ? 'text' : 'move',
         }}
-        data-testid="canvas-anno-text-input"
+        data-testid="anno-text-input"
       />
 
       {selected && !editing && (
@@ -207,14 +211,14 @@ export function CanvasTextBox({
             style={{ ...handle('grab'), left: 'calc(50% - 6px)', top: -24 }}
             onPointerDown={startRotate}
             title="旋轉"
-            data-testid="canvas-anno-text-rotate"
+            data-testid="anno-text-rotate"
           />
           {/* 右下角縮放握把 */}
           <div
             style={{ ...handle('nwse-resize'), right: -6, bottom: -6 }}
             onPointerDown={startResize}
             title="縮放"
-            data-testid="canvas-anno-text-resize"
+            data-testid="anno-text-resize"
           />
         </>
       )}

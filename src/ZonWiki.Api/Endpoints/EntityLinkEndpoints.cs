@@ -234,11 +234,13 @@ public static class EntityLinkEndpoints
             if (!await OwnsEntityAsync(db, userGuid, st, sourceId, ct))
                 return Results.NotFound(new { success = false, error = "找不到來源項目或無權限" });
 
-            // 來源型別 → 可關聯的目標型別（子任務與任務同樣可關聯筆記/節點）
+            // 來源型別 → 可關聯的目標型別（子任務與任務同樣可關聯筆記/節點）。
+            // 筆記來源也允許關聯到「其他筆記」（self 會在最後排除），與全域搜尋一致，
+            // 否則框選某段文字想關聯到另一篇筆記時會「搜不到」。
             var targets = st switch
             {
                 TypeTask or TypeSubtask => new[] { TypeNote, TypeNode },
-                TypeNote => new[] { TypeTask, TypeNode },
+                TypeNote => new[] { TypeNote, TypeTask, TypeNode },
                 TypeNode => new[] { TypeTask, TypeNote },
                 _ => Array.Empty<string>(),
             };
@@ -261,7 +263,8 @@ public static class EntityLinkEndpoints
 
             var term = (q ?? string.Empty).Trim();
             var like = "%" + EscapeLike(term) + "%"; // 供 ILike 使用（已跳脫 % _ \）
-            const int perTypeLimit = 12;
+            // 每型別只取少量最相關（避免一次列太多眼花）；使用者可再打字縮小範圍。
+            const int perTypeLimit = 6;
             var candidates = new List<LinkCandidateDto>();
 
             foreach (var tt in targets)
