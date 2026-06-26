@@ -135,6 +135,36 @@ export function isOverdue(dueIso: string | null | undefined): boolean {
 }
 
 /**
+ * 判斷一張任務是否逾期：長期任務（isLongTerm）一律不算逾期，
+ * 其餘看截止時間是否早於現在。呼叫端仍需自行排除「已完成」的任務。
+ */
+export function isTaskOverdue(task: { dueDateTime?: string | null; isLongTerm?: boolean }): boolean {
+  if (task.isLongTerm) return false;
+  return isOverdue(task.dueDateTime);
+}
+
+/**
+ * 把長期任務的「粗粒度目標期」格式化成可讀字串。
+ * @param targetIso 目標期代表日（UTC ISO，存該期起始日）。
+ * @param granularity 粒度："month" | "quarter" | "year"。
+ * @returns 例如「2026 年」「2026 Q3」「2026/07」；無資料回空字串。
+ */
+export function formatTargetPeriod(
+  targetIso: string | null | undefined,
+  granularity: string | null | undefined
+): string {
+  if (!targetIso || !granularity) return "";
+  const d = new Date(targetIso);
+  if (Number.isNaN(d.getTime())) return "";
+  const year = d.getUTCFullYear();
+  const month = d.getUTCMonth() + 1;
+  if (granularity === "year") return `${year} 年`;
+  if (granularity === "quarter") return `${year} Q${Math.floor((month - 1) / 3) + 1}`;
+  if (granularity === "month") return `${year}/${String(month).padStart(2, "0")}`;
+  return "";
+}
+
+/**
  * 狀態中繼資料（看板欄位 / 標籤共用）。
  */
 export const STATUS_META: Record<

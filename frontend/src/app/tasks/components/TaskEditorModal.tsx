@@ -102,6 +102,12 @@ export function TaskEditorModal({
   const [groupId, setGroupId] = useState<string>("");
   const [plannedIso, setPlannedIso] = useState<string | null>(null);
   const [dueIso, setDueIso] = useState<string | null>(null);
+  // 長期任務（#1）：標記 + 粗粒度目標期（"" / "month" / "quarter" / "year" 與其代表日 UTC）。
+  const [isLongTerm, setIsLongTerm] = useState(false);
+  const [targetGranularity, setTargetGranularity] = useState<string>("");
+  const [targetIso, setTargetIso] = useState<string | null>(null);
+  // 釘選到首頁（#2）。
+  const [isPinnedToHome, setIsPinnedToHome] = useState(false);
   const [subTasks, setSubTasks] = useState<SubTask[]>([]);
   // 父任務（任務之間可有父子關係）。"" = 頂層任務。
   const [parentId, setParentId] = useState<string>("");
@@ -140,6 +146,10 @@ export function TaskEditorModal({
     setGroupId(c.groupId || "");
     setPlannedIso(c.plannedDateTime ?? null);
     setDueIso(c.dueDateTime ?? null);
+    setIsLongTerm(!!c.isLongTerm);
+    setTargetGranularity(c.targetGranularity || "");
+    setTargetIso(c.targetDateTime ?? null);
+    setIsPinnedToHome(!!c.isPinnedToHome);
     setSubTasks(c.subTasks || []);
     setSelectedTagIds((c.tags || []).map((t) => t.id));
     setParentId(c.parentId || "");
@@ -205,8 +215,23 @@ export function TaskEditorModal({
     else payload.clearGroupId = true;
     if (parentId) payload.parentId = parentId;
     else payload.clearParentId = true;
+    // 長期任務 + 釘選到首頁（皆送目前值；後端 null＝不更新，故一律明送布林）。
+    payload.isLongTerm = isLongTerm;
+    payload.isPinnedToHome = isPinnedToHome;
+    // 粗粒度目標期：只有「長期 + 有選粒度」才寫入，否則清空。
+    if (isLongTerm && targetGranularity) {
+      payload.targetGranularity = targetGranularity;
+      if (targetIso) payload.targetDateTime = targetIso;
+      else payload.clearTargetDateTime = true;
+    } else {
+      payload.clearTargetGranularity = true;
+      payload.clearTargetDateTime = true;
+    }
     return payload;
-  }, [title, content, status, priority, plannedIso, dueIso, groupId, parentId]);
+  }, [
+    title, content, status, priority, plannedIso, dueIso, groupId, parentId,
+    isLongTerm, isPinnedToHome, targetGranularity, targetIso,
+  ]);
 
   /**
    * 把子任務的暫存變更 diff 後寫入後端：解除父子關係 / 新增 / 改名 / 打勾 / 排序。
@@ -339,6 +364,24 @@ export function TaskEditorModal({
     }
   }, [taskId, onDeleted, onClose]);
 
+  // 粗粒度目標期：把代表日（UTC）拆成 年/月(1-12)/季(1-4)；無代表日時用今年/本月當預設。
+  const targetParts = (() => {
+    const d = targetIso ? new Date(targetIso) : new Date();
+    const m = d.getUTCMonth() + 1;
+    return { year: d.getUTCFullYear(), month: m, quarter: Math.floor((m - 1) / 3) + 1 };
+  })();
+  /** 依粒度與年 + 月/季組出代表日（該期起始日 UTC）並寫入。 */
+  const setTargetFromParts = (g: string, year: number, monthOrQuarter: number) => {
+    const monthIndex = g === "month" ? monthOrQuarter - 1 : g === "quarter" ? (monthOrQuarter - 1) * 3 : 0;
+    setTargetIso(new Date(Date.UTC(year, monthIndex, 1)).toISOString());
+    markDirty();
+  };
+  // 目標期選單/輸入框的共用樣式。
+  const ctlStyle: React.CSSProperties = {
+    padding: "4px 6px", border: "1px solid var(--border-default)", borderRadius: "var(--radius-sm)",
+    background: "var(--bg-surface)", color: "var(--text-primary)", fontSize: "var(--text-sm)",
+  };
+
   if (!taskId) return null;
 
   return (
@@ -384,6 +427,98 @@ export function TaskEditorModal({
             <div className="tk-edit-body">
               {/* 左欄：屬性 */}
               <div className="tk-edit-meta">
+                {/* 首頁釘選 ｜ 長期任務（置於最上方；長期可設粗粒度目標期「月/季/年」，且不列入逾期） */}
+                <div className="tk-field">
+                  <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
+                    <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: "var(--text-sm)", cursor: "pointer" }}>
+                      <input
+                        type="checkbox"
+                        checked={isPinnedToHome}
+                        onChange={(e) => {
+                          setIsPinnedToHome(e.target.checked);
+                          markDirty();
+                        }}
+                      />
+                      📌 釘選到首頁
+                    </label>
+                    <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: "var(--text-sm)", cursor: "pointer" }}>
+                      <input
+                        type="checkbox"
+                        checked={isLongTerm}
+                        onChange={(e) => {
+                          setIsLongTerm(e.target.checked);
+                          markDirty();
+                        }}
+                      />
+                      ♾️ 長期任務
+                    </label>
+                  </div>
+                  {isLongTerm && (
+                    <div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                      <span style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>目標期（截止日難設定時用）</span>
+                      <select
+                        style={ctlStyle}
+                        value={targetGranularity}
+                        onChange={(e) => {
+                          const g = e.target.value;
+                          setTargetGranularity(g);
+                          if (g && !targetIso) {
+                            setTargetFromParts(g, targetParts.year, g === "quarter" ? targetParts.quarter : targetParts.month);
+                          } else if (!g) {
+                            setTargetIso(null);
+                          }
+                          markDirty();
+                        }}
+                        aria-label="目標期粒度"
+                      >
+                        <option value="">不設定（純長期）</option>
+                        <option value="year">年</option>
+                        <option value="quarter">季</option>
+                        <option value="month">月</option>
+                      </select>
+                      {targetGranularity && (
+                        <input
+                          type="number"
+                          style={{ ...ctlStyle, width: 84 }}
+                          value={targetParts.year}
+                          onChange={(e) =>
+                            setTargetFromParts(
+                              targetGranularity,
+                              Number(e.target.value) || targetParts.year,
+                              targetGranularity === "quarter" ? targetParts.quarter : targetParts.month
+                            )
+                          }
+                          aria-label="目標年份"
+                        />
+                      )}
+                      {targetGranularity === "quarter" && (
+                        <select
+                          style={ctlStyle}
+                          value={targetParts.quarter}
+                          onChange={(e) => setTargetFromParts("quarter", targetParts.year, Number(e.target.value))}
+                          aria-label="目標季"
+                        >
+                          {[1, 2, 3, 4].map((q) => (
+                            <option key={q} value={q}>Q{q}</option>
+                          ))}
+                        </select>
+                      )}
+                      {targetGranularity === "month" && (
+                        <select
+                          style={ctlStyle}
+                          value={targetParts.month}
+                          onChange={(e) => setTargetFromParts("month", targetParts.year, Number(e.target.value))}
+                          aria-label="目標月"
+                        >
+                          {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                            <option key={m} value={m}>{m} 月</option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
+                  )}
+                </div>
+
                 {/* 狀態 */}
                 <div className="tk-field">
                   <label className="tk-field-label">狀態</label>

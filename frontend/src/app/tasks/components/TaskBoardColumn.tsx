@@ -2,7 +2,7 @@
 
 import { TaskCard, TaskGroup, CurrentUser } from "@/lib/api";
 import { TaskCardItem } from "./TaskCardItem";
-import { STATUS_META, isOverdue } from "../taskUtils";
+import { STATUS_META, isTaskOverdue } from "../taskUtils";
 
 /**
  * 看板的單一狀態欄位（待辦 / 進行中 / 完成），為拖放目標。
@@ -39,7 +39,7 @@ export function TaskBoardColumn({
   const meta = STATUS_META[status];
   // 逾期數（完成欄不計）
   const overdueCount =
-    status === "done" ? 0 : tasks.filter((t) => isOverdue(t.dueDateTime)).length;
+    status === "done" ? 0 : tasks.filter((t) => isTaskOverdue(t)).length;
 
   return (
     <div

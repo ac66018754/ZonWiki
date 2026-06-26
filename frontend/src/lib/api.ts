@@ -246,6 +246,16 @@ export interface TaskCard {
   subTasks?: SubTask[];
   /** 標籤 (與筆記共用標籤庫；清單與詳情都會帶回) */
   tags?: { id: string; name: string }[];
+  /** 是否為長期任務（true＝不強制截止日、不列入逾期） */
+  isLongTerm?: boolean;
+  /** 粗粒度目標期的代表日（UTC，可空）；搭配 targetGranularity 解讀（存該月/季/年起始日） */
+  targetDateTime?: string | null;
+  /** 目標期粒度："month" | "quarter" | "year"；null＝未設粗粒度目標 */
+  targetGranularity?: string | null;
+  /** 是否釘選到首頁「我的任務」區塊 */
+  isPinnedToHome?: boolean;
+  /** 首頁釘選區排序序號（越小越前） */
+  homeSortOrder?: number;
   /** 建立時間 (UTC) */
   createdDateTime: string;
   /** 更新時間 (UTC) */
@@ -352,6 +362,8 @@ export interface HomePageAggregate {
   weeklyCalendar: WeeklyCalendarSummary;
   /** 今日待辦清單（狀態 = todo / doing） */
   todayTodos: TaskCard[];
+  /** 釘選到首頁「我的任務」區塊的任務（依 homeSortOrder 排序） */
+  pinnedTasks?: TaskCard[];
   /** 常用連結卡清單 */
   quickLinks: QuickLink[];
   /** 最近 5 個捕捉項目 */
@@ -1059,6 +1071,14 @@ export async function createTaskCard(payload: {
   dueDateTime?: string | null;
   /** 父任務 ID（建立為某任務的子任務時帶入） */
   parentId?: string | null;
+  /** 是否為長期任務 */
+  isLongTerm?: boolean;
+  /** 粗粒度目標期代表日（UTC） */
+  targetDateTime?: string | null;
+  /** 目標期粒度："month" | "quarter" | "year" */
+  targetGranularity?: string | null;
+  /** 是否釘選到首頁 */
+  isPinnedToHome?: boolean;
 }): Promise<TaskCard | null> {
   const r = await fetchJson<TaskCard>("/api/tasks", {
     method: "POST",
@@ -1082,10 +1102,24 @@ export interface UpdateTaskCardPayload {
   sortOrder?: number;
   /** 父任務 ID（設定父子關係）；改為頂層任務請用 clearParentId */
   parentId?: string | null;
+  /** 是否為長期任務（null/未傳＝不更新） */
+  isLongTerm?: boolean;
+  /** 粗粒度目標期代表日（UTC）；清空請用 clearTargetDateTime */
+  targetDateTime?: string;
+  /** 目標期粒度："month" | "quarter" | "year"；清空請用 clearTargetGranularity */
+  targetGranularity?: string;
+  /** 是否釘選到首頁（未傳＝不更新） */
+  isPinnedToHome?: boolean;
+  /** 首頁排序序號（未傳＝不更新） */
+  homeSortOrder?: number;
   clearPlannedDateTime?: boolean;
   clearDueDateTime?: boolean;
   clearGroupId?: boolean;
   clearParentId?: boolean;
+  /** 清空粗粒度目標期代表日 */
+  clearTargetDateTime?: boolean;
+  /** 清空目標期粒度 */
+  clearTargetGranularity?: boolean;
 }
 
 /**
@@ -1756,24 +1790,24 @@ export async function deleteNoteMark(markId: string): Promise<boolean> {
  */
 export interface NoteOverlayItem {
   id: string;
-  /** "sticky" | "drawing" | "slide" */
-  kind: 'sticky' | 'drawing' | 'slide';
+  /** "sticky" | "drawing" | "slide" | "text" */
+  kind: 'sticky' | 'drawing' | 'slide' | 'text';
   x: number;
   y: number;
   width: number;
   height: number;
   zIndex: number;
-  /** 便利貼底色 */
+  /** 便利貼底色 / 純文字框字色 */
   color?: string | null;
-  /** 便利貼文字 */
+  /** 便利貼文字 / 純文字框內容 */
   text?: string | null;
-  /** 型別專屬資料 JSON：drawing→筆畫；slide→圖片網址陣列 */
+  /** 型別專屬資料 JSON：drawing→筆畫；slide→圖片網址陣列；text→{bg,fontSize,rotation} */
   dataJson?: string | null;
 }
 
 /** 建立浮層元件的輸入。 */
 export interface CreateNoteOverlayInput {
-  kind: 'sticky' | 'drawing' | 'slide';
+  kind: 'sticky' | 'drawing' | 'slide' | 'text';
   x: number;
   y: number;
   width: number;
