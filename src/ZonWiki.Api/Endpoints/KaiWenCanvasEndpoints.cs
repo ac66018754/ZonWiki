@@ -240,7 +240,7 @@ public static class KaiWenCanvasEndpoints
         // 已刪除的畫布（須 IgnoreQueryFilters 才看得到 ValidFlag=false 的資料）
         var deletedCanvases = await db.Canvas
             .IgnoreQueryFilters()
-            .Where(c => c.UserId == currentUser.UserId && !c.ValidFlag)
+            .Where(c => c.UserId == currentUser.UserId && !c.ValidFlag && c.PurgedDateTime == null)
             .OrderByDescending(c => c.UpdatedDateTime)
             .Select(c => new TrashCanvasDto(
                 c.Id.ToString(),
@@ -252,7 +252,7 @@ public static class KaiWenCanvasEndpoints
         // 已刪除的節點：節點本身被刪、但其畫布仍存在（避免與「整張畫布刪除」重複列出）
         var rawNodes = await db.Node
             .IgnoreQueryFilters()
-            .Where(n => !n.ValidFlag)
+            .Where(n => !n.ValidFlag && n.PurgedDateTime == null)
             .Join(
                 db.Canvas.IgnoreQueryFilters()
                     .Where(c => c.UserId == currentUser.UserId && c.ValidFlag),
@@ -376,6 +376,7 @@ public static class KaiWenCanvasEndpoints
 
         canvas.ValidFlag = true;
         canvas.DeletedDateTime = null;
+        canvas.PurgedDateTime = null; // 還原時一併清除清除標記
         await db.SaveChangesAsync(ct);
 
         return Results.StatusCode(StatusCodes.Status204NoContent);
@@ -418,13 +419,16 @@ public static class KaiWenCanvasEndpoints
 
         node.ValidFlag = true;
         node.DeletedDateTime = null;
+        node.PurgedDateTime = null; // 還原時一併清除清除標記
         await db.SaveChangesAsync(ct);
 
         return Results.StatusCode(StatusCodes.Status204NoContent);
     }
 
     /// <summary>
-    /// 永久刪除垃圾桶中的畫布（硬刪除，連同其節點/邊由 DB 階層式刪除）。
+    /// 永久刪除垃圾桶中的畫布。
+    /// 決策（「絕不硬刪除、一切可復原」，見 CLAUDE.md §3）：不從 DB 移除，改標記 PurgedDateTime，
+    /// ValidFlag 維持 false，垃圾桶清單排除已 purged 者；列仍留在 DB（可由 DB 將 ValidFlag 壓回復活）。
     /// </summary>
     private static async Task<IResult> PurgeCanvas(
         string canvasId,
@@ -453,14 +457,16 @@ public static class KaiWenCanvasEndpoints
             return CanvasJsonHelper.JsonError(ApiResponse<object>.Fail("Canvas not found", 404), StatusCodes.Status404NotFound);
         }
 
-        db.Canvas.Remove(canvas);
+        // 軟性永久刪除（絕不硬刪）：標記 PurgedDateTime，列留 DB、可復原。
+        canvas.PurgedDateTime = DateTime.UtcNow;
+        canvas.UpdatedDateTime = DateTime.UtcNow;
         await db.SaveChangesAsync(ct);
 
         return Results.StatusCode(StatusCodes.Status204NoContent);
     }
 
     /// <summary>
-    /// 永久刪除垃圾桶中的節點（硬刪除，須屬於該使用者的畫布）。
+    /// 永久刪除垃圾桶中的節點（軟性標記，須屬於該使用者的畫布；絕不硬刪、可復原）。
     /// </summary>
     private static async Task<IResult> PurgeNode(
         string nodeId,
@@ -493,14 +499,17 @@ public static class KaiWenCanvasEndpoints
             return CanvasJsonHelper.JsonError(ApiResponse<object>.Fail("Node not found", 404), StatusCodes.Status404NotFound);
         }
 
-        db.Node.Remove(node);
+        // 軟性永久刪除（絕不硬刪）：標記 PurgedDateTime，列留 DB、可復原。
+        node.PurgedDateTime = DateTime.UtcNow;
+        node.UpdatedDateTime = DateTime.UtcNow;
         await db.SaveChangesAsync(ct);
 
         return Results.StatusCode(StatusCodes.Status204NoContent);
     }
 
     /// <summary>
-    /// 清空垃圾桶：永久刪除該使用者所有已軟刪除的畫布與節點。
+    /// 清空垃圾桶：把該使用者所有「在垃圾桶中（軟刪除、尚未 purged）」的畫布與節點標記為 purged
+    /// （軟性，絕不硬刪、可復原）。
     /// </summary>
     private static async Task<IResult> EmptyTrash(
         ICurrentUser currentUser,
@@ -514,21 +523,32 @@ public static class KaiWenCanvasEndpoints
                 StatusCodes.Status401Unauthorized);
         }
 
+        var purgedAt = DateTime.UtcNow;
+
         var canvases = await db.Canvas
             .IgnoreQueryFilters()
-            .Where(c => c.UserId == currentUser.UserId && !c.ValidFlag)
+            .Where(c => c.UserId == currentUser.UserId && !c.ValidFlag && c.PurgedDateTime == null)
             .ToListAsync(ct);
 
         var nodes = await db.Node
             .IgnoreQueryFilters()
-            .Where(n => !n.ValidFlag)
+            .Where(n => !n.ValidFlag && n.PurgedDateTime == null)
             .Join(
                 db.Canvas.IgnoreQueryFilters().Where(c => c.UserId == currentUser.UserId),
                 n => n.CanvasId, c => c.Id, (n, c) => n)
             .ToListAsync(ct);
 
-        db.Node.RemoveRange(nodes);
-        db.Canvas.RemoveRange(canvases);
+        // 軟性清空（絕不硬刪）：逐筆標記 PurgedDateTime，列留 DB、可復原。
+        foreach (var node in nodes)
+        {
+            node.PurgedDateTime = purgedAt;
+            node.UpdatedDateTime = purgedAt;
+        }
+        foreach (var canvas in canvases)
+        {
+            canvas.PurgedDateTime = purgedAt;
+            canvas.UpdatedDateTime = purgedAt;
+        }
         await db.SaveChangesAsync(ct);
 
         return Results.StatusCode(StatusCodes.Status204NoContent);

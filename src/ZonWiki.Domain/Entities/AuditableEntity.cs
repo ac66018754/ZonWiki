@@ -42,4 +42,13 @@ public abstract class AuditableEntity
     /// 未刪除時為 null。
     /// </summary>
     public DateTime? DeletedDateTime { get; set; }
+
+    /// <summary>
+    /// 永久刪除（清除）時間（UTC，nullable）。
+    /// 決策：本系統「絕不硬刪除」——垃圾桶的「永久刪除」不再從 DB 移除實體列，
+    /// 而是把此欄填上時間（ValidFlag 維持 false），讓項目從垃圾桶清單消失，
+    /// 但資料列仍保留在 DB（必要時可由 DB 將 ValidFlag 壓回 true 復活，符合「一切可復原」原則）。
+    /// null = 尚未永久刪除（可能仍在垃圾桶，或正常使用中）。
+    /// </summary>
+    public DateTime? PurgedDateTime { get; set; }
 }
