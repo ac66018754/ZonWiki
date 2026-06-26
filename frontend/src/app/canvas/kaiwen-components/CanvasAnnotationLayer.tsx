@@ -7,7 +7,6 @@ import { kaiwenApi } from '../kaiwen-api';
 import type { CanvasAnnotationDto } from '../kaiwen-types';
 import { askAi } from '@/lib/api';
 import { logger } from '@/lib/logger';
-import { ColorPickerInline } from '@/components/ColorPicker';
 import { pushUndo, useUndoHotkeys } from '@/lib/undoManager';
 import {
   type DrawTool,
@@ -23,10 +22,9 @@ import { ShapeEl } from '@/lib/drawing/ShapeEl';
 import { StickyBody } from '@/components/overlay/StickyBody';
 import { SlideBody } from '@/components/overlay/SlideBody';
 import { STICKY_COLORS } from '@/components/overlay/overlayShared';
-import { CanvasTextBox, parseTextExtra, type TextExtra } from './CanvasTextBox';
-
-/** 純文字框的字色 / 背景「快選」常用色（只放 4 個；其餘點色盤球球展開挑）。 */
-const TEXT_PRESET_COLORS = ['#ef4444', '#f59e0b', '#22c55e', '#3b82f6'];
+import { DrawingTextBox, parseTextExtra, type TextExtra } from '@/components/drawing/TextBox';
+import { DrawingToolbar } from '@/components/drawing/DrawingToolbar';
+import { TextPropsPanel } from '@/components/drawing/TextPropsPanel';
 
 /** 便利貼/圖片板標題列上的小圖示按鈕樣式（－ 收合、🗑 刪除）；與筆記便利貼一致。 */
 const annoChromeBtnStyle: React.CSSProperties = {
@@ -120,6 +118,9 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
   const [tool, setTool] = useState<DrawTool>(null);
   const [penColor, setPenColor] = useState('#ef4444');
   const [penWidth, setPenWidth] = useState(3);
+  // 螢光筆獨立的線寬（預設較粗）與透明度（半透明），與一般畫筆分開記憶。
+  const [highlightWidth, setHighlightWidth] = useState(16);
+  const [highlightOpacity, setHighlightOpacity] = useState(0.4);
   const [penDash, setPenDash] = useState(false);
   const [showPenColor, setShowPenColor] = useState(false);
   // 純文字框色盤球球：分別控制「字色」與「背景」的完整色盤是否展開。
@@ -162,7 +163,7 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
     if (!showPenColor) return;
     const onDown = (e: MouseEvent) => {
       const t = e.target as HTMLElement | null;
-      if (t?.closest('[data-canvas-colorpop]') || t?.closest('[data-canvas-colorbtn]')) return;
+      if (t?.closest('[data-draw-colorpop]') || t?.closest('[data-draw-colorbtn]')) return;
       setShowPenColor(false);
     };
     document.addEventListener('mousedown', onDown, true);
@@ -335,9 +336,9 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
     const onDown = (e: PointerEvent) => {
       const t = e.target as HTMLElement | null;
       if (
-        t?.closest('[data-testid="canvas-anno-text"]') ||
-        t?.closest('[data-canvas-textprops]') ||
-        t?.closest('[data-canvas-textpop]')
+        t?.closest('[data-testid="anno-text"]') ||
+        t?.closest('[data-draw-textprops]') ||
+        t?.closest('[data-draw-textpop]')
       ) return;
       const id = selectedTextId;
       setSelectedTextId(null);
@@ -359,7 +360,7 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
     if (!showTextFontPop && !showTextBgPop) return;
     const onDown = (e: MouseEvent) => {
       const t = e.target as HTMLElement | null;
-      if (t?.closest('[data-canvas-textpop]') || t?.closest('[data-canvas-textcolorbtn]')) return;
+      if (t?.closest('[data-draw-textpop]') || t?.closest('[data-draw-textcolorbtn]')) return;
       setShowTextFontPop(false);
       setShowTextBgPop(false);
     };
@@ -470,6 +471,10 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
 
   const eraseRadius = Math.max(8, penWidth * 3);
   const isPenTool = tool === 'pen' || tool === 'line' || tool === 'rect' || tool === 'ellipse';
+  // 含螢光筆的「會畫出形狀」工具（顏色/線寬可即時套到剛畫的圖形）。
+  const isDrawShapeTool = isPenTool || tool === 'highlight';
+  // 線寬滑桿目前控制的值：螢光筆用自己的較粗線寬，其餘用一般筆寬。
+  const activeWidth = tool === 'highlight' ? highlightWidth : penWidth;
 
   /** 螢幕座標 → 畫布座標。 */
   const flowPoint = (e: React.PointerEvent): [number, number] => {
@@ -506,10 +511,18 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
       forceRerender((n) => n + 1);
       return;
     }
-    curShape.current =
-      tool === 'pen'
-        ? { type: 'free', color: penColor, width: penWidth, dash: penDash, points: [p] }
-        : { type: tool, color: penColor, width: penWidth, dash: penDash, points: [p, p] };
+    if (tool === 'pen' || tool === 'highlight') {
+      // 螢光筆＝自由筆 + 較粗線寬 + 半透明（opacity）。
+      curShape.current = {
+        type: 'free', color: penColor,
+        width: tool === 'highlight' ? highlightWidth : penWidth,
+        dash: tool === 'highlight' ? false : penDash,
+        ...(tool === 'highlight' ? { opacity: highlightOpacity } : {}),
+        points: [p],
+      };
+    } else {
+      curShape.current = { type: tool, color: penColor, width: penWidth, dash: penDash, points: [p, p] };
+    }
     forceRerender((n) => n + 1);
   };
 
@@ -596,8 +609,10 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
     applyToSelected({ color: hex });
   };
   const changePenWidth = (w: number) => {
-    setPenWidth(w);
-    if (isPenTool) applyToSelected({ width: w });
+    // 螢光筆改它自己的線寬；其餘（含局部橡皮擦半徑）改一般筆寬。
+    if (tool === 'highlight') setHighlightWidth(w);
+    else setPenWidth(w);
+    if (isDrawShapeTool) applyToSelected({ width: w });
   };
   const togglePenDash = () => {
     setPenDash((v) => {
@@ -785,7 +800,7 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
 
           {/* 純文字框（Snipaste 風格：可打字、設背景、旋轉縮放） */}
           {items.filter((i) => i.kind === 'text').map((item) => (
-            <CanvasTextBox
+            <DrawingTextBox
               key={item.id}
               item={item}
               zoomRef={zoomRef}
@@ -819,234 +834,47 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
           可收合：收合後只剩一顆 🧰 工具箱圖示，點它再展開。 */}
       {mounted && createPortal(
         toolbarOpen ? (
-        <div
-          style={{
-            position: 'fixed', bottom: 168, right: 16, zIndex: 1400, pointerEvents: 'auto',
-            display: 'flex', flexDirection: 'column-reverse', gap: 4, alignItems: 'flex-end',
-          }}
-          data-testid="canvas-annotation-toolbar"
-        >
-          <div style={{
-            display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end',
-            background: 'var(--bg-surface)', border: '1px solid var(--border-default)',
-            borderRadius: 'var(--radius-md)', padding: 4, boxShadow: 'var(--shadow-md)', maxWidth: 360,
-          }}>
-            <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={collapseToolbar} title="收合工具箱" data-testid="canvas-anno-collapse">🧰</button>
-            <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={addSticky} title="新增便利貼" data-testid="canvas-anno-add-sticky">＋便利貼</button>
-            <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={addSlide} title="新增圖片板（可放多張圖、手動切換）" data-testid="canvas-anno-add-slide">＋圖片板</button>
-            <button className="tk-btn" style={{ cursor: 'pointer', fontWeight: 700 }} onClick={addTextBox} title="新增純文字框（可打字、設背景顏色/透明、旋轉縮放、調字級字色）" data-testid="canvas-anno-add-text">T</button>
-            {([
-              ['pen', '✏️', '自由筆'],
-              ['line', '／', '直線'],
-              ['rect', '▭', '矩形'],
-              ['ellipse', '◯', '橢圓'],
-              ['erase-stroke', '🧹', '橡皮擦：整筆刪除（點一筆即刪整筆）'],
-              ['erase-area', '🧽', '橡皮擦：局部擦除（擦到哪、那裏消失）'],
-              ['erase-box', '⬚', '橡皮擦：框選擦除（框到哪、那裏消失，同一形狀不連帶整個刪除）'],
-            ] as [Exclude<DrawTool, null>, string, string][]).map(([t, icon, label]) => (
-              <button
-                key={t}
-                className={`tk-btn ${tool === t ? 'tk-btn--primary' : ''}`}
-                style={{ cursor: 'pointer' }}
-                title={label}
-                onClick={() => selectTool(t)}
-                data-testid={`canvas-anno-tool-${t}`}
-              >
-                {icon}
-              </button>
-            ))}
-            {isPenTool && (
-              <button
-                title="畫筆顏色"
-                onClick={() => setShowPenColor((v) => !v)}
-                data-testid="canvas-anno-pen-color"
-                data-canvas-colorbtn
-                style={{ width: 18, height: 18, flexShrink: 0, borderRadius: '50%', background: penColor, border: '1px solid var(--border-strong, #999)', cursor: 'pointer' }}
+          <DrawingToolbar
+            testIdPrefix="canvas-anno"
+            position={{ bottom: 168, right: 16 }}
+            maxWidth={360}
+            leading={{ label: '🧰', title: '收合工具箱', onClick: collapseToolbar, testId: 'canvas-anno-collapse' }}
+            onAddSticky={addSticky}
+            onAddSlide={addSlide}
+            onAddText={addTextBox}
+            tool={tool}
+            onSelectTool={selectTool}
+            penColor={penColor}
+            showPenColor={showPenColor}
+            onTogglePenColor={() => setShowPenColor((v) => !v)}
+            onPenColorChange={changePenColor}
+            penWidth={activeWidth}
+            onPenWidthChange={changePenWidth}
+            penDash={penDash}
+            onToggleDash={togglePenDash}
+            highlightOpacity={highlightOpacity}
+            onHighlightOpacityChange={setHighlightOpacity}
+            eraseRadius={eraseRadius}
+            selectedShapeIdx={selectedShapeIdx}
+            hasShapes={shapes.length > 0}
+            onClear={clearDrawing}
+            drawingActive={drawingActive}
+            onDone={() => { setSelectedShapeIdx(null); setTool(null); }}
+            topContent={selectedTextItem ? (
+              <TextPropsPanel
+                testIdPrefix="canvas-anno"
+                fontColor={selectedTextItem.color || '#ef4444'}
+                dataJson={selectedTextItem.dataJson}
+                onSetFontColor={setTextColor}
+                onUpdateExtra={updateTextExtra}
+                showFontPop={showTextFontPop}
+                showBgPop={showTextBgPop}
+                onToggleFontPop={() => { setShowTextBgPop(false); setShowTextFontPop((v) => !v); }}
+                onToggleBgPop={() => { setShowTextFontPop(false); setShowTextBgPop((v) => !v); }}
+                onDelete={deleteSelectedText}
               />
-            )}
-            {(isPenTool || tool === 'erase-area') && (
-              <input
-                type="range" min={1} max={20} value={penWidth}
-                onChange={(e) => changePenWidth(Number(e.target.value))}
-                title={tool === 'erase-area' ? `橡皮擦大小：${eraseRadius}` : `線寬：${penWidth}`}
-                style={{ width: 70 }}
-                data-testid="canvas-anno-pen-width"
-              />
-            )}
-            {isPenTool && (
-              <button
-                className={`tk-btn ${penDash ? 'tk-btn--primary' : ''}`}
-                style={{ cursor: 'pointer' }}
-                title="虛線 / 實線"
-                onClick={togglePenDash}
-              >
-                {penDash ? '┄' : '—'}
-              </button>
-            )}
-            {selectedShapeIdx !== null && isPenTool && (
-              <span
-                style={{ fontSize: 'var(--text-xs)', color: 'var(--action-secondary-fg)', whiteSpace: 'nowrap' }}
-                title="可直接調整工具列的顏色 / 線寬 / 虛線，會即時套用到剛畫的圖形"
-              >
-                ✎ 調整剛畫的圖形
-              </span>
-            )}
-            {shapes.length > 0 && (
-              <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={clearDrawing} title="清除全部手繪（可 Ctrl+Z 復原）" data-testid="canvas-anno-clear">清除</button>
-            )}
-            {drawingActive && (
-              <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={() => { setSelectedShapeIdx(null); setTool(null); }} title="結束繪圖（回到一般畫布操作）" data-testid="canvas-anno-done">完成</button>
-            )}
-          </div>
-
-          {showPenColor && isPenTool && (
-            <div
-              data-canvas-colorpop
-              style={{
-                width: 220, background: 'var(--bg-surface)', border: '1px solid var(--border-default)',
-                borderRadius: 'var(--radius-md)', boxShadow: 'var(--shadow-lg)', padding: 8,
-              }}
-            >
-              <ColorPickerInline
-                initial={penColor}
-                onChange={(hex) => changePenColor(hex)}
-                onPick={(hex) => changePenColor(hex)}
-              />
-            </div>
-          )}
-
-          {/* 純文字框屬性面板（選取文字框時出現）：字級 ｜ 字色 ｜ 底 ｜ 刪除。
-              顏色各只放 4 個快選＋一顆球球，點球球展開完整色盤（與畫筆色盤同邏輯）。 */}
-          {selectedTextItem && (() => {
-            const te = parseTextExtra(selectedTextItem.dataJson);
-            const curFont = selectedTextItem.color || '#ef4444';
-            const lbl: React.CSSProperties = { color: 'var(--text-secondary)', whiteSpace: 'nowrap', marginLeft: 2 };
-            const dividerStyle: React.CSSProperties = { width: 1, alignSelf: 'stretch', background: 'var(--border-default)', margin: '2px 3px' };
-            return (
-              <div
-                data-canvas-textprops
-                data-testid="canvas-anno-textprops"
-                style={{
-                  display: 'flex', gap: 5, flexWrap: 'nowrap', alignItems: 'center', justifyContent: 'flex-end',
-                  background: 'var(--bg-surface)', border: '1px solid var(--border-default)',
-                  borderRadius: 'var(--radius-md)', padding: '5px 8px', boxShadow: 'var(--shadow-md)',
-                  fontSize: 'var(--text-xs)',
-                }}
-              >
-                {/* 字級 */}
-                <span style={lbl}>字級</span>
-                <input
-                  type="range" min={10} max={80} value={te.fontSize}
-                  onChange={(e) => updateTextExtra({ fontSize: Number(e.target.value) })}
-                  style={{ width: 72 }}
-                  title={`字級：${te.fontSize}`}
-                  data-testid="canvas-anno-text-fontsize"
-                />
-
-                <span style={dividerStyle} />
-                {/* 字色：4 快選 + 球球展開完整色盤 */}
-                <span style={lbl}>字色</span>
-                {TEXT_PRESET_COLORS.map((c) => (
-                  <button
-                    key={`fc-${c}`} onClick={() => setTextColor(c)} title="字體顏色"
-                    style={{
-                      width: 16, height: 16, flexShrink: 0, borderRadius: '50%', background: c, cursor: 'pointer', padding: 0,
-                      border: curFont === c ? '2px solid var(--text-primary)' : '1px solid rgba(0,0,0,0.25)',
-                    }}
-                  />
-                ))}
-                <button
-                  data-canvas-textcolorbtn data-testid="canvas-anno-text-fontball" title="更多字色（展開色盤）"
-                  onClick={() => { setShowTextBgPop(false); setShowTextFontPop((v) => !v); }}
-                  style={{
-                    width: 18, height: 18, flexShrink: 0, borderRadius: '50%', background: curFont,
-                    border: '2px solid var(--text-tertiary)', cursor: 'pointer', padding: 0,
-                  }}
-                />
-
-                <span style={dividerStyle} />
-                {/* 底：透明 + 4 快選 + 球球 */}
-                <span style={lbl}>底</span>
-                <button
-                  className={`tk-btn ${te.bg ? '' : 'tk-btn--primary'}`}
-                  style={{ cursor: 'pointer', fontSize: 'var(--text-xs)', padding: '1px 6px', flexShrink: 0 }}
-                  onClick={() => updateTextExtra({ bg: null })}
-                  title="背景透明"
-                  data-testid="canvas-anno-text-bg-none"
-                >
-                  透明
-                </button>
-                {TEXT_PRESET_COLORS.map((c) => (
-                  <button
-                    key={`bg-${c}`} onClick={() => updateTextExtra({ bg: c })} title="背景顏色"
-                    style={{
-                      width: 16, height: 16, flexShrink: 0, borderRadius: 4, background: c, cursor: 'pointer', padding: 0,
-                      border: te.bg === c ? '2px solid var(--text-primary)' : '1px solid rgba(0,0,0,0.25)',
-                    }}
-                  />
-                ))}
-                <button
-                  data-canvas-textcolorbtn data-testid="canvas-anno-text-bgball" title="更多背景色（展開色盤）"
-                  onClick={() => { setShowTextFontPop(false); setShowTextBgPop((v) => !v); }}
-                  style={{
-                    width: 18, height: 18, flexShrink: 0, borderRadius: '50%', cursor: 'pointer', padding: 0,
-                    border: '2px solid var(--text-tertiary)',
-                    background: te.bg ?? 'transparent',
-                    // 透明時用棋盤格表示「無背景」
-                    backgroundImage: te.bg ? undefined
-                      : 'linear-gradient(45deg, #bbb 25%, transparent 25%, transparent 75%, #bbb 75%), linear-gradient(45deg, #bbb 25%, #fff 25%, #fff 75%, #bbb 75%)',
-                    backgroundSize: '8px 8px', backgroundPosition: '0 0, 4px 4px',
-                  }}
-                />
-
-                <span style={dividerStyle} />
-                {/* 刪除 */}
-                <button
-                  className="tk-btn"
-                  style={{ cursor: 'pointer', fontSize: 'var(--text-sm)', padding: '1px 6px', flexShrink: 0 }}
-                  onClick={deleteSelectedText}
-                  title="刪除此文字框"
-                  data-testid="canvas-anno-text-delete"
-                >
-                  🗑
-                </button>
-              </div>
-            );
-          })()}
-
-          {/* 字色完整色盤（點球球展開） */}
-          {selectedTextItem && showTextFontPop && (
-            <div
-              data-canvas-textpop data-testid="canvas-anno-text-fontpop"
-              style={{
-                width: 220, background: 'var(--bg-surface)', border: '1px solid var(--border-default)',
-                borderRadius: 'var(--radius-md)', boxShadow: 'var(--shadow-lg)', padding: 8,
-              }}
-            >
-              <ColorPickerInline
-                initial={selectedTextItem.color || '#ef4444'}
-                onChange={(hex) => setTextColor(hex)}
-                onPick={(hex) => setTextColor(hex)}
-              />
-            </div>
-          )}
-          {/* 背景完整色盤（點球球展開） */}
-          {selectedTextItem && showTextBgPop && (
-            <div
-              data-canvas-textpop data-testid="canvas-anno-text-bgpop"
-              style={{
-                width: 220, background: 'var(--bg-surface)', border: '1px solid var(--border-default)',
-                borderRadius: 'var(--radius-md)', boxShadow: 'var(--shadow-lg)', padding: 8,
-              }}
-            >
-              <ColorPickerInline
-                initial={parseTextExtra(selectedTextItem.dataJson).bg ?? '#ffffff'}
-                onChange={(hex) => updateTextExtra({ bg: hex })}
-                onPick={(hex) => updateTextExtra({ bg: hex })}
-              />
-            </div>
-          )}
-        </div>
+            ) : null}
+          />
         ) : (
           <button
             onClick={expandToolbar}

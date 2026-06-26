@@ -11,7 +11,6 @@ import {
   type NoteOverlayItem,
 } from '@/lib/api';
 import { logger } from '@/lib/logger';
-import { ColorPickerInline } from '@/components/ColorPicker';
 import { pushUndo } from '@/lib/undoManager';
 import {
   type DrawTool,
@@ -26,6 +25,9 @@ import { ShapeEl } from '@/lib/drawing/ShapeEl';
 import { StickyBody } from '@/components/overlay/StickyBody';
 import { SlideBody } from '@/components/overlay/SlideBody';
 import { STICKY_COLORS } from '@/components/overlay/overlayShared';
+import { DrawingTextBox, parseTextExtra, type TextExtra } from '@/components/drawing/TextBox';
+import { DrawingToolbar } from '@/components/drawing/DrawingToolbar';
+import { TextPropsPanel } from '@/components/drawing/TextPropsPanel';
 
 /**
  * 事件：框選提問的答案要放進「就在原處旁邊」的便利貼（由 NoteMarksLayer 派發、NoteOverlay 接收建立）。
@@ -50,8 +52,10 @@ interface Props {
   noteId: string;
   /** 內文容器（.markdown-prose）參考；浮層覆蓋其上。 */
   containerRef: React.RefObject<HTMLDivElement | null>;
-  /** 點右下角工具列「📖 目錄」時呼叫（重新開啟章節目錄表）。 */
-  onRequestToc?: () => void;
+  /** 點右下角工具列「📖 目錄」時呼叫（切換章節目錄表開/關）。 */
+  onToggleToc?: () => void;
+  /** 章節目錄表目前是否開啟（開啟時工具列目錄鈕加深底色，標示 On）。 */
+  tocOpen?: boolean;
 }
 
 /**
@@ -66,7 +70,7 @@ interface Props {
  * 浮層容器 pointer-events:none；繪圖中時 SVG 捕捉指標、便利貼暫不可拖；未繪圖時指標穿透、便利貼可互動，
  * 故不影響底下文字選取（#5 標註）。
  */
-export function NoteOverlay({ noteId, containerRef, onRequestToc }: Props) {
+export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Props) {
   const [items, setItems] = useState<NoteOverlayItem[]>([]);
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [mounted, setMounted] = useState(false);
@@ -75,8 +79,18 @@ export function NoteOverlay({ noteId, containerRef, onRequestToc }: Props) {
   const [tool, setTool] = useState<DrawTool>(null);
   const [penColor, setPenColor] = useState('#ef4444');
   const [penWidth, setPenWidth] = useState(3);
+  // 螢光筆獨立的線寬（較粗）與透明度（半透明），與一般畫筆分開記憶。
+  const [highlightWidth, setHighlightWidth] = useState(16);
+  const [highlightOpacity, setHighlightOpacity] = useState(0.4);
   const [penDash, setPenDash] = useState(false);
   const [showPenColor, setShowPenColor] = useState(false);
+  // 純文字框：目前選取 / 編輯中的文字框 id；字色/背景完整色盤是否展開。
+  const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
+  const [editingTextId, setEditingTextId] = useState<string | null>(null);
+  const [showTextFontPop, setShowTextFontPop] = useState(false);
+  const [showTextBgPop, setShowTextBgPop] = useState(false);
+  // 筆記座標系無縮放（zoom 固定 1）；DrawingTextBox 需要 zoomRef 換算拖曳位移。
+  const noteZoomRef = useRef(1);
   // 「剛畫完的形狀」索引：可在工具列即時調整其顏色 / 線寬 / 虛線並立刻看到變化。
   // null＝沒有可調整的對象（換工具、擦除、開始畫新的一筆都會清除）。
   const [selectedShapeIdx, setSelectedShapeIdx] = useState<number | null>(null);
@@ -101,7 +115,7 @@ export function NoteOverlay({ noteId, containerRef, onRequestToc }: Props) {
     if (!showPenColor) return;
     const onDown = (e: MouseEvent) => {
       const t = e.target as HTMLElement | null;
-      if (t?.closest('[data-overlay-colorpop]') || t?.closest('[data-overlay-colorbtn]')) return;
+      if (t?.closest('[data-draw-colorpop]') || t?.closest('[data-draw-colorbtn]')) return;
       setShowPenColor(false);
     };
     document.addEventListener('mousedown', onDown, true);
@@ -111,7 +125,10 @@ export function NoteOverlay({ noteId, containerRef, onRequestToc }: Props) {
   useEffect(() => {
     let alive = true;
     listNoteOverlay(noteId).then((list) => {
-      if (alive) setItems(list);
+      if (!alive) return;
+      setItems(list);
+      // 便利貼/圖片板預設「收合」（只顯示標題列）——每次打開筆記都全收合，不記憶展開狀態。
+      setCollapsedIds(new Set(list.filter((i) => i.kind === 'sticky' || i.kind === 'slide').map((i) => i.id)));
     });
     return () => { alive = false; };
   }, [noteId]);
@@ -180,7 +197,15 @@ export function NoteOverlay({ noteId, containerRef, onRequestToc }: Props) {
   // 之後可用標題列的「📌」切換成「釘住浮動、可拖到任何地方」。
   const spawnPos = () => {
     const step = (items.filter((i) => i.kind !== 'drawing').length % 6) * 18;
-    return { x: 36 + step, y: 36 + step };
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return { x: 36 + step, y: 36 + step };
+    // 生成在「使用者目前看到的位置」＝視窗中心換算成內文相對座標（扣半個便利貼讓它置中於視野），
+    // 而非永遠在內文最左上角。非釘選便利貼用內文相對座標，故會跟著內文捲動停在這。
+    const cx = window.innerWidth / 2 - rect.left - 110;
+    const cy = window.innerHeight / 2 - rect.top - 90;
+    const x = Math.max(8, Math.min(cx, Math.max(8, size.w - 120))) + step;
+    const y = Math.max(8, cy) + step;
+    return { x, y };
   };
   const addSticky = async () => {
     const p = spawnPos();
@@ -202,6 +227,94 @@ export function NoteOverlay({ noteId, containerRef, onRequestToc }: Props) {
     setItems((prev) => prev.filter((i) => i.id !== id));
     await deleteNoteOverlay(id);
   };
+
+  // ── 純文字框（Snipaste 風格；與開問啦畫布共用 DrawingTextBox）──
+  /** 螢幕座標 → 內文相對座標（筆記無縮放/平移，直接扣掉容器左上角）。 */
+  const toFlow = (clientX: number, clientY: number): { x: number; y: number } => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    return rect ? { x: clientX - rect.left, y: clientY - rect.top } : { x: clientX, y: clientY };
+  };
+
+  const addTextBox = async () => {
+    const p = spawnPos();
+    const created = await createNoteOverlay(noteId, {
+      kind: 'text', x: p.x, y: p.y, width: 180, height: 48, zIndex: maxZ + 1,
+      color: '#ef4444', text: '', dataJson: JSON.stringify({ bg: null, fontSize: 20, rotation: 0 }),
+    });
+    if (created) {
+      setItems((prev) => [...prev, created]);
+      setSelectedTextId(created.id);
+      setEditingTextId(created.id);
+    }
+  };
+
+  /** 若指定文字框內容為空 → 刪除（避免留下看不見的空框）。 */
+  const deleteIfEmpty = (id: string): void => {
+    const it = itemsRef.current.find((x) => x.id === id);
+    if (it && it.kind === 'text' && !(it.text ?? '').trim()) remove(id);
+  };
+
+  const selectedTextItem = items.find((i) => i.id === selectedTextId && i.kind === 'text') ?? null;
+  /** 更新選取文字框的額外屬性（bg / fontSize / rotation）並持久化。 */
+  const updateTextExtra = (patch: Partial<TextExtra>) => {
+    if (!selectedTextItem) return;
+    const cur = parseTextExtra(selectedTextItem.dataJson);
+    const json = JSON.stringify({ ...cur, ...patch });
+    patchLocal(selectedTextItem.id, { dataJson: json });
+    persist(selectedTextItem.id, { dataJson: json });
+  };
+  /** 設定選取文字框的字體顏色。 */
+  const setTextColor = (c: string) => {
+    if (!selectedTextItem) return;
+    patchLocal(selectedTextItem.id, { color: c });
+    persist(selectedTextItem.id, { color: c });
+  };
+  /** 刪除目前選取的文字框。 */
+  const deleteSelectedText = () => {
+    const id = selectedTextId;
+    setSelectedTextId(null);
+    setEditingTextId(null);
+    if (id) remove(id);
+  };
+
+  // 點文字框與其屬性面板 / 色盤以外的地方 → 取消選取（空框順手刪除）。
+  useEffect(() => {
+    if (!selectedTextId) return;
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (
+        t?.closest('[data-testid="anno-text"]') ||
+        t?.closest('[data-draw-textprops]') ||
+        t?.closest('[data-draw-textpop]')
+      ) return;
+      const id = selectedTextId;
+      setSelectedTextId(null);
+      setEditingTextId(null);
+      deleteIfEmpty(id);
+    };
+    document.addEventListener('pointerdown', onDown, true);
+    return () => document.removeEventListener('pointerdown', onDown, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTextId]);
+
+  // 換選取對象 / 取消選取時，把展開的色盤收起來。
+  useEffect(() => {
+    setShowTextFontPop(false);
+    setShowTextBgPop(false);
+  }, [selectedTextId]);
+
+  // 點色盤與球球以外的地方 → 收起展開中的文字色盤。
+  useEffect(() => {
+    if (!showTextFontPop && !showTextBgPop) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t?.closest('[data-draw-textpop]') || t?.closest('[data-draw-textcolorbtn]')) return;
+      setShowTextFontPop(false);
+      setShowTextBgPop(false);
+    };
+    document.addEventListener('mousedown', onDown, true);
+    return () => document.removeEventListener('mousedown', onDown, true);
+  }, [showTextFontPop, showTextBgPop]);
 
   // ── 便利貼「繼續問」：脈絡＝筆記內容（後端自動帶）＋前一張便利貼＋本便利貼，答案變成新便利貼 ──
   const askFromSticky = async (item: NoteOverlayItem, question: string) => {
@@ -394,6 +507,10 @@ export function NoteOverlay({ noteId, containerRef, onRequestToc }: Props) {
 
   const eraseRadius = Math.max(8, penWidth * 3); // 局部橡皮擦半徑（沿用線寬滑桿）
   const isPenTool = tool === 'pen' || tool === 'line' || tool === 'rect' || tool === 'ellipse';
+  // 含螢光筆的「會畫出形狀」工具（顏色/線寬可即時套到剛畫的圖形）。
+  const isDrawShapeTool = isPenTool || tool === 'highlight';
+  // 線寬滑桿目前控制的值：螢光筆用自己的較粗線寬，其餘用一般筆寬。
+  const activeWidth = tool === 'highlight' ? highlightWidth : penWidth;
 
   const relPoint = (e: React.PointerEvent<SVGSVGElement>): [number, number] => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -417,10 +534,18 @@ export function NoteOverlay({ noteId, containerRef, onRequestToc }: Props) {
       forceRerender((n) => n + 1);
       return;
     }
-    curShape.current =
-      tool === 'pen'
-        ? { type: 'free', color: penColor, width: penWidth, dash: penDash, points: [p] }
-        : { type: tool, color: penColor, width: penWidth, dash: penDash, points: [p, p] };
+    if (tool === 'pen' || tool === 'highlight') {
+      // 螢光筆＝自由筆 + 較粗線寬 + 半透明（opacity）。
+      curShape.current = {
+        type: 'free', color: penColor,
+        width: tool === 'highlight' ? highlightWidth : penWidth,
+        dash: tool === 'highlight' ? false : penDash,
+        ...(tool === 'highlight' ? { opacity: highlightOpacity } : {}),
+        points: [p],
+      };
+    } else {
+      curShape.current = { type: tool, color: penColor, width: penWidth, dash: penDash, points: [p, p] };
+    }
     forceRerender((n) => n + 1);
   };
   const onSvgMove = (e: React.PointerEvent<SVGSVGElement>) => {
@@ -538,9 +663,11 @@ export function NoteOverlay({ noteId, containerRef, onRequestToc }: Props) {
     applyToSelected({ color: hex });
   };
   const changePenWidth = (w: number) => {
-    setPenWidth(w);
-    // 橡皮擦半徑沿用此滑桿；只有在繪圖工具且有選取形狀時才回套到形狀。
-    if (isPenTool) applyToSelected({ width: w });
+    // 螢光筆改它自己的線寬；其餘（含局部橡皮擦半徑）改一般筆寬。
+    if (tool === 'highlight') setHighlightWidth(w);
+    else setPenWidth(w);
+    // 只有在繪圖形狀工具且有選取形狀時才回套到形狀。
+    if (isDrawShapeTool) applyToSelected({ width: w });
   };
   const togglePenDash = () => {
     setPenDash((v) => {
@@ -753,7 +880,25 @@ export function NoteOverlay({ noteId, containerRef, onRequestToc }: Props) {
           )}
         </svg>
         {/* 非 pinned 便利貼/圖片板：position:absolute 疊在內文上、隨內文捲動、被內文區裁切（原本行為）。 */}
-        {items.filter((i) => i.kind !== 'drawing' && !isPinned(i)).map(renderOverlayItem)}
+        {items.filter((i) => (i.kind === 'sticky' || i.kind === 'slide') && !isPinned(i)).map(renderOverlayItem)}
+        {/* 純文字框（Snipaste 風格：可打字、設背景、旋轉縮放；與開問啦畫布共用元件）。
+            繪圖中時設為不可互動，讓底下手繪 SVG 接管指標。 */}
+        {items.filter((i) => i.kind === 'text').map((item) => (
+          <DrawingTextBox
+            key={item.id}
+            item={item}
+            zoomRef={noteZoomRef}
+            toFlow={toFlow}
+            selected={selectedTextId === item.id}
+            editing={editingTextId === item.id}
+            interactive={!drawingActive}
+            onSelect={() => { bringToFront(item); setSelectedTextId(item.id); }}
+            onStartEdit={() => { setSelectedTextId(item.id); setEditingTextId(item.id); }}
+            onStopEdit={() => { setEditingTextId(null); deleteIfEmpty(item.id); }}
+            onChange={(patch) => patchLocal(item.id, patch)}
+            onCommit={(patch) => persist(item.id, patch)}
+          />
+        ))}
       </div>
 
       {/* pinned 便利貼/圖片板：portal 至 body、position:fixed → 可自由拖到整個畫面（含側欄），不隨內文捲動。 */}
@@ -762,118 +907,69 @@ export function NoteOverlay({ noteId, containerRef, onRequestToc }: Props) {
         document.body,
       )}
 
-      {/* 工具列：portal 至 body 並 position:fixed → 捲動內文時固定不動，不會被滑掉（#6）。
-          固定在右下角（浮動工具盤），避免蓋住內文頂端的「編輯 / 匯出 PDF / 刪除」按鈕。
-          flexDirection: column-reverse → 工具列在下、色盤彈窗往上開，留在畫面內。 */}
+      {/* 工具列：portal 至 body 並 position:fixed → 捲動內文時固定不動。
+          使用與開問啦畫布共用的 DrawingToolbar（三列版面）；筆記專屬的「歸位 / ＋高 / −高」放在情境控制列。 */}
       {mounted && createPortal(
-        <div
-          style={{
-            position: 'fixed', bottom: 24, right: 24, zIndex: 1400, pointerEvents: 'auto',
-            display: 'flex', flexDirection: 'column-reverse', gap: 4, alignItems: 'flex-end',
+        <DrawingToolbar
+          testIdPrefix="overlay"
+          position={{ bottom: 24, right: 24 }}
+          maxWidth={380}
+          leading={{
+            label: '📖 目錄',
+            title: tocOpen ? '關閉章節目錄表' : '開啟章節目錄表',
+            onClick: () => onToggleToc?.(),
+            active: tocOpen,
+            testId: 'overlay-toggle-toc',
           }}
-          data-testid="overlay-toolbar"
-        >
-          <div style={{
-            display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end',
-            background: 'var(--bg-surface)', border: '1px solid var(--border-default)',
-            borderRadius: 'var(--radius-md)', padding: 4, boxShadow: 'var(--shadow-md)', maxWidth: 380,
-          }}>
-            {onRequestToc && (
-              <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={onRequestToc} title="顯示章節目錄表" data-testid="overlay-toggle-toc">📖 目錄</button>
-            )}
-            <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={addSticky} title="新增便利貼" data-testid="overlay-add-sticky">＋便利貼</button>
-            <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={addSlide} title="新增圖片板（可放多張圖、手動切換）" data-testid="overlay-add-slide">＋圖片板</button>
-            {items.some((i) => i.kind !== 'drawing') && (
-              <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={gatherStrayItems} title="便利貼歸位：把所有便利貼/圖片板拉回左上角（救回被拖到看不見、抓不回來的）" data-testid="overlay-gather">↺ 歸位</button>
-            )}
-            {/* 繪圖工具：點同一鈕可再關閉 */}
-            {([
-              ['pen', '✏️', '自由筆'],
-              ['line', '／', '直線'],
-              ['rect', '▭', '矩形'],
-              ['ellipse', '◯', '橢圓'],
-              ['erase-stroke', '🧹', '橡皮擦：整筆刪除（點一筆即刪整筆）'],
-              ['erase-area', '🧽', '橡皮擦：局部擦除（擦到哪、那裏消失）'],
-              ['erase-box', '⬚', '橡皮擦：框選擦除（框到哪、那裏消失，同一形狀不連帶整個刪除）'],
-            ] as [Exclude<DrawTool, null>, string, string][]).map(([t, icon, label]) => (
-              <button
-                key={t}
-                className={`tk-btn ${tool === t ? 'tk-btn--primary' : ''}`}
-                style={{ cursor: 'pointer' }}
-                title={label}
-                onClick={() => selectTool(t)}
-                data-testid={`overlay-tool-${t}`}
-              >
-                {icon}
-              </button>
-            ))}
-            {isPenTool && (
-              <button
-                title="畫筆顏色"
-                onClick={() => setShowPenColor((v) => !v)}
-                data-testid="overlay-pen-color"
-                data-overlay-colorbtn
-                style={{ width: 18, height: 18, flexShrink: 0, borderRadius: '50%', background: penColor, border: '1px solid var(--border-strong, #999)', cursor: 'pointer' }}
-              />
-            )}
-            {(isPenTool || tool === 'erase-area') && (
-              <input
-                type="range" min={1} max={20} value={penWidth}
-                onChange={(e) => changePenWidth(Number(e.target.value))}
-                title={tool === 'erase-area' ? `橡皮擦大小：${eraseRadius}` : `線寬：${penWidth}`}
-                style={{ width: 70 }}
-                data-testid="overlay-pen-width"
-              />
-            )}
-            {isPenTool && (
-              <button
-                className={`tk-btn ${penDash ? 'tk-btn--primary' : ''}`}
-                style={{ cursor: 'pointer' }}
-                title="虛線 / 實線"
-                onClick={togglePenDash}
-              >
-                {penDash ? '┄' : '—'}
-              </button>
-            )}
-            {selectedShapeIdx !== null && isPenTool && (
-              <span
-                style={{ fontSize: 'var(--text-xs)', color: 'var(--action-secondary-fg)', whiteSpace: 'nowrap' }}
-                title="可直接調整工具列的顏色 / 線寬 / 虛線，會即時套用到剛畫的圖形"
-              >
-                ✎ 調整剛畫的圖形
-              </span>
-            )}
-            {shapes.length > 0 && (
-              <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={clearDrawing} title="清除全部手繪（可 Ctrl+Z 復原）" data-testid="overlay-clear">清除</button>
-            )}
-            {drawingActive && (
-              <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={growCanvas} title="加高繪圖區（往下擴充，可放更多便利貼/塗鴉/輪播）" data-testid="overlay-grow">＋高</button>
-            )}
-            {drawingActive && extraHeight > 0 && (
-              <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={shrinkCanvas} title="降低繪圖區高度" data-testid="overlay-shrink">−高</button>
-            )}
-            {drawingActive && (
-              <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={() => { setSelectedShapeIdx(null); setTool(null); }} title="結束繪圖（回到一般互動）">完成</button>
-            )}
-          </div>
-
-          {showPenColor && isPenTool && (
-            <div
-              data-overlay-colorpop
-              style={{
-                width: 220, background: 'var(--bg-surface)', border: '1px solid var(--border-default)',
-                borderRadius: 'var(--radius-md)', boxShadow: 'var(--shadow-lg)', padding: 8,
-              }}
-            >
-              {/* 選色後不關閉色盤（連續調色）；點空白處才關 */}
-              <ColorPickerInline
-                initial={penColor}
-                onChange={(hex) => changePenColor(hex)}
-                onPick={(hex) => changePenColor(hex)}
-              />
-            </div>
-          )}
-        </div>,
+          onAddSticky={addSticky}
+          onAddSlide={addSlide}
+          onAddText={addTextBox}
+          tool={tool}
+          onSelectTool={selectTool}
+          penColor={penColor}
+          showPenColor={showPenColor}
+          onTogglePenColor={() => setShowPenColor((v) => !v)}
+          onPenColorChange={changePenColor}
+          penWidth={activeWidth}
+          onPenWidthChange={changePenWidth}
+          penDash={penDash}
+          onToggleDash={togglePenDash}
+          highlightOpacity={highlightOpacity}
+          onHighlightOpacityChange={setHighlightOpacity}
+          eraseRadius={eraseRadius}
+          selectedShapeIdx={selectedShapeIdx}
+          hasShapes={shapes.length > 0}
+          onClear={clearDrawing}
+          drawingActive={drawingActive}
+          onDone={() => { setSelectedShapeIdx(null); setTool(null); }}
+          extraControls={(items.some((i) => i.kind !== 'drawing') || drawingActive) ? (
+            <>
+              {items.some((i) => i.kind !== 'drawing') && (
+                <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={gatherStrayItems} title="歸位：把所有便利貼/圖片板/文字框拉回左上角（救回被拖到看不見、抓不回來的）" data-testid="overlay-gather">↺ 歸位</button>
+              )}
+              {drawingActive && (
+                <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={growCanvas} title="加高繪圖區（往下擴充，可放更多便利貼/塗鴉/輪播）" data-testid="overlay-grow">＋高</button>
+              )}
+              {drawingActive && extraHeight > 0 && (
+                <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={shrinkCanvas} title="降低繪圖區高度" data-testid="overlay-shrink">−高</button>
+              )}
+            </>
+          ) : undefined}
+          topContent={selectedTextItem ? (
+            <TextPropsPanel
+              testIdPrefix="overlay"
+              fontColor={selectedTextItem.color || '#ef4444'}
+              dataJson={selectedTextItem.dataJson}
+              onSetFontColor={setTextColor}
+              onUpdateExtra={updateTextExtra}
+              showFontPop={showTextFontPop}
+              showBgPop={showTextBgPop}
+              onToggleFontPop={() => { setShowTextBgPop(false); setShowTextFontPop((v) => !v); }}
+              onToggleBgPop={() => { setShowTextFontPop(false); setShowTextBgPop((v) => !v); }}
+              onDelete={deleteSelectedText}
+            />
+          ) : null}
+        />,
         document.body,
       )}
     </>
