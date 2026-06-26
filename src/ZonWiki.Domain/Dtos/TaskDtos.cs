@@ -28,6 +28,11 @@ public sealed record TaskGroupDto(
 /// <param name="SubTaskDone">已完成的子任務數。</param>
 /// <param name="Tags">貼在此任務上的標籤（與筆記共用標籤庫）。</param>
 /// <param name="SubTasks">子任務清單（供清單／看板卡片在外層直接展開顯示）。</param>
+/// <param name="IsLongTerm">是否為長期任務（不強制截止日、不列入逾期）。</param>
+/// <param name="TargetDateTime">粗粒度目標期的代表日（UTC，可空）。</param>
+/// <param name="TargetGranularity">目標期粒度："month" | "quarter" | "year"；null＝未設粗粒度目標。</param>
+/// <param name="IsPinnedToHome">是否釘選到首頁「我的任務」區塊。</param>
+/// <param name="HomeSortOrder">首頁釘選區的排序序號（越小越前）。</param>
 public sealed record TaskCardSummaryDto(
     Guid Id,
     string Title,
@@ -42,7 +47,12 @@ public sealed record TaskCardSummaryDto(
     int SubTaskDone = 0,
     List<TagRefDto>? Tags = null,
     List<SubTaskDto>? SubTasks = null,
-    Guid? ParentId = null);
+    Guid? ParentId = null,
+    bool IsLongTerm = false,
+    DateTime? TargetDateTime = null,
+    string? TargetGranularity = null,
+    bool IsPinnedToHome = false,
+    int HomeSortOrder = 0);
 
 /// <summary>
 /// 子任務（檢核清單項目）資料傳輸物件。
@@ -105,6 +115,11 @@ public sealed record ReorderSubTasksRequest(
 /// <param name="RecurrenceRule">重複規則（iCal RRULE，可空）。</param>
 /// <param name="CreatedDateTime">建立時間（UTC）。</param>
 /// <param name="UpdatedDateTime">最後更新時間（UTC）。</param>
+/// <param name="IsLongTerm">是否為長期任務（不強制截止日、不列入逾期）。</param>
+/// <param name="TargetDateTime">粗粒度目標期的代表日（UTC，可空）。</param>
+/// <param name="TargetGranularity">目標期粒度："month" | "quarter" | "year"；null＝未設粗粒度目標。</param>
+/// <param name="IsPinnedToHome">是否釘選到首頁「我的任務」區塊。</param>
+/// <param name="HomeSortOrder">首頁釘選區的排序序號（越小越前）。</param>
 public sealed record TaskCardDetailDto(
     Guid Id,
     string Title,
@@ -120,7 +135,12 @@ public sealed record TaskCardDetailDto(
     DateTime UpdatedDateTime,
     List<SubTaskDto>? SubTasks = null,
     List<TagRefDto>? Tags = null,
-    Guid? ParentId = null);
+    Guid? ParentId = null,
+    bool IsLongTerm = false,
+    DateTime? TargetDateTime = null,
+    string? TargetGranularity = null,
+    bool IsPinnedToHome = false,
+    int HomeSortOrder = 0);
 
 /// <summary>
 /// 建立任務卡片的請求內容。
@@ -134,6 +154,10 @@ public sealed record TaskCardDetailDto(
 /// <param name="GroupId">所屬群組識別碼（可空）。</param>
 /// <param name="SortOrder">排序序號（預設 0）。</param>
 /// <param name="RecurrenceRule">重複規則（iCal RRULE，可空）。</param>
+/// <param name="IsLongTerm">是否為長期任務（預設 false）。</param>
+/// <param name="TargetDateTime">粗粒度目標期的代表日（UTC，可空）。</param>
+/// <param name="TargetGranularity">目標期粒度："month" | "quarter" | "year"；null＝未設粗粒度目標（預設 null）。</param>
+/// <param name="IsPinnedToHome">是否釘選到首頁「我的任務」區塊（預設 false；建立時不收 HomeSortOrder，由後端指派）。</param>
 public sealed record CreateTaskCardRequest(
     string Title,
     string Content = "",
@@ -144,7 +168,11 @@ public sealed record CreateTaskCardRequest(
     Guid? GroupId = null,
     int SortOrder = 0,
     string? RecurrenceRule = null,
-    Guid? ParentId = null);
+    Guid? ParentId = null,
+    bool IsLongTerm = false,
+    DateTime? TargetDateTime = null,
+    string? TargetGranularity = null,
+    bool IsPinnedToHome = false);
 
 /// <summary>
 /// 更新任務卡片的請求內容（所有欄位皆選擇性）。
@@ -161,6 +189,13 @@ public sealed record CreateTaskCardRequest(
 /// <param name="ClearPlannedDateTime">是否清除排程日期（true 時把 PlannedDateTime 設為 null；用以區分「不更新」與「清空」）。</param>
 /// <param name="ClearDueDateTime">是否清除截止日期（true 時把 DueDateTime 設為 null）。</param>
 /// <param name="ClearGroupId">是否清除所屬分類（true 時把 GroupId 設為 null，即移出分類）。</param>
+/// <param name="IsLongTerm">是否為長期任務（null = 不更新）。</param>
+/// <param name="TargetDateTime">粗粒度目標期的代表日（UTC，可空；null = 不更新）。</param>
+/// <param name="TargetGranularity">目標期粒度："month" | "quarter" | "year"；null＝不更新；非 null 時更新（可空值＝清空目標粒度）。</param>
+/// <param name="IsPinnedToHome">是否釘選到首頁（null = 不更新）。</param>
+/// <param name="HomeSortOrder">首頁釘選區的排序序號（null = 不更新；當 IsPinnedToHome 由 false 變 true 時，若未同時指定則後端自動指派為目前最大 + 1）。</param>
+/// <param name="ClearTargetDateTime">是否清除粗粒度目標期日期（true 時把 TargetDateTime 設為 null）。</param>
+/// <param name="ClearTargetGranularity">是否清除粗粒度目標期粒度（true 時把 TargetGranularity 設為 null）。</param>
 public sealed record UpdateTaskCardRequest(
     string? Title = null,
     string? Content = null,
@@ -175,7 +210,14 @@ public sealed record UpdateTaskCardRequest(
     bool ClearPlannedDateTime = false,
     bool ClearDueDateTime = false,
     bool ClearGroupId = false,
-    bool ClearParentId = false);
+    bool ClearParentId = false,
+    bool? IsLongTerm = null,
+    DateTime? TargetDateTime = null,
+    string? TargetGranularity = null,
+    bool? IsPinnedToHome = null,
+    int? HomeSortOrder = null,
+    bool ClearTargetDateTime = false,
+    bool ClearTargetGranularity = false);
 
 /// <summary>
 /// 建立任務群組的請求內容。

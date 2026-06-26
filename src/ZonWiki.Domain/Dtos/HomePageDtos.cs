@@ -136,11 +136,13 @@ public sealed record WeeklyCalendarSummaryDto(
 /// <param name="TodayTodos">今日待辦清單（狀態 = todo / doing）。</param>
 /// <param name="QuickLinks">常用連結卡清單。</param>
 /// <param name="RecentCaptures">最近 5 個捕捉項目（依建立時間倒序）。</param>
+/// <param name="PinnedTasks">釘選到首頁的任務卡片清單（依 HomeSortOrder、再 CreatedDateTime 排序；含標籤與子任務計數）。</param>
 public sealed record HomePageAggregateDto(
     WeeklyCalendarSummaryDto WeeklyCalendar,
     List<TaskCardSummaryDto> TodayTodos,
     List<QuickLinkDto> QuickLinks,
-    List<CaptureItemDto> RecentCaptures);
+    List<CaptureItemDto> RecentCaptures,
+    List<TaskCardSummaryDto>? PinnedTasks = null);
 
 /// <summary>
 /// 行事曆檢視資料（某時間區間內的任務與日記）。
