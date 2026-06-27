@@ -14,6 +14,11 @@ public static class AuthExtensions
     public const string UserIdClaimType = "user_id";
 
     /// <summary>
+    /// 「智慧選擇」policy scheme 名稱：依請求是否帶 Bearer 標頭，分流到 ApiToken 或 Cookie 驗證。
+    /// </summary>
+    public const string SmartAuthScheme = "ZonWikiSmartAuth";
+
+    /// <summary>
     /// 註冊 ZonWiki 驗證服務：Cookie 驗證一律啟用；Google OAuth 為選擇性加強。
     /// </summary>
     /// <param name="services">服務集合</param>
@@ -43,10 +48,33 @@ public static class AuthExtensions
         services
             .AddAuthentication(options =>
             {
-                options.DefaultScheme = CookieAuthenticationDefaults.AuthenticationScheme;
+                // 預設驗證走「智慧選擇」policy scheme：依請求是否帶 Bearer 標頭，
+                // 分流到 ApiToken（外部 AI 助理）或 Cookie（瀏覽器登入）。
+                options.DefaultScheme = SmartAuthScheme;
+                // 簽入/簽出一律落在 Cookie（瀏覽器登入流程；Google 回呼亦用 Cookie 簽入）。
+                options.DefaultSignInScheme = CookieAuthenticationDefaults.AuthenticationScheme;
+                options.DefaultSignOutScheme = CookieAuthenticationDefaults.AuthenticationScheme;
                 // Google 為選擇性的 challenge scheme
                 options.DefaultChallengeScheme = defaultChallengeScheme;
             })
+            // 智慧選擇：帶 "Authorization: Bearer ..." 的請求 → ApiToken 驗證；其餘 → Cookie 驗證。
+            .AddPolicyScheme(SmartAuthScheme, "Cookie 或 API 權杖", options =>
+            {
+                options.ForwardDefaultSelector = context =>
+                {
+                    string? authorization = context.Request.Headers.Authorization;
+                    if (!string.IsNullOrEmpty(authorization)
+                        && authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return ApiTokenAuthenticationHandler.SchemeName;
+                    }
+                    return CookieAuthenticationDefaults.AuthenticationScheme;
+                };
+            })
+            // API 個人存取權杖（PAT）驗證方案。
+            .AddScheme<AuthenticationSchemeOptions, ApiTokenAuthenticationHandler>(
+                ApiTokenAuthenticationHandler.SchemeName,
+                _ => { })
             .AddCookie(options =>
             {
                 options.Cookie.Name = AuthCookieName;

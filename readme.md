@@ -557,12 +557,24 @@ dotnet test tests/ZonWiki.Api.Tests --filter "NoteSearch"
 ## MCP (Model Context Protocol)
 
 ZonWiki 已內建一支 **MCP Server**（[`mcp/`](./mcp/)，Node.js + TypeScript），讓 Claude（Desktop / Code）
-等支援 MCP 的 AI 助理**直接讀寫**你的知識庫、任務、捕捉與開問啦畫布，共 **16 個工具**：
+等支援 MCP 的 AI 助理**直接讀寫**你的知識庫、任務、捕捉與開問啦畫布，共 **19 個工具**：
 
-- **筆記（5）**：`list_notes`、`get_note`、`create_note`、`update_note`、`search_notes`
+- **筆記（6）**：`list_notes`、`get_note`、`create_note`、`create_classified_note`、`update_note`、`search_notes`
+  - `create_classified_note`（推薦）：以「分類名稱路徑」自動建立巢狀分類、以「標籤名稱」自動建標籤，一次完成「資料夾→分類、Markdown→筆記、正確歸類」。
+- **分類（2）**：`list_categories`、`create_category`
 - **任務（3）**：`list_tasks`、`create_task`、`update_task`
 - **快速捕捉（3）**：`list_captures`、`create_capture`、`archive_capture`
 - **開問啦畫布（5）**：`list_canvases`、`create_canvas`、`get_canvas`、`create_canvas_node`、`search_canvas_nodes`
+
+### 對外 AI 整合：API 個人存取權杖（PAT）＋ ChatGPT/Hermes
+
+除了本機 MCP（Cookie 或權杖），ZonWiki 也支援讓**任何外部 AI**以「你的身分」呼叫 API：
+
+- **API 權杖**：登入後到「個人頁 → API 權杖」產生（可命名、設到期、隨時撤銷；資料庫只存 SHA-256 雜湊、明碼只顯示一次）。
+  AI 客戶端以 `Authorization: Bearer <權杖>` 帶上即可（與 Cookie 並存，互不影響）。
+- **AI 友善端點** `POST /api/ai/notes`：以「分類名稱路徑＋標籤名稱」一次建立/更新筆記並自動歸類（支援 `upsert` 避免重複）。
+- **ChatGPT（Custom GPT Action）**：精簡 OpenAPI 文件公開於 `GET /openapi/zonwiki-ai.json`；在 Custom GPT 的 Action 匯入該 URL、認證選 Bearer 貼上權杖即可寫筆記並分類。
+- **Hermes / 自訂 agent**：以遠端 MCP 或直接呼叫 REST API（皆帶 Bearer 權杖）。
 
 ### 快速啟用
 

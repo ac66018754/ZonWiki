@@ -47,6 +47,9 @@ public sealed class ZonWikiDbContext(
     // --- 身分（資料以 {Table}_UserId 切分，每位使用者只見自己的資料）-----------
     public DbSet<User> User => Set<User>();
 
+    // --- API 個人存取權杖（PAT；供外部 AI 助理以 Bearer 權杖呼叫 API）-----------
+    public DbSet<ApiToken> ApiToken => Set<ApiToken>();
+
     // --- 筆記（含日記；分類/標籤皆為多對多）-----------------------------------
     public DbSet<Note> Note => Set<Note>();
     public DbSet<Category> Category => Set<Category>();

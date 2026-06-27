@@ -629,6 +629,69 @@ export async function deleteMyAccount(): Promise<boolean> {
   return r.success;
 }
 
+// ============================================================================
+// API 個人存取權杖（PAT）— 給外部 AI 助理以 Bearer 權杖呼叫 API
+// ============================================================================
+
+/** 一把 API 權杖的資訊（不含明碼與雜湊）。 */
+export interface ApiTokenInfo {
+  /** 權杖 Id。 */
+  id: string;
+  /** 名稱（辨識用途，例如 "Claude Code"）。 */
+  name: string;
+  /** 明碼前綴（辨識用，例如 "zwk_Ab12cd"）。 */
+  tokenPrefix: string;
+  /** 建立時間（UTC ISO 字串）。 */
+  createdDateTime: string;
+  /** 最後使用時間（UTC ISO，可空＝尚未使用）。 */
+  lastUsedDateTime?: string | null;
+  /** 到期時間（UTC ISO，可空＝永不過期）。 */
+  expiresDateTime?: string | null;
+  /** 權限範圍（資訊性）。 */
+  scopes: string;
+}
+
+/** 產生權杖的回應：明碼權杖（只回傳這一次）+ 權杖資訊。 */
+export interface CreatedApiToken {
+  /** 完整明碼權杖（請立即複製保存；離開頁面後無法再取得）。 */
+  token: string;
+  /** 權杖資訊。 */
+  info: ApiTokenInfo;
+}
+
+/**
+ * 列出「我的」API 權杖（不含明碼）。
+ */
+export async function listApiTokens(): Promise<ApiTokenInfo[]> {
+  const r = await fetchJson<ApiTokenInfo[]>("/api/me/tokens");
+  return r.success ? r.data ?? [] : [];
+}
+
+/**
+ * 產生一把新權杖。回傳的 token 為明碼、只會出現這一次。
+ * @param name 權杖名稱（辨識用途）。
+ * @param expiresInDays 幾天後過期（可空＝永不過期）。
+ */
+export async function createApiToken(
+  name: string,
+  expiresInDays?: number | null
+): Promise<CreatedApiToken | { error: string }> {
+  const r = await fetchJson<CreatedApiToken>("/api/me/tokens", {
+    method: "POST",
+    body: JSON.stringify({ name, expiresInDays: expiresInDays ?? null }),
+  });
+  if (r.success && r.data) return r.data;
+  return { error: r.error ?? "產生權杖失敗" };
+}
+
+/**
+ * 撤銷（軟刪除）一把權杖。
+ */
+export async function revokeApiToken(id: string): Promise<boolean> {
+  const r = await fetchJson<void>(`/api/me/tokens/${id}`, { method: "DELETE" });
+  return r.success;
+}
+
 /**
  * 取得登入 URL
  */
