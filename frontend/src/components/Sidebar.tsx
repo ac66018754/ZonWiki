@@ -36,6 +36,7 @@ const PROFILE_NAV: { href: string; label: string; icon: string; desc: string }[]
   { href: "/profile", label: "帳號資訊", icon: "👤", desc: "暱稱、時區、密碼、帳號" },
   { href: "/profile/stats", label: "統計數據", icon: "📊", desc: "筆記/任務/畫布等筆數" },
   { href: "/profile/activity", label: "活動紀錄", icon: "🕑", desc: "近 30 天操作明細" },
+  { href: "/profile/tokens", label: "API 權杖", icon: "🔑", desc: "供 AI 助理存取的權杖" },
   { href: "/profile/shortcuts", label: "快捷鍵", icon: "⌨️", desc: "自訂鍵盤快捷鍵" },
 ];
 

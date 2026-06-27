@@ -160,6 +160,22 @@ app.MapGet("/", () => Results.Ok(new { name = "ZonWiki API", status = "alive", a
 app.MapZonWikiAuthEndpoints(authConfigured);
 app.MapAuthPasswordEndpoints();
 app.MapProfileEndpoints(); // 個人頁：profile/stats/activity/改 email/刪帳號
+app.MapApiTokenEndpoints(); // 個人頁：API 個人存取權杖（PAT）產生/列出/撤銷
+
+// AI 整合端點：給外部 AI 助理（Claude Code / Hermes / ChatGPT Action）以權杖呼叫，
+// 一次完成「資料夾名稱→巢狀分類、Markdown→筆記、正確歸類、貼標籤」。
+app.MapAiIntegrationEndpoints();
+
+// 給 ChatGPT Custom GPT Action 用的精簡 OpenAPI 文件（公開可讀；實際呼叫仍需 Bearer 權杖）。
+// servers 位址優先採設定 Api:PublicBaseUrl，否則由當前請求推算（本機→localhost、prod→公開網域）。
+app.MapGet("/openapi/zonwiki-ai.json", (HttpContext http, IConfiguration config) =>
+{
+    var configuredBase = config["Api:PublicBaseUrl"];
+    var baseUrl = !string.IsNullOrWhiteSpace(configuredBase)
+        ? configuredBase.TrimEnd('/')
+        : $"{http.Request.Scheme}://{http.Request.Host}";
+    return Results.Text(AiOpenApiDocument.Build(baseUrl), "application/json");
+}).AllowAnonymous();
 
 app.MapCategoryEndpoints();
 app.MapNoteEndpoints();

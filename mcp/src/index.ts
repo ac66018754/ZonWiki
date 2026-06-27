@@ -49,11 +49,23 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
     headers: buildHeaders(body !== undefined),
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
-  const json = (await res.json()) as { Success: boolean; Data: T; Error?: string }
-  if (!res.ok || !json.Success) {
-    throw new Error(json.Error ?? `HTTP ${res.status}`)
+  // 後端 ApiResponse 信封以 camelCase 序列化（success/data/error）；
+  // 為穩健起見同時容忍 PascalCase（Success/Data/Error），兩者皆可解析。
+  const json = (await res.json()) as {
+    success?: boolean
+    Success?: boolean
+    data?: T
+    Data?: T
+    error?: string
+    Error?: string
   }
-  return json.Data
+  const success = json.success ?? json.Success ?? false
+  const data = (json.data ?? json.Data) as T
+  const error = json.error ?? json.Error
+  if (!res.ok || !success) {
+    throw new Error(error ?? `HTTP ${res.status}`)
+  }
+  return data
 }
 
 /**
@@ -118,7 +130,8 @@ server.tool(
  */
 server.tool(
   'create_note',
-  '在 ZonWiki 中建立新筆記（支援 Markdown 內容、分類、標籤、日記）。',
+  '在 ZonWiki 中建立新筆記（低階：分類與標籤須以「既有 ID（GUID）」指定）。'
+    + '若你只有分類/標籤的「名稱」、想自動建立巢狀分類，請改用 create_classified_note。',
   {
     title: z.string().describe('筆記標題'),
     contentRaw: z.string().describe('筆記內容（Markdown 格式）'),
@@ -131,11 +144,11 @@ server.tool(
     categoryIds: z
       .array(z.string())
       .optional()
-      .describe('分類 ID 清單（可空）'),
-    tags: z
+      .describe('分類 ID（GUID）清單；須為既有分類（可先用 list_categories 取得）。可空。'),
+    tagIds: z
       .array(z.string())
       .optional()
-      .describe('標籤名稱清單；若標籤不存在則自動建立（可空）'),
+      .describe('標籤 ID（GUID）清單；須為既有標籤。可空。'),
   },
   async ({
     title,
@@ -144,7 +157,7 @@ server.tool(
     isDraft,
     journalDate,
     categoryIds,
-    tags,
+    tagIds,
   }: {
     title: string
     contentRaw: string
@@ -152,7 +165,7 @@ server.tool(
     isDraft?: boolean
     journalDate?: string
     categoryIds?: string[]
-    tags?: string[]
+    tagIds?: string[]
   }) => {
     try {
       const journalDateObj = journalDate ? new Date(journalDate) : undefined
@@ -163,9 +176,60 @@ server.tool(
         IsDraft: isDraft ?? false,
         JournalDate: journalDateObj,
         CategoryIds: categoryIds,
-        Tags: tags,
+        TagIds: tagIds,
       })
       return ok(response)
+    } catch (e) {
+      return fail(e)
+    }
+  },
+)
+
+/**
+ * 建立並「自動歸類」一篇筆記（推薦給 AI 助理使用）。
+ * 分類以「名稱路徑」指定、找不到自動建立巢狀分類；標籤以「名稱」指定、找不到自動建立。
+ */
+server.tool(
+  'create_classified_note',
+  '把整理好的內容寫成一篇筆記並自動歸類（推薦）。'
+    + 'categoryPath 用「分類名稱路徑」（由上而下，找不到會自動建立巢狀分類），'
+    + 'tags 用「標籤名稱」（找不到自動建立）。最適合「幫我把這篇文章/這個目錄整理進某分類」。',
+  {
+    title: z.string().describe('筆記標題（整理本機檔案時用檔名）'),
+    contentRaw: z.string().optional().describe('Markdown 內容'),
+    categoryPath: z
+      .array(z.string())
+      .optional()
+      .describe('分類名稱路徑（由上而下），例如 ["學習","Python"]；對應資料夾階層'),
+    tags: z.array(z.string()).optional().describe('標籤名稱清單（找不到自動建立）'),
+    upsert: z
+      .boolean()
+      .optional()
+      .describe('true＝同分類同標題就更新而非新增（避免反覆匯入產生重複）。預設 false'),
+  },
+  async ({
+    title,
+    contentRaw,
+    categoryPath,
+    tags,
+    upsert,
+  }: {
+    title: string
+    contentRaw?: string
+    categoryPath?: string[]
+    tags?: string[]
+    upsert?: boolean
+  }) => {
+    try {
+      return ok(
+        await call('POST', '/api/ai/notes', {
+          Title: title,
+          ContentRaw: contentRaw ?? '',
+          CategoryPath: categoryPath,
+          Tags: tags,
+          Upsert: upsert ?? false,
+        }),
+      )
     } catch (e) {
       return fail(e)
     }
@@ -238,8 +302,59 @@ server.tool(
   },
   async ({ query, limit }: { query: string; limit?: number }) => {
     try {
-      const params = new URLSearchParams({ query, limit: String(limit ?? 20) })
-      return ok(await call('GET', `/api/notes/search?${params}`))
+      // 全站搜尋端點為 /api/search?q=...（參數名是 q）；回傳混合型別，這裡只留筆記。
+      const params = new URLSearchParams({ q: query, limit: String(limit ?? 20) })
+      const results = await call<Array<{ type?: string }>>('GET', `/api/search?${params}`)
+      const notes = Array.isArray(results)
+        ? results.filter((r) => r?.type === 'note')
+        : results
+      return ok(notes)
+    } catch (e) {
+      return fail(e)
+    }
+  },
+)
+
+// ============================================================================
+// 分類工具（Categories）
+// ============================================================================
+
+/**
+ * 列出所有分類（含階層 parentId 與每個分類的有效筆記數）。
+ */
+server.tool(
+  'list_categories',
+  '列出 ZonWiki 的所有分類（含上層 parentId 與每個分類的筆記數）。'
+    + '建立筆記前可先看一遍，盡量沿用既有分類名稱、避免語意重複。',
+  {},
+  async () => {
+    try {
+      return ok(await call('GET', '/api/categories'))
+    } catch (e) {
+      return fail(e)
+    }
+  },
+)
+
+/**
+ * 建立一個新分類（可指定 parentId 形成巢狀分類）。
+ */
+server.tool(
+  'create_category',
+  '建立一個新分類（可指定 parentId 形成巢狀分類）。'
+    + '若只是要「邊建分類邊建筆記」，用 create_classified_note 更省事（會自動建分類）。',
+  {
+    name: z.string().describe('分類名稱'),
+    parentId: z.string().optional().describe('上層分類 ID（GUID）；不填＝最上層'),
+  },
+  async ({ name, parentId }: { name: string; parentId?: string }) => {
+    try {
+      return ok(
+        await call('POST', '/api/categories', {
+          Name: name,
+          ParentId: parentId ?? null,
+        }),
+      )
     } catch (e) {
       return fail(e)
     }
