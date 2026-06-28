@@ -84,9 +84,13 @@ public static class DependencyInjection
         services.AddScoped<Refine.ITranscriptionService, Refine.OpenAiCompatibleTranscriptionService>();
         services.AddScoped<Refine.ArticleFetchService>();
         var ytDlpPath = configuration["Refine:YtDlpPath"] ?? "yt-dlp";
+        // 住宅代理 + 登入 cookies（皆可選）：讓資料中心 IP 的 prod 借「住宅 IP ＋ 已登入」抓
+        // 會擋資料中心或需登入的站（YouTube/IG）。設定鍵：Refine:Proxy、Refine:CookiesPath。
+        var refineProxy = configuration["Refine:Proxy"];
+        var refineCookiesPath = configuration["Refine:CookiesPath"];
         services.AddScoped(sp => new Refine.YtDlpService(
             sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<Refine.YtDlpService>>(),
-            ytDlpPath));
+            ytDlpPath, refineProxy, refineCookiesPath));
         // 上傳檔案精煉用：以 ffmpeg 把上傳的影音轉成 16kHz 單聲道 mp3 再送轉錄。
         var ffmpegPath = configuration["Refine:FfmpegPath"] ?? "ffmpeg";
         services.AddScoped(sp => new Refine.FfmpegAudioService(

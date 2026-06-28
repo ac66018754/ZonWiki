@@ -44,6 +44,8 @@ public sealed class YtDlpService
 {
     private readonly ILogger<YtDlpService> _logger;
     private readonly string _ytDlpPath;
+    private readonly string? _proxy;
+    private readonly string? _cookiesPath;
 
     /// <summary>字幕語言偏好（中英日優先）。</summary>
     private const string SubLangs = "zh-Hant,zh-TW,zh-Hans,zh,zh.*,en,en.*,ja,ja.*";
@@ -53,10 +55,43 @@ public sealed class YtDlpService
     /// </summary>
     /// <param name="logger">記錄器。</param>
     /// <param name="ytDlpPath">yt-dlp 執行檔路徑（預設取 PATH 上的 "yt-dlp"）。</param>
-    public YtDlpService(ILogger<YtDlpService> logger, string ytDlpPath = "yt-dlp")
+    /// <param name="proxy">
+    /// （可選）住宅代理 URL（如 socks5://localhost:埠 或 http://user:pass@host:埠）。
+    /// 設定後 yt-dlp 一律經此代理出去——讓資料中心 IP 的 prod 借「住宅 IP」抓會擋資料中心的站（YouTube/IG）。
+    /// </param>
+    /// <param name="cookiesPath">
+    /// （可選）Netscape 格式 cookies.txt 檔路徑（已登入的瀏覽器匯出）。設定後 yt-dlp 帶 --cookies 以「已登入」身分抓需登入的內容。
+    /// </param>
+    public YtDlpService(
+        ILogger<YtDlpService> logger,
+        string ytDlpPath = "yt-dlp",
+        string? proxy = null,
+        string? cookiesPath = null)
     {
         _logger = logger;
         _ytDlpPath = ytDlpPath;
+        _proxy = string.IsNullOrWhiteSpace(proxy) ? null : proxy.Trim();
+        _cookiesPath = string.IsNullOrWhiteSpace(cookiesPath) ? null : cookiesPath.Trim();
+    }
+
+    /// <summary>
+    /// 共用旗標：住宅代理（--proxy）與登入 cookies（--cookies）。只有設定了才帶。
+    /// 每次 yt-dlp 呼叫都前置這些旗標，讓 prod 能以「住宅 IP ＋ 已登入」身分抓需要的站。
+    /// </summary>
+    private string[] CommonArgs()
+    {
+        var args = new List<string>(4);
+        if (_proxy is not null)
+        {
+            args.Add("--proxy");
+            args.Add(_proxy);
+        }
+        if (_cookiesPath is not null)
+        {
+            args.Add("--cookies");
+            args.Add(_cookiesPath);
+        }
+        return args.ToArray();
     }
 
     /// <summary>
@@ -81,14 +116,14 @@ public sealed class YtDlpService
 
             // 1) 嘗試只抓字幕（含自動字幕），不下載影片。
             await RunAsync(
-                new[]
-                {
+                [
+                    .. CommonArgs(),
                     "--skip-download", "--write-subs", "--write-auto-subs",
                     "--sub-format", "vtt", "--sub-langs", SubLangs,
                     "--no-playlist", "--no-warnings",
                     "-o", Path.Combine(workDir, "sub.%(ext)s"),
                     url,
-                },
+                ],
                 workDir, cancellationToken, throwOnError: false);
 
             var vtt = Directory.GetFiles(workDir, "*.vtt").FirstOrDefault();
@@ -103,14 +138,14 @@ public sealed class YtDlpService
 
             // 2) 沒字幕 → 下載音訊並轉成 16kHz 單聲道 mp3（小、好送轉錄）。
             await RunAsync(
-                new[]
-                {
+                [
+                    .. CommonArgs(),
                     "-x", "--audio-format", "mp3",
                     "--postprocessor-args", "ffmpeg:-ar 16000 -ac 1",
                     "--no-playlist", "--no-warnings",
                     "-o", Path.Combine(workDir, "audio.%(ext)s"),
                     url,
-                },
+                ],
                 workDir, cancellationToken, throwOnError: true);
 
             var audio = Directory.GetFiles(workDir, "audio.*")
@@ -138,7 +173,7 @@ public sealed class YtDlpService
         try
         {
             var (output, _) = await RunAsync(
-                new[] { "--skip-download", "--no-playlist", "--no-warnings", "--print", "%(title)s", url },
+                [.. CommonArgs(), "--skip-download", "--no-playlist", "--no-warnings", "--print", "%(title)s", url],
                 Path.GetTempPath(), cancellationToken, throwOnError: false);
             var title = output.Trim().Split('\n').FirstOrDefault()?.Trim();
             return string.IsNullOrWhiteSpace(title) ? "未命名內容" : title;
