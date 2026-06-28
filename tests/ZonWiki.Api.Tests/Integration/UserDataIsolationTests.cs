@@ -929,5 +929,6 @@ public sealed class UserDataIsolationTests : IAsyncLifetime
         public Guid UserId => _userId;
         public string? Email => _email;
         public bool IsAuthenticated => true;
+        public string Source => "web";
     }
 }

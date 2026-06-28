@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using ZonWiki.Infrastructure.Persistence;
@@ -11,9 +12,11 @@ using ZonWiki.Infrastructure.Persistence;
 namespace ZonWiki.Infrastructure.Migrations
 {
     [DbContext(typeof(ZonWikiDbContext))]
-    partial class ZonWikiDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260627090440_AddActivityLogSource")]
+    partial class AddActivityLogSource
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -1956,10 +1959,6 @@ namespace ZonWiki.Infrastructure.Migrations
                         .HasColumnType("character varying(32)")
                         .HasColumnName("Note_Kind");
 
-                    b.Property<DateTime?>("LastOpenedDateTime")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("Note_LastOpenedDateTime");
-
                     b.Property<DateTime?>("PurgedDateTime")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("Note_PurgedDateTime");
@@ -3286,11 +3285,6 @@ namespace ZonWiki.Infrastructure.Migrations
                         .HasColumnType("character varying(255)")
                         .HasColumnName("User_GoogleSub");
 
-                    b.Property<string>("GroqApiKeyEncrypted")
-                        .HasMaxLength(1024)
-                        .HasColumnType("character varying(1024)")
-                        .HasColumnName("User_GroqApiKeyEncrypted");
-
                     b.Property<string>("PasswordHash")
                         .HasMaxLength(256)
                         .HasColumnType("character varying(256)")
@@ -3309,14 +3303,6 @@ namespace ZonWiki.Infrastructure.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("User_TimeZone");
-
-                    b.Property<string>("TranscriptionEngine")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(16)
-                        .HasColumnType("character varying(16)")
-                        .HasDefaultValue("gemini")
-                        .HasColumnName("User_TranscriptionEngine");
 
                     b.Property<DateTime>("UpdatedDateTime")
                         .HasColumnType("timestamp with time zone")

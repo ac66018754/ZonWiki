@@ -39,4 +39,17 @@ public interface INoteAiService
         string selectedText,
         string question,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// 通用文字生成：以給定的系統提示與使用者內容呼叫 AI，回傳完整文字結果。
+    /// 供「精煉成筆記」等需要自訂提示的流程使用（重用同一條 AI 供應者管線）。
+    /// </summary>
+    /// <param name="systemPrompt">系統提示（角色與輸出規範）。</param>
+    /// <param name="userContent">使用者內容（例如逐字稿）。</param>
+    /// <param name="cancellationToken">取消權杖。</param>
+    /// <returns>AI 產出的完整文字。</returns>
+    Task<string> GenerateAsync(
+        string systemPrompt,
+        string userContent,
+        CancellationToken cancellationToken);
 }

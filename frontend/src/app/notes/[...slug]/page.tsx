@@ -6,6 +6,7 @@ import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { enhanceCodeBlocks } from '@/lib/codeBlocks';
 import {
   getNote,
+  markNoteOpened,
   updateNote,
   deleteNote,
   listNoteComments,
@@ -267,6 +268,9 @@ export default function NotesDetailPage() {
           setEditContent(noteData.contentRaw);
           setEditCatIds((noteData.categories ?? []).map((c) => c.id));
           setEditTagIds((noteData.tags ?? []).map((t) => t.id));
+
+          // 記錄「最後打開時間」（供筆記清單依此排序；輕量、失敗靜默）。
+          markNoteOpened(noteData.id);
 
           // 載入留言
           const commentsList = await listNoteComments(noteData.id);

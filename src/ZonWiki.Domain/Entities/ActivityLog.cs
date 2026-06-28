@@ -35,4 +35,11 @@ public class ActivityLog : AuditableEntity, IUserOwned
     /// 動作當下該實體的標題 / 名稱（標題級摘要；節點/快速紀錄取首行片段，刻意不存完整內容）。
     /// </summary>
     public string Title { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 操作來源："web"（人類在瀏覽器以 Cookie 登入操作），或 API 權杖名稱
+    /// （例如 "Claude Code"、"ChatGPT"，表示由外部 AI 助理透過 API 權杖操作）。
+    /// 供首頁「AI 最近動作」區塊辨識「是哪個 AI、做了什麼」。預設 "web"。
+    /// </summary>
+    public string Source { get; set; } = "web";
 }

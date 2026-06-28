@@ -53,6 +53,19 @@ public class User : AuditableEntity
     public string? ShortcutsJson { get; set; }
 
     /// <summary>
+    /// 「精煉成筆記」的轉錄引擎偏好：
+    /// "gemini"（預設，用全站共用 Gemini，免額外金鑰；原生理解音訊）或
+    /// "groq"（用 Groq Whisper 轉錄，需使用者自填 <see cref="GroqApiKeyEncrypted"/>）。
+    /// </summary>
+    public string TranscriptionEngine { get; set; } = "gemini";
+
+    /// <summary>
+    /// 使用者自己的 Groq API 金鑰（加密儲存；僅當 <see cref="TranscriptionEngine"/> = "groq" 時使用）。
+    /// 與 AI 模型金鑰同樣用 ASP.NET Core Data Protection 加密；nullable＝未設定。
+    /// </summary>
+    public string? GroqApiKeyEncrypted { get; set; }
+
+    /// <summary>
     /// 導覽屬性：此使用者發表的留言清單。
     /// </summary>
     public ICollection<Comment> Comments { get; set; } = new List<Comment>();

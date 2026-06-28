@@ -1009,5 +1009,8 @@ public sealed class AskQueueServiceTests : IAsyncLifetime
             => _throwOnAsk is not null
                 ? Task.FromException<string>(_throwOnAsk)
                 : Task.FromResult(_answer);
+
+        public Task<string> GenerateAsync(string systemPrompt, string userContent, CancellationToken cancellationToken)
+            => Task.FromResult(_answer);
     }
 }

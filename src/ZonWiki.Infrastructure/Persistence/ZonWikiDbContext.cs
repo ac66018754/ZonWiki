@@ -31,6 +31,12 @@ public sealed class ZonWikiDbContext(
     public Guid CurrentUserId => _userIdOverride ?? _currentUser?.UserId ?? Guid.Empty;
 
     /// <summary>
+    /// 目前請求的操作來源："web"（人類在瀏覽器以 Cookie 操作）或 API 權杖名稱（外部 AI）。
+    /// 供活動紀錄攔截器標示「是誰/哪個 AI 做的」。無 HttpContext（背景/遷移）時為 "web"。
+    /// </summary>
+    public string CurrentSource => _currentUser?.Source ?? "web";
+
+    /// <summary>
     /// 設定背景工作的「目前使用者」覆寫。
     /// 必須在此 DbContext 的「第一次查詢之前」呼叫——因為使用者隔離過濾的 UserId 會在
     /// 模型首次建立時以常數烤進模型、並依此值快取，呼叫太晚將無效。

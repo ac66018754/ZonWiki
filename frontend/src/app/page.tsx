@@ -16,6 +16,8 @@ import {
   type TaskGroup,
 } from "@/lib/api";
 import { QuickLinksSection } from "@/components/QuickLinksSection";
+import { AiActivitySection } from "@/components/AiActivitySection";
+import { RefineInputSection } from "@/components/RefineInputSection";
 import { CaptureFilingModal } from "@/components/CaptureFilingModal";
 import { TaskListView } from "@/app/tasks/components/TaskListView";
 import { TaskEditorModal } from "@/app/tasks/components/TaskEditorModal";
@@ -743,6 +745,12 @@ export function HomePageClient({ user }: HomePageClientProps) {
 
         {/* 常用連結卡（分類 + 共用標籤） */}
         <QuickLinksSection links={data.quickLinks} onChanged={reloadHome} />
+
+        {/* 精煉成筆記：貼連結 → AI 整理成分類筆記 */}
+        <RefineInputSection />
+
+        {/* AI 最近動作（外部 AI 透過 MCP/權杖對知識庫做的 CRUD 軌跡） */}
+        <AiActivitySection />
 
         {/* 快速捕捉 */}
         <section className="home-section">

@@ -124,6 +124,8 @@ public sealed class ApiTokenAuthenticationHandler : AuthenticationHandler<Authen
                 new(ClaimTypes.Name, user.DisplayName),
                 // 標記此身分來自 API 權杖（供日後稽核/限制用）。
                 new("auth_method", "api_token"),
+                // 權杖名稱（例如 "Claude Code"）：寫入活動紀錄的來源，讓首頁能分辨是哪個 AI 操作。
+                new("token_name", apiToken.Name),
             };
 
             var identity = new ClaimsIdentity(claims, SchemeName);
