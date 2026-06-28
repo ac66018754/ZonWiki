@@ -21,10 +21,52 @@ public static class AskQueueEndpoints
         // GET /api/ask-queue - 查詢使用者的提問佇列
         var getQueue = app.MapGet("/api/ask-queue", GetQueueHandler);
 
+        // GET /api/ask-queue/{sessionId} - 查詢單筆完整明細（含完整 log，供「AI 處理佇列」頁診斷）
+        var getDetail = app.MapGet("/api/ask-queue/{sessionId:guid}", GetDetailHandler);
+
         // 要求驗證的端點
         if (authConfigured)
         {
             getQueue.RequireAuthorization();
+            getDetail.RequireAuthorization();
+        }
+    }
+
+    /// <summary>
+    /// 查詢目前使用者「單筆」AI 處理佇列的完整明細（含完整 PromptText、ErrorText 與逐則串流訊息）。
+    /// 找不到（或非本人）回 404。
+    /// </summary>
+    private static async Task<IResult> GetDetailHandler(
+        HttpContext http,
+        AskQueueService queueService,
+        ILogger<object> logger,
+        Guid sessionId,
+        CancellationToken ct = default)
+    {
+        var userId = ExtractUserId(http);
+        if (userId == Guid.Empty)
+        {
+            return Results.Json(
+                ApiResponse<AskQueueDetailDto>.Fail("Invalid user identity", 401),
+                statusCode: StatusCodes.Status401Unauthorized);
+        }
+
+        try
+        {
+            var detail = await queueService.GetDetailAsync(userId, sessionId, ct);
+            if (detail is null)
+            {
+                return Results.Json(
+                    ApiResponse<AskQueueDetailDto>.Fail("Not found", 404),
+                    statusCode: StatusCodes.Status404NotFound);
+            }
+
+            return Results.Ok(ApiResponse<AskQueueDetailDto>.Ok(detail));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to get ask-queue detail (userId={UserId}, sessionId={SessionId})", userId, sessionId);
+            return Results.StatusCode(500);
         }
     }
 

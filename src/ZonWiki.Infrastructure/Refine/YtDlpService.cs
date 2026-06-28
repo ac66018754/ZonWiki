@@ -1,6 +1,4 @@
 using System.Diagnostics;
-using System.Net;
-using System.Net.Sockets;
 using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
@@ -69,58 +67,69 @@ public sealed class YtDlpService
     /// <returns>擷取結果（呼叫端負責刪除 WorkDir）。</returns>
     public async Task<RefineExtractResult> ExtractAsync(string url, CancellationToken cancellationToken)
     {
-        await ValidateUrlAsync(url, cancellationToken);
+        await RefineUrlGuard.ValidateAsync(url, cancellationToken);
 
         var workDir = Path.Combine(Path.GetTempPath(), "zonwiki-refine", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(workDir);
 
-        // 取標題（快速、不下載）。
-        var title = await GetTitleAsync(url, cancellationToken);
-
-        // 1) 嘗試只抓字幕（含自動字幕），不下載影片。
-        await RunAsync(
-            new[]
-            {
-                "--skip-download", "--write-subs", "--write-auto-subs",
-                "--sub-format", "vtt", "--sub-langs", SubLangs,
-                "--no-playlist", "--no-warnings",
-                "-o", Path.Combine(workDir, "sub.%(ext)s"),
-                url,
-            },
-            workDir, cancellationToken, throwOnError: false);
-
-        var vtt = Directory.GetFiles(workDir, "*.vtt").FirstOrDefault();
-        if (vtt is not null)
+        // 成功時 workDir 由呼叫端負責清理；失敗（拋例外，例如無媒體而要退回文章抓取）時
+        // 這裡先把自己的暫存目錄刪掉，避免殘留空目錄累積。
+        try
         {
-            var text = CleanVtt(await File.ReadAllTextAsync(vtt, Encoding.UTF8, cancellationToken));
-            if (!string.IsNullOrWhiteSpace(text))
+            // 取標題（快速、不下載）。
+            var title = await GetTitleAsync(url, cancellationToken);
+
+            // 1) 嘗試只抓字幕（含自動字幕），不下載影片。
+            await RunAsync(
+                new[]
+                {
+                    "--skip-download", "--write-subs", "--write-auto-subs",
+                    "--sub-format", "vtt", "--sub-langs", SubLangs,
+                    "--no-playlist", "--no-warnings",
+                    "-o", Path.Combine(workDir, "sub.%(ext)s"),
+                    url,
+                },
+                workDir, cancellationToken, throwOnError: false);
+
+            var vtt = Directory.GetFiles(workDir, "*.vtt").FirstOrDefault();
+            if (vtt is not null)
             {
-                return new RefineExtractResult(RefineSourceKind.Text, title, text, null, workDir);
+                var text = CleanVtt(await File.ReadAllTextAsync(vtt, Encoding.UTF8, cancellationToken));
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    return new RefineExtractResult(RefineSourceKind.Text, title, text, null, workDir);
+                }
             }
-        }
 
-        // 2) 沒字幕 → 下載音訊並轉成 16kHz 單聲道 mp3（小、好送轉錄）。
-        await RunAsync(
-            new[]
+            // 2) 沒字幕 → 下載音訊並轉成 16kHz 單聲道 mp3（小、好送轉錄）。
+            await RunAsync(
+                new[]
+                {
+                    "-x", "--audio-format", "mp3",
+                    "--postprocessor-args", "ffmpeg:-ar 16000 -ac 1",
+                    "--no-playlist", "--no-warnings",
+                    "-o", Path.Combine(workDir, "audio.%(ext)s"),
+                    url,
+                },
+                workDir, cancellationToken, throwOnError: true);
+
+            var audio = Directory.GetFiles(workDir, "audio.*")
+                .FirstOrDefault(f => f.EndsWith(".mp3", StringComparison.OrdinalIgnoreCase))
+                ?? Directory.GetFiles(workDir, "audio.*").FirstOrDefault();
+
+            if (audio is null)
             {
-                "-x", "--audio-format", "mp3",
-                "--postprocessor-args", "ffmpeg:-ar 16000 -ac 1",
-                "--no-playlist", "--no-warnings",
-                "-o", Path.Combine(workDir, "audio.%(ext)s"),
-                url,
-            },
-            workDir, cancellationToken, throwOnError: true);
+                throw new InvalidOperationException("這個連結抓不到字幕、也下載不到音訊（可能有登入牆、DRM 或不支援）。");
+            }
 
-        var audio = Directory.GetFiles(workDir, "audio.*")
-            .FirstOrDefault(f => f.EndsWith(".mp3", StringComparison.OrdinalIgnoreCase))
-            ?? Directory.GetFiles(workDir, "audio.*").FirstOrDefault();
-
-        if (audio is null)
-        {
-            throw new InvalidOperationException("這個連結抓不到字幕、也下載不到音訊（可能有登入牆、DRM 或不支援）。");
+            return new RefineExtractResult(RefineSourceKind.Audio, title, null, audio, workDir);
         }
-
-        return new RefineExtractResult(RefineSourceKind.Audio, title, null, audio, workDir);
+        catch
+        {
+            try { Directory.Delete(workDir, recursive: true); }
+            catch (Exception cleanupEx) { _logger.LogWarning(cleanupEx, "清理 yt-dlp 暫存目錄失敗：{Dir}", workDir); }
+            throw;
+        }
     }
 
     /// <summary>取得標題（--print，不下載）。失敗則回退「未命名」。</summary>
@@ -178,80 +187,6 @@ public sealed class YtDlpService
         }
 
         return (stdout, stderr);
-    }
-
-    /// <summary>
-    /// SSRF 防護：只允許 http/https；阻擋 localhost、私有/迴路/連結本地 IP、雲端中繼資料端點。
-    /// 主機名稱會解析成 IP 再核對，避免指向內網（例如 GCP 中繼資料 169.254.169.254）。
-    /// </summary>
-    private static async Task ValidateUrlAsync(string url, CancellationToken cancellationToken)
-    {
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)
-            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
-        {
-            throw new ArgumentException("只接受 http/https 的網址。");
-        }
-
-        var host = uri.Host;
-        if (host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
-            || host.Equals("metadata.google.internal", StringComparison.OrdinalIgnoreCase)
-            || host.EndsWith(".local", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new ArgumentException("不允許指向內部主機的網址。");
-        }
-
-        IPAddress[] addresses;
-        if (IPAddress.TryParse(host, out var literal))
-        {
-            addresses = new[] { literal };
-        }
-        else
-        {
-            try
-            {
-                addresses = await Dns.GetHostAddressesAsync(host, cancellationToken);
-            }
-            catch
-            {
-                // 解析不到就讓 yt-dlp 自己去碰（多半是它支援、但 DNS 暫時失敗的站）。
-                return;
-            }
-        }
-
-        foreach (var ip in addresses)
-        {
-            if (IsPrivateOrReserved(ip))
-            {
-                throw new ArgumentException("不允許指向內部 / 私有網路的網址。");
-            }
-        }
-    }
-
-    /// <summary>判斷 IP 是否為迴路 / 私有 / 連結本地（含雲端中繼資料 169.254.169.254）。</summary>
-    private static bool IsPrivateOrReserved(IPAddress ip)
-    {
-        if (IPAddress.IsLoopback(ip))
-        {
-            return true;
-        }
-
-        if (ip.AddressFamily == AddressFamily.InterNetwork)
-        {
-            var b = ip.GetAddressBytes();
-            return b[0] == 10                                   // 10.0.0.0/8
-                || (b[0] == 172 && b[1] >= 16 && b[1] <= 31)    // 172.16.0.0/12
-                || (b[0] == 192 && b[1] == 168)                 // 192.168.0.0/16
-                || (b[0] == 169 && b[1] == 254)                 // 169.254.0.0/16（含中繼資料）
-                || b[0] == 0
-                || b[0] == 127;
-        }
-
-        if (ip.AddressFamily == AddressFamily.InterNetworkV6)
-        {
-            return ip.IsIPv6LinkLocal || ip.IsIPv6SiteLocal || ip.IsIPv6UniqueLocal;
-        }
-
-        return false;
     }
 
     /// <summary>

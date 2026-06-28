@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { refineUrl } from "@/lib/api";
+import { useRef, useState } from "react";
+import { refineUrl, refineUpload } from "@/lib/api";
 
 /**
  * 首頁「✨ 精煉成筆記」區塊。
@@ -14,6 +14,33 @@ export function RefineInputSection() {
   const [url, setUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  /** 上傳檔案大小上限（與後端一致：100MB）。 */
+  const MAX_UPLOAD_MB = 100;
+
+  const handleUpload = async (file: File) => {
+    if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
+      setMsg({ kind: "err", text: `檔案過大（上限 ${MAX_UPLOAD_MB}MB）。` });
+      return;
+    }
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await refineUpload(file);
+      if (r.ok) {
+        setMsg({ kind: "ok", text: "已上傳並加入處理佇列！正在轉錄並整理成筆記，可到「AI 處理中」看進度。" });
+      } else {
+        setMsg({ kind: "err", text: r.error ?? "上傳失敗，請稍後再試。" });
+      }
+    } catch {
+      setMsg({ kind: "err", text: "上傳失敗，請稍後再試。" });
+    } finally {
+      setBusy(false);
+      // 重置 input，讓「選同一個檔」也能再次觸發 onChange。
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -61,6 +88,31 @@ export function RefineInputSection() {
           {busy ? "送出中…" : "精煉成筆記"}
         </button>
       </form>
+
+      {/* 或：上傳檔案（給手機/電腦自己抓下來的 IG／影片／錄音檔；一律走 Groq 轉錄） */}
+      <div style={dividerRowStyle}>
+        <span style={dividerLineStyle} />
+        <span style={dividerTextStyle}>或上傳影音 / 錄音檔</span>
+        <span style={dividerLineStyle} />
+      </div>
+      <div style={{ display: "flex", gap: "var(--spacing-2)", alignItems: "center", flexWrap: "wrap" }}>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="audio/*,video/*"
+          disabled={busy}
+          aria-label="要精煉成筆記的音訊或影片檔"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) handleUpload(f);
+          }}
+          style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)", flex: 1, minWidth: 220 }}
+        />
+      </div>
+      <p style={{ ...hintStyle, margin: "var(--spacing-2) 0 0" }}>
+        上傳檔一律需轉錄，請先在「個人頁 → 精煉成筆記」設定 Groq 金鑰（免費）。上限 {MAX_UPLOAD_MB}MB。
+      </p>
+
       {msg && (
         <p
           style={{
@@ -113,4 +165,20 @@ const btnStyle: React.CSSProperties = {
   fontWeight: 600,
   fontSize: "var(--text-sm)",
   cursor: "pointer",
+};
+const dividerRowStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: "var(--spacing-2)",
+  margin: "var(--spacing-3) 0",
+};
+const dividerLineStyle: React.CSSProperties = {
+  flex: 1,
+  height: 1,
+  background: "var(--border-default)",
+};
+const dividerTextStyle: React.CSSProperties = {
+  fontSize: "var(--text-xs)",
+  color: "var(--text-tertiary)",
+  whiteSpace: "nowrap",
 };

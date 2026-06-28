@@ -80,12 +80,18 @@ public static class DependencyInjection
         services.AddScoped<AiModelResolver>();
         services.AddScoped<AiProviderFactory>();
 
-        // 「精煉成筆記」：yt-dlp 擷取 + OpenAI 相容轉錄（Groq）。
+        // 「精煉成筆記」：yt-dlp 擷取 + 文章抓取 + OpenAI 相容轉錄（Groq）。
         services.AddScoped<Refine.ITranscriptionService, Refine.OpenAiCompatibleTranscriptionService>();
+        services.AddScoped<Refine.ArticleFetchService>();
         var ytDlpPath = configuration["Refine:YtDlpPath"] ?? "yt-dlp";
         services.AddScoped(sp => new Refine.YtDlpService(
             sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<Refine.YtDlpService>>(),
             ytDlpPath));
+        // 上傳檔案精煉用：以 ffmpeg 把上傳的影音轉成 16kHz 單聲道 mp3 再送轉錄。
+        var ffmpegPath = configuration["Refine:FfmpegPath"] ?? "ffmpeg";
+        services.AddScoped(sp => new Refine.FfmpegAudioService(
+            sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<Refine.FfmpegAudioService>>(),
+            ffmpegPath));
 
         // 預設 AI 供應者：優先用 Fake（測試）、否則用本機 claude CLI
         var aiProviderType = configuration["Ai:Provider"] ?? "Default";

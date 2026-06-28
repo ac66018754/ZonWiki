@@ -199,6 +199,76 @@ public sealed class AskQueueService
     }
 
     /// <summary>
+    /// 查詢「單筆」AI 處理佇列的完整明細（含完整 PromptText、ErrorText 與逐則串流訊息／log）。
+    /// 供「AI 處理佇列」頁面診斷失敗原因。僅回傳屬於該使用者者；找不到則回 null。
+    /// </summary>
+    /// <param name="userId">查詢的使用者識別碼。</param>
+    /// <param name="sessionId">工作階段識別碼。</param>
+    /// <param name="ct">取消權杖。</param>
+    /// <returns>完整明細 DTO；不存在或非本人時為 null。</returns>
+    public async Task<AskQueueDetailDto?> GetDetailAsync(
+        Guid userId,
+        Guid sessionId,
+        CancellationToken ct = default)
+    {
+        var session = await _db.AiSession
+            .Where(s => s.Id == sessionId && s.UserId == userId && s.ValidFlag)
+            .FirstOrDefaultAsync(ct);
+
+        if (session is null)
+        {
+            return null;
+        }
+
+        // 來源筆記 / 答案筆記的 slug、title（可能已刪除；只查本人）。
+        var sourceNote = session.NoteId is null
+            ? null
+            : await _db.Note
+                .Where(n => n.Id == session.NoteId && n.ValidFlag && n.UserId == userId)
+                .Select(n => new { n.Slug, n.Title })
+                .FirstOrDefaultAsync(ct);
+
+        var answerNote = session.AnswerNoteId is null
+            ? null
+            : await _db.Note
+                .Where(n => n.Id == session.AnswerNoteId && n.ValidFlag && n.UserId == userId)
+                .Select(n => new { n.Slug, n.Title })
+                .FirstOrDefaultAsync(ct);
+
+        // 逐則串流訊息（完整 log）：依序號排序；只取本人的訊息（隔離冗餘核對）。
+        var messages = await _db.AiMessage
+            .Where(m => m.SessionId == sessionId && m.UserId == userId && m.ValidFlag)
+            .OrderBy(m => m.SeqNo)
+            .Select(m => new AiQueueMessageDto(
+                m.SeqNo,
+                m.Role,
+                m.Content,
+                m.CreatedDateTime))
+            .ToListAsync(ct);
+
+        return new AskQueueDetailDto(
+            SessionId: session.Id,
+            Status: session.Status,
+            Kind: session.Kind,
+            QuestionText: session.QuestionText,
+            AnchorText: session.AnchorText,
+            PromptText: session.PromptText,
+            ErrorText: session.ErrorText,
+            TokenUsageJson: session.TokenUsageJson,
+            NoteId: session.NoteId,
+            NoteSlug: sourceNote?.Slug,
+            NoteTitle: sourceNote?.Title,
+            AnswerNoteId: session.AnswerNoteId,
+            AnswerNoteSlug: answerNote?.Slug,
+            MarkId: session.MarkId,
+            CanvasId: session.CanvasId,
+            AskNodeId: session.AskNodeId,
+            CreatedDateTime: session.CreatedDateTime,
+            UpdatedDateTime: session.UpdatedDateTime,
+            Messages: messages);
+    }
+
+    /// <summary>
     /// 執行框選提問的完整流程：建立 Running AiSession → 呼叫 AI → 成功時建答案筆記/錨點/更新為 Completed
     /// → 失敗時記錄 ErrorText/更新為 Failed（不建答案筆記）。
     /// </summary>

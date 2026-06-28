@@ -819,6 +819,36 @@ export async function refineUrl(url: string): Promise<{ ok: boolean; error?: str
   return { ok: r.success, error: r.success ? undefined : r.error ?? undefined };
 }
 
+/**
+ * 上傳音訊／影片檔精煉成筆記（multipart/form-data）。
+ *
+ * 不走 fetchJson（它固定送 application/json）；改用 FormData，讓瀏覽器自帶 multipart boundary。
+ * 適合「手機/電腦自己抓下來的 IG/影片檔」：上傳後 ZonWiki 轉錄＋整理成分類筆記。
+ * @param file 使用者選的音訊/影片檔
+ * @returns ok=是否已加入處理佇列；error=失敗訊息
+ */
+export async function refineUpload(file: File): Promise<{ ok: boolean; error?: string }> {
+  const fd = new FormData();
+  fd.append("file", file);
+  try {
+    const res = await fetch(`${apiBase()}/api/refine/upload`, {
+      method: "POST",
+      credentials: "include",
+      body: fd,
+    });
+    if (res.status === 401 && typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("zonwiki:unauthorized"));
+    }
+    const body = (await res.json().catch(() => null)) as { success?: boolean; error?: string } | null;
+    if (res.ok && body?.success) {
+      return { ok: true };
+    }
+    return { ok: false, error: body?.error ?? `上傳失敗（${res.status}）` };
+  } catch {
+    return { ok: false, error: "上傳失敗，請稍後再試。" };
+  }
+}
+
 // ============================================================================
 // API 方法 — Note (筆記)
 // ============================================================================
@@ -2094,13 +2124,19 @@ export async function beautifyNote(
  * 注意：後端使用 .NET System.Text.Json 預設的 camelCase 命名（PascalCase property 轉 camelCase JSON）。
  * 因此 JSON 中是 camelCase，但 TypeScript interface 仍使用 camelCase 以符合習慣。
  */
+/** AI 處理佇列的工作種類。 */
+export type AskQueueKind = 'floatingnote' | 'node' | 'beautify' | 'reformat' | 'refine';
+
+/** AI 處理佇列的狀態。 */
+export type AskQueueStatus = 'Running' | 'Completed' | 'Failed';
+
 export interface AskQueueItemDto {
   /** 工作階段 ID */
   sessionId: string;
   /** 狀態："Running" | "Completed" | "Failed" */
-  status: 'Running' | 'Completed' | 'Failed';
-  /** 提問種類："floatingnote" | "node" */
-  kind: 'floatingnote' | 'node';
+  status: AskQueueStatus;
+  /** 提問種類 */
+  kind: AskQueueKind;
   /** 提問文字（來源框選提問內容） */
   questionText: string | null;
   /** 框選片段文字 */
@@ -2134,8 +2170,8 @@ export interface AskQueueItemDto {
  * @param limit 返回筆數（預設 50，上限 200）
  */
 export async function getAskQueue(params?: {
-  status?: 'Running' | 'Completed' | 'Failed';
-  kind?: 'floatingnote' | 'node';
+  status?: AskQueueStatus;
+  kind?: AskQueueKind;
   limit?: number;
 }): Promise<AskQueueItemDto[]> {
   const query = new URLSearchParams();
@@ -2146,6 +2182,61 @@ export async function getAskQueue(params?: {
   const path = `/api/ask-queue${query.toString() ? `?${query.toString()}` : ''}`;
   const r = await fetchJson<AskQueueItemDto[]>(path);
   return r.success ? r.data ?? [] : [];
+}
+
+/**
+ * AI 處理佇列明細中的「單則串流訊息」（完整 log 的一行）。
+ */
+export interface AiQueueMessageDto {
+  /** 串流序號（排序用） */
+  seqNo: number;
+  /** 角色 / 事件型別（assistant / result / error 等） */
+  role: string;
+  /** 訊息文字內容 */
+  content: string;
+  /** 建立時間 (UTC ISO 字串) */
+  createdDateTime: string;
+}
+
+/**
+ * AI 處理佇列「單筆完整明細」（含完整 prompt、錯誤與逐則 log）。
+ */
+export interface AskQueueDetailDto {
+  sessionId: string;
+  status: AskQueueStatus;
+  kind: AskQueueKind;
+  questionText: string | null;
+  anchorText: string | null;
+  /** 實際送給 AI 的完整 prompt（除錯用） */
+  promptText: string;
+  /** 失敗訊息（Failed 時有值） */
+  errorText: string | null;
+  /** token 用量 JSON 字串 */
+  tokenUsageJson: string;
+  noteId?: string | null;
+  noteSlug?: string | null;
+  noteTitle?: string | null;
+  answerNoteId?: string | null;
+  answerNoteSlug?: string | null;
+  markId?: string | null;
+  canvasId?: string | null;
+  askNodeId?: string | null;
+  /** 建立時間 (UTC ISO 字串) */
+  createdDateTime: string;
+  /** 最後更新時間 (UTC ISO 字串；完成／失敗時間) */
+  updatedDateTime: string;
+  /** 逐則串流訊息（完整 log；依序號排序） */
+  messages: AiQueueMessageDto[];
+}
+
+/**
+ * 取得單筆 AI 處理佇列的完整明細（含完整 log，供「AI 處理佇列」頁診斷）。
+ * @param sessionId 工作階段 ID
+ * @returns 明細；找不到（或非本人）時為 null。
+ */
+export async function getAskQueueDetail(sessionId: string): Promise<AskQueueDetailDto | null> {
+  const r = await fetchJson<AskQueueDetailDto>(`/api/ask-queue/${encodeURIComponent(sessionId)}`);
+  return r.success ? r.data ?? null : null;
 }
 
 // ============================================================================

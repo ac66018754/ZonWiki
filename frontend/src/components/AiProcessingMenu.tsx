@@ -122,6 +122,8 @@ export function AiProcessingMenu() {
         return '美化筆記';
       case 'reformat':
         return '整理排版';
+      case 'refine':
+        return '精煉成筆記';
       case 'floatingnote':
         return '框選提問';
       default:
@@ -129,16 +131,10 @@ export function AiProcessingMenu() {
     }
   };
 
-  // 點項目導航：node → 畫布主頁；其餘筆記類（框選提問／美化／排版）→ 來源筆記（有錨點就捲到框選處）。
+  // 點項目導航：一律導到「AI 處理佇列」頁面並預選該筆，可在那裡看完整 log（含失敗原因）、
+  // 再由明細頁的「前往來源」跳到畫布／來源筆記。
   const handleItemClick = (item: AskQueueItemDto) => {
-    if (item.kind === 'node') {
-      router.push('/canvas');
-    } else if (item.noteSlug) {
-      const url = `/notes/${encodeURIComponent(item.noteSlug)}${
-        item.markId ? `?mark=${encodeURIComponent(item.markId)}` : ''
-      }`;
-      router.push(url);
-    }
+    router.push(`/ai-queue?session=${encodeURIComponent(item.sessionId)}`);
     setOpen(false);
   };
 
@@ -206,7 +202,7 @@ export function AiProcessingMenu() {
               }}
             >
               <span style={{ fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--text-primary)' }}>
-                AI 提問佇列{runningCount > 0 ? `（進行中 ${runningCount}）` : ''}
+                AI 處理佇列{runningCount > 0 ? `（進行中 ${runningCount}）` : ''}
               </span>
               <button
                 onClick={fetchQueue}
@@ -240,7 +236,8 @@ export function AiProcessingMenu() {
             ) : (
               items.map((item) => {
                 const badge = statusBadge(item.status);
-                const clickable = item.kind === 'node' ? true : !!item.noteSlug;
+                // 一律可點：導到「AI 處理佇列」明細頁（不再依來源是否存在而禁用）。
+                const clickable = true;
                 const sourceTitle =
                   item.noteTitle ?? item.noteSlug ?? (item.kind === 'node' ? '開問啦畫布' : '(未知筆記)');
                 const question = item.questionText || item.anchorText || kindLabel(item.kind);
@@ -310,6 +307,31 @@ export function AiProcessingMenu() {
                 );
               })
             )}
+
+            {/* footer：開啟完整「AI 處理佇列」頁（可按類別篩選、看完整 log） */}
+            <button
+              onClick={() => {
+                router.push('/ai-queue');
+                setOpen(false);
+              }}
+              style={{
+                display: 'block',
+                width: '100%',
+                textAlign: 'center',
+                padding: 'var(--spacing-3)',
+                background: 'transparent',
+                border: 'none',
+                borderTop: '1px solid var(--border-default)',
+                color: 'var(--accent-primary, #6366f1)',
+                fontSize: 'var(--text-sm)',
+                fontWeight: 600,
+                cursor: 'pointer',
+                position: 'sticky',
+                bottom: 0,
+              }}
+            >
+              開啟 AI 處理佇列 →
+            </button>
           </div>
         </>
       )}
