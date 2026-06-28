@@ -288,6 +288,8 @@ public sealed record AskQueueItemDto(
 /// <param name="PromptText">實際送給 AI 的完整 prompt（除錯用）。</param>
 /// <param name="ErrorText">失敗訊息（Failed 時有值；可空）。</param>
 /// <param name="TokenUsageJson">token 用量 JSON 字串。</param>
+/// <param name="AiProvider">這次實際使用的 AI 供應者（可空；例如 "Groq"、"共用預設（Gemini）"）。</param>
+/// <param name="AiModelId">這次實際使用的模型代號（可空；例如 "llama-3.3-70b-versatile"）。</param>
 /// <param name="NoteId">來源筆記識別碼（可空）。</param>
 /// <param name="NoteSlug">來源筆記 slug（供導航；null 若不存）。</param>
 /// <param name="NoteTitle">來源筆記標題（null 若不存）。</param>
@@ -308,6 +310,8 @@ public sealed record AskQueueDetailDto(
     string PromptText,
     string? ErrorText,
     string TokenUsageJson,
+    string? AiProvider,
+    string? AiModelId,
     Guid? NoteId,
     string? NoteSlug,
     string? NoteTitle,

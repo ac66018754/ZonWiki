@@ -687,9 +687,17 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
     );
   }
 
-  // 首頁、開問啦、垃圾桶：桌機隱藏側欄（這些頁面是滿版內容）；
-  // 手機斷點則作為抽屜出現，僅提供區段導覽（讓手機仍能在各區段間切換）。
-  if (pathname === "/" || pathname === "/canvas" || pathname === "/trash") {
+  // 只有「筆記相關頁面」才顯示左側的「筆記分類 / 標籤」側欄：
+  //   - /notes、/notes/...（清單、詳情、關係圖）
+  //   - /a/...（文章閱讀，內容即筆記）
+  // 其餘所有頁面（首頁、開問啦、垃圾桶、AI 處理佇列，以及「未來任何新頁」）桌機一律隱藏側欄、
+  // 手機作為區段導覽抽屜。這樣新頁不會再「預設」掉進下方的筆記側欄。
+  // （/tasks 與 /profile* 已於上方各自 return，不會走到這裡。）
+  const isNotesArea =
+    pathname === "/notes" ||
+    pathname.startsWith("/notes/") ||
+    pathname.startsWith("/a/");
+  if (!isNotesArea) {
     return (
       <aside id="app-sidebar" className="sidebar sidebar--hidden" role="complementary">
         <MobileSectionNav />

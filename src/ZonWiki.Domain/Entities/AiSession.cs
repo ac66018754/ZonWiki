@@ -78,6 +78,17 @@ public class AiSession : AuditableEntity, IUserOwned
     public string TokenUsageJson { get; set; } = "{}";
 
     /// <summary>
+    /// 這次工作實際使用的「AI 供應者」標示（可空；例如 "Groq"、"Gemini（共用預設）"、"Claude CLI"）。
+    /// 供使用者在「AI 處理佇列」看出是哪家提供商，失敗時較好回報問題。
+    /// </summary>
+    public string? AiProvider { get; set; }
+
+    /// <summary>
+    /// 這次工作實際使用的「模型代號」（可空；例如 "llama-3.3-70b-versatile"、"gemini-flash-lite"）。
+    /// </summary>
+    public string? AiModelId { get; set; }
+
+    /// <summary>
     /// 此次提問串流出的訊息集合（導覽屬性）。
     /// </summary>
     public ICollection<AiMessage> Messages { get; set; } = new List<AiMessage>();

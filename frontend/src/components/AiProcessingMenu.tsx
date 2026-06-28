@@ -6,9 +6,6 @@ import type { AskQueueItemDto } from '@/lib/api';
 import { getAskQueue } from '@/lib/api';
 import { AI_QUEUE_CHANGED_EVENT } from '@/lib/aiQueue';
 
-/** 輪詢間隔（毫秒）：定時更新「進行中」數字（事件驅動為主，輪詢為保險，例如畫布提問）。 */
-const POLL_INTERVAL_MS = 6000;
-
 /**
  * Header 上的「AI 處理中」下拉選單。
  *
@@ -40,10 +37,10 @@ export function AiProcessingMenu() {
     }
   }, []);
 
-  // 初次載入 + 定時輪詢 + 監聽「AI 佇列變動」事件（觸發/完成 AI 動作時即時重抓）。
+  // 初次載入抓一次 + 監聽「AI 佇列變動」事件（觸發/完成 AI 動作時即時重抓）。
+  // 已「移除定時輪詢」（避免長時間對 VM 持續打 DB）；改為「初次載入 + 展開時 + AI 動作事件」才抓。
   useEffect(() => {
     fetchQueue();
-    const timer = setInterval(fetchQueue, POLL_INTERVAL_MS);
     // 事件驅動即時更新：AI 動作觸發/完成時會派發 AI_QUEUE_CHANGED_EVENT。
     // 觸發瞬間伺服器端的 Running 紀錄可能還沒建好，故「立刻 + 稍後」各補抓一次。
     const onChanged = () => {
@@ -52,7 +49,6 @@ export function AiProcessingMenu() {
     };
     window.addEventListener(AI_QUEUE_CHANGED_EVENT, onChanged);
     return () => {
-      clearInterval(timer);
       window.removeEventListener(AI_QUEUE_CHANGED_EVENT, onChanged);
     };
   }, [fetchQueue]);

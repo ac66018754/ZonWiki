@@ -2213,6 +2213,10 @@ export interface AskQueueDetailDto {
   errorText: string | null;
   /** token 用量 JSON 字串 */
   tokenUsageJson: string;
+  /** 這次實際使用的 AI 供應者（例如 "Groq"、"共用預設（Gemini）"） */
+  aiProvider?: string | null;
+  /** 這次實際使用的模型代號（例如 "llama-3.3-70b-versatile"） */
+  aiModelId?: string | null;
   noteId?: string | null;
   noteSlug?: string | null;
   noteTitle?: string | null;

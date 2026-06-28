@@ -24,11 +24,20 @@ public sealed class RefineService
     private readonly ITranscriptionService _transcription;
     private readonly INoteAiService _noteAi;
     private readonly AiModelResolver _keyResolver;
+    private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<RefineService> _logger;
 
-    /// <summary>Groq 轉錄端點與模型（OpenAI 相容）。</summary>
+    /// <summary>Groq 端點（OpenAI 相容；轉錄與聊天共用同一把金鑰）。</summary>
     private const string GroqBaseUrl = "https://api.groq.com/openai/v1";
+
+    /// <summary>Groq 轉錄模型。</summary>
     private const string GroqModel = "whisper-large-v3-turbo";
+
+    /// <summary>Groq 聊天（整理筆記）模型——擅長照指示輸出結構化 JSON。</summary>
+    private const string GroqChatModel = "llama-3.3-70b-versatile";
+
+    /// <summary>整理逾時秒數（給 Groq 聊天串流）。</summary>
+    private const int GroqChatTimeoutSeconds = 180;
 
     /// <summary>
     /// 給 AI 的系統提示：依內容類型整理成結構化筆記，並以嚴格 JSON 輸出（供程式解析後建立筆記）。
@@ -56,6 +65,7 @@ public sealed class RefineService
         ITranscriptionService transcription,
         INoteAiService noteAi,
         AiModelResolver keyResolver,
+        IHttpClientFactory httpClientFactory,
         ILogger<RefineService> logger)
     {
         _db = db;
@@ -65,6 +75,7 @@ public sealed class RefineService
         _transcription = transcription;
         _noteAi = noteAi;
         _keyResolver = keyResolver;
+        _httpClientFactory = httpClientFactory;
         _logger = logger;
     }
 
@@ -113,7 +124,7 @@ public sealed class RefineService
             }
 
             // 3)+4) AI 分類結構化 → 建立分類筆記（與「上傳檔案精煉」共用同一段核心）。
-            var note = await RefineTranscriptToNoteAsync(userId, title, transcript, url, cancellationToken);
+            var note = await RefineTranscriptToNoteAsync(user, session, title, transcript, url, cancellationToken);
 
             // 5) 標記完成（連結答案筆記）。
             if (session is not null)
@@ -188,7 +199,7 @@ public sealed class RefineService
             var fallbackTitle = Path.GetFileNameWithoutExtension(displayName);
             if (string.IsNullOrWhiteSpace(fallbackTitle)) fallbackTitle = "上傳的內容";
             var sourceLabel = $"上傳檔案：{displayName}";
-            var note = await RefineTranscriptToNoteAsync(userId, fallbackTitle, transcript, sourceLabel, cancellationToken);
+            var note = await RefineTranscriptToNoteAsync(user, session, fallbackTitle, transcript, sourceLabel, cancellationToken);
 
             // 5) 標記完成（連結答案筆記）。
             if (session is not null)
@@ -242,7 +253,8 @@ public sealed class RefineService
     /// <param name="cancellationToken">取消權杖。</param>
     /// <returns>建立好的筆記。</returns>
     private async Task<Note> RefineTranscriptToNoteAsync(
-        Guid userId,
+        User user,
+        AiSession? session,
         string title,
         string transcript,
         string sourceLabel,
@@ -257,13 +269,83 @@ public sealed class RefineService
             transcript = transcript[..maxChars] + "\n\n[已截斷：內容超過字數上限，以上僅為前段]";
         }
 
-        // AI 分類 + 結構化（回傳 JSON）。
         var userPrompt = $"標題：{title}\n來源：{sourceLabel}\n\n內容：\n{transcript}";
-        var aiOutput = await _noteAi.GenerateAsync(RefineSystemPrompt, userPrompt, cancellationToken);
-        var parsed = ParseAiOutput(aiOutput, fallbackTitle: title, sourceLabel: sourceLabel);
 
-        // 建立分類筆記。
-        return await CreateNoteAsync(userId, parsed, sourceLabel, cancellationToken);
+        // AI 來源選擇：使用者有設定 Groq 金鑰 → 用 Groq（OpenAI 相容聊天）整理，
+        // 不依賴可能掛掉的「共用預設 Gemini relay」；否則退回共用預設模型。
+        // 不論成功失敗，都把實際使用的「供應者 / 模型」記到 AiSession，供佇列顯示是哪家提供商。
+        var groqKey = _keyResolver.ResolveApiKey(user.GroqApiKeyEncrypted);
+        string aiOutput;
+        if (!string.IsNullOrEmpty(groqKey))
+        {
+            StampProvider(session, "Groq", GroqChatModel);
+            aiOutput = await GenerateViaGroqAsync(groqKey, RefineSystemPrompt, userPrompt, cancellationToken);
+        }
+        else
+        {
+            StampProvider(session, "共用預設（Gemini）", null);
+            aiOutput = await _noteAi.GenerateAsync(RefineSystemPrompt, userPrompt, cancellationToken);
+        }
+
+        var parsed = ParseAiOutput(aiOutput, fallbackTitle: title, sourceLabel: sourceLabel);
+        return await CreateNoteAsync(user.Id, parsed, sourceLabel, cancellationToken);
+    }
+
+    /// <summary>
+    /// 記錄這次工作實際使用的「AI 供應者 / 模型」到 AiSession（供「AI 處理佇列」顯示是哪家提供商）。
+    /// 只設值不另存——呼叫端在完成/失敗時的 SaveChanges 會一併持久化（失敗也看得到用了哪家）。
+    /// </summary>
+    private static void StampProvider(AiSession? session, string provider, string? modelId)
+    {
+        if (session is null) return;
+        session.AiProvider = provider;
+        session.AiModelId = modelId;
+    }
+
+    /// <summary>
+    /// 以 Groq（OpenAI 相容聊天端點）整理筆記：串流累積完整輸出。失敗（端點錯誤）轉成例外往上拋。
+    /// </summary>
+    private async Task<string> GenerateViaGroqAsync(
+        string groqKey,
+        string systemPrompt,
+        string userContent,
+        CancellationToken cancellationToken)
+    {
+        var http = _httpClientFactory.CreateClient("ai");
+        var provider = new OpenAiCompatibleStreamingProvider(
+            http, GroqBaseUrl, groqKey, GroqChatModel, GroqChatTimeoutSeconds);
+
+        var accumulated = new System.Text.StringBuilder();
+        string? completed = null;
+        string? error = null;
+
+        await foreach (var evt in provider.StreamAsync(
+            prompt: userContent,
+            resumeSessionId: null,
+            model: GroqChatModel,
+            systemPrompt: systemPrompt,
+            cancellationToken: cancellationToken))
+        {
+            switch (evt.Type)
+            {
+                case AiStreamEventType.Delta:
+                    accumulated.Append(evt.Text);
+                    break;
+                case AiStreamEventType.Completed:
+                    completed = evt.Text;
+                    break;
+                case AiStreamEventType.Error:
+                    error = evt.Text;
+                    break;
+            }
+        }
+
+        if (error is not null)
+        {
+            throw new InvalidOperationException($"AI 轉換失敗（Groq）：{error}");
+        }
+
+        return !string.IsNullOrEmpty(completed) ? completed : accumulated.ToString();
     }
 
     /// <summary>

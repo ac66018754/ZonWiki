@@ -255,6 +255,8 @@ public sealed class AskQueueService
             PromptText: session.PromptText,
             ErrorText: session.ErrorText,
             TokenUsageJson: session.TokenUsageJson,
+            AiProvider: session.AiProvider,
+            AiModelId: session.AiModelId,
             NoteId: session.NoteId,
             NoteSlug: sourceNote?.Slug,
             NoteTitle: sourceNote?.Title,
