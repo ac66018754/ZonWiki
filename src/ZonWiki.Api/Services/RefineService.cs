@@ -20,6 +20,7 @@ public sealed class RefineService
     private readonly ZonWikiDbContext _db;
     private readonly YtDlpService _ytDlp;
     private readonly ArticleFetchService _articleFetch;
+    private readonly FfmpegAudioService _ffmpeg;
     private readonly ITranscriptionService _transcription;
     private readonly INoteAiService _noteAi;
     private readonly AiModelResolver _keyResolver;
@@ -51,6 +52,7 @@ public sealed class RefineService
         ZonWikiDbContext db,
         YtDlpService ytDlp,
         ArticleFetchService articleFetch,
+        FfmpegAudioService ffmpeg,
         ITranscriptionService transcription,
         INoteAiService noteAi,
         AiModelResolver keyResolver,
@@ -59,6 +61,7 @@ public sealed class RefineService
         _db = db;
         _ytDlp = ytDlp;
         _articleFetch = articleFetch;
+        _ffmpeg = ffmpeg;
         _transcription = transcription;
         _noteAi = noteAi;
         _keyResolver = keyResolver;
@@ -109,20 +112,8 @@ public sealed class RefineService
                 throw new InvalidOperationException("沒有取得任何可整理的文字內容。");
             }
 
-            // 逐字稿過長時截斷（保護 prompt 長度；多數模型上下文足夠，但仍設上限）。
-            const int maxChars = 40000;
-            if (transcript.Length > maxChars)
-            {
-                transcript = transcript[..maxChars];
-            }
-
-            // 3) AI 分類 + 結構化（回傳 JSON）。
-            var userPrompt = $"標題：{title}\n來源：{url}\n\n內容：\n{transcript}";
-            var aiOutput = await _noteAi.GenerateAsync(RefineSystemPrompt, userPrompt, cancellationToken);
-            var parsed = ParseAiOutput(aiOutput, fallbackTitle: title, sourceUrl: url);
-
-            // 4) 建立分類筆記。
-            var note = await CreateNoteAsync(userId, parsed, url, cancellationToken);
+            // 3)+4) AI 分類結構化 → 建立分類筆記（與「上傳檔案精煉」共用同一段核心）。
+            var note = await RefineTranscriptToNoteAsync(userId, title, transcript, url, cancellationToken);
 
             // 5) 標記完成（連結答案筆記）。
             if (session is not null)
@@ -159,6 +150,123 @@ public sealed class RefineService
     }
 
     /// <summary>
+    /// 從「使用者上傳的音訊／影片檔」精煉成筆記：ffmpeg 轉 16kHz 單聲道 mp3 → 轉錄 → AI 整理分類 → 建立筆記。
+    /// 上傳檔一律無字幕，故必須在個人頁把轉錄引擎設為 Groq。背景執行；以 AiSession 追蹤進度。
+    /// 呼叫端須在背景子範圍中先 <c>db.SetCurrentUserId(userId)</c> 再解析本服務。
+    /// </summary>
+    /// <param name="userId">使用者識別碼。</param>
+    /// <param name="uploadFilePath">已存到伺服器暫存區的上傳檔路徑（產生的檔名；本方法負責用完刪除）。</param>
+    /// <param name="displayName">使用者原始檔名（僅供標題／來源顯示；不用於檔案系統路徑）。</param>
+    /// <param name="sessionId">追蹤用的 AiSession 識別碼（呼叫端已建立 Running 列）。</param>
+    /// <param name="cancellationToken">取消權杖。</param>
+    public async Task ExecuteFromFileAsync(
+        Guid userId,
+        string uploadFilePath,
+        string displayName,
+        Guid sessionId,
+        CancellationToken cancellationToken)
+    {
+        var session = await _db.AiSession.FirstOrDefaultAsync(s => s.Id == sessionId, cancellationToken);
+        string? workDir = null;
+        try
+        {
+            var user = await _db.User.FirstOrDefaultAsync(u => u.Id == userId, cancellationToken)
+                ?? throw new InvalidOperationException("使用者不存在。");
+
+            // 1) ffmpeg 把上傳檔（音訊或影片）轉成 16kHz 單聲道 mp3。
+            workDir = Path.Combine(Path.GetTempPath(), "zonwiki-refine", Guid.NewGuid().ToString("N"));
+            var mp3Path = await _ffmpeg.ExtractTo16kMonoMp3Async(uploadFilePath, workDir, cancellationToken);
+
+            // 2) 轉錄（上傳檔一律需要轉錄 → 需 Groq）。
+            var transcript = await TranscribeAudioAsync(user, mp3Path, cancellationToken);
+            if (string.IsNullOrWhiteSpace(transcript))
+            {
+                throw new InvalidOperationException("這個檔案轉錄不出任何文字（可能沒有語音內容）。");
+            }
+
+            // 3)+4) AI 分類結構化 → 建立分類筆記。標題以原始檔名為後備（AI 會給更好的標題）。
+            var fallbackTitle = Path.GetFileNameWithoutExtension(displayName);
+            if (string.IsNullOrWhiteSpace(fallbackTitle)) fallbackTitle = "上傳的內容";
+            var sourceLabel = $"上傳檔案：{displayName}";
+            var note = await RefineTranscriptToNoteAsync(userId, fallbackTitle, transcript, sourceLabel, cancellationToken);
+
+            // 5) 標記完成（連結答案筆記）。
+            if (session is not null)
+            {
+                AskQueueService.ApplyCompleted(session, note.Id);
+                await _db.SaveChangesAsync(cancellationToken);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "上傳檔案精煉失敗（userId={UserId}, file={File}）", userId, displayName);
+            if (session is not null)
+            {
+                try
+                {
+                    AskQueueService.ApplyFailed(session, ex.Message);
+                    await _db.SaveChangesAsync(cancellationToken);
+                }
+                catch (Exception logEx)
+                {
+                    _logger.LogError(logEx, "更新上傳精煉失敗狀態時又出錯");
+                }
+            }
+        }
+        finally
+        {
+            // 清理：上傳暫存檔 + ffmpeg 工作目錄。
+            try
+            {
+                if (File.Exists(uploadFilePath)) File.Delete(uploadFilePath);
+            }
+            catch (Exception cleanupEx)
+            {
+                _logger.LogWarning(cleanupEx, "清理上傳暫存檔失敗：{Path}", uploadFilePath);
+            }
+            if (workDir is not null && Directory.Exists(workDir))
+            {
+                try { Directory.Delete(workDir, recursive: true); }
+                catch (Exception cleanupEx) { _logger.LogWarning(cleanupEx, "清理精煉暫存目錄失敗：{Dir}", workDir); }
+            }
+        }
+    }
+
+    /// <summary>
+    /// 精煉核心（URL 與上傳檔共用）：截斷過長逐字稿 → AI 分類結構化（JSON）→ 解析 → 建立分類筆記。
+    /// </summary>
+    /// <param name="userId">使用者識別碼。</param>
+    /// <param name="title">後備標題（AI 沒給標題時用）。</param>
+    /// <param name="transcript">逐字稿／內文。</param>
+    /// <param name="sourceLabel">來源標示（URL 或「上傳檔案：檔名」），寫入筆記尾端供回溯。</param>
+    /// <param name="cancellationToken">取消權杖。</param>
+    /// <returns>建立好的筆記。</returns>
+    private async Task<Note> RefineTranscriptToNoteAsync(
+        Guid userId,
+        string title,
+        string transcript,
+        string sourceLabel,
+        CancellationToken cancellationToken)
+    {
+        // 逐字稿過長時截斷（保護 prompt 長度；多數模型上下文足夠，但仍設上限）。
+        // 明確標註「已截斷」，讓 AI 與使用者都知道只整理了前段（避免誤以為涵蓋全片）。
+        const int maxChars = 40000;
+        if (transcript.Length > maxChars)
+        {
+            _logger.LogInformation("精煉逐字稿超過 {Max} 字已截斷（來源：{Source}）", maxChars, sourceLabel);
+            transcript = transcript[..maxChars] + "\n\n[已截斷：內容超過字數上限，以上僅為前段]";
+        }
+
+        // AI 分類 + 結構化（回傳 JSON）。
+        var userPrompt = $"標題：{title}\n來源：{sourceLabel}\n\n內容：\n{transcript}";
+        var aiOutput = await _noteAi.GenerateAsync(RefineSystemPrompt, userPrompt, cancellationToken);
+        var parsed = ParseAiOutput(aiOutput, fallbackTitle: title, sourceLabel: sourceLabel);
+
+        // 建立分類筆記。
+        return await CreateNoteAsync(userId, parsed, sourceLabel, cancellationToken);
+    }
+
+    /// <summary>
     /// 轉錄音訊：依使用者設定的引擎。Groq → 用其金鑰打 Groq Whisper；Gemini → v1 暫不支援音訊（提示改用 Groq）。
     /// </summary>
     private async Task<string> TranscribeAudioAsync(User user, string audioPath, CancellationToken cancellationToken)
@@ -176,7 +284,7 @@ public sealed class RefineService
     }
 
     /// <summary>解析 AI 的 JSON 輸出；失敗則退回「整段當內容」的保底結果。</summary>
-    private static RefineNoteResult ParseAiOutput(string aiOutput, string fallbackTitle, string sourceUrl)
+    private static RefineNoteResult ParseAiOutput(string aiOutput, string fallbackTitle, string sourceLabel)
     {
         var text = StripFence(aiOutput.Trim());
         try
@@ -207,18 +315,18 @@ public sealed class RefineService
         }
 
         // 保底：AI 沒給合法 JSON → 直接把整段輸出當筆記內容。
-        var body = string.IsNullOrWhiteSpace(text) ? $"（無法整理內容）\n\n來源：{sourceUrl}" : text;
+        var body = string.IsNullOrWhiteSpace(text) ? $"（無法整理內容）\n\n來源：{sourceLabel}" : text;
         return new RefineNoteResult(fallbackTitle, body, new List<string>(), new List<string>());
     }
 
     /// <summary>建立筆記：解析分類路徑（自動建巢狀分類）→ 建 Note + 版本 + 分類 + 標籤。</summary>
-    private async Task<Note> CreateNoteAsync(Guid userId, RefineNoteResult r, string sourceUrl, CancellationToken ct)
+    private async Task<Note> CreateNoteAsync(Guid userId, RefineNoteResult r, string sourceLabel, CancellationToken ct)
     {
         var userKey = userId.ToString();
         var title = r.Title.Length > 500 ? r.Title[..500] : r.Title;
 
-        // 內容尾端附上來源連結（方便回溯）。
-        var contentRaw = r.ContentRaw.TrimEnd() + $"\n\n---\n> 來源（精煉自）：{sourceUrl}\n";
+        // 內容尾端附上來源（URL 或上傳檔名）方便回溯。
+        var contentRaw = r.ContentRaw.TrimEnd() + $"\n\n---\n> 來源（精煉自）：{sourceLabel}\n";
 
         // slug 去重。
         var baseSlug = NoteContentHelpers.GenerateSlug(title);

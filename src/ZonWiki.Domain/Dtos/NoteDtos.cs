@@ -276,6 +276,64 @@ public sealed record AskQueueItemDto(
     string? ErrorText = null);
 
 /// <summary>
+/// AI 處理佇列「單筆完整明細」資料傳輸物件。
+/// 供「AI 處理佇列」頁面查看單筆的完整輸入（PromptText）、結果、錯誤與逐則串流訊息（log），
+/// 便於診斷失敗原因（dropdown 只顯示截斷摘要，看不到完整 log）。
+/// </summary>
+/// <param name="SessionId">工作階段識別碼。</param>
+/// <param name="Status">狀態：Running / Completed / Failed。</param>
+/// <param name="Kind">種類：node / floatingnote / beautify / reformat / refine。</param>
+/// <param name="QuestionText">提問／標籤文字（佇列顯示用；可空）。</param>
+/// <param name="AnchorText">框選文字（floatingnote 時有值；可空）。</param>
+/// <param name="PromptText">實際送給 AI 的完整 prompt（除錯用）。</param>
+/// <param name="ErrorText">失敗訊息（Failed 時有值；可空）。</param>
+/// <param name="TokenUsageJson">token 用量 JSON 字串。</param>
+/// <param name="NoteId">來源筆記識別碼（可空）。</param>
+/// <param name="NoteSlug">來源筆記 slug（供導航；null 若不存）。</param>
+/// <param name="NoteTitle">來源筆記標題（null 若不存）。</param>
+/// <param name="AnswerNoteId">答案筆記識別碼（可空）。</param>
+/// <param name="AnswerNoteSlug">答案筆記 slug（供導航；可空）。</param>
+/// <param name="MarkId">來源筆記上的錨點識別碼（可空）。</param>
+/// <param name="CanvasId">所屬畫布識別碼（node 提問時有值；可空）。</param>
+/// <param name="AskNodeId">提問來源節點識別碼（可空）。</param>
+/// <param name="CreatedDateTime">建立時間（UTC）。</param>
+/// <param name="UpdatedDateTime">最後更新時間（UTC；完成／失敗時間）。</param>
+/// <param name="Messages">逐則串流訊息（完整 log；依序號排序；node 提問才有，其餘多半為空）。</param>
+public sealed record AskQueueDetailDto(
+    Guid SessionId,
+    string Status,
+    string Kind,
+    string? QuestionText,
+    string? AnchorText,
+    string PromptText,
+    string? ErrorText,
+    string TokenUsageJson,
+    Guid? NoteId,
+    string? NoteSlug,
+    string? NoteTitle,
+    Guid? AnswerNoteId,
+    string? AnswerNoteSlug,
+    Guid? MarkId,
+    Guid? CanvasId,
+    Guid? AskNodeId,
+    DateTime CreatedDateTime,
+    DateTime UpdatedDateTime,
+    IReadOnlyList<AiQueueMessageDto> Messages);
+
+/// <summary>
+/// AI 處理佇列明細中的「單則串流訊息」資料傳輸物件（完整 log 的一行）。
+/// </summary>
+/// <param name="SeqNo">串流序號（排序用）。</param>
+/// <param name="Role">角色 / 事件型別（assistant / result / error 等）。</param>
+/// <param name="Content">訊息文字內容。</param>
+/// <param name="CreatedDateTime">建立時間（UTC）。</param>
+public sealed record AiQueueMessageDto(
+    int SeqNo,
+    string Role,
+    string Content,
+    DateTime CreatedDateTime);
+
+/// <summary>
 /// 筆記文字標註資料傳輸物件（重點 / 關聯 / 備註）。
 /// </summary>
 /// <param name="Id">標註識別碼。</param>

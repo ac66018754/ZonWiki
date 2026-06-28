@@ -72,53 +72,64 @@ public sealed class YtDlpService
         var workDir = Path.Combine(Path.GetTempPath(), "zonwiki-refine", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(workDir);
 
-        // 取標題（快速、不下載）。
-        var title = await GetTitleAsync(url, cancellationToken);
-
-        // 1) 嘗試只抓字幕（含自動字幕），不下載影片。
-        await RunAsync(
-            new[]
-            {
-                "--skip-download", "--write-subs", "--write-auto-subs",
-                "--sub-format", "vtt", "--sub-langs", SubLangs,
-                "--no-playlist", "--no-warnings",
-                "-o", Path.Combine(workDir, "sub.%(ext)s"),
-                url,
-            },
-            workDir, cancellationToken, throwOnError: false);
-
-        var vtt = Directory.GetFiles(workDir, "*.vtt").FirstOrDefault();
-        if (vtt is not null)
+        // 成功時 workDir 由呼叫端負責清理；失敗（拋例外，例如無媒體而要退回文章抓取）時
+        // 這裡先把自己的暫存目錄刪掉，避免殘留空目錄累積。
+        try
         {
-            var text = CleanVtt(await File.ReadAllTextAsync(vtt, Encoding.UTF8, cancellationToken));
-            if (!string.IsNullOrWhiteSpace(text))
+            // 取標題（快速、不下載）。
+            var title = await GetTitleAsync(url, cancellationToken);
+
+            // 1) 嘗試只抓字幕（含自動字幕），不下載影片。
+            await RunAsync(
+                new[]
+                {
+                    "--skip-download", "--write-subs", "--write-auto-subs",
+                    "--sub-format", "vtt", "--sub-langs", SubLangs,
+                    "--no-playlist", "--no-warnings",
+                    "-o", Path.Combine(workDir, "sub.%(ext)s"),
+                    url,
+                },
+                workDir, cancellationToken, throwOnError: false);
+
+            var vtt = Directory.GetFiles(workDir, "*.vtt").FirstOrDefault();
+            if (vtt is not null)
             {
-                return new RefineExtractResult(RefineSourceKind.Text, title, text, null, workDir);
+                var text = CleanVtt(await File.ReadAllTextAsync(vtt, Encoding.UTF8, cancellationToken));
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    return new RefineExtractResult(RefineSourceKind.Text, title, text, null, workDir);
+                }
             }
-        }
 
-        // 2) 沒字幕 → 下載音訊並轉成 16kHz 單聲道 mp3（小、好送轉錄）。
-        await RunAsync(
-            new[]
+            // 2) 沒字幕 → 下載音訊並轉成 16kHz 單聲道 mp3（小、好送轉錄）。
+            await RunAsync(
+                new[]
+                {
+                    "-x", "--audio-format", "mp3",
+                    "--postprocessor-args", "ffmpeg:-ar 16000 -ac 1",
+                    "--no-playlist", "--no-warnings",
+                    "-o", Path.Combine(workDir, "audio.%(ext)s"),
+                    url,
+                },
+                workDir, cancellationToken, throwOnError: true);
+
+            var audio = Directory.GetFiles(workDir, "audio.*")
+                .FirstOrDefault(f => f.EndsWith(".mp3", StringComparison.OrdinalIgnoreCase))
+                ?? Directory.GetFiles(workDir, "audio.*").FirstOrDefault();
+
+            if (audio is null)
             {
-                "-x", "--audio-format", "mp3",
-                "--postprocessor-args", "ffmpeg:-ar 16000 -ac 1",
-                "--no-playlist", "--no-warnings",
-                "-o", Path.Combine(workDir, "audio.%(ext)s"),
-                url,
-            },
-            workDir, cancellationToken, throwOnError: true);
+                throw new InvalidOperationException("這個連結抓不到字幕、也下載不到音訊（可能有登入牆、DRM 或不支援）。");
+            }
 
-        var audio = Directory.GetFiles(workDir, "audio.*")
-            .FirstOrDefault(f => f.EndsWith(".mp3", StringComparison.OrdinalIgnoreCase))
-            ?? Directory.GetFiles(workDir, "audio.*").FirstOrDefault();
-
-        if (audio is null)
-        {
-            throw new InvalidOperationException("這個連結抓不到字幕、也下載不到音訊（可能有登入牆、DRM 或不支援）。");
+            return new RefineExtractResult(RefineSourceKind.Audio, title, null, audio, workDir);
         }
-
-        return new RefineExtractResult(RefineSourceKind.Audio, title, null, audio, workDir);
+        catch
+        {
+            try { Directory.Delete(workDir, recursive: true); }
+            catch (Exception cleanupEx) { _logger.LogWarning(cleanupEx, "清理 yt-dlp 暫存目錄失敗：{Dir}", workDir); }
+            throw;
+        }
     }
 
     /// <summary>取得標題（--print，不下載）。失敗則回退「未命名」。</summary>
