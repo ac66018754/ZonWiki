@@ -1,6 +1,4 @@
 using System.Diagnostics;
-using System.Net;
-using System.Net.Sockets;
 using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
@@ -69,7 +67,7 @@ public sealed class YtDlpService
     /// <returns>擷取結果（呼叫端負責刪除 WorkDir）。</returns>
     public async Task<RefineExtractResult> ExtractAsync(string url, CancellationToken cancellationToken)
     {
-        await ValidateUrlAsync(url, cancellationToken);
+        await RefineUrlGuard.ValidateAsync(url, cancellationToken);
 
         var workDir = Path.Combine(Path.GetTempPath(), "zonwiki-refine", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(workDir);
@@ -178,80 +176,6 @@ public sealed class YtDlpService
         }
 
         return (stdout, stderr);
-    }
-
-    /// <summary>
-    /// SSRF 防護：只允許 http/https；阻擋 localhost、私有/迴路/連結本地 IP、雲端中繼資料端點。
-    /// 主機名稱會解析成 IP 再核對，避免指向內網（例如 GCP 中繼資料 169.254.169.254）。
-    /// </summary>
-    private static async Task ValidateUrlAsync(string url, CancellationToken cancellationToken)
-    {
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)
-            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
-        {
-            throw new ArgumentException("只接受 http/https 的網址。");
-        }
-
-        var host = uri.Host;
-        if (host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
-            || host.Equals("metadata.google.internal", StringComparison.OrdinalIgnoreCase)
-            || host.EndsWith(".local", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new ArgumentException("不允許指向內部主機的網址。");
-        }
-
-        IPAddress[] addresses;
-        if (IPAddress.TryParse(host, out var literal))
-        {
-            addresses = new[] { literal };
-        }
-        else
-        {
-            try
-            {
-                addresses = await Dns.GetHostAddressesAsync(host, cancellationToken);
-            }
-            catch
-            {
-                // 解析不到就讓 yt-dlp 自己去碰（多半是它支援、但 DNS 暫時失敗的站）。
-                return;
-            }
-        }
-
-        foreach (var ip in addresses)
-        {
-            if (IsPrivateOrReserved(ip))
-            {
-                throw new ArgumentException("不允許指向內部 / 私有網路的網址。");
-            }
-        }
-    }
-
-    /// <summary>判斷 IP 是否為迴路 / 私有 / 連結本地（含雲端中繼資料 169.254.169.254）。</summary>
-    private static bool IsPrivateOrReserved(IPAddress ip)
-    {
-        if (IPAddress.IsLoopback(ip))
-        {
-            return true;
-        }
-
-        if (ip.AddressFamily == AddressFamily.InterNetwork)
-        {
-            var b = ip.GetAddressBytes();
-            return b[0] == 10                                   // 10.0.0.0/8
-                || (b[0] == 172 && b[1] >= 16 && b[1] <= 31)    // 172.16.0.0/12
-                || (b[0] == 192 && b[1] == 168)                 // 192.168.0.0/16
-                || (b[0] == 169 && b[1] == 254)                 // 169.254.0.0/16（含中繼資料）
-                || b[0] == 0
-                || b[0] == 127;
-        }
-
-        if (ip.AddressFamily == AddressFamily.InterNetworkV6)
-        {
-            return ip.IsIPv6LinkLocal || ip.IsIPv6SiteLocal || ip.IsIPv6UniqueLocal;
-        }
-
-        return false;
     }
 
     /// <summary>

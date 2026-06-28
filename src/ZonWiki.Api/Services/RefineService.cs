@@ -19,6 +19,7 @@ public sealed class RefineService
 {
     private readonly ZonWikiDbContext _db;
     private readonly YtDlpService _ytDlp;
+    private readonly ArticleFetchService _articleFetch;
     private readonly ITranscriptionService _transcription;
     private readonly INoteAiService _noteAi;
     private readonly AiModelResolver _keyResolver;
@@ -49,6 +50,7 @@ public sealed class RefineService
     public RefineService(
         ZonWikiDbContext db,
         YtDlpService ytDlp,
+        ArticleFetchService articleFetch,
         ITranscriptionService transcription,
         INoteAiService noteAi,
         AiModelResolver keyResolver,
@@ -56,6 +58,7 @@ public sealed class RefineService
     {
         _db = db;
         _ytDlp = ytDlp;
+        _articleFetch = articleFetch;
         _transcription = transcription;
         _noteAi = noteAi;
         _keyResolver = keyResolver;
@@ -79,18 +82,26 @@ public sealed class RefineService
             var user = await _db.User.FirstOrDefaultAsync(u => u.Id == userId, cancellationToken)
                 ?? throw new InvalidOperationException("使用者不存在。");
 
-            // 1) 抓字幕 / 下載音訊。
-            extract = await _ytDlp.ExtractAsync(url, cancellationToken);
-
-            // 2) 取得逐字稿文字。
+            // 1)+2) 取得「標題 + 逐字稿/內文」：先試影音（yt-dlp 抓字幕或音訊轉錄），
+            //        抓不到影音（InvalidOperationException）就退而求其次當「文章」抓網頁文字。
+            //        （SSRF 等 ArgumentException 不在此攔截，直接往外拋讓工作失敗。）
+            string title;
             string transcript;
-            if (extract.Kind == RefineSourceKind.Text)
+            try
             {
-                transcript = extract.Text ?? string.Empty;
+                extract = await _ytDlp.ExtractAsync(url, cancellationToken);
+                title = extract.Title;
+                transcript = extract.Kind == RefineSourceKind.Text
+                    ? extract.Text ?? string.Empty
+                    : await TranscribeAudioAsync(user, extract.AudioPath!, cancellationToken);
             }
-            else
+            catch (InvalidOperationException)
             {
-                transcript = await TranscribeAudioAsync(user, extract.AudioPath!, cancellationToken);
+                var article = await _articleFetch.FetchAsync(url, cancellationToken)
+                    ?? throw new InvalidOperationException(
+                        "這個連結既不是可抓的影音、也讀不到文章內文（可能是 Threads/X/IG 等需登入或靠 JS 渲染的頁面）。");
+                title = article.Title;
+                transcript = article.Text;
             }
 
             if (string.IsNullOrWhiteSpace(transcript))
@@ -106,9 +117,9 @@ public sealed class RefineService
             }
 
             // 3) AI 分類 + 結構化（回傳 JSON）。
-            var userPrompt = $"標題：{extract.Title}\n來源：{url}\n\n逐字稿：\n{transcript}";
+            var userPrompt = $"標題：{title}\n來源：{url}\n\n內容：\n{transcript}";
             var aiOutput = await _noteAi.GenerateAsync(RefineSystemPrompt, userPrompt, cancellationToken);
-            var parsed = ParseAiOutput(aiOutput, fallbackTitle: extract.Title, sourceUrl: url);
+            var parsed = ParseAiOutput(aiOutput, fallbackTitle: title, sourceUrl: url);
 
             // 4) 建立分類筆記。
             var note = await CreateNoteAsync(userId, parsed, url, cancellationToken);
