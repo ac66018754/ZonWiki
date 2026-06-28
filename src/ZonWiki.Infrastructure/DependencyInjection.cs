@@ -80,6 +80,13 @@ public static class DependencyInjection
         services.AddScoped<AiModelResolver>();
         services.AddScoped<AiProviderFactory>();
 
+        // 「精煉成筆記」：yt-dlp 擷取 + OpenAI 相容轉錄（Groq）。
+        services.AddScoped<Refine.ITranscriptionService, Refine.OpenAiCompatibleTranscriptionService>();
+        var ytDlpPath = configuration["Refine:YtDlpPath"] ?? "yt-dlp";
+        services.AddScoped(sp => new Refine.YtDlpService(
+            sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<Refine.YtDlpService>>(),
+            ytDlpPath));
+
         // 預設 AI 供應者：優先用 Fake（測試）、否則用本機 claude CLI
         var aiProviderType = configuration["Ai:Provider"] ?? "Default";
         if (aiProviderType == "Fake")

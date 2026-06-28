@@ -8,6 +8,7 @@ import {
   getLogoutUrl,
   getUserSettings,
   updateUserSettings,
+  updateTranscriptionSettings,
   type MyProfile,
   type MyStats,
   type MyActivityDay,
@@ -589,6 +590,148 @@ export function TimeZoneSection() {
         目前生效時區：<strong>{effectiveTz}</strong>
         ｜現在時間：{formatDateTime(new Date().toISOString(), effectiveTz)}
       </p>
+      {msg && <p style={hintTextStyle}>{msg}</p>}
+    </section>
+  );
+}
+
+// ============================================================================
+// 區塊：精煉成筆記（轉錄引擎設定）
+// ============================================================================
+
+/**
+ * 「精煉成筆記」設定區塊：選轉錄引擎（Gemini 預設 / Groq），Groq 需自填免費金鑰。
+ * 用於把影片/播客/文章連結自動整理成分類筆記時，沒有字幕的音訊要靠轉錄。
+ */
+export function RefineSettingsSection() {
+  const [engine, setEngine] = useState<"gemini" | "groq">("gemini");
+  const [groqKeySet, setGroqKeySet] = useState(false);
+  const [groqKey, setGroqKey] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    getUserSettings()
+      .then((s) => {
+        if (!alive || !s) return;
+        setEngine((s.transcriptionEngine as "gemini" | "groq") ?? "gemini");
+        setGroqKeySet(Boolean(s.groqKeySet));
+        setLoaded(true);
+      })
+      .catch(() => setLoaded(true));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true);
+    setMsg(null);
+    try {
+      const payload: { transcriptionEngine?: "gemini" | "groq"; groqApiKey?: string } = {
+        transcriptionEngine: engine,
+      };
+      // 只有使用者實際輸入了新金鑰才送出（空字串＝不動；要清除請按「清除金鑰」）。
+      if (groqKey.trim().length > 0) payload.groqApiKey = groqKey.trim();
+      const result = await updateTranscriptionSettings(payload);
+      if (result) {
+        setGroqKeySet(Boolean(result.groqKeySet));
+        setGroqKey("");
+        setMsg("已儲存");
+      } else {
+        setMsg("儲存失敗，請稍後重試。");
+      }
+    } catch {
+      setMsg("儲存失敗，請稍後重試。");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleClearKey = async () => {
+    setSaving(true);
+    setMsg(null);
+    try {
+      const result = await updateTranscriptionSettings({ groqApiKey: "" });
+      if (result) {
+        setGroqKeySet(false);
+        setGroqKey("");
+        setMsg("已清除 Groq 金鑰");
+      }
+    } catch {
+      setMsg("清除失敗，請稍後重試。");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section style={cardStyle}>
+      <h2 style={sectionTitleStyle}>精煉成筆記（轉錄引擎）</h2>
+      <p style={{ ...hintTextStyle, margin: "0 0 var(--spacing-3)", fontSize: "var(--text-sm)" }}>
+        「精煉成筆記」可以把一個影片/播客/文章連結，自動抓字幕或把音訊轉成文字，再用 AI 整理成分類筆記。
+        有字幕的內容（多數 YouTube）用預設 Gemini 即可；<strong>沒字幕的音訊（多數 Podcast、IG）需要轉錄</strong>，
+        這時請選 Groq。
+      </p>
+
+      <div style={{ marginBottom: "var(--spacing-4)" }}>
+        <label style={labelStyle}>轉錄引擎</label>
+        <select
+          value={engine}
+          onChange={(e) => setEngine(e.target.value as "gemini" | "groq")}
+          disabled={!loaded || saving}
+          style={{ ...inputStyle, width: "auto", minWidth: "260px" }}
+          aria-label="轉錄引擎"
+        >
+          <option value="gemini">Gemini（預設）— 有字幕的內容免設定</option>
+          <option value="groq">Groq Whisper — 音訊轉錄（需自填免費金鑰）</option>
+        </select>
+      </div>
+
+      {engine === "groq" && (
+        <div
+          style={{
+            marginBottom: "var(--spacing-4)",
+            padding: "var(--spacing-4)",
+            background: "var(--bg-default)",
+            border: "1px solid var(--border-default)",
+            borderRadius: "var(--radius-md)",
+          }}
+        >
+          <p style={{ ...hintTextStyle, margin: "0 0 var(--spacing-2)", fontSize: "var(--text-sm)" }}>
+            <strong>Groq 是什麼？</strong> Groq 是一個超快的 AI 推論服務，提供 OpenAI 的 Whisper
+            語音轉文字。它有<strong>免費方案</strong>：每天約 2,000 次轉錄、每小時約 2 小時音訊量，個人用綽綽有餘。
+          </p>
+          <p style={{ ...hintTextStyle, margin: "0 0 var(--spacing-3)", fontSize: "var(--text-sm)" }}>
+            到 <code>console.groq.com</code> 免費註冊 → 建立 API Key（zwk 之外，Groq 的金鑰以 <code>gsk_</code> 開頭）→ 貼到下面。
+            金鑰會<strong>加密</strong>儲存，絕不外洩。
+          </p>
+          <label style={labelStyle}>
+            Groq API 金鑰{groqKeySet ? "（已設定；要更換才需重填）" : ""}
+          </label>
+          <div style={{ display: "flex", gap: "var(--spacing-2)", flexWrap: "wrap" }}>
+            <input
+              type="password"
+              value={groqKey}
+              onChange={(e) => setGroqKey(e.target.value)}
+              placeholder={groqKeySet ? "•••••••••（已設定）" : "gsk_..."}
+              autoComplete="off"
+              style={{ ...inputStyle, flex: 1, minWidth: "220px" }}
+            />
+            {groqKeySet && (
+              <button style={secondaryBtnStyle} onClick={handleClearKey} disabled={saving} type="button">
+                清除金鑰
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      <button style={primaryBtnStyle} onClick={handleSave} disabled={!loaded || saving}>
+        {saving ? "儲存中…" : "儲存"}
+      </button>
       {msg && <p style={hintTextStyle}>{msg}</p>}
     </section>
   );

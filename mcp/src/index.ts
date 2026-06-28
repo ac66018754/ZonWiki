@@ -430,7 +430,8 @@ server.tool(
       .describe('優先級（0-3），預設 0'),
     plannedDateTime: z.string().optional().describe('計劃日期時間（ISO 8601，可空）'),
     dueDateTime: z.string().optional().describe('截止日期時間（ISO 8601，可空）'),
-    groupId: z.string().optional().describe('任務群組 ID（可空）'),
+    groupId: z.string().optional().describe('任務群組 ID（任務的「分類」；可用 list_task_groups 取得或 create_task_group 建立）'),
+    parentId: z.string().optional().describe('父任務 ID（GUID）；填了就是該任務的子任務'),
     recurrenceRule: z
       .string()
       .optional()
@@ -444,6 +445,7 @@ server.tool(
     plannedDateTime,
     dueDateTime,
     groupId,
+    parentId,
     recurrenceRule,
   }: {
     title: string
@@ -453,6 +455,7 @@ server.tool(
     plannedDateTime?: string
     dueDateTime?: string
     groupId?: string
+    parentId?: string
     recurrenceRule?: string
   }) => {
     try {
@@ -465,6 +468,7 @@ server.tool(
           PlannedDateTime: plannedDateTime ? new Date(plannedDateTime) : undefined,
           DueDateTime: dueDateTime ? new Date(dueDateTime) : undefined,
           GroupId: groupId,
+          ParentId: parentId,
           RecurrenceRule: recurrenceRule,
         }),
       )
@@ -479,11 +483,11 @@ server.tool(
  */
 server.tool(
   'update_task',
-  '更新現有任務卡片的狀態、優先級、日期或描述。',
+  '更新現有任務卡片的狀態、優先級、日期、描述、群組(分類)或父任務。只傳要改的欄位。',
   {
     taskId: z.string().describe('任務卡片 ID（UUID）'),
     title: z.string().optional().describe('新標題（可空）'),
-    content: z.string().optional().describe('新描述（可空）'),
+    content: z.string().optional().describe('新描述（Markdown，可空）'),
     status: z
       .enum(['todo', 'doing', 'done'])
       .optional()
@@ -495,8 +499,14 @@ server.tool(
       .max(3)
       .optional()
       .describe('新優先級（可空）'),
-    plannedDateTime: z.string().optional().describe('新計劃日期時間（可空）'),
-    dueDateTime: z.string().optional().describe('新截止日期時間（可空）'),
+    plannedDateTime: z.string().optional().describe('新計劃日期時間（ISO 8601，可空）'),
+    dueDateTime: z.string().optional().describe('新截止日期時間（ISO 8601，可空）'),
+    groupId: z.string().optional().describe('改到哪個群組(分類) ID（可空）'),
+    parentId: z.string().optional().describe('改父任務 ID（可空）'),
+    clearPlannedDateTime: z.boolean().optional().describe('true＝清空計劃日期'),
+    clearDueDateTime: z.boolean().optional().describe('true＝清空截止日期'),
+    clearGroupId: z.boolean().optional().describe('true＝移出群組(分類)'),
+    clearParentId: z.boolean().optional().describe('true＝解除父任務（變回頂層任務）'),
   },
   async ({
     taskId,
@@ -506,6 +516,12 @@ server.tool(
     priority,
     plannedDateTime,
     dueDateTime,
+    groupId,
+    parentId,
+    clearPlannedDateTime,
+    clearDueDateTime,
+    clearGroupId,
+    clearParentId,
   }: {
     taskId: string
     title?: string
@@ -514,6 +530,12 @@ server.tool(
     priority?: number
     plannedDateTime?: string
     dueDateTime?: string
+    groupId?: string
+    parentId?: string
+    clearPlannedDateTime?: boolean
+    clearDueDateTime?: boolean
+    clearGroupId?: boolean
+    clearParentId?: boolean
   }) => {
     try {
       return ok(
@@ -524,6 +546,12 @@ server.tool(
           Priority: priority,
           PlannedDateTime: plannedDateTime ? new Date(plannedDateTime) : undefined,
           DueDateTime: dueDateTime ? new Date(dueDateTime) : undefined,
+          GroupId: groupId,
+          ParentId: parentId,
+          ClearPlannedDateTime: clearPlannedDateTime ?? false,
+          ClearDueDateTime: clearDueDateTime ?? false,
+          ClearGroupId: clearGroupId ?? false,
+          ClearParentId: clearParentId ?? false,
         }),
       )
     } catch (e) {
@@ -766,6 +794,490 @@ server.tool(
       return ok(
         await call('GET', `/api/canvases/${canvasId}/search?query=${encodeURIComponent(query)}`),
       )
+    } catch (e) {
+      return fail(e)
+    }
+  },
+)
+
+// ============================================================================
+// 任務：取得 / 刪除 / 子任務 / 群組(分類)
+// ============================================================================
+
+server.tool(
+  'get_task',
+  '取得單一任務的完整資訊（含子任務與標籤）。',
+  { taskId: z.string().describe('任務 ID（GUID）') },
+  async ({ taskId }: { taskId: string }) => {
+    try {
+      return ok(await call('GET', `/api/tasks/${taskId}`))
+    } catch (e) {
+      return fail(e)
+    }
+  },
+)
+
+server.tool(
+  'delete_task',
+  '刪除一個任務（軟刪除，進垃圾桶可還原）。會連同其子任務一併刪除。',
+  { taskId: z.string().describe('任務 ID（GUID）') },
+  async ({ taskId }: { taskId: string }) => {
+    try {
+      return ok(await call('DELETE', `/api/tasks/${taskId}`))
+    } catch (e) {
+      return fail(e)
+    }
+  },
+)
+
+server.tool(
+  'list_subtasks',
+  '列出某任務底下的子任務。',
+  { taskId: z.string().describe('父任務 ID（GUID）') },
+  async ({ taskId }: { taskId: string }) => {
+    try {
+      return ok(await call('GET', `/api/tasks/${taskId}/subtasks`))
+    } catch (e) {
+      return fail(e)
+    }
+  },
+)
+
+server.tool(
+  'create_subtask',
+  '在某任務底下新增一個子任務。',
+  {
+    taskId: z.string().describe('父任務 ID（GUID）'),
+    title: z.string().describe('子任務標題'),
+  },
+  async ({ taskId, title }: { taskId: string; title: string }) => {
+    try {
+      return ok(await call('POST', `/api/tasks/${taskId}/subtasks`, { Title: title }))
+    } catch (e) {
+      return fail(e)
+    }
+  },
+)
+
+server.tool(
+  'update_subtask',
+  '更新子任務（改標題或標記完成/未完成）。',
+  {
+    subtaskId: z.string().describe('子任務 ID（GUID）'),
+    title: z.string().optional().describe('新標題（可空）'),
+    isDone: z.boolean().optional().describe('是否完成（可空）'),
+  },
+  async ({ subtaskId, title, isDone }: { subtaskId: string; title?: string; isDone?: boolean }) => {
+    try {
+      return ok(await call('PUT', `/api/subtasks/${subtaskId}`, { Title: title, IsDone: isDone }))
+    } catch (e) {
+      return fail(e)
+    }
+  },
+)
+
+server.tool(
+  'delete_subtask',
+  '刪除一個子任務。',
+  { subtaskId: z.string().describe('子任務 ID（GUID）') },
+  async ({ subtaskId }: { subtaskId: string }) => {
+    try {
+      return ok(await call('DELETE', `/api/subtasks/${subtaskId}`))
+    } catch (e) {
+      return fail(e)
+    }
+  },
+)
+
+server.tool(
+  'list_task_groups',
+  '列出任務群組（任務的「分類」）。',
+  {},
+  async () => {
+    try {
+      return ok(await call('GET', '/api/task-groups'))
+    } catch (e) {
+      return fail(e)
+    }
+  },
+)
+
+server.tool(
+  'create_task_group',
+  '建立任務群組（任務的「分類」），可指定顏色。',
+  {
+    name: z.string().describe('群組名稱'),
+    color: z.string().optional().describe('顏色（hex，可空）'),
+  },
+  async ({ name, color }: { name: string; color?: string }) => {
+    try {
+      return ok(await call('POST', '/api/task-groups', { Name: name, Color: color }))
+    } catch (e) {
+      return fail(e)
+    }
+  },
+)
+
+// ============================================================================
+// 行事曆（Calendar）— 行事曆即任務的日期視圖；建立/改事件＝建/改帶日期的任務
+// ============================================================================
+
+server.tool(
+  'get_calendar',
+  '查某段時間區間內的行事曆項目（帶有計劃/截止日期的任務、以及日記）。要新增/修改行事曆事件，請用 create_task / update_task 並帶 plannedDateTime / dueDateTime。',
+  {
+    from: z.string().describe('區間起點（ISO 8601，例如 2026-06-01T00:00:00Z）'),
+    to: z.string().describe('區間終點（ISO 8601）'),
+  },
+  async ({ from, to }: { from: string; to: string }) => {
+    try {
+      const params = new URLSearchParams({ from, to })
+      return ok(await call('GET', `/api/calendar?${params}`))
+    } catch (e) {
+      return fail(e)
+    }
+  },
+)
+
+// ============================================================================
+// 筆記：刪除 / 重新歸類 / 反向連結（補齊 CRUD）
+// ============================================================================
+
+server.tool(
+  'delete_note',
+  '刪除一篇筆記（軟刪除，進垃圾桶可還原）。',
+  { noteId: z.string().describe('筆記 ID（GUID）') },
+  async ({ noteId }: { noteId: string }) => {
+    try {
+      return ok(await call('DELETE', `/api/notes/${noteId}`))
+    } catch (e) {
+      return fail(e)
+    }
+  },
+)
+
+server.tool(
+  'set_note_categories',
+  '重新設定一篇筆記所屬的分類（整組取代；傳入分類 ID 清單）。傳空陣列＝清空分類。',
+  {
+    noteId: z.string().describe('筆記 ID（GUID）'),
+    categoryIds: z.array(z.string()).describe('分類 ID（GUID）清單；整組取代既有分類'),
+  },
+  async ({ noteId, categoryIds }: { noteId: string; categoryIds: string[] }) => {
+    try {
+      // 此端點 body 為「GUID 陣列」本身（非物件）。
+      return ok(await call('PUT', `/api/notes/${noteId}/categories`, categoryIds))
+    } catch (e) {
+      return fail(e)
+    }
+  },
+)
+
+server.tool(
+  'get_backlinks',
+  '取得指向某篇筆記的反向連結（有哪些筆記用 [[ ]] 連到它）。',
+  { noteId: z.string().describe('筆記 ID（GUID）') },
+  async ({ noteId }: { noteId: string }) => {
+    try {
+      return ok(await call('GET', `/api/notes/${noteId}/backlinks`))
+    } catch (e) {
+      return fail(e)
+    }
+  },
+)
+
+// ============================================================================
+// 分類：更新（改名/搬移）/ 刪除（補齊 CRUD）
+// ============================================================================
+
+server.tool(
+  'update_category',
+  '更新分類：改名稱或變更上層分類（搬移）。',
+  {
+    categoryId: z.string().describe('分類 ID（GUID）'),
+    name: z.string().describe('新名稱'),
+    parentId: z.string().optional().describe('新的上層分類 ID（GUID）；不填＝移到最上層'),
+  },
+  async ({ categoryId, name, parentId }: { categoryId: string; name: string; parentId?: string }) => {
+    try {
+      return ok(await call('PUT', `/api/categories/${categoryId}`, { Name: name, ParentId: parentId ?? null }))
+    } catch (e) {
+      return fail(e)
+    }
+  },
+)
+
+server.tool(
+  'delete_category',
+  '刪除分類（軟刪除）。若該分類底下還有子分類或筆記，後端會擋下並要求先清空。',
+  { categoryId: z.string().describe('分類 ID（GUID）') },
+  async ({ categoryId }: { categoryId: string }) => {
+    try {
+      return ok(await call('DELETE', `/api/categories/${categoryId}`))
+    } catch (e) {
+      return fail(e)
+    }
+  },
+)
+
+// ============================================================================
+// 關聯 / 反向關聯（跨模組：任務 / 子任務 / 筆記 / 開問啦節點 互連）
+// ============================================================================
+
+server.tool(
+  'list_links',
+  '列出某個項目的所有關聯（雙向）。',
+  {
+    type: z.enum(['note', 'taskcard', 'subtask', 'node']).describe('項目型別'),
+    id: z.string().describe('項目 ID（GUID）'),
+  },
+  async ({ type, id }: { type: string; id: string }) => {
+    try {
+      const params = new URLSearchParams({ type, id })
+      return ok(await call('GET', `/api/links?${params}`))
+    } catch (e) {
+      return fail(e)
+    }
+  },
+)
+
+server.tool(
+  'get_link_candidates',
+  '搜尋「可關聯的對象」候選（依來源型別決定可連的目標；已關聯者會標示）。',
+  {
+    sourceType: z.enum(['note', 'taskcard', 'subtask', 'node']).describe('來源項目型別'),
+    sourceId: z.string().describe('來源項目 ID（GUID）'),
+    query: z.string().optional().describe('關鍵字（可空）'),
+  },
+  async ({ sourceType, sourceId, query }: { sourceType: string; sourceId: string; query?: string }) => {
+    try {
+      const params = new URLSearchParams({ sourceType, sourceId })
+      if (query) params.append('q', query)
+      return ok(await call('GET', `/api/links/candidates?${params}`))
+    } catch (e) {
+      return fail(e)
+    }
+  },
+)
+
+server.tool(
+  'create_link',
+  '建立兩個項目之間的雙向關聯（任務/子任務/筆記/節點任兩者互連）。',
+  {
+    sourceType: z.enum(['note', 'taskcard', 'subtask', 'node']).describe('來源型別'),
+    sourceId: z.string().describe('來源 ID（GUID）'),
+    targetType: z.enum(['note', 'taskcard', 'subtask', 'node']).describe('目標型別'),
+    targetId: z.string().describe('目標 ID（GUID）'),
+  },
+  async ({
+    sourceType,
+    sourceId,
+    targetType,
+    targetId,
+  }: {
+    sourceType: string
+    sourceId: string
+    targetType: string
+    targetId: string
+  }) => {
+    try {
+      return ok(
+        await call('POST', '/api/links', {
+          SourceType: sourceType,
+          SourceId: sourceId,
+          TargetType: targetType,
+          TargetId: targetId,
+        }),
+      )
+    } catch (e) {
+      return fail(e)
+    }
+  },
+)
+
+server.tool(
+  'delete_link',
+  '解除一個關聯。',
+  { linkId: z.string().describe('關聯 ID（GUID；可由 list_links 取得）') },
+  async ({ linkId }: { linkId: string }) => {
+    try {
+      return ok(await call('DELETE', `/api/links/${linkId}`))
+    } catch (e) {
+      return fail(e)
+    }
+  },
+)
+
+// ============================================================================
+// 標籤（Tags）CRUD
+// ============================================================================
+
+server.tool(
+  'list_tags',
+  '列出所有標籤（含每個標籤的筆記數）。',
+  {},
+  async () => {
+    try {
+      return ok(await call('GET', '/api/notes/tags'))
+    } catch (e) {
+      return fail(e)
+    }
+  },
+)
+
+server.tool(
+  'create_tag',
+  '建立一個標籤（同名已存在則回傳既有的）。',
+  { name: z.string().describe('標籤名稱') },
+  async ({ name }: { name: string }) => {
+    try {
+      return ok(await call('POST', '/api/notes/tags', { Name: name }))
+    } catch (e) {
+      return fail(e)
+    }
+  },
+)
+
+server.tool(
+  'delete_tag',
+  '刪除一個標籤（軟刪除）。',
+  { tagId: z.string().describe('標籤 ID（GUID）') },
+  async ({ tagId }: { tagId: string }) => {
+    try {
+      return ok(await call('DELETE', `/api/notes/tags/${tagId}`))
+    } catch (e) {
+      return fail(e)
+    }
+  },
+)
+
+// ============================================================================
+// 額外：操作軌跡 / 垃圾桶 / 帳號
+// ============================================================================
+
+server.tool(
+  'get_activity',
+  '查詢操作軌跡（誰/哪個 AI、何時、對哪個項目做了什麼）。可用來回顧「AI 最近做了什麼」。預設只看 AI 的操作；source="all" 含人類網頁操作。',
+  {
+    source: z
+      .string()
+      .optional()
+      .describe('來源篩選：留空＝只看 AI；"all"＝含人類網頁；或指定來源名（例如 "Claude Code"）'),
+    entityType: z
+      .enum(['note', 'taskcard', 'subtask', 'node', 'capture', 'quicklink', 'prompt', 'aimodel'])
+      .optional()
+      .describe('只看某種項目型別（可空）'),
+    action: z
+      .enum(['created', 'updated', 'deleted', 'restored'])
+      .optional()
+      .describe('只看某種動作（可空）'),
+    query: z.string().optional().describe('在標題中搜尋關鍵字（可空）'),
+    days: z.number().optional().describe('往前幾天（預設 30，1-365）'),
+    take: z.number().optional().describe('回傳筆數上限（預設 50，1-200）'),
+    skip: z.number().optional().describe('略過前幾筆（分頁用，預設 0）'),
+  },
+  async ({
+    source,
+    entityType,
+    action,
+    query,
+    days,
+    take,
+    skip,
+  }: {
+    source?: string
+    entityType?: string
+    action?: string
+    query?: string
+    days?: number
+    take?: number
+    skip?: number
+  }) => {
+    try {
+      const params = new URLSearchParams()
+      if (source) params.append('source', source)
+      if (entityType) params.append('entityType', entityType)
+      if (action) params.append('action', action)
+      if (query) params.append('q', query)
+      if (days != null) params.append('days', String(days))
+      if (take != null) params.append('take', String(take))
+      if (skip != null) params.append('skip', String(skip))
+      return ok(await call('GET', `/api/home/ai-activity?${params}`))
+    } catch (e) {
+      return fail(e)
+    }
+  },
+)
+
+server.tool(
+  'list_trash',
+  '列出垃圾桶內的軟刪除項目（跨模組：筆記/分類/標籤/任務/節點…）。',
+  {},
+  async () => {
+    try {
+      return ok(await call('GET', '/api/trash'))
+    } catch (e) {
+      return fail(e)
+    }
+  },
+)
+
+server.tool(
+  'restore_item',
+  '從垃圾桶還原一個項目。type 用後端的型別字串（PascalCase），可由 list_trash 的分區鍵取得。',
+  {
+    type: z
+      .enum([
+        'Note',
+        'Category',
+        'Tag',
+        'TaskCard',
+        'TaskGroup',
+        'CaptureItem',
+        'QuickLink',
+        'Canvas',
+        'Node',
+      ])
+      .describe('項目型別（PascalCase，例如 Note / TaskCard / Category / Tag；可由 list_trash 取得）'),
+    id: z.string().describe('項目 ID（GUID；可由 list_trash 取得）'),
+  },
+  async ({ type, id }: { type: string; id: string }) => {
+    try {
+      return ok(await call('POST', `/api/trash/${type}/${id}/restore`))
+    } catch (e) {
+      return fail(e)
+    }
+  },
+)
+
+server.tool(
+  'whoami',
+  '回報目前是哪個帳號在操作（確認權杖接的是對的帳號/環境）。',
+  {},
+  async () => {
+    try {
+      return ok(await call('GET', '/api/me'))
+    } catch (e) {
+      return fail(e)
+    }
+  },
+)
+
+// ============================================================================
+// 精煉成筆記（給一個 URL，後端抓字幕/音訊轉錄後整理成分類筆記）
+// ============================================================================
+
+server.tool(
+  'refine_url',
+  '把一個連結（YouTube / podcast / 文章…）「精煉成筆記」：後端會抓字幕或音訊轉錄，再用 AI 整理成分類筆記。'
+    + '此為非同步：立即回傳 sessionId，實際處理在背景進行（進度在 ZonWiki 的「AI 處理中」佇列）。'
+    + '注意：沒字幕的音訊需要使用者在個人頁把轉錄引擎設為 Groq 並填金鑰。',
+  {
+    url: z.string().describe('內容連結（http/https）'),
+  },
+  async ({ url }: { url: string }) => {
+    try {
+      return ok(await call('POST', '/api/refine', { Url: url }))
     } catch (e) {
       return fail(e)
     }

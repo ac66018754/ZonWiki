@@ -87,6 +87,12 @@ public sealed class GeminiNoteAiService : INoteAiService
     }
 
     /// <summary>
+    /// 通用文字生成：直接以自訂系統提示 + 內容呼叫供應者（重用 TransformAsync 流程）。
+    /// </summary>
+    public Task<string> GenerateAsync(string systemPrompt, string userContent, CancellationToken cancellationToken) =>
+        TransformAsync(systemPrompt, userContent, cancellationToken);
+
+    /// <summary>
     /// 共用流程：解析供應者 → 以系統提示 + 內容串流呼叫 → 累積完整結果 → 去除外層 ``` 圍欄。
     /// </summary>
     /// <param name="systemPrompt">系統提示（決定排版或美化）。</param>

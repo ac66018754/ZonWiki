@@ -826,6 +826,19 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
           onPointerUp={onCaptureUp}
           onPointerLeave={onCaptureUp}
           onContextMenu={(e) => e.preventDefault()}
+          onWheel={(e) => {
+            // 繪圖中也能用滑鼠滾輪縮放畫布：擷取面會擋掉 React Flow 原生的滾輪縮放，
+            // 故在此自行以「游標為中心」縮放（保持游標下的畫布座標不動）。
+            const vp = getViewport();
+            const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+            const newZoom = vp.zoom * factor;
+            const rect = e.currentTarget.getBoundingClientRect();
+            const px = e.clientX - rect.left;
+            const py = e.clientY - rect.top;
+            const newX = px - (px - vp.x) * (newZoom / vp.zoom);
+            const newY = py - (py - vp.y) * (newZoom / vp.zoom);
+            setViewport({ x: newX, y: newY, zoom: newZoom });
+          }}
           data-testid="canvas-annotation-capture"
         />
       )}

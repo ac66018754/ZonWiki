@@ -60,6 +60,7 @@ builder.Services.AddScoped<AskCancellationRegistry>();
 builder.Services.AddScoped<AncestryService>();
 builder.Services.AddScoped<AskOrchestrator>();
 builder.Services.AddScoped<AskQueueService>();
+builder.Services.AddScoped<RefineService>(); // 精煉成筆記協調器
 
 var connectionString = builder.Configuration.GetConnectionString(
     DependencyInjection.PostgresConnectionName)
@@ -199,6 +200,9 @@ app.MapHomePageEndpoints();
 // 使用者設定與垃圾桶（P5 - 全站共用設定）
 app.MapUserSettingsEndpoints();
 app.MapTrashEndpoints();
+
+// 精煉成筆記：URL → 抓字幕/音訊轉錄 → AI 整理成分類筆記（非同步，進「AI 處理中」佇列）
+app.MapRefineEndpoints();
 
 // Canvas SSE 端點（P4 - 開問啦移植）
 app.MapCanvasEndpoints();

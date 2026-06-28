@@ -167,6 +167,80 @@ public static class ProfileEndpoints
             return Results.Ok(new { success = true, data = items });
         }).RequireAuthorization();
 
+        // 首頁「AI 最近動作」：列出由「外部 AI（API 權杖）」對知識庫做的 CRUD 軌跡，
+        // 支援來源 / 實體型別 / 動作 / 關鍵字篩選與分頁；並回傳「有哪些 AI 來源」供前端做下拉。
+        // source 規則：未給＝只看 AI（Source != "web"）；"all"＝含人類網頁操作；其餘＝指定來源（權杖名）。
+        app.MapGet("/api/home/ai-activity", async (
+            HttpContext http,
+            ZonWikiDbContext db,
+            string? source,
+            string? entityType,
+            string? action,
+            string? q,
+            int? days,
+            int? take,
+            int? skip,
+            CancellationToken ct) =>
+        {
+            if (!TryUser(http, out var userGuid)) return Results.Unauthorized();
+            var dayWindow = days is >= 1 and <= 365 ? days.Value : 30;
+            var limit = take is >= 1 and <= 200 ? take.Value : 50;
+            var offset = skip is >= 0 ? skip.Value : 0;
+            var from = DateTime.UtcNow.AddDays(-dayWindow);
+
+            var baseQuery = db.ActivityLog
+                .Where(a => a.UserId == userGuid && a.ValidFlag && a.CreatedDateTime >= from);
+
+            if (string.IsNullOrWhiteSpace(source))
+            {
+                baseQuery = baseQuery.Where(a => a.Source != "web"); // 預設只看 AI
+            }
+            else if (!string.Equals(source, "all", StringComparison.OrdinalIgnoreCase))
+            {
+                baseQuery = baseQuery.Where(a => a.Source == source);
+            }
+
+            if (!string.IsNullOrWhiteSpace(entityType))
+            {
+                baseQuery = baseQuery.Where(a => a.EntityType == entityType);
+            }
+            if (!string.IsNullOrWhiteSpace(action))
+            {
+                baseQuery = baseQuery.Where(a => a.ActionType == action);
+            }
+            if (!string.IsNullOrWhiteSpace(q))
+            {
+                baseQuery = baseQuery.Where(a => EF.Functions.ILike(a.Title, $"%{q}%"));
+            }
+
+            var total = await baseQuery.CountAsync(ct);
+            var items = await baseQuery
+                .OrderByDescending(a => a.CreatedDateTime)
+                .Skip(offset)
+                .Take(limit)
+                .Select(a => new
+                {
+                    id = a.Id,
+                    source = a.Source,
+                    action = a.ActionType,
+                    entityType = a.EntityType,
+                    entityId = a.EntityId,
+                    title = a.Title,
+                    at = a.CreatedDateTime,
+                })
+                .ToListAsync(ct);
+
+            // 近窗內的 AI 來源清單（含筆數），供前端做來源下拉篩選。
+            var sources = await db.ActivityLog
+                .Where(a => a.UserId == userGuid && a.ValidFlag && a.CreatedDateTime >= from && a.Source != "web")
+                .GroupBy(a => a.Source)
+                .Select(g => new { source = g.Key, count = g.Count() })
+                .OrderByDescending(x => x.count)
+                .ToListAsync(ct);
+
+            return Results.Ok(new { success = true, data = new { items, total, sources } });
+        }).RequireAuthorization();
+
         // 刪除帳號（軟刪除）並立即登出
         app.MapDelete("/api/me", async (HttpContext http, ZonWikiDbContext db, CancellationToken ct) =>
         {

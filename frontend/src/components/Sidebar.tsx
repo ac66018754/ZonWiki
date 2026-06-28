@@ -37,6 +37,7 @@ const PROFILE_NAV: { href: string; label: string; icon: string; desc: string }[]
   { href: "/profile/stats", label: "統計數據", icon: "📊", desc: "筆記/任務/畫布等筆數" },
   { href: "/profile/activity", label: "活動紀錄", icon: "🕑", desc: "近 30 天操作明細" },
   { href: "/profile/tokens", label: "API 權杖", icon: "🔑", desc: "供 AI 助理存取的權杖" },
+  { href: "/profile/refine", label: "精煉成筆記", icon: "✨", desc: "轉錄引擎 / Groq 金鑰" },
   { href: "/profile/shortcuts", label: "快捷鍵", icon: "⌨️", desc: "自訂鍵盤快捷鍵" },
 ];
 

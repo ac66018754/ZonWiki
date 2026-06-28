@@ -95,7 +95,9 @@ public sealed record NoteSummaryDto(
     bool IsDraft,
     DateTime UpdatedDateTime,
     List<TagRefDto>? Categories = null,
-    List<TagRefDto>? Tags = null);
+    List<TagRefDto>? Tags = null,
+    DateTime CreatedDateTime = default,
+    DateTime? LastOpenedDateTime = null);
 
 /// <summary>
 /// 筆記詳細資料傳輸物件（含渲染後 HTML 與原始 Markdown，供閱讀與編輯）。

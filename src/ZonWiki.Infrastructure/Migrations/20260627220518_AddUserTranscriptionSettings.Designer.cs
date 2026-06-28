@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using ZonWiki.Infrastructure.Persistence;
@@ -11,9 +12,11 @@ using ZonWiki.Infrastructure.Persistence;
 namespace ZonWiki.Infrastructure.Migrations
 {
     [DbContext(typeof(ZonWikiDbContext))]
-    partial class ZonWikiDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260627220518_AddUserTranscriptionSettings")]
+    partial class AddUserTranscriptionSettings
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -1955,10 +1958,6 @@ namespace ZonWiki.Infrastructure.Migrations
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)")
                         .HasColumnName("Note_Kind");
-
-                    b.Property<DateTime?>("LastOpenedDateTime")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("Note_LastOpenedDateTime");
 
                     b.Property<DateTime?>("PurgedDateTime")
                         .HasColumnType("timestamp with time zone")

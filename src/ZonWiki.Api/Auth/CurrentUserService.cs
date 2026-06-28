@@ -66,4 +66,28 @@ public sealed class CurrentUserService : ICurrentUser
             return context?.User.Identity?.IsAuthenticated ?? false;
         }
     }
+
+    /// <inheritdoc />
+    public string Source
+    {
+        get
+        {
+            var context = _httpContextAccessor.HttpContext;
+            if (context?.User.Identity?.IsAuthenticated != true)
+            {
+                return "web";
+            }
+
+            // 由 API 權杖驗證的請求帶有 auth_method=api_token 與 token_name 宣告；
+            // 以權杖名稱作為來源（例如 "Claude Code"），讓活動紀錄能分辨是哪個 AI 操作。
+            var authMethod = context.User.FindFirst("auth_method")?.Value;
+            if (string.Equals(authMethod, "api_token", StringComparison.Ordinal))
+            {
+                var tokenName = context.User.FindFirst("token_name")?.Value;
+                return string.IsNullOrWhiteSpace(tokenName) ? "api" : tokenName;
+            }
+
+            return "web";
+        }
+    }
 }

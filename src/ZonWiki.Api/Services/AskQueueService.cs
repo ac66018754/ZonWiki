@@ -136,7 +136,7 @@ public sealed class AskQueueService
         var filterByStatus = !string.IsNullOrWhiteSpace(status) && validStatuses.Contains(status);
 
         // 驗證 kind 值（忽略無效值）。
-        var validKinds = new[] { "node", "floatingnote", "beautify", "reformat" };
+        var validKinds = new[] { "node", "floatingnote", "beautify", "reformat", "refine" };
         var filterByKind = !string.IsNullOrWhiteSpace(kind) && validKinds.Contains(kind);
 
         // 建立查詢。
@@ -169,8 +169,10 @@ public sealed class AskQueueService
         return results
             .Select(r =>
             {
+                // 精煉成筆記（下載+轉錄+整理）合理需要數分鐘，給較長的逾時門檻；其餘同步式 AI 工作維持 5 分鐘。
+                var staleThreshold = r.Session.Kind == "refine" ? 30 : StaleRunningMinutes;
                 var isStale = r.Session.Status == "Running"
-                    && (now - r.Session.CreatedDateTime).TotalMinutes > StaleRunningMinutes;
+                    && (now - r.Session.CreatedDateTime).TotalMinutes > staleThreshold;
                 var status = isStale ? "Failed" : r.Session.Status;
                 var errorText = isStale
                     ? "逾時（可能已中斷，未在時限內完成）"

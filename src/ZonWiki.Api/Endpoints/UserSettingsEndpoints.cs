@@ -39,7 +39,9 @@ public static class UserSettingsEndpoints
                 .Select(u => new UserSettingsDto(
                     DisplayMode: u.DisplayMode,
                     TimeZone: u.TimeZone,
-                    ShortcutsJson: u.ShortcutsJson))
+                    ShortcutsJson: u.ShortcutsJson,
+                    TranscriptionEngine: u.TranscriptionEngine,
+                    GroqKeySet: u.GroqApiKeyEncrypted != null && u.GroqApiKeyEncrypted != ""))
                 .FirstOrDefaultAsync(ct);
 
             if (user is null)
@@ -62,6 +64,7 @@ public static class UserSettingsEndpoints
         app.MapPut("/api/me/settings", async (
             ZonWikiDbContext db,
             HttpContext httpContext,
+            ZonWiki.Infrastructure.Ai.AiModelResolver keyResolver,
             UpdateUserSettingsRequest request,
             CancellationToken ct) =>
         {
@@ -78,6 +81,25 @@ public static class UserSettingsEndpoints
             if (user is null)
             {
                 return Results.NotFound(ApiResponse<UserSettingsDto>.Fail("使用者不存在", 404));
+            }
+
+            // 轉錄引擎（gemini / groq）
+            if (request.TranscriptionEngine != null)
+            {
+                var engine = request.TranscriptionEngine.Trim().ToLowerInvariant();
+                if (engine is not ("gemini" or "groq"))
+                {
+                    return Results.BadRequest(ApiResponse<UserSettingsDto>.Fail("無效的轉錄引擎（只接受 gemini 或 groq）", 400));
+                }
+                user.TranscriptionEngine = engine;
+            }
+
+            // Groq 金鑰：非 null 才動作。空字串＝清除；否則加密儲存（絕不回傳明碼）。
+            if (request.GroqApiKey != null)
+            {
+                user.GroqApiKeyEncrypted = request.GroqApiKey.Length == 0
+                    ? null
+                    : keyResolver.EncryptApiKey(request.GroqApiKey.Trim());
             }
 
             // 驗證與更新顯示模式
@@ -113,7 +135,9 @@ public static class UserSettingsEndpoints
             var resultDto = new UserSettingsDto(
                 DisplayMode: user.DisplayMode,
                 TimeZone: user.TimeZone,
-                ShortcutsJson: user.ShortcutsJson);
+                ShortcutsJson: user.ShortcutsJson,
+                TranscriptionEngine: user.TranscriptionEngine,
+                GroqKeySet: !string.IsNullOrEmpty(user.GroqApiKeyEncrypted));
 
             return Results.Ok(ApiResponse<UserSettingsDto>.Ok(resultDto));
         });

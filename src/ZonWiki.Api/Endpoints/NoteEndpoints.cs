@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using ZonWiki.Api.Auth;
 using ZonWiki.Domain.Common;
 using ZonWiki.Domain.Dtos;
 using ZonWiki.Infrastructure.Persistence;
@@ -54,11 +55,36 @@ public static class NoteEndpoints
                     n.NoteTags
                         .Where(nt => nt.ValidFlag && nt.Tag != null && nt.Tag.ValidFlag)
                         .Select(nt => new TagRefDto(nt.Tag!.Id, nt.Tag.Name))
-                        .ToList()))
+                        .ToList(),
+                    n.CreatedDateTime,
+                    n.LastOpenedDateTime))
                 .ToListAsync(ct);
 
             return Results.Ok(ApiResponse<List<NoteSummaryDto>>.Ok(items));
         });
+
+        // 標記筆記「最後打開時間」：前端開啟筆記詳情時呼叫。輕量、不寫版本、不動 UpdatedDateTime。
+        app.MapPost("/api/notes/{id:guid}/opened", async (
+            ZonWikiDbContext db,
+            HttpContext http,
+            Guid id,
+            CancellationToken ct) =>
+        {
+            var userIdClaim = http.User.FindFirst(AuthExtensions.UserIdClaimType)?.Value;
+            if (string.IsNullOrEmpty(userIdClaim) || !Guid.TryParse(userIdClaim, out var userGuid))
+            {
+                return Results.Json(ApiResponse<object>.Fail("Invalid user identity", 401), statusCode: 401);
+            }
+
+            // 直接 UPDATE，不載入實體（避免觸發版本/稽核流程）；ExecuteUpdate 不改 UpdatedDateTime。
+            var affected = await db.Note
+                .Where(n => n.Id == id && n.UserId == userGuid && n.ValidFlag)
+                .ExecuteUpdateAsync(s => s.SetProperty(n => n.LastOpenedDateTime, DateTime.UtcNow), ct);
+
+            return affected > 0
+                ? Results.Ok(ApiResponse<object>.Ok(new { id }))
+                : Results.NotFound(ApiResponse<object>.Fail("Note not found", 404));
+        }).RequireAuthorization();
 
         // 依 slug 取單篇筆記詳情。
         app.MapGet("/api/notes/{*slug}", async (

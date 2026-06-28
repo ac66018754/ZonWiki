@@ -6,10 +6,14 @@ namespace ZonWiki.Domain.Dtos;
 /// <param name="DisplayMode">顯示模式（"warmpaper"、"light"、"dark"、"night"）。</param>
 /// <param name="TimeZone">IANA 時區名稱（例如 "Asia/Taipei"），空字串代表跟隨裝置預設。</param>
 /// <param name="ShortcutsJson">快捷鍵自訂覆寫的 JSON 字串（{ "動作ID": "按鍵" }）；null 代表沿用預設。</param>
+/// <param name="TranscriptionEngine">「精煉成筆記」轉錄引擎："gemini"（預設）或 "groq"。</param>
+/// <param name="GroqKeySet">是否已設定 Groq 金鑰（true/false；<b>絕不</b>回傳金鑰本身）。</param>
 public sealed record UserSettingsDto(
     string DisplayMode,
     string TimeZone,
-    string? ShortcutsJson);
+    string? ShortcutsJson,
+    string TranscriptionEngine = "gemini",
+    bool GroqKeySet = false);
 
 /// <summary>
 /// 使用者設定更新請求（欄位皆選擇性）。
@@ -17,10 +21,14 @@ public sealed record UserSettingsDto(
 /// <param name="DisplayMode">新的顯示模式（可選）。</param>
 /// <param name="TimeZone">新的時區（可選）。</param>
 /// <param name="ShortcutsJson">新的快捷鍵覆寫 JSON（可選；傳空字串代表清除＝還原全部預設）。</param>
+/// <param name="TranscriptionEngine">轉錄引擎（"gemini" / "groq"；可選）。</param>
+/// <param name="GroqApiKey">新的 Groq 金鑰（可選）：非 null 才更新；傳空字串＝清除既有金鑰；金鑰會加密儲存。</param>
 public sealed record UpdateUserSettingsRequest(
     string? DisplayMode,
     string? TimeZone,
-    string? ShortcutsJson);
+    string? ShortcutsJson,
+    string? TranscriptionEngine = null,
+    string? GroqApiKey = null);
 
 /// <summary>
 /// 垃圾桶項目摘要資料傳輸物件（含型別、所屬模組、標題、內容預覽、刪除時間）。

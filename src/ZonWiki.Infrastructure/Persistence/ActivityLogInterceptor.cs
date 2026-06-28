@@ -57,6 +57,8 @@ public sealed class ActivityLogInterceptor : SaveChangesInterceptor
 
         var now = DateTime.UtcNow;
         var userKey = userId.ToString();
+        // 操作來源："web"（人類）或 API 權杖名稱（外部 AI，例如 "Claude Code"）。
+        var source = db.CurrentSource;
         var pending = new List<ActivityLog>();
 
         // 先收集，迴圈結束後再 AddRange，避免在列舉變更追蹤器時又改動它。
@@ -90,6 +92,7 @@ public sealed class ActivityLogInterceptor : SaveChangesInterceptor
                 EntityType = entityType,
                 EntityId = entityId,
                 Title = Truncate(title, 200),
+                Source = source,
                 CreatedDateTime = now,
                 UpdatedDateTime = now,
                 CreatedUser = userKey,

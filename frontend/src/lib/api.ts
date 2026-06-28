@@ -80,6 +80,10 @@ export interface UserSettings {
   displayMode: "warmpaper" | "light" | "dark" | "night";
   /** 快捷鍵自訂覆寫的 JSON 字串（{ "動作ID": "按鍵" }）；null/缺省＝沿用預設 */
   shortcutsJson?: string | null;
+  /** 「精煉成筆記」轉錄引擎："gemini"（預設）或 "groq" */
+  transcriptionEngine?: "gemini" | "groq";
+  /** 是否已設定 Groq 金鑰（唯讀；後端絕不回傳金鑰本身） */
+  groqKeySet?: boolean;
 }
 
 // ============================================================================
@@ -146,8 +150,12 @@ export interface NoteSummary {
   categoryId?: string | null;
   /** 所屬分類名稱 */
   categoryName?: string;
-  /** 更新時間 (UTC) */
+  /** 更新時間 (UTC) — 最後編輯時間 */
   updatedDateTime: string;
+  /** 建立時間 (UTC) */
+  createdDateTime?: string;
+  /** 最後打開（檢視）時間 (UTC，可空＝從未打開) */
+  lastOpenedDateTime?: string | null;
   /** 是否為草稿 */
   isDraft?: boolean;
   /** @deprecated 相容舊欄位名 */
@@ -659,6 +667,63 @@ export interface CreatedApiToken {
   info: ApiTokenInfo;
 }
 
+// ============================================================================
+// 首頁「AI 最近動作」— AI 透過 MCP/權杖對知識庫做的 CRUD 軌跡
+// ============================================================================
+
+/** 一筆 AI 操作軌跡。 */
+export interface AiActivityItem {
+  /** 紀錄 Id。 */
+  id: string;
+  /** 來源："web"（人）或權杖名稱（例如 "Claude Code"）。 */
+  source: string;
+  /** 動作：created / updated / deleted / restored。 */
+  action: string;
+  /** 實體型別：note / taskcard / subtask / node / capture / quicklink / prompt / aimodel。 */
+  entityType: string;
+  /** 實體 Id。 */
+  entityId: string;
+  /** 操作當下的標題（標題級）。 */
+  title: string;
+  /** 操作時間（UTC ISO；前端依時區顯示）。 */
+  at: string;
+}
+
+/** AI 操作軌跡查詢結果（含分頁總數與來源清單）。 */
+export interface AiActivityResult {
+  /** 本頁項目。 */
+  items: AiActivityItem[];
+  /** 符合條件的總筆數（分頁用）。 */
+  total: number;
+  /** 近窗內的 AI 來源清單（含筆數），供前端做來源下拉。 */
+  sources: { source: string; count: number }[];
+}
+
+/**
+ * 查詢「AI 最近動作」軌跡。
+ * @param opts 篩選條件（source 留空＝只看 AI；"all"＝含人類網頁；或指定來源名）。
+ */
+export async function getAiActivity(opts?: {
+  source?: string;
+  entityType?: string;
+  action?: string;
+  q?: string;
+  days?: number;
+  take?: number;
+  skip?: number;
+}): Promise<AiActivityResult> {
+  const params = new URLSearchParams();
+  if (opts?.source) params.append("source", opts.source);
+  if (opts?.entityType) params.append("entityType", opts.entityType);
+  if (opts?.action) params.append("action", opts.action);
+  if (opts?.q) params.append("q", opts.q);
+  if (opts?.days != null) params.append("days", String(opts.days));
+  if (opts?.take != null) params.append("take", String(opts.take));
+  if (opts?.skip != null) params.append("skip", String(opts.skip));
+  const r = await fetchJson<AiActivityResult>(`/api/home/ai-activity?${params}`);
+  return r.success && r.data ? r.data : { items: [], total: 0, sources: [] };
+}
+
 /**
  * 列出「我的」API 權杖（不含明碼）。
  */
@@ -725,6 +790,33 @@ export async function updateUserSettings(
     body: JSON.stringify(settings),
   });
   return r.data ?? null;
+}
+
+/**
+ * 更新「精煉成筆記」轉錄設定：引擎與（可選）Groq 金鑰。
+ * @param payload transcriptionEngine（gemini/groq）；groqApiKey（非 null 才更新；空字串＝清除）。
+ */
+export async function updateTranscriptionSettings(payload: {
+  transcriptionEngine?: "gemini" | "groq";
+  groqApiKey?: string;
+}): Promise<UserSettings | null> {
+  const r = await fetchJson<UserSettings>("/api/me/settings", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+  return r.data ?? null;
+}
+
+/**
+ * 「精煉成筆記」：丟一個 URL，後端非同步抓字幕/音訊轉錄後整理成分類筆記。
+ * 立即回傳（含 sessionId）；進度顯示在「AI 處理中」佇列。
+ */
+export async function refineUrl(url: string): Promise<{ ok: boolean; error?: string }> {
+  const r = await fetchJson<{ sessionId: string }>("/api/refine", {
+    method: "POST",
+    body: JSON.stringify({ url }),
+  });
+  return { ok: r.success, error: r.success ? undefined : r.error ?? undefined };
 }
 
 // ============================================================================
@@ -954,6 +1046,18 @@ export async function listNotes(params?: {
   const path = `/api/notes${query.toString() ? `?${query.toString()}` : ""}`;
   const r = await fetchJson<NoteSummary[]>(path);
   return r.data ?? [];
+}
+
+/**
+ * 標記筆記「最後打開時間」（開啟筆記詳情時呼叫；輕量、不影響編輯時間）。
+ * 失敗時靜默忽略（純排序輔助，不應打斷閱讀）。
+ */
+export async function markNoteOpened(noteId: string): Promise<void> {
+  try {
+    await fetchJson<{ id: string }>(`/api/notes/${noteId}/opened`, { method: "POST" });
+  } catch {
+    // 忽略
+  }
 }
 
 /**

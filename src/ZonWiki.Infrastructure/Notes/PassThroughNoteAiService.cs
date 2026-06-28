@@ -43,4 +43,15 @@ public sealed class PassThroughNoteAiService : INoteAiService
     {
         return Task.FromResult($"（尚未接上 AI）關於「{selectedText}」的問題：{question}");
     }
+
+    /// <summary>
+    /// Stub 實作：直接回傳內容（測試精煉流程的管線時用）。
+    /// </summary>
+    public Task<string> GenerateAsync(
+        string systemPrompt,
+        string userContent,
+        CancellationToken cancellationToken)
+    {
+        return Task.FromResult(userContent);
+    }
 }

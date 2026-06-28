@@ -56,6 +56,25 @@ export default function NotesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // 排序：最後打開 / 最後編輯 / 建立 時間，可正逆序；預設＝最後打開、逆序（最近打開在最前）。
+  const [sortBy, setSortBy] = useState<'opened' | 'updated' | 'created'>('opened');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+
+  // 依排序設定產生顯示用清單（前端排序；無該時間者排最後）。
+  const sortedNotes = useMemo(() => {
+    const keyOf = (n: NoteSummary) => {
+      const v =
+        sortBy === 'opened'
+          ? n.lastOpenedDateTime
+          : sortBy === 'created'
+            ? n.createdDateTime
+            : n.updatedDateTime;
+      return v ? new Date(v).getTime() : 0;
+    };
+    const arr = [...notes].sort((a, b) => keyOf(a) - keyOf(b));
+    return sortDir === 'desc' ? arr.reverse() : arr;
+  }, [notes, sortBy, sortDir]);
+
   // 編輯模式 + 本次批次標籤（皆持久化於 localStorage）
   const [editMode, setEditMode] = useState(false);
   const [batchTagId, setBatchTagId] = useState<string | null>(null);
@@ -242,13 +261,35 @@ export default function NotesPage() {
                 )}
               </p>
             </div>
-            <button
-              className={`notes-editbtn ${editMode ? 'notes-editbtn--on' : ''}`}
-              onClick={toggleEditMode}
-              title="編輯模式：開啟後可勾選筆記做批次操作（重整不會關閉，只有再次按此才關）"
-            >
-              {editMode ? '✓ 編輯模式：開' : '☑ 編輯模式'}
-            </button>
+            <div style={{ display: 'flex', gap: 'var(--spacing-2)', alignItems: 'center', flexWrap: 'wrap' }}>
+              {/* 排序方式（建立 / 最後編輯 / 最後打開）+ 方向 */}
+              <select
+                className="tk-input"
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as 'opened' | 'updated' | 'created')}
+                aria-label="排序方式"
+                style={{ width: 'auto' }}
+              >
+                <option value="opened">最後打開時間</option>
+                <option value="updated">最後編輯時間</option>
+                <option value="created">建立時間</option>
+              </select>
+              <button
+                className="tk-input"
+                onClick={() => setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))}
+                title="切換正序 / 逆序"
+                style={{ width: 'auto', cursor: 'pointer' }}
+              >
+                {sortDir === 'asc' ? '↑ 正序' : '↓ 逆序'}
+              </button>
+              <button
+                className={`notes-editbtn ${editMode ? 'notes-editbtn--on' : ''}`}
+                onClick={toggleEditMode}
+                title="編輯模式：開啟後可勾選筆記做批次操作（重整不會關閉，只有再次按此才關）"
+              >
+                {editMode ? '✓ 編輯模式：開' : '☑ 編輯模式'}
+              </button>
+            </div>
           </div>
 
           {/* 批次操作工具列（編輯模式且有選取時顯示） */}
@@ -303,8 +344,17 @@ export default function NotesPage() {
           </div>
         ) : (
           <div style={{ display: 'grid', gap: 'var(--spacing-3)' }}>
-            {notes.map((note) => {
+            {sortedNotes.map((note) => {
               const checked = selectedIdSet.has(note.id);
+              // 顯示的時間跟著「排序方式」走：選什麼排序，就顯示那個時間。
+              const sortTime =
+                sortBy === 'opened'
+                  ? note.lastOpenedDateTime
+                  : sortBy === 'created'
+                    ? note.createdDateTime
+                    : note.updatedDateTime;
+              const sortTimeLabel =
+                sortBy === 'opened' ? '最後打開' : sortBy === 'created' ? '建立' : '最後編輯';
               return (
                 <div key={note.id} className="note-row">
                   {editMode && (
@@ -373,7 +423,10 @@ export default function NotesPage() {
                         alignItems: 'center',
                       }}
                     >
-                      <span>⏱️ {formatNoteDateTime(note.updatedDateTime)}</span>
+                      <span>
+                        ⏱️ {sortTimeLabel}：
+                        {sortTime ? formatNoteDateTime(sortTime) : '—（未打開）'}
+                      </span>
                     </div>
                   </Link>
                 </div>

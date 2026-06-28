@@ -57,6 +57,12 @@ public class Note : AuditableEntity, IUserOwned
     public DateTime? JournalDate { get; set; }
 
     /// <summary>
+    /// 最後打開（檢視）時間（UTC，nullable）。供筆記清單依「最後打開時間」排序。
+    /// 由前端開啟筆記詳情時呼叫 POST /api/notes/{id}/opened 更新；不影響 UpdatedDateTime（編輯時間）。
+    /// </summary>
+    public DateTime? LastOpenedDateTime { get; set; }
+
+    /// <summary>
     /// 導覽屬性：此筆記的留言清單。
     /// </summary>
     public ICollection<Comment> Comments { get; set; } = new List<Comment>();
