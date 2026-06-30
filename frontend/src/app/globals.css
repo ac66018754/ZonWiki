@@ -1605,6 +1605,17 @@ button:disabled,
 .nt-actions:focus-within {
   opacity: 1;
 }
+/* 觸控裝置（無 hover 能力）：所有「平常 opacity:0、滑鼠移上去才出現」的操作鈕一律顯示，
+   否則手機/平板上 hover 只是「點一下閃一下」→ 永遠點不到那些鈕。
+   涵蓋：分類/標籤(.nt-actions)、子任務刪除(.tk-sub-del)、常用連結卡(.qls-card-actions)、篩選選項刪除(.tfp-del)。 */
+@media (hover: none) {
+  .nt-actions,
+  .tk-sub-del,
+  .qls-card-actions,
+  .tfp-del {
+    opacity: 1;
+  }
+}
 .nt-actions button {
   width: 24px;
   height: 24px;
