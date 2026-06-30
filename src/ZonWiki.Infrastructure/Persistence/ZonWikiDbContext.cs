@@ -1,3 +1,5 @@
+using System;
+using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore;
 using ZonWiki.Domain.Common;
 using ZonWiki.Domain.Entities;
@@ -120,11 +122,56 @@ public sealed class ZonWikiDbContext(
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(ZonWikiDbContext).Assembly);
         modelBuilder.ApplyZonWikiNamingConventions();
 
+        // 全站搜尋效能：啟用 pg_trgm 擴充並對「會被搜尋的文字欄位」建立 GIN trigram 索引。
+        // 讓 SearchEndpoints 的 ILIKE '%關鍵字%'（子字串、大小寫不敏感）能走索引，
+        // 而不是每次都對整張表做順序掃描（弱核 VM 上資料一多就明顯變慢）。
+        ConfigureSearchTrigramIndexes(modelBuilder);
+
         // 套用使用者隔離過濾：有登入使用者（或背景覆寫）時，對所有 IUserOwned 實體加過濾。
         // 注意傳入的是「值」(CurrentUserId)，會同時反映背景覆寫；遷移/設計階段兩者皆無 → 不加過濾。
         if (_currentUser != null || _userIdOverride.HasValue)
         {
             modelBuilder.ApplyUserIsolationFilters(CurrentUserId);
         }
+    }
+
+    /// <summary>
+    /// 設定全站搜尋用的 pg_trgm 擴充與 GIN trigram 索引。
+    /// 只針對 <c>SearchEndpoints</c> 實際會以 ILIKE 子字串搜尋的文字欄位建立索引，
+    /// 避免對其它欄位建立無謂的索引而增加寫入/維護成本。
+    /// </summary>
+    /// <param name="modelBuilder">EF Core 模型建構器。</param>
+    private static void ConfigureSearchTrigramIndexes(ModelBuilder modelBuilder)
+    {
+        // pg_trgm：提供 trigram 比對與「LIKE/ILIKE 可用 GIN 索引」的運算子類別 gin_trgm_ops。
+        modelBuilder.HasPostgresExtension("pg_trgm");
+
+        // 區域工具：為單一文字欄位建立一個 GIN trigram 索引（索引名稱顯式指定，方便辨識與維護）。
+        static void Trigram<TEntity>(
+            ModelBuilder builder,
+            Expression<Func<TEntity, object?>> column,
+            string indexName)
+            where TEntity : class =>
+            builder
+                .Entity<TEntity>()
+                .HasIndex(column)
+                .HasDatabaseName(indexName)
+                .HasMethod("gin")
+                .HasOperators("gin_trgm_ops");
+
+        // 筆記：標題 + 原始 Markdown 內容
+        Trigram<Note>(modelBuilder, note => note.Title, "IX_Note_Title_Trgm");
+        Trigram<Note>(modelBuilder, note => note.ContentRaw, "IX_Note_ContentRaw_Trgm");
+
+        // 任務卡片：標題 + 內容
+        Trigram<TaskCard>(modelBuilder, task => task.Title, "IX_TaskCard_Title_Trgm");
+        Trigram<TaskCard>(modelBuilder, task => task.Content, "IX_TaskCard_Content_Trgm");
+
+        // 畫布：標題
+        Trigram<Canvas>(modelBuilder, canvas => canvas.Title, "IX_Canvas_Title_Trgm");
+
+        // 開問啦節點：標題 + 內容
+        Trigram<Node>(modelBuilder, node => node.Title, "IX_Node_Title_Trgm");
+        Trigram<Node>(modelBuilder, node => node.Content, "IX_Node_Content_Trgm");
     }
 }
