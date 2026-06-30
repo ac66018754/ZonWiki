@@ -268,6 +268,19 @@ export function AiProcessingMenu() {
                       <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
                         {formatTime(item.createdDateTime)}
                       </span>
+                      {/* 後援鏈進行中：顯示目前正在嘗試哪一家供應者。 */}
+                      {item.status === 'Running' && item.currentProvider && (
+                        <span
+                          style={{
+                            fontSize: 'var(--text-xs)',
+                            fontWeight: 600,
+                            color: 'var(--accent-primary, #6366f1)',
+                          }}
+                          title="後援鏈目前嘗試的供應者"
+                        >
+                          📡 {item.currentProvider}
+                        </span>
+                      )}
                     </div>
                     <div
                       title={question}

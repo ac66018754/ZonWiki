@@ -193,7 +193,9 @@ public sealed class AskQueueService
                     CanvasId: r.Session.CanvasId,
                     AskNodeId: r.Session.AskNodeId,
                     CreatedDateTime: r.Session.CreatedDateTime,
-                    ErrorText: errorText);
+                    ErrorText: errorText,
+                    // Running 時帶「目前正在嘗試哪一家」（後援鏈），供小窗即時顯示；非 Running 為 null。
+                    CurrentProvider: status == "Running" ? r.Session.AiProvider : null);
             })
             .ToList()
             .AsReadOnly();
@@ -507,9 +509,9 @@ public sealed class AskQueueService
             string content;
             if (evt.StageKind == AiStageKind.AttemptStart)
             {
-                // 更新「目前供應者」供小窗顯示「目前：Claude (1/2)」。
+                // 更新「目前供應者」供小窗顯示「目前：Claude CLI」。（不動 AiModelId，避免污染其語意；
+                // 第幾次嘗試的細節保存在下方 stage AiMessage 內容，完整頁可看到歷程。）
                 session.AiProvider = evt.ProviderLabel;
-                session.AiModelId = evt.AttemptInChain?.ToString();
                 content = $"▶ 嘗試 {evt.ProviderLabel}（該家第 {evt.AttemptInProvider} 次；全鏈第 {evt.AttemptInChain}/6 次）";
             }
             else if (evt.StageKind == AiStageKind.AttemptFailed)
