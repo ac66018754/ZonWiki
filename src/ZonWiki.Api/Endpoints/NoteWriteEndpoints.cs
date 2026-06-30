@@ -922,7 +922,8 @@ public static class NoteWriteEndpoints
         HttpContext http,
         ZonWikiDbContext db,
         ILogger<object> logger,
-        CancellationToken ct)
+        int limit = 500,
+        CancellationToken ct = default)
     {
         // 若啟用驗證，只返回使用者自己的筆記與連結
         Guid? userId = null;
@@ -934,7 +935,11 @@ public static class NoteWriteEndpoints
 
         try
         {
-            // 取得所有有效筆記（若有使用者身分則過濾）
+            // 防爆量：知識圖最多回傳 N 個節點（取「最近更新」者），避免筆記一多就回傳 MB 級 JSON，
+            // 拖垮弱核 VM 的序列化成本與前端繪圖。預設 500，夾在 [1, 2000]。
+            var cappedLimit = Math.Clamp(limit, 1, 2000);
+
+            // 取得有效筆記（若有使用者身分則過濾），依最近更新排序後取前 N 筆
             var notesQuery = db.Note.Where(n => n.ValidFlag);
             if (userId.HasValue)
             {
@@ -942,6 +947,8 @@ public static class NoteWriteEndpoints
             }
 
             var nodes = await notesQuery
+                .OrderByDescending(n => n.UpdatedDateTime)
+                .Take(cappedLimit)
                 .Select(n => new GraphNodeDto(
                     n.Id,
                     n.Title,
@@ -949,7 +956,12 @@ public static class NoteWriteEndpoints
                     n.Kind))
                 .ToListAsync(ct);
 
-            // 取得所有連結（若有使用者身分則過濾）
+            // 連結保留規則：來源筆記須在本次節點集合內；目標若已解析（非 null）也須在集合內，
+            // 避免指向「被上限截斷」節點的懸空邊。未解析（target 為 null，即指向尚未建立的筆記）
+            // 的連結維持原行為照常回傳。未截斷（筆記數 < 上限）時，等同回傳全部有效連結。
+            var nodeIds = nodes.Select(n => n.Id).ToHashSet();
+
+            // 取得連結（若有使用者身分則過濾）
             var linksQuery = db.NoteLink.Where(nl => nl.ValidFlag);
             if (userId.HasValue)
             {
@@ -963,7 +975,12 @@ public static class NoteWriteEndpoints
                     nl.AnchorText))
                 .ToListAsync(ct);
 
-            var graph = new KnowledgeGraphDto(nodes, edges);
+            var prunedEdges = edges
+                .Where(edge => nodeIds.Contains(edge.SourceNoteId)
+                    && (!edge.TargetNoteId.HasValue || nodeIds.Contains(edge.TargetNoteId.Value)))
+                .ToList();
+
+            var graph = new KnowledgeGraphDto(nodes, prunedEdges);
 
             return Results.Ok(ApiResponse<KnowledgeGraphDto>.Ok(graph));
         }
