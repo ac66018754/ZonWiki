@@ -1616,6 +1616,31 @@ button:disabled,
     opacity: 1;
   }
 }
+/* 排序模式的「↑ 上移 / ↓ 下移 / ⤴ 移到頂層」小按鈕：手機無法做樹狀拖放，改用按鈕重排。 */
+.nt-sortbtn {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+}
+.nt-sortbtn:hover {
+  background: var(--bg-default);
+  color: var(--text-primary);
+}
+.nt-sortbtn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
 .nt-actions button {
   width: 24px;
   height: 24px;
