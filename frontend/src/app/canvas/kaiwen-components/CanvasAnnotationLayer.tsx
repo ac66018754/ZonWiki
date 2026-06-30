@@ -166,8 +166,8 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
       if (t?.closest('[data-draw-colorpop]') || t?.closest('[data-draw-colorbtn]')) return;
       setShowPenColor(false);
     };
-    document.addEventListener('mousedown', onDown, true);
-    return () => document.removeEventListener('mousedown', onDown, true);
+    document.addEventListener('pointerdown', onDown, true);
+    return () => document.removeEventListener('pointerdown', onDown, true);
   }, [showPenColor]);
 
   // 載入此畫布的所有標註。切換畫布時也重置繪圖工具與選取，避免把前一張畫布的
@@ -364,8 +364,8 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
       setShowTextFontPop(false);
       setShowTextBgPop(false);
     };
-    document.addEventListener('mousedown', onDown, true);
-    return () => document.removeEventListener('mousedown', onDown, true);
+    document.addEventListener('pointerdown', onDown, true);
+    return () => document.removeEventListener('pointerdown', onDown, true);
   }, [showTextFontPop, showTextBgPop]);
 
   // 屬性面板用：目前選取的文字框 + 其額外屬性。

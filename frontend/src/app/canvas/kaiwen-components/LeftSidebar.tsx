@@ -169,12 +169,12 @@ export function LeftSidebar({
       setIsDragging(false)
     }
 
-    document.addEventListener('mousemove', handleMouseMove)
-    document.addEventListener('mouseup', handleMouseUp)
+    document.addEventListener('pointermove', handleMouseMove)
+    document.addEventListener('pointerup', handleMouseUp)
 
     return () => {
-      document.removeEventListener('mousemove', handleMouseMove)
-      document.removeEventListener('mouseup', handleMouseUp)
+      document.removeEventListener('pointermove', handleMouseMove)
+      document.removeEventListener('pointerup', handleMouseUp)
     }
   }, [isDragging])
 
@@ -253,7 +253,7 @@ export function LeftSidebar({
         className={`absolute right-0 top-0 h-full w-1 cursor-col-resize hover:bg-[var(--kw-primary)] transition-colors ${
           isDragging ? 'bg-[var(--kw-primary)]' : 'bg-transparent'
         }`}
-        onMouseDown={handleDragStart}
+        onPointerDown={handleDragStart}
         title="拖曳以調整側欄寬度"
         data-testid="sidebar-resize-bar"
       />

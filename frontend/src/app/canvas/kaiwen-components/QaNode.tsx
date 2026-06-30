@@ -217,8 +217,8 @@ function QaNodeComponent({ data, selected }: NodeProps<QaRfNode>) {
       }
     }
 
-    document.addEventListener('mousedown', onDocMouseDown, true)
-    return () => document.removeEventListener('mousedown', onDocMouseDown, true)
+    document.addEventListener('pointerdown', onDocMouseDown, true)
+    return () => document.removeEventListener('pointerdown', onDocMouseDown, true)
   }, [selection])
 
   return (

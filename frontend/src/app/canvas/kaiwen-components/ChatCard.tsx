@@ -150,8 +150,8 @@ export function ChatCard({
       }
     }
 
-    document.addEventListener('mousedown', onDown, true)
-    return () => document.removeEventListener('mousedown', onDown, true)
+    document.addEventListener('pointerdown', onDown, true)
+    return () => document.removeEventListener('pointerdown', onDown, true)
   }, [imgMenu])
 
   /**
@@ -168,8 +168,8 @@ export function ChatCard({
       }
     }
 
-    document.addEventListener('mousedown', onDocMouseDown, true)
-    return () => document.removeEventListener('mousedown', onDocMouseDown, true)
+    document.addEventListener('pointerdown', onDocMouseDown, true)
+    return () => document.removeEventListener('pointerdown', onDocMouseDown, true)
   }, [selection])
 
   /**

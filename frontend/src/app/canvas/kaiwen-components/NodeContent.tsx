@@ -99,7 +99,7 @@ export function NodeContent({
       ref={containerRef}
       className="qa-content nodrag"
       data-testid="node-content"
-      onMouseUp={onMouseUp}
+      onPointerUp={onMouseUp}
       onClick={handleClick}
       onDoubleClick={onStartEdit}
     >
