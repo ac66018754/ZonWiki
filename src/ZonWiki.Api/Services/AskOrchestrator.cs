@@ -110,10 +110,10 @@ public sealed class AskOrchestrator
             }
 
             var question = askFrom.Content;
-            var resolvedProvider = await _factory.ResolveAsync(
-                userId,
-                askFrom.Model,
-                cancellationToken);
+            // 有選模型 → 用該單一供應者（不變）；沒選模型（預設）→ 走後援鏈。
+            var resolvedProvider = string.IsNullOrWhiteSpace(askFrom.Model)
+                ? await _factory.ResolveChainAsync(cancellationToken)
+                : await _factory.ResolveAsync(userId, askFrom.Model, cancellationToken);
 
             // 獲取祖先脈絡（不含自己）。限定在「本畫布」內追溯（canvasGuid 已驗證屬於目前使用者），
             // 避免 ParentId 越界把他人畫布的節點內容帶進提問脈絡（跨帳號外洩）。
@@ -390,10 +390,10 @@ public sealed class AskOrchestrator
                 return;
             }
 
-            var resolvedProvider = await _factory.ResolveAsync(
-                userId,
-                source.Model,
-                cancellationToken);
+            // 有選模型 → 用該單一供應者（不變）；沒選模型（預設）→ 走後援鏈。
+            var resolvedProvider = string.IsNullOrWhiteSpace(source.Model)
+                ? await _factory.ResolveChainAsync(cancellationToken)
+                : await _factory.ResolveAsync(userId, source.Model, cancellationToken);
 
             // 組建 Prompt：除了整份節點內容與框選文字，再附上祖先脈絡（修正「框選提問上下文太少」）。
             // 限定在本畫布內追溯，避免跨畫布/跨帳號外洩（與 RunNodeAskAsync 同策略）。
@@ -610,6 +610,10 @@ public sealed class AskOrchestrator
             _db.AiSession.Add(session);
             await _db.SaveChangesAsync(cancellationToken);
 
+            // 後援鏈階段記錄器：更新 session.AiProvider + 寫 stage AiMessage（與框選提問共用同一套）。
+            // 單一供應者（有選模型）不會發 Stage 事件，故此回呼自然不觸發。
+            var onStage = AskQueueService.BuildStageRecorder(_db, session, cancellationToken);
+
             // 串流 AI 回應
             await foreach (var evt in resolved.Provider.StreamAsync(
                 prompt,
@@ -620,6 +624,22 @@ public sealed class AskOrchestrator
             {
                 switch (evt.Type)
                 {
+                    case AiStreamEventType.Stage:
+                        // 記錄階段（哪家/第幾次/失敗錯誤）。
+                        await onStage(evt);
+                        // 後援鏈「失敗清空重試」：開始新一次嘗試時，若前一家已逐字串出內容，
+                        // 通知前端清空該節點已顯示內容，再從新一家重新逐字。
+                        if (evt.StageKind == AiStageKind.AttemptStart && accumulated.Length > 0)
+                        {
+                            _hub.Publish(canvasId, "NodeStreaming", new
+                            {
+                                NodeId = answer.Id.ToString(),
+                                Reset = true,
+                            });
+                            accumulated.Clear();
+                        }
+                        break;
+
                     case AiStreamEventType.Delta:
                         accumulated.Append(evt.Text);
                         _hub.Publish(canvasId, "NodeStreaming", new

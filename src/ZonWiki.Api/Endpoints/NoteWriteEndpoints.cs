@@ -8,6 +8,7 @@ using ZonWiki.Api.Services;
 using ZonWiki.Domain.Common;
 using ZonWiki.Domain.Dtos;
 using ZonWiki.Domain.Entities;
+using ZonWiki.Infrastructure.Ai;
 using ZonWiki.Infrastructure.Notes;
 using ZonWiki.Infrastructure.Persistence;
 
@@ -197,7 +198,7 @@ public static class NoteWriteEndpoints
                 "floatingnote",
                 question,
                 selected,
-                ctk => aiService.AskAboutAsync(context, question, ctk),
+                (onStage, ctk) => aiService.AskAboutAsync(context, question, ctk, onStage),
                 ct);
             return Results.Ok(ApiResponse<AskSelectionAnswerDto>.Ok(new AskSelectionAnswerDto(answer)));
         }
@@ -1003,7 +1004,7 @@ public static class NoteWriteEndpoints
         AiTransformRequest request,
         CancellationToken ct)
         => await TransformNoteContentAsync(http, db, queueService, logger, id, request, ct,
-            (content) => aiService.ReformatAsync(content, ct), "reformat");
+            (content, onStage) => aiService.ReformatAsync(content, ct, onStage), "reformat");
 
     // ==================== AI Beautify ====================
 
@@ -1017,7 +1018,7 @@ public static class NoteWriteEndpoints
         AiTransformRequest request,
         CancellationToken ct)
         => await TransformNoteContentAsync(http, db, queueService, logger, id, request, ct,
-            (content) => aiService.BeautifyAsync(content, ct), "beautify");
+            (content, onStage) => aiService.BeautifyAsync(content, ct, onStage), "beautify");
 
     /// <summary>
     /// AI 排版／美化共用處理：對「請求帶來的目前內容」做轉換並回傳結果，
@@ -1041,7 +1042,7 @@ public static class NoteWriteEndpoints
         Guid id,
         AiTransformRequest request,
         CancellationToken ct,
-        Func<string, Task<string>> transform,
+        Func<string, Func<AiStreamEvent, Task>, Task<string>> transform,
         string opName)
     {
         var userId = ExtractUserId(http);
@@ -1079,7 +1080,7 @@ public static class NoteWriteEndpoints
                 opName,
                 label,
                 null,
-                _ => transform(input),
+                (onStage, _) => transform(input, onStage),
                 ct);
             var html = Markdown.ToHtml(transformed, NoteContentHelpers.MarkdownPipeline);
 
