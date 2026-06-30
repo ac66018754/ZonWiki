@@ -17,6 +17,8 @@ import { RefineInputSection } from "@/components/RefineInputSection";
 import { CaptureFilingModal } from "@/components/CaptureFilingModal";
 import { TaskListView } from "@/app/tasks/components/TaskListView";
 import { TaskEditorModal } from "@/app/tasks/components/TaskEditorModal";
+import { QuickCreateTaskModal } from "@/app/tasks/components/QuickCreateTaskModal";
+import { NoteCreateModal } from "@/components/NoteCreateModal";
 import { formatTargetPeriod, isTaskOverdue } from "@/app/tasks/taskUtils";
 import {
   formatDateTime as formatDateTimeUtil,
@@ -91,6 +93,12 @@ export function HomePageClient({ user }: HomePageClientProps) {
   // data 無樂觀更新（新增/刪除捕捉後一律重抓），故直接使用 SWR 資料。
   const { data, isLoading: loading, mutate: mutateHome } = useHomePage();
   const [error, setError] = useState<string | null>(null);
+
+  // 首頁「快速操作列」狀態：精煉/快速記錄是否展開、新增任務/筆記彈窗是否開啟。
+  const [showRefine, setShowRefine] = useState(false);
+  const [showCapture, setShowCapture] = useState(false);
+  const [newTaskOpen, setNewTaskOpen] = useState(false);
+  const [newNoteOpen, setNewNoteOpen] = useState(false);
 
   // 快速捕捉狀態
   const [captureInput, setCaptureInput] = useState("");
@@ -622,6 +630,39 @@ export function HomePageClient({ user }: HomePageClientProps) {
           })()}
         </section>
 
+        {/* 快速操作列（在「我的任務」之上）：待辦/筆記直接開彈窗；精煉/快速記錄點了才展開區塊。 */}
+        <div
+          style={{
+            display: "flex",
+            gap: "var(--spacing-2)",
+            flexWrap: "wrap",
+            marginBottom: "var(--spacing-5)",
+          }}
+        >
+          <button className="home-quickbtn" onClick={() => setNewTaskOpen(true)} title="快速新增待辦">
+            ＋ 待辦
+          </button>
+          <button className="home-quickbtn" onClick={() => setNewNoteOpen(true)} title="快速新增筆記">
+            ＋ 筆記
+          </button>
+          <button
+            className={`home-quickbtn ${showRefine ? "home-quickbtn--on" : ""}`}
+            onClick={() => setShowRefine((v) => !v)}
+            aria-expanded={showRefine}
+            title="精煉成筆記（貼連結或上傳影音 → AI 整理成分類筆記）"
+          >
+            ✨ 精煉成筆記
+          </button>
+          <button
+            className={`home-quickbtn ${showCapture ? "home-quickbtn--on" : ""}`}
+            onClick={() => setShowCapture((v) => !v)}
+            aria-expanded={showCapture}
+            title="快速記錄（打字或錄音速記）"
+          >
+            ⚡ 快速記錄
+          </button>
+        </div>
+
         {/* 我的任務（釘選到首頁的任務；可在任務編輯彈窗或這裡取消釘選） */}
         {(data.pinnedTasks?.length ?? 0) > 0 && (
           <section className="home-section">
@@ -722,13 +763,14 @@ export function HomePageClient({ user }: HomePageClientProps) {
         {/* 常用連結卡（分類 + 共用標籤） */}
         <QuickLinksSection links={data.quickLinks} onChanged={reloadHome} />
 
-        {/* 精煉成筆記：貼連結 → AI 整理成分類筆記 */}
-        <RefineInputSection />
+        {/* 精煉成筆記：點上方「✨ 精煉成筆記」按鈕才展開（貼連結或上傳影音 → AI 整理成分類筆記） */}
+        {showRefine && <RefineInputSection />}
 
         {/* AI 最近動作（外部 AI 透過 MCP/權杖對知識庫做的 CRUD 軌跡） */}
         <AiActivitySection />
 
-        {/* 快速捕捉 */}
+        {/* 快速捕捉：點上方「⚡ 快速記錄」按鈕才展開 */}
+        {showCapture && (
         <section className="home-section">
           <h2
             style={{
@@ -963,6 +1005,7 @@ export function HomePageClient({ user }: HomePageClientProps) {
             </div>
           )}
         </section>
+        )}
       </div>
 
       {/* 捕捉分流彈窗（點最近記錄開啟：上 1/3 原文、下 2/3 新增筆記/Todo + 過去衍生清單） */}
@@ -970,6 +1013,27 @@ export function HomePageClient({ user }: HomePageClientProps) {
         capture={filingCapture}
         onClose={() => setFilingCapture(null)}
         onChanged={reloadHome}
+      />
+
+      {/* 快速新增待辦 / 筆記彈窗（由上方「快速操作列」的「＋ 待辦」「＋ 筆記」開啟） */}
+      <QuickCreateTaskModal
+        initial={newTaskOpen ? { plannedDateTime: null, dueDateTime: null } : null}
+        groups={taskGroups}
+        user={user}
+        onClose={() => setNewTaskOpen(false)}
+        onCreated={() => {
+          setNewTaskOpen(false);
+          reloadHome();
+          reloadTasks();
+        }}
+      />
+      <NoteCreateModal
+        open={newNoteOpen}
+        onClose={() => setNewNoteOpen(false)}
+        onCreated={() => {
+          setNewNoteOpen(false);
+          reloadHome();
+        }}
       />
 
       {/* 任務檢視/編輯彈窗（首頁本週行程的卡片點擊開啟）；關閉後重抓任務以同步變更 */}

@@ -28,6 +28,7 @@ import { NoteCreateModal } from "./NoteCreateModal";
 import { MobileSectionNav } from "./MobileSectionNav";
 import { TasksShortcutHints } from "./TasksShortcutHints";
 import { closeMobileNav } from "@/lib/mobileNav";
+import { SHORTCUT_ACTION_EVENT } from "@/lib/shortcuts";
 
 /**
  * 個人頁面（/profile）子頁導覽項目。各子頁各自載入自己的資料。
@@ -124,6 +125,20 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
     window.addEventListener("zonwiki:note-categorized", onCategorized);
     return () => window.removeEventListener("zonwiki:note-categorized", onCategorized);
   }, [loadNotes]);
+
+  // 筆記頁快捷鍵「A」→ 開「新增筆記」彈窗。ShortcutRuntime 在 /notes 派發 SHORTCUT_ACTION_EVENT，
+  // 側欄在所有頁面常駐、又擁有新增筆記彈窗，故由它統一接收並開啟。
+  useEffect(() => {
+    const onShortcut = (e: Event) => {
+      const actionId = (e as CustomEvent<{ actionId?: string }>).detail?.actionId;
+      if (actionId === "newNote") {
+        setPresetCatForNewNote([]);
+        setShowCreateModal(true);
+      }
+    };
+    window.addEventListener(SHORTCUT_ACTION_EVENT, onShortcut);
+    return () => window.removeEventListener(SHORTCUT_ACTION_EVENT, onShortcut);
+  }, []);
 
   // 切換路由（例如新增/刪除/編輯筆記後導覽）時，刷新樹中的筆記清單，保持與內容一致。
   useEffect(() => {

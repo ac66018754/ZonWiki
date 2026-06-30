@@ -277,7 +277,7 @@ function AiQueueInner() {
                 載入中…
               </div>
             ) : listError ? (
-              <div style={{ padding: "var(--spacing-4)", color: "var(--status-error-fg)", fontSize: "var(--text-sm)" }}>
+              <div style={{ padding: "var(--spacing-4)", color: "var(--status-danger-fg)", fontSize: "var(--text-sm)" }}>
                 {listError}
               </div>
             ) : items.length === 0 ? (
@@ -363,7 +363,7 @@ function AiQueueInner() {
           ) : detailLoading ? (
             <div style={{ color: "var(--text-secondary)", fontSize: "var(--text-sm)" }}>載入明細中…</div>
           ) : detailError ? (
-            <div style={{ color: "var(--status-error-fg)", fontSize: "var(--text-sm)" }}>{detailError}</div>
+            <div style={{ color: "var(--status-danger-fg)", fontSize: "var(--text-sm)" }}>{detailError}</div>
           ) : detail ? (
             <DetailPanel detail={detail} tz={tz} onGoToSource={() => goToSource(detail)} onGoToAnswer={() =>
               detail.answerNoteSlug && router.push(`/notes/${encodeURIComponent(detail.answerNoteSlug)}`)
@@ -514,7 +514,7 @@ function Section({
         style={{
           fontSize: "var(--text-xs)",
           fontWeight: 700,
-          color: tone === "error" ? "var(--status-error-fg)" : "var(--text-secondary)",
+          color: tone === "error" ? "var(--status-danger-fg)" : "var(--text-secondary)",
           marginBottom: 4,
         }}
       >
@@ -529,7 +529,10 @@ function Section({
 const preStyle: React.CSSProperties = {
   margin: 0,
   padding: "var(--spacing-3)",
-  background: "var(--bg-base, var(--bg-secondary, #f6f6f7))",
+  // 用會「隨主題變色」的變數（暗色/夜間是深底），而非固定的淺色 #f6f6f7——否則暗色模式變成
+  // 淺底＋淺字、完全看不清（錯誤訊息/prompt/log 四個區塊都吃這個樣式）。加邊框增加區塊辨識度。
+  background: "var(--bg-surface-secondary)",
+  border: "1px solid var(--border-default)",
   borderRadius: "var(--radius-md)",
   fontSize: "var(--text-xs)",
   fontFamily: "var(--font-mono, ui-monospace, monospace)",

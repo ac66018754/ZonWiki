@@ -1641,6 +1641,30 @@ button:disabled,
   opacity: 0.3;
   cursor: default;
 }
+/* 首頁「快速操作列」按鈕（＋待辦／＋筆記／✨精煉成筆記／⚡快速記錄）；展開中的切換鈕加 --on 反白。 */
+.home-quickbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  padding: var(--spacing-2) var(--spacing-4);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+.home-quickbtn:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-default);
+}
+.home-quickbtn--on {
+  border-color: var(--action-primary-bg);
+  background: var(--action-primary-bg);
+  color: var(--action-primary-fg);
+}
 .nt-actions button {
   width: 24px;
   height: 24px;

@@ -11,7 +11,7 @@ import { getUserSettings, updateUserSettings } from "./api";
  */
 
 /** 快捷鍵作用範圍。 */
-export type ShortcutScope = "global" | "tasks";
+export type ShortcutScope = "global" | "tasks" | "notes";
 
 /**
  * 單一快捷鍵動作的定義。
@@ -29,7 +29,8 @@ export interface ShortcutAction {
 
 /**
  * 內建快捷鍵動作清單（含預設鍵）。
- * 預設鍵全部互異，避免在 Todo 頁（global 與 tasks 同時生效）相撞。
+ * 預設鍵在「同一頁會同時生效的範圍」內互異即可——tasks 與 notes 是不同頁、不會同時生效，
+ * 故可共用同一鍵（例如日程規劃與筆記都用 A 來「新增」）。衝突判定見 findConflicts（依範圍判斷）。
  */
 export const SHORTCUT_ACTIONS: readonly ShortcutAction[] = [
   // ── 全域（任何頁面皆可用）──
@@ -45,13 +46,30 @@ export const SHORTCUT_ACTIONS: readonly ShortcutAction[] = [
   { id: "calWeek", scope: "tasks", label: "行事曆－週檢視", defaultKey: "w" },
   { id: "calDay", scope: "tasks", label: "行事曆－日檢視", defaultKey: "d" },
   { id: "newTodo", scope: "tasks", label: "彈出「新增任務」表單", defaultKey: "a" },
+  // ── 筆記頁專用 ──
+  { id: "newNote", scope: "notes", label: "彈出「新增筆記」表單", defaultKey: "a" },
 ];
 
 /** scope → 顯示用中文標題（快捷鍵設定頁分區用）。 */
 export const SHORTCUT_SCOPE_LABEL: Record<ShortcutScope, string> = {
   global: "全域（任何頁面）",
   tasks: "Todo 頁（日程規劃）",
+  notes: "筆記頁",
 };
+
+/**
+ * 各「頁面情境」會同時生效的範圍集合。global 在每個情境都生效；tasks 只在 Todo 頁、
+ * notes 只在筆記頁。用於判斷兩個動作是否「可能同時生效而相撞」。
+ */
+const PAGE_CONTEXTS: readonly ShortcutScope[][] = [
+  ["global", "tasks"],
+  ["global", "notes"],
+];
+
+/** 兩個範圍是否「會在同一頁同時生效」（存在某情境同時包含兩者）。 */
+function scopesCoexist(a: ShortcutScope, b: ShortcutScope): boolean {
+  return PAGE_CONTEXTS.some((ctx) => ctx.includes(a) && ctx.includes(b));
+}
 
 /** 事件：快捷鍵覆寫已更新 → 通知執行器與側欄重新載入並套用。 */
 export const SHORTCUTS_UPDATED_EVENT = "zonwiki:shortcuts-updated";
@@ -114,24 +132,23 @@ export function serializeOverrides(overrides: ShortcutOverrides): string {
 }
 
 /**
- * 偵測按鍵衝突。由於 Todo 頁同時生效 global 與 tasks，故跨全部動作統一判定：
- * 任兩個動作共用同一鍵即為衝突。
+ * 偵測按鍵衝突（依範圍判斷）：只有「會在同一頁同時生效」的兩個動作共用同鍵才算衝突。
+ * 例如 newTodo(tasks) 與 newNote(notes) 都用 A，但分屬不同頁、不會同時生效 → 不算衝突；
+ * global 與任一頁面範圍共存，故 global 的鍵與任何 tasks/notes 鍵相同仍算衝突。
  * @param overrides 覆寫對應表。
- * @returns 動作 ID → 與它同鍵的其他動作 ID 陣列（無衝突者不入表）。
+ * @returns 動作 ID → 與它衝突的其他動作 ID 陣列（無衝突者不入表）。
  */
 export function findConflicts(overrides: ShortcutOverrides): Record<string, string[]> {
-  const byKey = new Map<string, string[]>();
-  for (const action of SHORTCUT_ACTIONS) {
-    const key = effectiveKey(action, overrides);
-    const list = byKey.get(key) ?? [];
-    list.push(action.id);
-    byKey.set(key, list);
-  }
   const conflicts: Record<string, string[]> = {};
-  for (const ids of byKey.values()) {
-    if (ids.length > 1) {
-      for (const id of ids) conflicts[id] = ids.filter((other) => other !== id);
-    }
+  for (const a of SHORTCUT_ACTIONS) {
+    const keyA = effectiveKey(a, overrides);
+    const others = SHORTCUT_ACTIONS.filter(
+      (b) =>
+        b.id !== a.id &&
+        effectiveKey(b, overrides) === keyA &&
+        scopesCoexist(a.scope, b.scope),
+    ).map((b) => b.id);
+    if (others.length > 0) conflicts[a.id] = others;
   }
   return conflicts;
 }
