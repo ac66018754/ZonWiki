@@ -4,18 +4,13 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import {
-  listNotes,
-  listNoteCategories,
-  listNoteTags,
   createNoteTag,
   addNoteTag,
   removeNoteTag,
   type NoteSummary,
-  type NoteCategory,
   type NoteTag,
-  type CurrentUser,
-  getCurrentUser,
 } from '@/lib/api';
+import { useCurrentUser, useNotes, useNoteCategories, useNoteTags } from '@/lib/swr';
 import { formatDateTime } from '@/lib/formatters';
 import { DEFAULT_TIMEZONE, NOTE_DND_MIME } from '@/lib/constants';
 import { SkeletonListItem } from '@/components/Skeleton';
@@ -49,12 +44,34 @@ export default function NotesPage() {
   const selectedCategoryId = searchParams.get('categoryId');
   const selectedTagId = searchParams.get('tagId');
 
-  const [user, setUser] = useState<CurrentUser | null>(null);
+  // 客戶端快取（SWR）：切走再切回此頁直接吃快取、瞬間顯示，背景再靜默重抓。
+  const { data: userData } = useCurrentUser();
+  const {
+    data: notesData,
+    error: notesError,
+    isLoading: notesLoading,
+    mutate: mutateNotes,
+  } = useNotes(selectedCategoryId, selectedTagId);
+  const { data: catData, mutate: mutateCats } = useNoteCategories();
+  const { data: tagData, mutate: mutateTags } = useNoteTags();
+
+  const user = userData ?? null;
+  const categories = catData ?? [];
+
+  // notes / tags 仍保留本地 state 承載「樂觀更新」（勾選即時加/移標籤），
+  // 並在 SWR 取得新資料時同步 seed（hybrid：SWR 管快取＋重抓，本地 state 管樂觀 UI）。
   const [notes, setNotes] = useState<NoteSummary[]>([]);
-  const [categories, setCategories] = useState<NoteCategory[]>([]);
+  useEffect(() => {
+    if (notesData) setNotes(notesData);
+  }, [notesData]);
   const [tags, setTags] = useState<NoteTag[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (tagData) setTags(tagData);
+  }, [tagData]);
+
+  // 只有「首次載入且尚無資料」才顯示骨架；keepPreviousData 下背景重抓不會閃骨架。
+  const loading = notesLoading && notes.length === 0;
+  const error = notesError ? '無法載入筆記清單，請稍後重試。' : null;
 
   // 排序：最後打開 / 最後編輯 / 建立 時間，可正逆序；預設＝最後打開、逆序（最近打開在最前）。
   const [sortBy, setSortBy] = useState<'opened' | 'updated' | 'created'>('opened');
@@ -87,40 +104,19 @@ export default function NotesPage() {
     setBatchTagId(localStorage.getItem(LS_BATCH_TAG));
   }, []);
 
-  const load = useCallback(async () => {
-    try {
-      setLoading(true);
-      const [currentUser, notesList, catList, tagList] = await Promise.all([
-        getCurrentUser(),
-        listNotes({
-          categoryId: selectedCategoryId || undefined,
-          tagId: selectedTagId || undefined,
-        }),
-        listNoteCategories(),
-        listNoteTags(),
-      ]);
-      setUser(currentUser);
-      setNotes(notesList);
-      setCategories(catList);
-      setTags(tagList);
-      setError(null);
-    } catch {
-      setError('無法載入筆記清單，請稍後重試。');
-    } finally {
-      setLoading(false);
-    }
-  }, [selectedCategoryId, selectedTagId]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
+  /** 重新整理清單（撤銷 SWR 快取並重抓 notes / 分類 / 標籤）。SWR 會在掛載/參數變更時自動抓取，故毋須額外 useEffect 觸發。 */
+  const reload = useCallback(() => {
+    mutateNotes();
+    mutateCats();
+    mutateTags();
+  }, [mutateNotes, mutateCats, mutateTags]);
 
   // 監聽「筆記被拖入某分類」事件（由側欄發出）→ 重新載入，更新分類筆記數與目前篩選
   useEffect(() => {
-    const onCategorized = () => load();
+    const onCategorized = () => reload();
     window.addEventListener('zonwiki:note-categorized', onCategorized);
     return () => window.removeEventListener('zonwiki:note-categorized', onCategorized);
-  }, [load]);
+  }, [reload]);
 
   const formatNoteDateTime = (dateStr: string) =>
     formatDateTime(dateStr, user?.timeZone || DEFAULT_TIMEZONE);
@@ -168,6 +164,7 @@ export default function NotesPage() {
           setBatchTagId(tagId);
           localStorage.setItem(LS_BATCH_TAG, tagId);
           setTags((prev) => [...prev, created]);
+          mutateTags();
         } else {
           tagName = tags.find((t) => t.id === tagId)?.name ?? '批次';
         }
@@ -180,6 +177,7 @@ export default function NotesPage() {
             n.id === note.id ? { ...n, tags: [...(n.tags ?? []), { id: tid, name: tagName }] } : n
           )
         );
+        mutateNotes();
       } else {
         const tid = batchTagId;
         if (!tid) return;
@@ -191,6 +189,7 @@ export default function NotesPage() {
             n.id === note.id ? { ...n, tags: (n.tags ?? []).filter((t) => t.id !== tid) } : n
           )
         );
+        mutateNotes();
       }
     } finally {
       setToggling(false);
@@ -298,7 +297,7 @@ export default function NotesPage() {
               selected={selectedNotes}
               categories={categories}
               tags={tags}
-              onReload={load}
+              onReload={reload}
               onResetBatch={() => {
                 // 批次刪除後：成員已不在，清掉本次批次標籤指標（下次勾選會建新的一組）。
                 setBatchTagId(null);
