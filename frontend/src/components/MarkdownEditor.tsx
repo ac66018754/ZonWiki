@@ -1,8 +1,9 @@
 "use client";
 
-import { useRef, useState, type ComponentPropsWithoutRef } from "react";
+import { useMemo, useRef, useState, type ComponentPropsWithoutRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { parseToggleSegments, TOGGLE_SNIPPET } from "@/lib/toggleBlocks";
 
 /**
  * 預覽中的程式碼區塊：包一層容器並加上「複製」按鈕。
@@ -40,6 +41,41 @@ function PreWithCopy(props: ComponentPropsWithoutRef<"pre"> & { node?: unknown }
       </button>
       <pre {...rest}>{children}</pre>
     </div>
+  );
+}
+
+/**
+ * 摺疊區塊感知的 Markdown 預覽。
+ *
+ * 把內容切成「一般 Markdown 段」與「toggle 段」：一般段交給 react-markdown，
+ * toggle 段渲染成真正的 <details>（原生摺疊），內文再遞迴渲染以支援巢狀 toggle。
+ * 安全性：標題為純文字（React 自動轉義）、內文走 react-markdown（未啟用 raw HTML），故無 XSS。
+ * 與後端 Markdig 的 :::toggle 渲染對齊，編輯預覽與實際閱讀檢視外觀一致。
+ */
+function ToggleAwareMarkdown({ value }: { value: string }) {
+  // 只在 value 改變時重新解析（切換檢視等其他重繪不必重跑）。
+  const segments = useMemo(() => parseToggleSegments(value), [value]);
+  return (
+    <>
+      {segments.map((seg, i) => {
+        // 以「型別＋位置＋內容前綴」當 key：內容變動（如重排 toggle）時會換 key →
+        // 重新掛載並套用各自宣告的預設展開狀態，避免 index key 把舊 DOM 展開狀態錯位到新元素。
+        const keyHint = (seg.type === "toggle" ? seg.title : seg.text).slice(0, 24);
+        const key = `${seg.type}-${i}-${keyHint}`;
+        return seg.type === "toggle" ? (
+          <details key={key} className="md-toggle" open={seg.open}>
+            <summary className="md-toggle-summary">{seg.title || "詳細內容"}</summary>
+            <div className="md-toggle-body">
+              <ToggleAwareMarkdown value={seg.body} />
+            </div>
+          </details>
+        ) : (
+          <ReactMarkdown key={key} remarkPlugins={[remarkGfm]} components={{ pre: PreWithCopy }}>
+            {seg.text}
+          </ReactMarkdown>
+        );
+      })}
+    </>
   );
 }
 
@@ -203,6 +239,7 @@ export function MarkdownEditor({
     { label: "`", title: "行內程式碼", run: () => wrap("`", "`", "code") },
     { label: "</>", title: "程式碼區塊", run: codeBlock },
     { label: "⊞", title: "表格", run: () => insertBlock("| 欄位 1 | 欄位 2 |\n| --- | --- |\n| 內容 | 內容 |") },
+    { label: "▸", title: "摺疊區塊（Notion 式 toggle：點標題可摺疊／展開）", run: () => insertBlock(TOGGLE_SNIPPET) },
     { label: "🖼", title: "插入圖片（選檔上傳；也可直接貼上剪貼簿圖片）", run: () => fileInputRef.current?.click() },
     { label: "―", title: "分隔線", run: () => insertBlock("---") },
     { label: "🔗", title: "連結", run: () => wrap("[", "](url)", "文字") },
@@ -276,9 +313,7 @@ export function MarkdownEditor({
         {showPreview && (
           <div className="mde-preview md-preview" style={{ minHeight }}>
             {value.trim() ? (
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ pre: PreWithCopy }}>
-                {value}
-              </ReactMarkdown>
+              <ToggleAwareMarkdown value={value} />
             ) : (
               <span className="mde-muted">預覽會顯示在這裡…</span>
             )}

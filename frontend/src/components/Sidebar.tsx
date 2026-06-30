@@ -28,6 +28,7 @@ import { NoteCreateModal } from "./NoteCreateModal";
 import { MobileSectionNav } from "./MobileSectionNav";
 import { TasksShortcutHints } from "./TasksShortcutHints";
 import { closeMobileNav } from "@/lib/mobileNav";
+import { SHORTCUT_ACTION_EVENT } from "@/lib/shortcuts";
 
 /**
  * 個人頁面（/profile）子頁導覽項目。各子頁各自載入自己的資料。
@@ -124,6 +125,20 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
     window.addEventListener("zonwiki:note-categorized", onCategorized);
     return () => window.removeEventListener("zonwiki:note-categorized", onCategorized);
   }, [loadNotes]);
+
+  // 筆記頁快捷鍵「A」→ 開「新增筆記」彈窗。ShortcutRuntime 在 /notes 派發 SHORTCUT_ACTION_EVENT，
+  // 側欄在所有頁面常駐、又擁有新增筆記彈窗，故由它統一接收並開啟。
+  useEffect(() => {
+    const onShortcut = (e: Event) => {
+      const actionId = (e as CustomEvent<{ actionId?: string }>).detail?.actionId;
+      if (actionId === "newNote") {
+        setPresetCatForNewNote([]);
+        setShowCreateModal(true);
+      }
+    };
+    window.addEventListener(SHORTCUT_ACTION_EVENT, onShortcut);
+    return () => window.removeEventListener(SHORTCUT_ACTION_EVENT, onShortcut);
+  }, []);
 
   // 切換路由（例如新增/刪除/編輯筆記後導覽）時，刷新樹中的筆記清單，保持與內容一致。
   useEffect(() => {
@@ -392,6 +407,31 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
     } catch (err) {
       setError(err instanceof Error ? err.message : "排序標籤失敗");
     }
+  };
+
+  // ── 觸控友善的「↑/↓ 上下移」與「⤴ 移到頂層」：手機無法做樹狀拖放，故在排序模式提供按鈕，
+  //    皆沿用上面的 reorderCategorySibling / reorderTagSibling / reparentCategory 邏輯。──
+  /** 把分類在「同層兄弟」中往上移一位（與前一個兄弟對調）。 */
+  const moveCategoryUp = (cat: NoteCategory) => {
+    const sibs = childrenOf(cat.parentId ?? null);
+    const i = sibs.findIndex((c) => c.id === cat.id);
+    if (i > 0) reorderCategorySibling(cat.id, sibs[i - 1].id, "before");
+  };
+  /** 把分類在「同層兄弟」中往下移一位。 */
+  const moveCategoryDown = (cat: NoteCategory) => {
+    const sibs = childrenOf(cat.parentId ?? null);
+    const i = sibs.findIndex((c) => c.id === cat.id);
+    if (i >= 0 && i < sibs.length - 1) reorderCategorySibling(cat.id, sibs[i + 1].id, "after");
+  };
+  /** 把標籤往上移一位。 */
+  const moveTagUp = (tagId: string) => {
+    const i = tags.findIndex((t) => t.id === tagId);
+    if (i > 0) reorderTagSibling(tagId, tags[i - 1].id, "before");
+  };
+  /** 把標籤往下移一位。 */
+  const moveTagDown = (tagId: string) => {
+    const i = tags.findIndex((t) => t.id === tagId);
+    if (i >= 0 && i < tags.length - 1) reorderTagSibling(tagId, tags[i + 1].id, "after");
   };
 
   // 把一篇筆記加入某分類（來自筆記清單頁的拖曳；冪等）
@@ -830,6 +870,11 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
   const renderNode = (cat: NoteCategory, depth: number): React.ReactNode => {
     const kids = childrenOf(cat.id);
     const catNotes = notesOf(cat.id);
+    // 同層兄弟（供排序模式「↑/↓」按鈕判斷是否已在頭/尾）。
+    const siblings = childrenOf(cat.parentId ?? null);
+    const sibIdx = siblings.findIndex((c) => c.id === cat.id);
+    const isFirstSibling = sibIdx <= 0;
+    const isLastSibling = sibIdx >= siblings.length - 1;
     // 有子分類或底下有筆記 → 可展開（顯示三角形、點名稱可收合）。
     const expandable = kids.length > 0 || catNotes.length > 0;
     const isCollapsed = collapsed.has(cat.id);
@@ -924,8 +969,50 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
           }}
         >
           {sortMode && (
-            <span className="nt-drag-handle" title="拖曳：上下＝調順序、中間＝變子分類">
-              ⠿
+            <span className="nt-sort-controls" style={{ display: "inline-flex", alignItems: "center", gap: 2 }}>
+              <span className="nt-drag-handle" title="桌機可拖曳：上下＝調順序、中間＝變子分類；手機請用右側按鈕">
+                ⠿
+              </span>
+              <button
+                className="nt-sortbtn"
+                title="上移"
+                aria-label="上移此分類"
+                disabled={isFirstSibling}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  moveCategoryUp(cat);
+                }}
+              >
+                ↑
+              </button>
+              <button
+                className="nt-sortbtn"
+                title="下移"
+                aria-label="下移此分類"
+                disabled={isLastSibling}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  moveCategoryDown(cat);
+                }}
+              >
+                ↓
+              </button>
+              {(cat.parentId ?? null) !== null && (
+                <button
+                  className="nt-sortbtn"
+                  title="移到頂層（取消子分類）"
+                  aria-label="移到頂層"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    reparentCategory(cat.id, null);
+                  }}
+                >
+                  ⤴
+                </button>
+              )}
             </span>
           )}
           {expandable ? (
@@ -1138,7 +1225,7 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
               <div className="nt-sort-hint">排序模式：拖曳標籤調整順序（上半＝插到前、下半＝插到後）。</div>
             )}
             {tagEditor && tagEditor.mode === "add" && renderTagEditor()}
-            {tags.map((tag) => {
+            {tags.map((tag, tagIdx) => {
               const isSelected = selectedTagId === tag.id;
               return (
                 <div key={tag.id}>
@@ -1188,8 +1275,34 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
                     }
                   >
                     {sortMode ? (
-                      <span className="nt-drag-handle" title="拖曳調整順序">
-                        ⠿
+                      <span className="nt-sort-controls" style={{ display: "inline-flex", alignItems: "center", gap: 2 }}>
+                        <span className="nt-drag-handle" title="桌機可拖曳調整順序；手機請用右側按鈕">
+                          ⠿
+                        </span>
+                        <button
+                          className="nt-sortbtn"
+                          title="上移"
+                          aria-label="上移此標籤"
+                          disabled={tagIdx <= 0}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            moveTagUp(tag.id);
+                          }}
+                        >
+                          ↑
+                        </button>
+                        <button
+                          className="nt-sortbtn"
+                          title="下移"
+                          aria-label="下移此標籤"
+                          disabled={tagIdx >= tags.length - 1}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            moveTagDown(tag.id);
+                          }}
+                        >
+                          ↓
+                        </button>
                       </span>
                     ) : (
                       <span className="nt-caret nt-caret--spacer" />

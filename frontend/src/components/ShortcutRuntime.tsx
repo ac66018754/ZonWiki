@@ -87,6 +87,17 @@ export function ShortcutRuntime() {
         window.dispatchEvent(
           new CustomEvent(SHORTCUT_ACTION_EVENT, { detail: { actionId: action.id } })
         );
+        return;
+      }
+
+      // notes 動作：僅在筆記頁觸發，派發 SHORTCUT_ACTION_EVENT 交給處理者
+      //（newNote 由側欄監聽 → 開「新增筆記」彈窗；側欄在所有頁面常駐）。
+      if (action.scope === "notes") {
+        if (!(pathRef.current ?? "").startsWith("/notes")) return;
+        event.preventDefault();
+        window.dispatchEvent(
+          new CustomEvent(SHORTCUT_ACTION_EVENT, { detail: { actionId: action.id } })
+        );
       }
     };
     window.addEventListener("keydown", onKey);

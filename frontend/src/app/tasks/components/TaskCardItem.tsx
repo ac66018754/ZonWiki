@@ -1,7 +1,8 @@
 "use client";
 
-import { useRef } from "react";
 import { TaskCard, TaskGroup, CurrentUser } from "@/lib/api";
+import { useDraggable } from "@dnd-kit/core";
+import { CSS } from "@dnd-kit/utilities";
 import {
   FALLBACK_TZ,
   PRIORITY_META,
@@ -24,10 +25,7 @@ export function TaskCardItem({
   task,
   group,
   user,
-  isDragged,
   collapsed,
-  onDragStart,
-  onDragEnd,
   onOpen,
   onToggleDone,
   onToggleCollapse,
@@ -36,10 +34,7 @@ export function TaskCardItem({
   task: TaskCard;
   group: TaskGroup | null;
   user: CurrentUser | null;
-  isDragged: boolean;
   collapsed: boolean;
-  onDragStart: () => void;
-  onDragEnd: () => void;
   onOpen: (id: string) => void;
   onToggleDone: (task: TaskCard) => void;
   onToggleCollapse: (taskId: string) => void;
@@ -54,27 +49,15 @@ export function TaskCardItem({
   const total = task.subTaskTotal ?? 0;
   const priorityMeta = PRIORITY_META[task.priority ?? 0];
 
-  // 區分「拖曳」與「點擊」：拖曳後短時間內忽略 onClick，避免拖完誤觸開啟彈窗。
-  const draggedRef = useRef(false);
+  // 拖曳能力由 @dnd-kit 提供：listeners 只掛在「⠿」把手上，卡片本體照常可點（開啟）/捲動，
+  // 觸控時不會「碰到卡片就被當成拖曳」。拖到其他欄位即由看板的 onDragEnd 改變狀態。
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, isDragging } =
+    useDraggable({ id: task.id });
 
   return (
     <div
-      draggable
-      onDragStart={() => {
-        draggedRef.current = true;
-        onDragStart();
-      }}
-      onDragEnd={() => {
-        onDragEnd();
-        // 在 onClick 之後再清除旗標（onClick 緊接 dragend 觸發時才會被擋下）。
-        setTimeout(() => {
-          draggedRef.current = false;
-        }, 0);
-      }}
-      onClick={() => {
-        if (draggedRef.current) return;
-        onOpen(task.id);
-      }}
+      ref={setNodeRef}
+      onClick={() => onOpen(task.id)}
       className={[
         "tk-card",
         overdue ? "tk-card--overdue" : "",
@@ -84,12 +67,33 @@ export function TaskCardItem({
         .join(" ")}
       style={{
         background: "var(--bg-elevated)",
-        cursor: isDragged ? "grabbing" : "grab",
-        opacity: isDragged ? 0.5 : 1,
-        boxShadow: isDragged ? "var(--shadow-lg)" : undefined,
+        cursor: "pointer",
+        transform: CSS.Translate.toString(transform),
+        opacity: isDragging ? 0.5 : 1,
+        boxShadow: isDragging ? "var(--shadow-lg)" : undefined,
+        zIndex: isDragging ? 50 : undefined,
+        position: isDragging ? "relative" : undefined,
       }}
     >
       <div className="tk-card-top">
+        <span
+          ref={setActivatorNodeRef}
+          className="tk-card-drag-handle"
+          title="拖曳到其他欄位改變狀態（手機長按把手拖曳）"
+          style={{
+            touchAction: "none",
+            cursor: "grab",
+            color: "var(--text-tertiary)",
+            fontSize: "var(--text-sm)",
+            lineHeight: 1,
+            userSelect: "none",
+          }}
+          onClick={(e) => e.stopPropagation()}
+          {...attributes}
+          {...listeners}
+        >
+          ⠿
+        </span>
         <input
           type="checkbox"
           className="tk-card-check"

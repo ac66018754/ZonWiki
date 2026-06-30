@@ -48,8 +48,8 @@ export function NotificationCenter({
     const onDown = (e: MouseEvent) => {
       if (!ref.current?.contains(e.target as Node)) setOpen(false)
     }
-    document.addEventListener('mousedown', onDown, true)
-    return () => document.removeEventListener('mousedown', onDown, true)
+    document.addEventListener('pointerdown', onDown, true)
+    return () => document.removeEventListener('pointerdown', onDown, true)
   }, [open, onMarkAllRead])
 
   // 把毫秒時間戳轉成 ISO 字串供 formatDateTime 使用（依使用者時區顯示）

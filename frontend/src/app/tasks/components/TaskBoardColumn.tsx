@@ -1,6 +1,7 @@
 "use client";
 
 import { TaskCard, TaskGroup, CurrentUser } from "@/lib/api";
+import { useDroppable } from "@dnd-kit/core";
 import { TaskCardItem } from "./TaskCardItem";
 import { STATUS_META, isTaskOverdue } from "../taskUtils";
 
@@ -12,11 +13,7 @@ export function TaskBoardColumn({
   tasks,
   groups,
   user,
-  draggedTaskId,
   collapsedTaskIds,
-  onDragStart,
-  onDragEnd,
-  onDrop,
   onOpen,
   onToggleDone,
   onToggleCollapse,
@@ -26,11 +23,7 @@ export function TaskBoardColumn({
   tasks: TaskCard[];
   groups: TaskGroup[];
   user: CurrentUser | null;
-  draggedTaskId: string | null;
   collapsedTaskIds: Set<string>;
-  onDragStart: (taskId: string) => void;
-  onDragEnd: () => void;
-  onDrop: () => void;
   onOpen: (id: string) => void;
   onToggleDone: (task: TaskCard) => void;
   onToggleCollapse: (taskId: string) => void;
@@ -41,28 +34,21 @@ export function TaskBoardColumn({
   const overdueCount =
     status === "done" ? 0 : tasks.filter((t) => isTaskOverdue(t)).length;
 
+  // 此欄為 @dnd-kit 放置目標；isOver（卡片拖到此欄上方）時加深底色提示「放這裡」。
+  const { setNodeRef, isOver } = useDroppable({ id: status });
+
   return (
     <div
+      ref={setNodeRef}
       style={{
         borderRadius: "var(--radius-md)",
         border: "1px solid var(--border-default)",
-        background: "var(--bg-surface)",
+        background: isOver ? "var(--action-secondary-bg)" : "var(--bg-surface)",
         padding: "var(--spacing-4)",
         minHeight: "420px",
         display: "flex",
         flexDirection: "column",
-      }}
-      onDragOver={(e) => {
-        e.preventDefault();
-        e.currentTarget.style.background = "var(--action-secondary-bg)";
-      }}
-      onDragLeave={(e) => {
-        e.currentTarget.style.background = "var(--bg-surface)";
-      }}
-      onDrop={(e) => {
-        e.preventDefault();
-        e.currentTarget.style.background = "var(--bg-surface)";
-        onDrop();
+        transition: "background 0.12s ease",
       }}
     >
       <div
@@ -109,10 +95,7 @@ export function TaskBoardColumn({
               task={task}
               group={groups.find((g) => g.id === task.groupId) || null}
               user={user}
-              isDragged={draggedTaskId === task.id}
               collapsed={collapsedTaskIds.has(task.id)}
-              onDragStart={() => onDragStart(task.id)}
-              onDragEnd={onDragEnd}
               onOpen={onOpen}
               onToggleDone={onToggleDone}
               onToggleCollapse={onToggleCollapse}

@@ -80,15 +80,20 @@ export function NoteMarksLayer({ noteId, containerRef, contentHtml, active }: Pr
     const el = containerRef.current;
     if (!el || !active) return;
 
-    const onMouseUp = () => {
-      // 點到既有標註不視為新框選。
-      const info = captureSelection(el);
-      if (!info) return;
-      const range = window.getSelection()?.getRangeAt(0);
-      if (range) {
+    // 框選結束 → 跳出標註浮窗。用 pointerup（涵蓋滑鼠／觸控／觸控筆）而非 mouseup，
+    // 否則手機/平板觸控時根本不觸發 → 行動裝置無法畫重點/做關聯/寫備註/提問。
+    // 行動瀏覽器在 pointerup 當下「選取」有時尚未定案，故延後一拍再讀取。
+    const onPointerUp = () => {
+      window.setTimeout(() => {
+        // 點到既有標註不視為新框選。
+        const info = captureSelection(el);
+        if (!info) return;
+        const selection = window.getSelection();
+        if (!selection || selection.rangeCount === 0) return;
+        const range = selection.getRangeAt(0);
         setHlMarkId(null); // 新的一次選取 → 下次選色建立新的重點
         setSel({ ...info, rect: range.getBoundingClientRect() });
-      }
+      }, 0);
     };
 
     const onOver = (e: Event) => {
@@ -116,13 +121,41 @@ export function NoteMarksLayer({ noteId, containerRef, contentHtml, active }: Pr
       scheduleHideHover();
     };
 
-    el.addEventListener('mouseup', onMouseUp);
+    // 觸控沒有 hover：點一下標註 → 顯示同一個浮窗（檢視關聯/備註、移除重點）；點到非標註處 → 收起。
+    // 桌機照常以 hover（mouseover/out）為主，這個 click 只是補上觸控可達性，兩者不衝突。
+    const onMarkTap = (e: Event) => {
+      const target = (e.target as HTMLElement)?.closest('[data-mark-id]') as HTMLElement | null;
+      if (!target || !el.contains(target)) {
+        setHover(null);
+        return;
+      }
+      const ids: string[] = [];
+      let cur: HTMLElement | null = target;
+      while (cur && cur !== el) {
+        const id = cur.getAttribute('data-mark-id');
+        if (id) ids.push(id);
+        cur = cur.parentElement;
+      }
+      if (ids.length === 0) {
+        setHover(null);
+        return;
+      }
+      if (hideTimer.current) {
+        window.clearTimeout(hideTimer.current);
+        hideTimer.current = null;
+      }
+      setHover({ markIds: ids, rect: target.getBoundingClientRect() });
+    };
+
+    el.addEventListener('pointerup', onPointerUp);
     el.addEventListener('mouseover', onOver);
     el.addEventListener('mouseout', onOut);
+    el.addEventListener('click', onMarkTap);
     return () => {
-      el.removeEventListener('mouseup', onMouseUp);
+      el.removeEventListener('pointerup', onPointerUp);
       el.removeEventListener('mouseover', onOver);
       el.removeEventListener('mouseout', onOut);
+      el.removeEventListener('click', onMarkTap);
       if (hideTimer.current) {
         window.clearTimeout(hideTimer.current);
         hideTimer.current = null;
@@ -410,13 +443,13 @@ function NoteSelectionPopover({
     };
   }, [tab, q, noteId]);
 
-  // 點浮窗外關閉。
+  // 點/觸浮窗外關閉。用 pointerdown（涵蓋觸控）讓行動裝置也能點外面關閉。
   useEffect(() => {
-    const onDown = (e: MouseEvent) => {
+    const onDown = (e: Event) => {
       if (!(e.target as HTMLElement)?.closest('[data-note-sel-popover]')) onClose();
     };
-    document.addEventListener('mousedown', onDown, true);
-    return () => document.removeEventListener('mousedown', onDown, true);
+    document.addEventListener('pointerdown', onDown, true);
+    return () => document.removeEventListener('pointerdown', onDown, true);
   }, [onClose]);
 
   const top = Math.min(window.innerHeight - 160, rect.bottom + 6);

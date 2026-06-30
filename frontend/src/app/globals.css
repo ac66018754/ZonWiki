@@ -914,6 +914,79 @@ html[data-route="login"] .main-content {
   overflow-wrap: anywhere;
 }
 
+/* ===========================================================================
+   摺疊區塊（Notion 式 toggle）：:::toggle 標題 … :::  → 原生 <details class="md-toggle">
+   全域定義，閱讀檢視（.markdown-prose 注入 HTML）與編輯預覽（.md-preview）外觀一致。
+   原生 <details> 由瀏覽器負責摺疊／展開，零 JavaScript。
+   =========================================================================== */
+.md-toggle {
+  margin: var(--spacing-3) 0;
+  border-radius: var(--radius-md);
+}
+
+/* 摘要列＝可點擊的標題；移除原生三角標記，改用自訂可旋轉箭頭。 */
+.md-toggle > .md-toggle-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-1);
+  padding: 4px 8px;
+  font-weight: 600;
+  color: var(--text-primary);
+  border-radius: var(--radius-sm);
+  list-style: none;
+  user-select: none;
+  /* cursor:pointer 由全域 summary 規則提供。 */
+}
+
+.md-toggle > .md-toggle-summary::-webkit-details-marker {
+  display: none;
+}
+
+.md-toggle > .md-toggle-summary::before {
+  content: "▸";
+  display: inline-block;
+  flex-shrink: 0;
+  width: 1em;
+  font-size: 0.85em;
+  color: var(--text-tertiary, var(--text-secondary));
+  transition: transform 0.15s ease;
+}
+
+/* 展開時箭頭轉 90 度（▸ → ▾）。 */
+.md-toggle[open] > .md-toggle-summary::before {
+  transform: rotate(90deg);
+}
+
+.md-toggle > .md-toggle-summary:hover {
+  background: var(--bg-surface-secondary);
+}
+
+/* 內文：縮排對齊標題文字（箭頭寬 + 間距），巢狀時自然逐層縮排。 */
+.md-toggle-body {
+  padding-left: 22px;
+  margin: 2px 0 4px;
+  border-left: 2px solid var(--border-default);
+  margin-left: 7px;
+}
+
+/* 內文段落上下邊距收斂，避免摺疊區塊內留白過大。 */
+.md-toggle-body > :first-child {
+  margin-top: var(--spacing-1);
+}
+.md-toggle-body > :last-child {
+  margin-bottom: 0;
+}
+
+/* 列印（匯出 PDF）時盡量讓摺疊內容顯示，避免內容遺漏。 */
+@media print {
+  .md-toggle > .md-toggle-summary::before {
+    transform: rotate(90deg);
+  }
+  .md-toggle .md-toggle-body {
+    display: block !important;
+  }
+}
+
 /* Header 導覽項目的快捷鍵提示（如「日程規劃 (T)」）。可在顯示設定中開關。 */
 .nav-hint {
   margin-left: 2px;
@@ -1604,6 +1677,66 @@ button:disabled,
 .nt-row:hover .nt-actions,
 .nt-actions:focus-within {
   opacity: 1;
+}
+/* 觸控裝置（無 hover 能力）：所有「平常 opacity:0、滑鼠移上去才出現」的操作鈕一律顯示，
+   否則手機/平板上 hover 只是「點一下閃一下」→ 永遠點不到那些鈕。
+   涵蓋：分類/標籤(.nt-actions)、子任務刪除(.tk-sub-del)、常用連結卡(.qls-card-actions)、篩選選項刪除(.tfp-del)。 */
+@media (hover: none) {
+  .nt-actions,
+  .tk-sub-del,
+  .qls-card-actions,
+  .tfp-del {
+    opacity: 1;
+  }
+}
+/* 排序模式的「↑ 上移 / ↓ 下移 / ⤴ 移到頂層」小按鈕：手機無法做樹狀拖放，改用按鈕重排。 */
+.nt-sortbtn {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+}
+.nt-sortbtn:hover {
+  background: var(--bg-default);
+  color: var(--text-primary);
+}
+.nt-sortbtn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+/* 首頁「快速操作列」按鈕（＋待辦／＋筆記／✨精煉成筆記／⚡快速記錄）；展開中的切換鈕加 --on 反白。 */
+.home-quickbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  padding: var(--spacing-2) var(--spacing-4);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+.home-quickbtn:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-default);
+}
+.home-quickbtn--on {
+  border-color: var(--action-primary-bg);
+  background: var(--action-primary-bg);
+  color: var(--action-primary-fg);
 }
 .nt-actions button {
   width: 24px;

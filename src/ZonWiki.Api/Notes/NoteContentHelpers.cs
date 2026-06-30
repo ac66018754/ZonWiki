@@ -12,10 +12,13 @@ internal static class NoteContentHelpers
 {
     /// <summary>
     /// Markdown 渲染管線（禁用 raw HTML 以防 XSS）。
+    /// 另啟用「摺疊區塊（Notion 式 toggle）」：<c>:::toggle 標題 … :::</c> → 原生 &lt;details&gt;。
+    /// 註：UseZonWikiToggles 必須在 UseAdvancedExtensions 之後，才能替換自訂容器的輸出器。
     /// </summary>
     public static readonly MarkdownPipeline MarkdownPipeline = new MarkdownPipelineBuilder()
         .UseAdvancedExtensions()
         .UseAutoLinks()
+        .UseZonWikiToggles()
         .DisableHtml()
         .Build();
 
