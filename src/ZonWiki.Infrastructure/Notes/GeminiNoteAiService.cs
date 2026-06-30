@@ -61,8 +61,11 @@ public sealed class GeminiNoteAiService : INoteAiService
     /// <param name="contentRaw">原始 Markdown 內容。</param>
     /// <param name="cancellationToken">取消權杖。</param>
     /// <returns>排版後的 Markdown 全文。</returns>
-    public Task<string> ReformatAsync(string contentRaw, CancellationToken cancellationToken) =>
-        TransformAsync(ReformatSystemPrompt, contentRaw, cancellationToken);
+    public Task<string> ReformatAsync(
+        string contentRaw,
+        CancellationToken cancellationToken,
+        Func<AiStreamEvent, Task>? onStage = null) =>
+        TransformAsync(ReformatSystemPrompt, contentRaw, cancellationToken, onStage);
 
     /// <summary>
     /// 內容美化：保留原意下潤飾措辭、結構與可讀性。
@@ -70,27 +73,38 @@ public sealed class GeminiNoteAiService : INoteAiService
     /// <param name="contentRaw">原始 Markdown 內容。</param>
     /// <param name="cancellationToken">取消權杖。</param>
     /// <returns>美化後的 Markdown 全文。</returns>
-    public Task<string> BeautifyAsync(string contentRaw, CancellationToken cancellationToken) =>
-        TransformAsync(BeautifySystemPrompt, contentRaw, cancellationToken);
+    public Task<string> BeautifyAsync(
+        string contentRaw,
+        CancellationToken cancellationToken,
+        Func<AiStreamEvent, Task>? onStage = null) =>
+        TransformAsync(BeautifySystemPrompt, contentRaw, cancellationToken, onStage);
 
     /// <summary>
     /// 框選提問：以選取文字為脈絡回答問題（Markdown）。
     /// </summary>
-    public Task<string> AskAboutAsync(string selectedText, string question, CancellationToken cancellationToken)
+    public Task<string> AskAboutAsync(
+        string selectedText,
+        string question,
+        CancellationToken cancellationToken,
+        Func<AiStreamEvent, Task>? onStage = null)
     {
         const string askSystem =
             "你是一位知識助理。使用者會提供一段「選取的文字」與一個「問題」，" +
             "請主要依據該段文字、必要時輔以你的知識，用繁體中文、清楚的 Markdown 回答問題。" +
             "可用標題、清單、表格、程式碼區塊；只輸出回答內容本身，不要重述問題、不要用 ``` 把整篇包起來。";
         var prompt = $"選取的文字：\n「{selectedText}」\n\n問題：{question}";
-        return TransformAsync(askSystem, prompt, cancellationToken);
+        return TransformAsync(askSystem, prompt, cancellationToken, onStage);
     }
 
     /// <summary>
     /// 通用文字生成：直接以自訂系統提示 + 內容呼叫供應者（重用 TransformAsync 流程）。
     /// </summary>
-    public Task<string> GenerateAsync(string systemPrompt, string userContent, CancellationToken cancellationToken) =>
-        TransformAsync(systemPrompt, userContent, cancellationToken);
+    public Task<string> GenerateAsync(
+        string systemPrompt,
+        string userContent,
+        CancellationToken cancellationToken,
+        Func<AiStreamEvent, Task>? onStage = null) =>
+        TransformAsync(systemPrompt, userContent, cancellationToken, onStage);
 
     /// <summary>
     /// 共用流程：解析供應者 → 以系統提示 + 內容串流呼叫 → 累積完整結果 → 去除外層 ``` 圍欄。
@@ -102,7 +116,8 @@ public sealed class GeminiNoteAiService : INoteAiService
     private async Task<string> TransformAsync(
         string systemPrompt,
         string contentRaw,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<AiStreamEvent, Task>? onStage = null)
     {
         // 空內容直接回傳，省一次 API 呼叫。
         if (string.IsNullOrWhiteSpace(contentRaw))
@@ -110,8 +125,8 @@ public sealed class GeminiNoteAiService : INoteAiService
             return contentRaw;
         }
 
-        // modelKey = null → 取全站共用預設模型（banana-gemini-lite）。userId 在此情境不影響解析。
-        var resolved = await _factory.ResolveAsync(Guid.Empty, modelKey: null, cancellationToken);
+        // 走「後援鏈」：Claude → Google AI Studio → banana（取代原本單一共用預設）。
+        var resolved = await _factory.ResolveChainAsync(cancellationToken);
 
         var accumulated = new StringBuilder();
         string? completedText = null;
@@ -126,6 +141,18 @@ public sealed class GeminiNoteAiService : INoteAiService
         {
             switch (evt.Type)
             {
+                case AiStreamEventType.Stage:
+                    // 通知呼叫端（寫佇列）；AttemptStart 代表「換新一次嘗試」→ 丟棄前一次失敗殘留的累積。
+                    if (onStage is not null)
+                    {
+                        await onStage(evt);
+                    }
+                    if (evt.StageKind == AiStageKind.AttemptStart)
+                    {
+                        accumulated.Clear();
+                        completedText = null;
+                    }
+                    break;
                 case AiStreamEventType.Delta:
                     accumulated.Append(evt.Text);
                     break;

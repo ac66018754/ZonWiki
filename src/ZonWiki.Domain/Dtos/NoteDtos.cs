@@ -258,6 +258,7 @@ public sealed record AskSelectionAnswerDto(string Answer);
 /// <param name="AskNodeId">提問來源節點識別碼（node 提問時有值；可空）。</param>
 /// <param name="CreatedDateTime">建立時間（UTC；佇列排序用）。</param>
 /// <param name="ErrorText">失敗訊息（Failed 時有值；可空）。</param>
+/// <param name="CurrentProvider">Running 時：後援鏈目前正在嘗試的供應者（如「Claude CLI」「Google AI Studio」「banana」）；非 Running 為 null。供小窗即時顯示「目前：…」。</param>
 public sealed record AskQueueItemDto(
     Guid SessionId,
     string Status,
@@ -273,7 +274,8 @@ public sealed record AskQueueItemDto(
     Guid? CanvasId,
     Guid? AskNodeId,
     DateTime CreatedDateTime,
-    string? ErrorText = null);
+    string? ErrorText = null,
+    string? CurrentProvider = null);
 
 /// <summary>
 /// AI 處理佇列「單筆完整明細」資料傳輸物件。

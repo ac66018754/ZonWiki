@@ -459,6 +459,36 @@ function DetailPanel({
         </Section>
       )}
 
+      {/* 後援鏈「嘗試歷程」：只取 stage 訊息，視覺化呈現換家/失敗，讓使用者看到走了哪幾家、各自錯誤。 */}
+      {detail.messages.some((m) => m.role === "stage") && (
+        <Section title="嘗試歷程（後援鏈：Claude → Google AI Studio → banana）">
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-1)" }}>
+            {detail.messages
+              .filter((m) => m.role === "stage")
+              .map((m) => {
+                const failed = m.content.startsWith("✗");
+                return (
+                  <div
+                    key={m.seqNo}
+                    style={{
+                      fontSize: "var(--text-sm)",
+                      padding: "var(--spacing-2) var(--spacing-3)",
+                      borderRadius: "var(--radius-sm)",
+                      borderLeft: `3px solid ${failed ? "var(--status-error-fg, #ef4444)" : "var(--accent-primary, #6366f1)"}`,
+                      background: "var(--bg-subtle, rgba(127,127,127,0.06))",
+                      color: failed ? "var(--status-error-fg, #ef4444)" : "var(--text-primary)",
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-word",
+                    }}
+                  >
+                    {m.content}
+                  </div>
+                );
+              })}
+          </div>
+        </Section>
+      )}
+
       {/* 完整 prompt */}
       {detail.promptText && (
         <Section title="送給 AI 的完整 prompt">

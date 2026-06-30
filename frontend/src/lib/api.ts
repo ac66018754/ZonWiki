@@ -2161,6 +2161,8 @@ export interface AskQueueItemDto {
   createdDateTime: string;
   /** 失敗錯誤訊息（Failed 狀態時） */
   errorText?: string | null;
+  /** Running 時：後援鏈目前正在嘗試的供應者（如「Claude CLI」「Google AI Studio」「banana」）；其餘為 null。 */
+  currentProvider?: string | null;
 }
 
 /**

@@ -30,14 +30,8 @@ public sealed class RefineService
     /// <summary>Groq 端點（OpenAI 相容；轉錄與聊天共用同一把金鑰）。</summary>
     private const string GroqBaseUrl = "https://api.groq.com/openai/v1";
 
-    /// <summary>Groq 轉錄模型。</summary>
+    /// <summary>Groq 轉錄模型（Whisper；note-gen 已改走後援鏈，Groq 僅用於音訊轉錄）。</summary>
     private const string GroqModel = "whisper-large-v3-turbo";
-
-    /// <summary>Groq 聊天（整理筆記）模型——擅長照指示輸出結構化 JSON。</summary>
-    private const string GroqChatModel = "llama-3.3-70b-versatile";
-
-    /// <summary>整理逾時秒數（給 Groq 聊天串流）。</summary>
-    private const int GroqChatTimeoutSeconds = 180;
 
     /// <summary>
     /// 給 AI 的系統提示：依內容類型整理成結構化筆記，並以嚴格 JSON 輸出（供程式解析後建立筆記）。
@@ -271,81 +265,16 @@ public sealed class RefineService
 
         var userPrompt = $"標題：{title}\n來源：{sourceLabel}\n\n內容：\n{transcript}";
 
-        // AI 來源選擇：使用者有設定 Groq 金鑰 → 用 Groq（OpenAI 相容聊天）整理，
-        // 不依賴可能掛掉的「共用預設 Gemini relay」；否則退回共用預設模型。
-        // 不論成功失敗，都把實際使用的「供應者 / 模型」記到 AiSession，供佇列顯示是哪家提供商。
-        var groqKey = _keyResolver.ResolveApiKey(user.GroqApiKeyEncrypted);
-        string aiOutput;
-        if (!string.IsNullOrEmpty(groqKey))
-        {
-            StampProvider(session, "Groq", GroqChatModel);
-            aiOutput = await GenerateViaGroqAsync(groqKey, RefineSystemPrompt, userPrompt, cancellationToken);
-        }
-        else
-        {
-            StampProvider(session, "共用預設（Gemini）", null);
-            aiOutput = await _noteAi.GenerateAsync(RefineSystemPrompt, userPrompt, cancellationToken);
-        }
+        // note-gen（文字整理/分類）一律走「後援鏈」（Claude → Google AI Studio → banana）——決策 b。
+        // 不再優先用 Groq；Groq（GroqBaseUrl/GroqModel）僅保留給「音訊轉錄」(TranscribeAudioAsync)。
+        // 每次嘗試/失敗經由 onStage 寫進 AiSession/AiMessage（與框選提問共用同一套階段記錄器，供佇列顯示）。
+        var onStage = session is null
+            ? null
+            : AskQueueService.BuildStageRecorder(_db, session, cancellationToken);
+        var aiOutput = await _noteAi.GenerateAsync(RefineSystemPrompt, userPrompt, cancellationToken, onStage);
 
         var parsed = ParseAiOutput(aiOutput, fallbackTitle: title, sourceLabel: sourceLabel);
         return await CreateNoteAsync(user.Id, parsed, sourceLabel, cancellationToken);
-    }
-
-    /// <summary>
-    /// 記錄這次工作實際使用的「AI 供應者 / 模型」到 AiSession（供「AI 處理佇列」顯示是哪家提供商）。
-    /// 只設值不另存——呼叫端在完成/失敗時的 SaveChanges 會一併持久化（失敗也看得到用了哪家）。
-    /// </summary>
-    private static void StampProvider(AiSession? session, string provider, string? modelId)
-    {
-        if (session is null) return;
-        session.AiProvider = provider;
-        session.AiModelId = modelId;
-    }
-
-    /// <summary>
-    /// 以 Groq（OpenAI 相容聊天端點）整理筆記：串流累積完整輸出。失敗（端點錯誤）轉成例外往上拋。
-    /// </summary>
-    private async Task<string> GenerateViaGroqAsync(
-        string groqKey,
-        string systemPrompt,
-        string userContent,
-        CancellationToken cancellationToken)
-    {
-        var http = _httpClientFactory.CreateClient("ai");
-        var provider = new OpenAiCompatibleStreamingProvider(
-            http, GroqBaseUrl, groqKey, GroqChatModel, GroqChatTimeoutSeconds);
-
-        var accumulated = new System.Text.StringBuilder();
-        string? completed = null;
-        string? error = null;
-
-        await foreach (var evt in provider.StreamAsync(
-            prompt: userContent,
-            resumeSessionId: null,
-            model: GroqChatModel,
-            systemPrompt: systemPrompt,
-            cancellationToken: cancellationToken))
-        {
-            switch (evt.Type)
-            {
-                case AiStreamEventType.Delta:
-                    accumulated.Append(evt.Text);
-                    break;
-                case AiStreamEventType.Completed:
-                    completed = evt.Text;
-                    break;
-                case AiStreamEventType.Error:
-                    error = evt.Text;
-                    break;
-            }
-        }
-
-        if (error is not null)
-        {
-            throw new InvalidOperationException($"AI 轉換失敗（Groq）：{error}");
-        }
-
-        return !string.IsNullOrEmpty(completed) ? completed : accumulated.ToString();
     }
 
     /// <summary>

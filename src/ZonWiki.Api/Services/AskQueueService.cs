@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using ZonWiki.Api.Notes;
 using ZonWiki.Domain.Dtos;
 using ZonWiki.Domain.Entities;
+using ZonWiki.Infrastructure.Ai;
 using ZonWiki.Infrastructure.Notes;
 using ZonWiki.Infrastructure.Persistence;
 
@@ -192,7 +193,9 @@ public sealed class AskQueueService
                     CanvasId: r.Session.CanvasId,
                     AskNodeId: r.Session.AskNodeId,
                     CreatedDateTime: r.Session.CreatedDateTime,
-                    ErrorText: errorText);
+                    ErrorText: errorText,
+                    // Running 時帶「目前正在嘗試哪一家」（後援鏈），供小窗即時顯示；非 Running 為 null。
+                    CurrentProvider: status == "Running" ? r.Session.AiProvider : null);
             })
             .ToList()
             .AsReadOnly();
@@ -312,8 +315,9 @@ public sealed class AskQueueService
 
         try
         {
-            // 呼叫 AI。
-            var answer = await aiService.AskAboutAsync(selected, question, ct);
+            // 呼叫 AI（傳入階段回呼，把後援鏈每次嘗試/失敗寫進佇列）。
+            var onStage = BuildStageRecorder(_db, session, ct);
+            var answer = await aiService.AskAboutAsync(selected, question, ct, onStage);
 
             // 組答案筆記內容（含來源出處引言 + 問題 + 回答）。
             var titleBase = question.Length <= 40 ? question : question[..40] + "…";
@@ -428,7 +432,7 @@ public sealed class AskQueueService
         string kind,
         string? label,
         string? anchorText,
-        Func<CancellationToken, Task<T>> aiCall,
+        Func<Func<AiStreamEvent, Task>, CancellationToken, Task<T>> aiCall,
         CancellationToken ct)
     {
         static string? Trunc(string? s) => s is null ? null : (s.Length > 2000 ? s[..2000] : s);
@@ -450,7 +454,9 @@ public sealed class AskQueueService
 
         try
         {
-            var result = await aiCall(ct);
+            // 傳入階段回呼：後援鏈每次嘗試/失敗即時寫進佇列（更新 AiProvider + 新增 stage AiMessage）。
+            var onStage = BuildStageRecorder(_db, session, ct);
+            var result = await aiCall(onStage, ct);
             ApplyCompleted(session);
             await _db.SaveChangesAsync(ct);
             return result;
@@ -474,5 +480,61 @@ public sealed class AskQueueService
             }
             throw;
         }
+    }
+
+    /// <summary>
+    /// 建立一個「後援鏈階段回呼」：在鏈每次「開始嘗試 / 嘗試失敗」時，
+    /// 更新 <see cref="AiSession.AiProvider"/>（供佇列小窗即時顯示目前哪家）並新增一筆 <c>Role="stage"</c> 的
+    /// <see cref="AiMessage"/>（供完整頁顯示嘗試歷程）。錯誤訊息一律經 <see cref="AiErrorSanitizer"/> 去敏。
+    ///
+    /// <para>
+    /// EF 安全：消費端事件迴圈是「循序」處理事件、且此時供應者解析（會用到 DbContext）早已完成、
+    /// 串流本身來自外部行程/HTTP（非 EF 查詢、無開啟中的 DataReader），故在迴圈內循序 SaveChanges 不會與其他 EF 操作衝突。
+    /// </para>
+    /// </summary>
+    /// <param name="db">與工作同範圍的 DbContext（寫 AiMessage / 更新 AiSession）。</param>
+    /// <param name="session">已建立並存檔的 Running AiSession。</param>
+    /// <param name="ct">取消權杖。</param>
+    /// <returns>可傳給 <see cref="INoteAiService"/> 的 onStage 回呼。</returns>
+    public static Func<AiStreamEvent, Task> BuildStageRecorder(ZonWikiDbContext db, AiSession session, CancellationToken ct)
+    {
+        var seqNo = 0;
+        return async (AiStreamEvent evt) =>
+        {
+            if (evt.Type != AiStreamEventType.Stage)
+            {
+                return;
+            }
+
+            string content;
+            if (evt.StageKind == AiStageKind.AttemptStart)
+            {
+                // 更新「目前供應者」供小窗顯示「目前：Claude CLI」。（不動 AiModelId，避免污染其語意；
+                // 第幾次嘗試的細節保存在下方 stage AiMessage 內容，完整頁可看到歷程。）
+                session.AiProvider = evt.ProviderLabel;
+                content = $"▶ 嘗試 {evt.ProviderLabel}（該家第 {evt.AttemptInProvider} 次；全鏈第 {evt.AttemptInChain}/6 次）";
+            }
+            else if (evt.StageKind == AiStageKind.AttemptFailed)
+            {
+                content = $"✗ {evt.ProviderLabel} 失敗：{AiErrorSanitizer.Sanitize(evt.Text)}";
+            }
+            else
+            {
+                return;
+            }
+
+            db.AiMessage.Add(new AiMessage
+            {
+                UserId = session.UserId,
+                SessionId = session.Id,
+                Role = "stage",
+                Content = content,
+                RawJsonLine = string.Empty,
+                SeqNo = ++seqNo,
+                CreatedUser = session.UserId.ToString(),
+                UpdatedUser = session.UserId.ToString(),
+            });
+            await db.SaveChangesAsync(ct);
+        };
     }
 }
