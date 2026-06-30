@@ -24,6 +24,15 @@ const API_COOKIE = process.env.ZONWIKI_API_COOKIE
 const API_TOKEN = process.env.ZONWIKI_API_TOKEN
 
 /**
+ * 摺疊區塊（Notion 式 toggle）寫法提示，接在「筆記內容」類參數說明之後，
+ * 讓 AI 透過 MCP 寫筆記時也會主動善用摺疊、提升可讀性（渲染由後端負責）。
+ */
+const TOGGLE_HINT =
+  '。可用「摺疊區塊」讓筆記更易讀：一行 :::toggle 摘要標題、內容、再一行 :::'
+  + '（預設收合；:::toggle-open 為預設展開），把長證據/完整程式碼或指令/延伸補充/FAQ 答案'
+  + '收進摺疊，但重點與結論留在外面、巢狀勿超過兩層、摺疊標題要能一眼看出內容'
+
+/**
  * 組出每次請求要帶的標頭：Content-Type（有 body 時）+ 認證（Cookie 或 Bearer）。
  */
 function buildHeaders(hasBody: boolean): Record<string, string> {
@@ -134,7 +143,7 @@ server.tool(
     + '若你只有分類/標籤的「名稱」、想自動建立巢狀分類，請改用 create_classified_note。',
   {
     title: z.string().describe('筆記標題'),
-    contentRaw: z.string().describe('筆記內容（Markdown 格式）'),
+    contentRaw: z.string().describe('筆記內容（Markdown 格式）' + TOGGLE_HINT),
     kind: z
       .enum(['note', 'journal'])
       .optional()
@@ -196,7 +205,7 @@ server.tool(
     + 'tags 用「標籤名稱」（找不到自動建立）。最適合「幫我把這篇文章/這個目錄整理進某分類」。',
   {
     title: z.string().describe('筆記標題（整理本機檔案時用檔名）'),
-    contentRaw: z.string().optional().describe('Markdown 內容'),
+    contentRaw: z.string().optional().describe('Markdown 內容' + TOGGLE_HINT),
     categoryPath: z
       .array(z.string())
       .optional()
@@ -245,7 +254,7 @@ server.tool(
   {
     noteId: z.string().describe('筆記 ID（UUID）'),
     title: z.string().optional().describe('新標題（可空；若無傳則保留原值）'),
-    contentRaw: z.string().optional().describe('新內容（Markdown，可空；若無傳則保留原值）'),
+    contentRaw: z.string().optional().describe('新內容（Markdown，可空；若無傳則保留原值）' + TOGGLE_HINT),
     isDraft: z
       .boolean()
       .optional()
