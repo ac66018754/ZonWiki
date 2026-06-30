@@ -65,20 +65,26 @@ public static class SearchEndpoints
                         new List<SearchResultDto>()));
             }
 
-            // 大小寫不敏感的搜尋關鍵字
-            var queryLower = q.ToLower().Trim();
+            // 子字串、大小寫不敏感搜尋：改用 PostgreSQL 的 ILIKE（搭配 pg_trgm GIN 索引）。
+            // 原本的 n.Title.ToLower().Contains(...) 會翻成 lower() LIKE，無法用索引、且每列都要轉小寫；
+            // ILIKE '%關鍵字%' 則能命中 IX_*_Trgm 索引。
+            // 使用者輸入中的 LIKE 萬用字元（% _ \）必須轉義，否則會被當成萬用字元而比對到非預期結果。
+            var term = q.Trim();
+            var pattern = $"%{EscapeLikePattern(term)}%";
+            // 片段擷取仍以小寫關鍵字在內容中定位（純顯示用，與查詢條件無關）。
+            var keywordLower = term.ToLowerInvariant();
 
             // 1. 搜尋筆記（標題與內容）
             var noteResults = await db.Note
                 .Where(n => n.ValidFlag &&
-                    (n.Title.ToLower().Contains(queryLower) ||
-                     n.ContentRaw.ToLower().Contains(queryLower)))
+                    (EF.Functions.ILike(n.Title, pattern, LikeEscapeChar) ||
+                     EF.Functions.ILike(n.ContentRaw, pattern, LikeEscapeChar)))
                 .AsNoTracking()
                 .Select(n => new SearchResultDto(
                     "note",
                     n.Id.ToString(),
                     n.Title,
-                    ExtractSnippet(n.ContentRaw, queryLower, 100),
+                    ExtractSnippet(n.ContentRaw, keywordLower, 100),
                     $"/notes/{n.Slug}"))
                 .Take(limit)
                 .ToListAsync(ct);
@@ -86,14 +92,14 @@ public static class SearchEndpoints
             // 2. 搜尋任務卡片（標題與內容）
             var taskResults = await db.TaskCard
                 .Where(t => t.ValidFlag &&
-                    (t.Title.ToLower().Contains(queryLower) ||
-                     t.Content.ToLower().Contains(queryLower)))
+                    (EF.Functions.ILike(t.Title, pattern, LikeEscapeChar) ||
+                     EF.Functions.ILike(t.Content, pattern, LikeEscapeChar)))
                 .AsNoTracking()
                 .Select(t => new SearchResultDto(
                     "task",
                     t.Id.ToString(),
                     t.Title,
-                    ExtractSnippet(t.Content, queryLower, 100),
+                    ExtractSnippet(t.Content, keywordLower, 100),
                     "/tasks"))
                 .Take(limit)
                 .ToListAsync(ct);
@@ -101,7 +107,7 @@ public static class SearchEndpoints
             // 3. 搜尋畫布（標題）
             var canvasResults = await db.Canvas
                 .Where(c => c.ValidFlag &&
-                    c.Title.ToLower().Contains(queryLower))
+                    EF.Functions.ILike(c.Title, pattern, LikeEscapeChar))
                 .AsNoTracking()
                 .Select(c => new SearchResultDto(
                     "canvas",
@@ -121,14 +127,14 @@ public static class SearchEndpoints
                     n.Canvas != null &&
                     n.Canvas.UserId == currentUser.UserId &&
                     n.Canvas.ValidFlag &&
-                    (n.Title.ToLower().Contains(queryLower) ||
-                     n.Content.ToLower().Contains(queryLower)))
+                    (EF.Functions.ILike(n.Title, pattern, LikeEscapeChar) ||
+                     EF.Functions.ILike(n.Content, pattern, LikeEscapeChar)))
                 .AsNoTracking()
                 .Select(n => new SearchResultDto(
                     "node",
                     n.Id.ToString(),
                     string.IsNullOrEmpty(n.Title) ? "（無標題）" : n.Title,
-                    ExtractSnippet(n.Content, queryLower, 100),
+                    ExtractSnippet(n.Content, keywordLower, 100),
                     $"/canvas?canvasId={n.CanvasId}&nodeId={n.Id}"))
                 .Take(limit)
                 .ToListAsync(ct);
@@ -146,6 +152,25 @@ public static class SearchEndpoints
             return Results.Ok(ApiResponse<List<SearchResultDto>>.Ok(finalResults));
         });
     }
+
+    /// <summary>
+    /// LIKE/ILIKE 的轉義字元（反斜線）。搭配 <see cref="EscapeLikePattern"/> 使用，
+    /// 讓使用者輸入中的萬用字元一律以字面值比對。
+    /// </summary>
+    private const string LikeEscapeChar = "\\";
+
+    /// <summary>
+    /// 轉義 LIKE/ILIKE 模式中的特殊字元（反斜線、百分比、底線），
+    /// 讓使用者輸入一律以「字面值」比對；查詢時須一併指定 ESCAPE 為 <see cref="LikeEscapeChar"/>。
+    /// 反斜線必須最先轉義，否則會把後續補上的轉義反斜線又重複轉義。
+    /// </summary>
+    /// <param name="input">使用者輸入的搜尋字串。</param>
+    /// <returns>已轉義、可安全嵌入 '%...%' 的字串。</returns>
+    private static string EscapeLikePattern(string input) =>
+        input
+            .Replace("\\", "\\\\")
+            .Replace("%", "\\%")
+            .Replace("_", "\\_");
 
     /// <summary>
     /// 從內容文字擷取包含搜尋關鍵字的片段。

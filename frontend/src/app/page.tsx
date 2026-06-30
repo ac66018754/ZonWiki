@@ -2,19 +2,15 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
-  getHomePage,
-  HomePageAggregate,
   updateTaskCard,
   updateSubTask,
-  listTaskCards,
-  listTaskGroups,
   createCapture,
   deleteCapture,
-  getCurrentUser,
   type CurrentUser,
   type TaskCard,
   type TaskGroup,
 } from "@/lib/api";
+import { useCurrentUser, useHomePage, useTaskCards, useTaskGroups } from "@/lib/swr";
 import { QuickLinksSection } from "@/components/QuickLinksSection";
 import { AiActivitySection } from "@/components/AiActivitySection";
 import { RefineInputSection } from "@/components/RefineInputSection";
@@ -91,8 +87,9 @@ interface HomePageClientProps {
  * - 快速捕捉（打字或錄音）
  */
 export function HomePageClient({ user }: HomePageClientProps) {
-  const [data, setData] = useState<HomePageAggregate | null>(null);
-  const [loading, setLoading] = useState(true);
+  // 客戶端快取（SWR）：首頁聚合資料切走再回來直接吃快取、瞬間顯示。
+  // data 無樂觀更新（新增/刪除捕捉後一律重抓），故直接使用 SWR 資料。
+  const { data, isLoading: loading, mutate: mutateHome } = useHomePage();
   const [error, setError] = useState<string | null>(null);
 
   // 快速捕捉狀態
@@ -113,8 +110,18 @@ export function HomePageClient({ user }: HomePageClientProps) {
     () => new Date().toISOString().split("T")[0]
   );
   // 展開面板用「完整任務」（含子任務）以重用日程規劃的卡片＋編輯；故另抓 listTaskCards/Groups
+  // allTasks 有樂觀更新（勾選/子任務）故保留本地、由 SWR seed；taskGroups 直接吃 SWR。
+  // 與「日程規劃」頁共用同一組 SWR 快取（task-cards / task-groups），切頁不重抓。
+  const { data: allTasksData, mutate: mutateAllTasks } = useTaskCards();
+  const { data: taskGroupsData, mutate: mutateTaskGroups } = useTaskGroups();
+  const taskGroups: TaskGroup[] = taskGroupsData ?? [];
   const [allTasks, setAllTasks] = useState<TaskCard[]>([]);
-  const [taskGroups, setTaskGroups] = useState<TaskGroup[]>([]);
+  useEffect(() => {
+    // 以 SWR 快取 seed 本地樂觀狀態：allTasksData 參考穩定（僅在實際重抓時才變動），
+    // 故不會造成無限重渲染；這是「外部資料源 → 本地可樂觀更新副本」的刻意同步。
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (allTasksData) setAllTasks(allTasksData);
+  }, [allTasksData]);
   const [collapsedTaskIds, setCollapsedTaskIds] = useState<Set<string>>(new Set());
   // 編輯彈窗導覽堆疊：進入子任務時 push、關閉時 pop（關閉子任務即回到父任務）。
   const [editorStack, setEditorStack] = useState<string[]>([]);
@@ -122,20 +129,11 @@ export function HomePageClient({ user }: HomePageClientProps) {
   const openTask = useCallback((id: string) => setEditorStack([id]), []);
   const pushTask = useCallback((id: string) => setEditorStack((prev) => [...prev, id]), []);
 
-  /** 重新載入展開面板用的完整任務清單與分類。 */
-  const reloadTasks = useCallback(async () => {
-    try {
-      const [cards, groups] = await Promise.all([listTaskCards(), listTaskGroups()]);
-      setAllTasks(cards);
-      setTaskGroups(groups);
-    } catch {
-      // 任務載入失敗不影響首頁其餘區塊
-    }
-  }, []);
-
-  useEffect(() => {
-    reloadTasks();
-  }, [reloadTasks]);
+  /** 重新整理展開面板用的完整任務清單與分類（撤銷 SWR 快取並重抓）。SWR 掛載時會自動抓取。 */
+  const reloadTasks = useCallback(() => {
+    mutateAllTasks();
+    mutateTaskGroups();
+  }, [mutateAllTasks, mutateTaskGroups]);
 
   // 點子任務標題會派發 zonwiki:open-task → 開啟該子任務；彈窗已開則 push（關閉會回到上層）。
   useEffect(() => {
@@ -157,10 +155,11 @@ export function HomePageClient({ user }: HomePageClientProps) {
     });
     try {
       await updateTaskCard(task.id, { status: nextStatus });
+      mutateAllTasks(); // 同步 SWR 快取
     } catch {
       if (snapshot) setAllTasks(snapshot);
     }
-  }, []);
+  }, [mutateAllTasks]);
 
   /** 子任務打勾：樂觀更新（只動該子任務），失敗只回滾該子任務。 */
   const handleSubtaskToggle = useCallback(
@@ -181,11 +180,12 @@ export function HomePageClient({ user }: HomePageClientProps) {
       setAllTasks(apply(nextDone));
       try {
         await updateSubTask(subtaskId, { isDone: nextDone });
+        mutateAllTasks(); // 同步 SWR 快取
       } catch {
         setAllTasks(apply(!nextDone));
       }
     },
-    []
+    [mutateAllTasks]
   );
 
   const handleToggleCollapse = useCallback((taskId: string) => {
@@ -197,15 +197,10 @@ export function HomePageClient({ user }: HomePageClientProps) {
     });
   }, []);
 
-  // 重新載入首頁聚合資料（常用連結區塊變更後呼叫）
-  const reloadHome = useCallback(async () => {
-    try {
-      const result = await getHomePage();
-      setData(result);
-    } catch {
-      setError("無法載入首頁資料，請稍後重試。");
-    }
-  }, []);
+  // 重新載入首頁聚合資料（常用連結/捕捉變更後呼叫）：撤銷 SWR 快取並重抓
+  const reloadHome = useCallback(() => {
+    mutateHome();
+  }, [mutateHome]);
 
   // 刪除最近記錄（軟刪，進垃圾桶）
   const handleDeleteCapture = useCallback(
@@ -220,24 +215,6 @@ export function HomePageClient({ user }: HomePageClientProps) {
     },
     [reloadHome]
   );
-
-  // 載入首頁資料
-  useEffect(() => {
-    const loadData = async () => {
-      try {
-        setLoading(true);
-        const result = await getHomePage();
-        setData(result);
-        setError(null);
-      } catch {
-        setError("無法載入首頁資料，請稍後重試。");
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadData();
-  }, []);
 
   // 初始化 Web Speech API
   useEffect(() => {
@@ -316,9 +293,8 @@ export function HomePageClient({ user }: HomePageClientProps) {
       setCaptureInput("");
       setRecordingTime(0);
 
-      // 重新載入首頁資料
-      const result = await getHomePage();
-      setData(result);
+      // 重新載入首頁資料（撤銷 SWR 快取並重抓）
+      mutateHome();
     } catch {
       setError("無法保存快速捕捉，請稍後重試。");
     }
@@ -1020,23 +996,8 @@ export function HomePageClient({ user }: HomePageClientProps) {
  * 首頁伺服器端包裝器——獲取用戶資訊後傳給客戶端
  */
 export default function HomePage() {
-  const [user, setUser] = useState<CurrentUser | null>(null);
-  const [userLoading, setUserLoading] = useState(true);
-
-  useEffect(() => {
-    const fetchUser = async () => {
-      try {
-        const currentUser = await getCurrentUser();
-        setUser(currentUser);
-      } catch {
-        setUser(null);
-      } finally {
-        setUserLoading(false);
-      }
-    };
-
-    fetchUser();
-  }, []);
+  // 使用者資訊改用 SWR 快取（與其他頁共用 'me' 快取，切頁不重抓）。
+  const { data: user, isLoading: userLoading } = useCurrentUser();
 
   if (userLoading) {
     return (
@@ -1056,5 +1017,5 @@ export default function HomePage() {
     );
   }
 
-  return <HomePageClient user={user} />;
+  return <HomePageClient user={user ?? null} />;
 }

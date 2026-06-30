@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using ZonWiki.Infrastructure.Persistence;
@@ -11,16 +12,17 @@ using ZonWiki.Infrastructure.Persistence;
 namespace ZonWiki.Infrastructure.Migrations
 {
     [DbContext(typeof(ZonWikiDbContext))]
-    partial class ZonWikiDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260628175724_AddAiSessionAiProviderModel")]
+    partial class AddAiSessionAiProviderModel
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
                 .HasAnnotation("ProductVersion", "10.0.0")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
-            NpgsqlModelBuilderExtensions.HasPostgresExtension(modelBuilder, "pg_trgm");
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
             modelBuilder.Entity("ZonWiki.Domain.Entities.ActivityLog", b =>
@@ -565,12 +567,6 @@ namespace ZonWiki.Infrastructure.Migrations
 
                     b.HasKey("Id")
                         .HasName("PK_Canvas");
-
-                    b.HasIndex("Title")
-                        .HasDatabaseName("IX_Canvas_Title_Trgm");
-
-                    NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("Title"), "gin");
-                    NpgsqlIndexBuilderExtensions.HasOperators(b.HasIndex("Title"), new[] { "gin_trgm_ops" });
 
                     b.HasIndex("UserId", "CreatedDateTime")
                         .HasDatabaseName("IX_Canvas_UserId_CreatedDateTime");
@@ -1758,18 +1754,6 @@ namespace ZonWiki.Infrastructure.Migrations
                     b.HasKey("Id")
                         .HasName("PK_Node");
 
-                    b.HasIndex("Content")
-                        .HasDatabaseName("IX_Node_Content_Trgm");
-
-                    NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("Content"), "gin");
-                    NpgsqlIndexBuilderExtensions.HasOperators(b.HasIndex("Content"), new[] { "gin_trgm_ops" });
-
-                    b.HasIndex("Title")
-                        .HasDatabaseName("IX_Node_Title_Trgm");
-
-                    NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("Title"), "gin");
-                    NpgsqlIndexBuilderExtensions.HasOperators(b.HasIndex("Title"), new[] { "gin_trgm_ops" });
-
                     b.HasIndex("CanvasId", "ValidFlag")
                         .HasDatabaseName("IX_Node_CanvasId_ValidFlag");
 
@@ -2028,18 +2012,6 @@ namespace ZonWiki.Infrastructure.Migrations
 
                     b.HasKey("Id")
                         .HasName("PK_Note");
-
-                    b.HasIndex("ContentRaw")
-                        .HasDatabaseName("IX_Note_ContentRaw_Trgm");
-
-                    NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("ContentRaw"), "gin");
-                    NpgsqlIndexBuilderExtensions.HasOperators(b.HasIndex("ContentRaw"), new[] { "gin_trgm_ops" });
-
-                    b.HasIndex("Title")
-                        .HasDatabaseName("IX_Note_Title_Trgm");
-
-                    NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("Title"), "gin");
-                    NpgsqlIndexBuilderExtensions.HasOperators(b.HasIndex("Title"), new[] { "gin_trgm_ops" });
 
                     b.HasIndex("UserId", "Slug")
                         .IsUnique()
@@ -3063,23 +3035,11 @@ namespace ZonWiki.Infrastructure.Migrations
                     b.HasKey("Id")
                         .HasName("PK_TaskCard");
 
-                    b.HasIndex("Content")
-                        .HasDatabaseName("IX_TaskCard_Content_Trgm");
-
-                    NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("Content"), "gin");
-                    NpgsqlIndexBuilderExtensions.HasOperators(b.HasIndex("Content"), new[] { "gin_trgm_ops" });
-
                     b.HasIndex("GroupId")
                         .HasDatabaseName("IX_TaskCard_GroupId");
 
                     b.HasIndex("ParentId")
                         .HasDatabaseName("IX_TaskCard_ParentId");
-
-                    b.HasIndex("Title")
-                        .HasDatabaseName("IX_TaskCard_Title_Trgm");
-
-                    NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("Title"), "gin");
-                    NpgsqlIndexBuilderExtensions.HasOperators(b.HasIndex("Title"), new[] { "gin_trgm_ops" });
 
                     b.HasIndex("UserId", "DueDateTime")
                         .HasDatabaseName("IX_TaskCard_UserId_DueDateTime");

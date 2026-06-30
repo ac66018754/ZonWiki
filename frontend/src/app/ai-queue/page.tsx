@@ -146,13 +146,8 @@ function AiQueueInner() {
     }
   }, [selectedId, fetchDetail]);
 
-  // 處理中（Running）的項目自動輪詢，讓使用者開著本頁就能看到它變成完成/失敗（不必手動重整）。
-  // 只在狀態為 Running 時跑；狀態一變（→Completed/Failed）相依改變即清除計時器，避免無謂輪詢。
-  useEffect(() => {
-    if (!selectedId || detail?.status !== "Running") return;
-    const timer = setInterval(() => fetchDetail(selectedId), 4000);
-    return () => clearInterval(timer);
-  }, [selectedId, detail?.status, fetchDetail]);
+  // 註：刻意「不做定時輪詢」（顧及 VM 負載）。要看處理中項目的最新狀態，
+  // 重新點該項目或用清單上方的 🔄 即可手動刷新。
 
   // 點清單項目：選取 + 更新網址（?session=）以利分享 / 重新整理保留。
   const handleSelect = (id: string) => {
@@ -420,6 +415,14 @@ function DetailPanel({
       <div style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>
         建立：{formatDateTime(detail.createdDateTime, tz)}　·　更新：{formatDateTime(detail.updatedDateTime, tz)}
       </div>
+
+      {/* AI 供應者 / 模型：看出這次是哪家提供商在處理，失敗時較好回報問題 */}
+      {(detail.aiProvider || detail.aiModelId) && (
+        <div style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>
+          🛰️ 供應者：<b>{detail.aiProvider ?? "—"}</b>
+          {detail.aiModelId ? <>　·　模型：<code>{detail.aiModelId}</code></> : null}
+        </div>
+      )}
 
       {/* 導航按鈕 */}
       <div style={{ display: "flex", gap: "var(--spacing-2)", flexWrap: "wrap" }}>

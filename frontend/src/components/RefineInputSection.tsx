@@ -96,6 +96,7 @@ export function RefineInputSection() {
         <span style={dividerLineStyle} />
       </div>
       <div style={{ display: "flex", gap: "var(--spacing-2)", alignItems: "center", flexWrap: "wrap" }}>
+        {/* 隱藏原生 file input（各主題下看起來像純文字、不夠顯眼）→ 改用明確按鈕觸發 */}
         <input
           ref={fileInputRef}
           type="file"
@@ -106,12 +107,32 @@ export function RefineInputSection() {
             const f = e.target.files?.[0];
             if (f) handleUpload(f);
           }}
-          style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)", flex: 1, minWidth: 220 }}
+          style={{ display: "none" }}
         />
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={busy}
+          style={uploadBtnStyle}
+        >
+          📎 {busy ? "處理中…" : "選擇音訊 / 影片檔上傳"}
+        </button>
       </div>
       <p style={{ ...hintStyle, margin: "var(--spacing-2) 0 0" }}>
         上傳檔一律需轉錄，請先在「個人頁 → 精煉成筆記」設定 Groq 金鑰（免費）。上限 {MAX_UPLOAD_MB}MB。
       </p>
+
+      {/* 教學：一般人不知道怎麼把影片/音訊變成檔案，提供各平台步驟（可收合） */}
+      <details style={helpBoxStyle}>
+        <summary style={helpSummaryStyle}>📖 不知道怎麼取得影片 / 音訊檔？點我看教學</summary>
+        <div style={helpBodyStyle}>
+          <p style={helpLineStyle}>📱 <b>iPhone</b>：在 IG / YouTube 點「分享」→ 用「捷徑」或下載類 App 把影片存到「檔案 / 相簿」→ 回這裡選檔上傳。</p>
+          <p style={helpLineStyle}>🤖 <b>Android</b>：用下載類 App 或瀏覽器把影片存到手機 → 上傳。</p>
+          <p style={helpLineStyle}>💻 <b>電腦</b>：用瀏覽器擴充或下載工具把影片 / 音訊存成檔案 → 上傳（用自己電腦＋已登入＋自家網路，成功率最高）。</p>
+          <p style={helpLineStyle}>🎙️ <b>錄音</b>：手機 / 電腦的會議錄音、語音備忘錄（m4a / mp3 / wav）可直接上傳。</p>
+          <p style={helpLineStyle}>💡 只是要 <b>YouTube 字幕或網路文章</b>？不用下載——直接把<b>網址</b>貼到上面那個框就好。</p>
+        </div>
+      </details>
 
       {msg && (
         <p
@@ -181,4 +202,43 @@ const dividerTextStyle: React.CSSProperties = {
   fontSize: "var(--text-xs)",
   color: "var(--text-tertiary)",
   whiteSpace: "nowrap",
+};
+// 上傳按鈕：明確的「實心次要按鈕」外觀（用主題變數，在所有顯示模式都顯眼，不再像純文字）。
+const uploadBtnStyle: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  padding: "var(--spacing-2) var(--spacing-4)",
+  background: "var(--action-secondary-bg)",
+  color: "var(--action-secondary-fg)",
+  border: "1px solid var(--action-secondary-fg)",
+  borderRadius: "var(--radius-md)",
+  fontWeight: 600,
+  fontSize: "var(--text-sm)",
+  cursor: "pointer",
+};
+const helpBoxStyle: React.CSSProperties = {
+  marginTop: "var(--spacing-3)",
+  border: "1px solid var(--border-default)",
+  borderRadius: "var(--radius-md)",
+  background: "var(--bg-default)",
+  padding: "var(--spacing-2) var(--spacing-3)",
+};
+const helpSummaryStyle: React.CSSProperties = {
+  cursor: "pointer",
+  fontSize: "var(--text-sm)",
+  fontWeight: 600,
+  color: "var(--text-secondary)",
+};
+const helpBodyStyle: React.CSSProperties = {
+  marginTop: "var(--spacing-2)",
+  display: "flex",
+  flexDirection: "column",
+  gap: "var(--spacing-1)",
+};
+const helpLineStyle: React.CSSProperties = {
+  margin: 0,
+  fontSize: "var(--text-xs)",
+  color: "var(--text-secondary)",
+  lineHeight: 1.6,
 };

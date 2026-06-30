@@ -60,9 +60,11 @@ export default function KnowledgeGraphPage() {
     }
   };
 
-  // 取得主題
-  const theme = (document.documentElement.getAttribute('data-theme') ||
-    'warmpaper') as 'warmpaper' | 'light' | 'dark' | 'night';
+  // 取得主題：SSR 時無 document，故加 typeof 守衛避免「document is not defined」造成整頁 500。
+  // 圖譜只在用戶端載入資料（loading=false）後才渲染，SSR 階段渲染的是載入動畫、不會用到 theme，故無 hydration 不一致疑慮。
+  const theme = (typeof document !== 'undefined'
+    ? document.documentElement.getAttribute('data-theme') || 'warmpaper'
+    : 'warmpaper') as 'warmpaper' | 'light' | 'dark' | 'night';
 
   if (loading) {
     return (

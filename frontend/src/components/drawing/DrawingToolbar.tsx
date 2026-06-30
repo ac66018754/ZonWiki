@@ -1,6 +1,7 @@
 'use client';
 
 import type React from 'react';
+import { useState } from 'react';
 import { ColorPickerInline } from '@/components/ColorPicker';
 import type { DrawTool } from '@/lib/drawing/shapes';
 
@@ -116,6 +117,10 @@ export function DrawingToolbar({
   const isHighlight = tool === 'highlight';
   const showColor = isColorTool(tool);
 
+  // 整個工具列的「收合」狀態（預設展開）。收合後只剩右上角的展開鈕，省畫面、避免擋住內容。
+  // 為純呈現元件的局部 UI 狀態，與繪圖/便利貼等業務狀態無關，故放元件內部即可。
+  const [collapsed, setCollapsed] = useState(false);
+
   /** Row2 的繪圖工具（含「文字」動作鈕）。 */
   const drawTools: [Exclude<DrawTool, null>, string, string][] = [
     ['pen', '✏️', '畫筆（自由筆）'],
@@ -161,6 +166,29 @@ export function DrawingToolbar({
         background: 'var(--bg-surface)', border: '1px solid var(--border-default)',
         borderRadius: 'var(--radius-md)', padding: 4, boxShadow: 'var(--shadow-md)', maxWidth,
       }}>
+        {/* 右上角：收合／展開整個工具列（預設展開）。收合時順手結束繪圖，避免工具列收起、畫布卻仍鎖住。 */}
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <button
+            className="tk-btn"
+            style={{ cursor: 'pointer', padding: '0 6px', lineHeight: 1.4 }}
+            onClick={() =>
+              setCollapsed((prev) => {
+                const next = !prev;
+                if (next && drawingActive) onDone();
+                return next;
+              })
+            }
+            title={collapsed ? '展開工具列' : '收合工具列'}
+            aria-label={collapsed ? '展開工具列' : '收合工具列'}
+            aria-expanded={!collapsed}
+            data-testid={`${testIdPrefix}-toolbar-collapse`}
+          >
+            {collapsed ? '▴' : '▾'}
+          </button>
+        </div>
+
+        {!collapsed && (
+          <>
         {/* Row1：目錄/工具箱 ｜ 便利貼 ｜ 圖片板 */}
         <div style={rowStyle}>
           <button
@@ -261,10 +289,12 @@ export function DrawingToolbar({
             )}
           </div>
         )}
+          </>
+        )}
       </div>
 
       {/* 顏色完整色盤（點顏色球球展開；往上開、留在畫面內）。選色後不自動關閉（連續調色）。 */}
-      {showPenColor && showColor && (
+      {!collapsed && showPenColor && showColor && (
         <div
           data-draw-colorpop
           style={{
@@ -281,7 +311,7 @@ export function DrawingToolbar({
       )}
 
       {/* 疊在最上方的情境內容（如文字框屬性面板）。column-reverse 下放在最後＝視覺最上層。 */}
-      {topContent}
+      {!collapsed && topContent}
     </div>
   );
 }

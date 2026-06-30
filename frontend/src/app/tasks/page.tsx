@@ -2,19 +2,14 @@
 
 import { useEffect, useState, useCallback } from "react";
 import {
-  listTaskCards,
-  listTaskGroups,
   createTaskCard,
   updateTaskCard,
   deleteTaskGroup,
   updateSubTask,
-  getCurrentUser,
-  listNoteTags,
   type TaskCard,
   type TaskGroup,
-  type NoteTag,
-  type CurrentUser,
 } from "@/lib/api";
+import { useCurrentUser, useTaskCards, useTaskGroups, useNoteTags } from "@/lib/swr";
 import { logger } from "@/lib/logger";
 import { TaskBoardView } from "./components/TaskBoardView";
 import { TaskListView } from "./components/TaskListView";
@@ -38,12 +33,30 @@ import { SHORTCUT_ACTION_EVENT } from "@/lib/shortcuts";
 export default function TasksPage() {
   const [view, setView] = useState<"list" | "board" | "calendar">("list");
   const [calendarView, setCalendarView] = useState<"month" | "week" | "day" | "year">("month");
+  // 客戶端快取（SWR）：切走再切回此頁直接吃快取、瞬間顯示，背景再靜默重抓。
+  const { data: userData } = useCurrentUser();
+  const {
+    data: tasksData,
+    error: tasksError,
+    isLoading: tasksLoading,
+    mutate: mutateTasks,
+  } = useTaskCards();
+  const { data: groupsData, mutate: mutateGroups } = useTaskGroups();
+  const { data: tagsData, mutate: mutateTags } = useNoteTags();
+
+  const user = userData ?? null;
+  const groups = groupsData ?? [];
+  const tagPool = tagsData ?? [];
+
+  // tasks 保留本地 state 承載大量「樂觀更新」（新增/勾選/子任務），並於 SWR 取得新資料時同步 seed。
   const [tasks, setTasks] = useState<TaskCard[]>([]);
-  const [groups, setGroups] = useState<TaskGroup[]>([]);
-  const [tagPool, setTagPool] = useState<NoteTag[]>([]);
-  const [user, setUser] = useState<CurrentUser | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (tasksData) setTasks(tasksData);
+  }, [tasksData]);
+
+  // 只有「首次載入且尚無資料」才顯示骨架；keepPreviousData 下背景重抓不會閃骨架。
+  const loading = tasksLoading && tasks.length === 0;
+  const error = tasksError ? "載入任務失敗" : null;
   // 預設：急迫度（優先度）排序、逆序（高→低）、拆行（依排序值分組）。
   const [sortBy, setSortBy] = useState<
     "createdDate" | "plannedDate" | "dueDate" | "priority" | "groupName" | "status"
@@ -87,34 +100,12 @@ export default function TasksPage() {
   /**
    * 重新載入任務與分類（任務卡片含子任務進度）。
    */
-  const reload = useCallback(async () => {
-    const [taskCards, taskGroups, noteTags] = await Promise.all([
-      listTaskCards(),
-      listTaskGroups(),
-      listNoteTags(),
-    ]);
-    setTasks(taskCards);
-    setGroups(taskGroups);
-    setTagPool(noteTags);
-  }, []);
-
-  useEffect(() => {
-    const init = async () => {
-      try {
-        setLoading(true);
-        const [currentUser] = await Promise.all([getCurrentUser()]);
-        setUser(currentUser);
-        await reload();
-        setError(null);
-      } catch (err) {
-        logger.error("Failed to load tasks:", err);
-        setError("載入任務失敗");
-      } finally {
-        setLoading(false);
-      }
-    };
-    init();
-  }, [reload]);
+  /** 重新整理任務/群組/標籤（撤銷 SWR 快取並重抓）。SWR 會在掛載時自動抓取，毋須額外 useEffect 觸發。 */
+  const reload = useCallback(() => {
+    mutateTasks();
+    mutateGroups();
+    mutateTags();
+  }, [mutateTasks, mutateGroups, mutateTags]);
 
   // 清單/看板卡片上點子任務標題會派發 zonwiki:open-task → 開啟該子任務。
   // 若彈窗已開（在某任務內）則 push（之後關閉會回到此任務）；否則重置堆疊開新的。
@@ -188,14 +179,17 @@ export default function TasksPage() {
       const realCats = Array.from(catFilterIds).filter((id) => id !== "__none__");
       const groupId = realCats.length === 1 ? realCats[0] : undefined;
       const created = await createTaskCard({ title, status: "todo", groupId });
-      if (created) setTasks((prev) => [created, ...prev]);
+      if (created) {
+        setTasks((prev) => [created, ...prev]);
+        mutateTasks(); // 同步 SWR 快取，避免切走再回來看到舊清單
+      }
       setQuickAddTitle("");
     } catch (err) {
       logger.error("Failed to quick-add task:", err);
     } finally {
       setQuickAdding(false);
     }
-  }, [quickAddTitle, quickAdding, catFilterIds]);
+  }, [quickAddTitle, quickAdding, catFilterIds, mutateTasks]);
 
   /** 快速切換完成 / 待辦（清單與看板的核取方塊）。樂觀更新，失敗回滾。 */
   const handleToggleDone = useCallback(async (task: TaskCard) => {
@@ -207,11 +201,12 @@ export default function TasksPage() {
     });
     try {
       await updateTaskCard(task.id, { status: nextStatus });
+      mutateTasks(); // 同步 SWR 快取
     } catch (err) {
       logger.error("Failed to toggle task:", err);
       if (snapshot) setTasks(snapshot); // 回滾
     }
-  }, []);
+  }, [mutateTasks]);
 
   /** 看板拖曳改狀態。樂觀更新，失敗回滾。 */
   const handleBoardStatusChange = useCallback(
@@ -223,12 +218,13 @@ export default function TasksPage() {
       });
       try {
         await updateTaskCard(id, updates);
+        mutateTasks(); // 同步 SWR 快取
       } catch (err) {
         logger.error("Failed to update task status:", err);
         if (snapshot) setTasks(snapshot); // 回滾
       }
     },
-    []
+    [mutateTasks]
   );
 
   /**
@@ -256,12 +252,13 @@ export default function TasksPage() {
       setTasks(applyDone(nextDone)); // 樂觀更新
       try {
         await updateSubTask(subtaskId, { isDone: nextDone });
+        mutateTasks(); // 同步 SWR 快取
       } catch (err) {
         logger.error("Failed to toggle subtask:", err);
         setTasks(applyDone(!nextDone)); // 只回滾該子任務
       }
     },
-    []
+    [mutateTasks]
   );
 
   /** 切換單一任務的子任務外層收合。 */
