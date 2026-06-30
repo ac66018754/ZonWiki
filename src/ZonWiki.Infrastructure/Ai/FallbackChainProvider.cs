@@ -45,6 +45,11 @@ public sealed class FallbackChainProvider : IAiProvider
     }
 
     /// <summary>
+    /// 此鏈各家供應者的顯示名稱（依嘗試順序）。供測試/診斷檢視鏈的組裝結果。
+    /// </summary>
+    public IReadOnlyList<string> ProviderLabels => _links.Select(link => link.Label).ToList();
+
+    /// <summary>
     /// 依序嘗試各家供應者並串流回應。詳見類別說明。
     /// 注意：後援鏈為一次性（one-shot），不沿用 <paramref name="resumeSessionId"/>（接續對話屬「有選模型」單一供應者路徑，不走鏈）。
     /// </summary>
