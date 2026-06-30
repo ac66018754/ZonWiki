@@ -914,6 +914,79 @@ html[data-route="login"] .main-content {
   overflow-wrap: anywhere;
 }
 
+/* ===========================================================================
+   摺疊區塊（Notion 式 toggle）：:::toggle 標題 … :::  → 原生 <details class="md-toggle">
+   全域定義，閱讀檢視（.markdown-prose 注入 HTML）與編輯預覽（.md-preview）外觀一致。
+   原生 <details> 由瀏覽器負責摺疊／展開，零 JavaScript。
+   =========================================================================== */
+.md-toggle {
+  margin: var(--spacing-3) 0;
+  border-radius: var(--radius-md);
+}
+
+/* 摘要列＝可點擊的標題；移除原生三角標記，改用自訂可旋轉箭頭。 */
+.md-toggle > .md-toggle-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-1);
+  padding: 4px 8px;
+  font-weight: 600;
+  color: var(--text-primary);
+  border-radius: var(--radius-sm);
+  list-style: none;
+  user-select: none;
+  /* cursor:pointer 由全域 summary 規則提供。 */
+}
+
+.md-toggle > .md-toggle-summary::-webkit-details-marker {
+  display: none;
+}
+
+.md-toggle > .md-toggle-summary::before {
+  content: "▸";
+  display: inline-block;
+  flex-shrink: 0;
+  width: 1em;
+  font-size: 0.85em;
+  color: var(--text-tertiary, var(--text-secondary));
+  transition: transform 0.15s ease;
+}
+
+/* 展開時箭頭轉 90 度（▸ → ▾）。 */
+.md-toggle[open] > .md-toggle-summary::before {
+  transform: rotate(90deg);
+}
+
+.md-toggle > .md-toggle-summary:hover {
+  background: var(--bg-surface-secondary);
+}
+
+/* 內文：縮排對齊標題文字（箭頭寬 + 間距），巢狀時自然逐層縮排。 */
+.md-toggle-body {
+  padding-left: 22px;
+  margin: 2px 0 4px;
+  border-left: 2px solid var(--border-default);
+  margin-left: 7px;
+}
+
+/* 內文段落上下邊距收斂，避免摺疊區塊內留白過大。 */
+.md-toggle-body > :first-child {
+  margin-top: var(--spacing-1);
+}
+.md-toggle-body > :last-child {
+  margin-bottom: 0;
+}
+
+/* 列印（匯出 PDF）時盡量讓摺疊內容顯示，避免內容遺漏。 */
+@media print {
+  .md-toggle > .md-toggle-summary::before {
+    transform: rotate(90deg);
+  }
+  .md-toggle .md-toggle-body {
+    display: block !important;
+  }
+}
+
 /* Header 導覽項目的快捷鍵提示（如「日程規劃 (T)」）。可在顯示設定中開關。 */
 .nav-hint {
   margin-left: 2px;

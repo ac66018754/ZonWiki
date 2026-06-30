@@ -6,6 +6,11 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
 
+  <!-- 讓測試專案能存取 internal 型別（如 NoteContentHelpers），以便對「正式管線」做單元測試。 -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="ZonWiki.Api.Tests" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="AspNetCore.HealthChecks.NpgSql" Version="9.0.0" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.Google" Version="10.0.0" />
