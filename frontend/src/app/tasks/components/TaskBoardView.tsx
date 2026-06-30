@@ -1,7 +1,14 @@
 "use client";
 
-import { useState } from "react";
 import { TaskCard, TaskGroup, CurrentUser } from "@/lib/api";
+import {
+  DndContext,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  pointerWithin,
+  type DragEndEvent,
+} from "@dnd-kit/core";
 import { TaskBoardColumn } from "./TaskBoardColumn";
 import { STATUS_ORDER } from "../taskUtils";
 
@@ -30,36 +37,40 @@ export function TaskBoardView({
   onToggleCollapse: (taskId: string) => void;
   onToggleSubtask: (taskId: string, subtaskId: string, nextDone: boolean) => void;
 }) {
-  const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
+  // 拖曳感測器：移動 8px 才啟動，桌機滑鼠與手機觸控（拖卡片左上「⠿」把手）皆適用。
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } })
+  );
+
+  /** 拖曳結束：卡片放到哪一欄（over.id＝狀態）就改成該狀態（沿用原行為，不在欄內排序）。 */
+  const handleDragEnd = (e: DragEndEvent) => {
+    const taskId = String(e.active.id);
+    const newStatus = e.over?.id as "todo" | "doing" | "done" | undefined;
+    if (!newStatus) return;
+    const dragged = tasks.find((t) => t.id === taskId);
+    if (dragged && dragged.status !== newStatus) {
+      onUpdateTask(taskId, { status: newStatus });
+    }
+  };
 
   return (
-    <div className="tk-board-grid">
-      {STATUS_ORDER.map((status) => (
-        <TaskBoardColumn
-          key={status}
-          status={status}
-          tasks={tasks.filter((t) => t.status === status)}
-          groups={groups}
-          user={user}
-          draggedTaskId={draggedTaskId}
-          collapsedTaskIds={collapsedTaskIds}
-          onDragStart={(taskId) => setDraggedTaskId(taskId)}
-          onDragEnd={() => setDraggedTaskId(null)}
-          onDrop={() => {
-            if (draggedTaskId) {
-              const dragged = tasks.find((t) => t.id === draggedTaskId);
-              if (dragged && dragged.status !== status) {
-                onUpdateTask(draggedTaskId, { status });
-              }
-            }
-            setDraggedTaskId(null);
-          }}
-          onOpen={onOpen}
-          onToggleDone={onToggleDone}
-          onToggleCollapse={onToggleCollapse}
-          onToggleSubtask={onToggleSubtask}
-        />
-      ))}
-    </div>
+    <DndContext sensors={sensors} collisionDetection={pointerWithin} onDragEnd={handleDragEnd}>
+      <div className="tk-board-grid">
+        {STATUS_ORDER.map((status) => (
+          <TaskBoardColumn
+            key={status}
+            status={status}
+            tasks={tasks.filter((t) => t.status === status)}
+            groups={groups}
+            user={user}
+            collapsedTaskIds={collapsedTaskIds}
+            onOpen={onOpen}
+            onToggleDone={onToggleDone}
+            onToggleCollapse={onToggleCollapse}
+            onToggleSubtask={onToggleSubtask}
+          />
+        ))}
+      </div>
+    </DndContext>
   );
 }
