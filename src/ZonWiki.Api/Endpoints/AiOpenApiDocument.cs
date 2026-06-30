@@ -127,7 +127,7 @@ public static class AiOpenApiDocument
         "required": ["title"],
         "properties": {
           "title": { "type": "string", "description": "筆記標題" },
-          "contentRaw": { "type": "string", "description": "Markdown 內容" },
+          "contentRaw": { "type": "string", "description": "Markdown 內容。支援摺疊區塊讓筆記更易讀：一行 :::toggle 摘要標題、內容、再一行 ::: 收合（預設收合；:::toggle-open 為預設展開）。把長證據/完整程式碼或指令/延伸補充/FAQ 答案收進摺疊，重點與結論留在外面，巢狀勿超過兩層。" },
           "categoryPath": {
             "type": "array",
             "items": { "type": "string" },
