@@ -66,7 +66,8 @@ public static class AiEndpoints
                 var bgQueue = scope.ServiceProvider.GetRequiredService<AskQueueService>();
                 var bgAi = scope.ServiceProvider.GetRequiredService<INoteAiService>();
                 var bgLogger = loggerFactory.CreateLogger("NoteAiBackground");
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(200));
+                // 背景逾時 340 秒（>claude 單次 300s），非同步背景執行、不阻塞請求。
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(340));
                 try
                 {
                     await bgQueue.FinishNoteAiAsync(

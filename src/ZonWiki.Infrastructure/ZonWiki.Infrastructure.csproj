@@ -5,6 +5,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- 讓測試專案存取 internal 成員（如 ClaudeCliProvider.CreateStartInfo），以驗證程序參數組裝。 -->
+    <InternalsVisibleTo Include="ZonWiki.Infrastructure.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Markdig" Version="0.42.0" />
     <PackageReference Include="Microsoft.AspNetCore.DataProtection" Version="10.0.0" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.0" />
