@@ -66,8 +66,9 @@ public static class AiEndpoints
                 var bgQueue = scope.ServiceProvider.GetRequiredService<AskQueueService>();
                 var bgAi = scope.ServiceProvider.GetRequiredService<INoteAiService>();
                 var bgLogger = loggerFactory.CreateLogger("NoteAiBackground");
-                // 背景逾時 340 秒（>claude 單次 300s），非同步背景執行、不阻塞請求。
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(340));
+                // 背景總預算 1800 秒（30 分）：讓後援鏈能真的逐棒 fallback（claude 單次 300s、最多 2 次後仍有餘裕
+                // 跌到 Google AI Studio／banana）。非同步背景執行、不阻塞請求。
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(1800));
                 try
                 {
                     await bgQueue.FinishNoteAiAsync(

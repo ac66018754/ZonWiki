@@ -146,8 +146,18 @@ function AiQueueInner() {
     }
   }, [selectedId, fetchDetail]);
 
-  // 註：刻意「不做定時輪詢」（顧及 VM 負載）。要看處理中項目的最新狀態，
-  // 重新點該項目或用清單上方的 🔄 即可手動刷新。
+  // 明細自動輪詢：只在「選取的工作仍在處理中」時，每 3.5 秒刷新一次明細，
+  // 讓後援鏈的每一次嘗試（含前一棒逾時被砍後、接著跑的下一次/下一家）即時出現在「嘗試歷程」。
+  // 工作一旦結束（完成/失敗/取消）就停止輪詢，顧及 VM 負載；清單本身仍不自動輪詢。
+  useEffect(() => {
+    if (!selectedId || detail?.status !== "Running") {
+      return;
+    }
+    const timer = setInterval(() => {
+      fetchDetail(selectedId);
+    }, 3500);
+    return () => clearInterval(timer);
+  }, [selectedId, detail?.status, fetchDetail]);
 
   // 點清單項目：選取 + 更新網址（?session=）以利分享 / 重新整理保留。
   const handleSelect = (id: string) => {
@@ -365,9 +375,16 @@ function AiQueueInner() {
           ) : detailError ? (
             <div style={{ color: "var(--status-danger-fg)", fontSize: "var(--text-sm)" }}>{detailError}</div>
           ) : detail ? (
-            <DetailPanel detail={detail} tz={tz} onGoToSource={() => goToSource(detail)} onGoToAnswer={() =>
-              detail.answerNoteSlug && router.push(`/notes/${encodeURIComponent(detail.answerNoteSlug)}`)
-            } />
+            <DetailPanel
+              detail={detail}
+              tz={tz}
+              detailLoading={detailLoading}
+              onRefresh={() => selectedId && fetchDetail(selectedId)}
+              onGoToSource={() => goToSource(detail)}
+              onGoToAnswer={() =>
+                detail.answerNoteSlug && router.push(`/notes/${encodeURIComponent(detail.answerNoteSlug)}`)
+              }
+            />
           ) : null}
         </div>
       </div>
@@ -379,16 +396,21 @@ function AiQueueInner() {
 function DetailPanel({
   detail,
   tz,
+  detailLoading,
+  onRefresh,
   onGoToSource,
   onGoToAnswer,
 }: {
   detail: AskQueueDetailDto;
   tz: string;
+  detailLoading: boolean;
+  onRefresh: () => void;
   onGoToSource: () => void;
   onGoToAnswer: () => void;
 }) {
   const badge = statusBadge(detail.status);
   const hasSource = detail.kind === "node" || !!detail.noteSlug;
+  const isRunning = detail.status === "Running";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-4)" }}>
@@ -424,8 +446,8 @@ function DetailPanel({
         </div>
       )}
 
-      {/* 導航按鈕 */}
-      <div style={{ display: "flex", gap: "var(--spacing-2)", flexWrap: "wrap" }}>
+      {/* 導航按鈕 + 重新整理明細 */}
+      <div style={{ display: "flex", gap: "var(--spacing-2)", flexWrap: "wrap", alignItems: "center" }}>
         {hasSource && (
           <button className="tk-btn" onClick={onGoToSource} title="前往來源">
             ↗ 前往來源{detail.kind === "node" ? "畫布" : "筆記"}
@@ -435,6 +457,14 @@ function DetailPanel({
           <button className="tk-btn" onClick={onGoToAnswer} title="查看產生的筆記">
             📝 查看產生的筆記
           </button>
+        )}
+        <button className="tk-btn" onClick={onRefresh} disabled={detailLoading} title="重新整理此工作的明細">
+          🔄 重新整理明細
+        </button>
+        {isRunning && (
+          <span style={{ fontSize: "var(--text-xs)", color: "var(--accent-primary, #6366f1)" }}>
+            ● 處理中，每 3.5 秒自動更新…
+          </span>
         )}
       </div>
 
@@ -462,6 +492,25 @@ function DetailPanel({
       {/* 後援鏈「嘗試歷程」：只取 stage 訊息，視覺化呈現換家/失敗，讓使用者看到走了哪幾家、各自錯誤。 */}
       {detail.messages.some((m) => m.role === "stage") && (
         <Section title="嘗試歷程（後援鏈：Claude → Google AI Studio → banana）">
+          {/* 6 鏈路與預算說明：讓使用者理解為何會有多次嘗試、以及何時會換家/被砍。 */}
+          <div
+            style={{
+              fontSize: "var(--text-xs)",
+              color: "var(--text-secondary)",
+              background: "var(--bg-subtle, rgba(127,127,127,0.06))",
+              border: "1px solid var(--border-default)",
+              borderRadius: "var(--radius-sm)",
+              padding: "var(--spacing-2) var(--spacing-3)",
+              marginBottom: "var(--spacing-2)",
+              lineHeight: 1.6,
+            }}
+          >
+            共用預設的 AI 走「<b>6 次後援鏈</b>」：依序 ①Claude CLI ②Google AI Studio ③banana，
+            <b>每家最多試 2 次</b>（失敗才換下一次／下一家），合計 6 次，任一次成功即停、全部失敗才算最終失敗。
+            <br />
+            預算：<b>背景總預算 30 分鐘</b>、<b>claude 單次上限 5 分鐘</b>。
+            某次若逾時或出錯被砍，會接著跑下一次（下方逐條列出）；即使被砍，這裡仍看得到它跑過。
+          </div>
           <div style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-1)" }}>
             {detail.messages
               .filter((m) => m.role === "stage")
