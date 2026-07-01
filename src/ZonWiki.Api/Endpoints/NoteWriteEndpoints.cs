@@ -155,7 +155,9 @@ public static class NoteWriteEndpoints
             var bgQueue = scope.ServiceProvider.GetRequiredService<AskQueueService>();
             var bgAi = scope.ServiceProvider.GetRequiredService<INoteAiService>();
             var bgLogger = loggerFactory.CreateLogger("NoteAiBackground");
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(200));
+            // 背景逾時 340 秒：需大於 claude 單次逾時(300s)，讓 claude 有足夠時間完成而非被外層提早砍。
+            // 非同步背景執行，不影響任何 HTTP 請求（前端只輪詢佇列）。
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(340));
             try
             {
                 await bgQueue.FinishAskSelectionAsync(sessionId, userId, bgAi, request, cts.Token);
@@ -222,7 +224,9 @@ public static class NoteWriteEndpoints
             var bgQueue = scope.ServiceProvider.GetRequiredService<AskQueueService>();
             var bgAi = scope.ServiceProvider.GetRequiredService<INoteAiService>();
             var bgLogger = loggerFactory.CreateLogger("NoteAiBackground");
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(200));
+            // 背景逾時 340 秒：需大於 claude 單次逾時(300s)，讓 claude 有足夠時間完成而非被外層提早砍。
+            // 非同步背景執行，不影響任何 HTTP 請求（前端只輪詢佇列）。
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(340));
             try
             {
                 await bgQueue.FinishNoteAiAsync(
@@ -1113,7 +1117,9 @@ public static class NoteWriteEndpoints
             var bgAi = scope.ServiceProvider.GetRequiredService<INoteAiService>();
             var bgLogger = loggerFactory.CreateLogger("NoteAiBackground");
             // 後援鏈最壞情況（claude 慢 + 換家）給較長逾時；遠大於前端輪詢，但不影響任何 HTTP 請求。
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(200));
+            // 背景逾時 340 秒：需大於 claude 單次逾時(300s)，讓 claude 有足夠時間完成而非被外層提早砍。
+            // 非同步背景執行，不影響任何 HTTP 請求（前端只輪詢佇列）。
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(340));
             try
             {
                 await bgQueue.FinishNoteAiAsync(

@@ -17,8 +17,12 @@ public sealed class ClaudeCliOptions
 
     /// <summary>
     /// 單次提問的逾時秒數，逾時則強制結束程序。
+    /// 預設 300 秒：claude -p 在記憶體受限的小機器（e2-micro 1GB）上冷啟動可達數十秒，
+    /// 加上產出長內容（如整篇排版）常需 2–4 分鐘；因 note-AI 已改非同步（背景執行、前端輪詢），
+    /// 拉長此逾時不會阻塞任何 HTTP 請求，只為讓 claude 有足夠時間完成而非中途被砍。
+    /// 可用設定鍵 <c>Ai:ClaudeCli:TimeoutSeconds</c> 覆寫。
     /// </summary>
-    public int TimeoutSeconds { get; set; } = 180;
+    public int TimeoutSeconds { get; set; } = 300;
 }
 
 /// <summary>
