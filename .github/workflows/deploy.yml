@@ -38,7 +38,7 @@ jobs:
         run: |
           gcloud compute ssh a0987461866@zonwiki \
             --project=zonwiki-prod \
-            --zone=us-central1-a \
+            --zone=asia-east1-b \
             --tunnel-through-iap \
             --quiet \
             --ssh-flag="-o StrictHostKeyChecking=accept-new" \
