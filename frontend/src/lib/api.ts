@@ -1900,11 +1900,20 @@ export async function askNoteSelection(
   }
 ): Promise<AskSelectionResult | null> {
   return withAiQueueNotify(async () => {
-    const r = await fetchJson<AskSelectionResult>(
+    const start = await fetchJson<{ sessionId: string }>(
       `/api/notes/${encodeURIComponent(noteId)}/ask-selection`,
       { method: 'POST', body: JSON.stringify(input) }
     );
-    return r.data ?? null;
+    const sessionId = start.data?.sessionId;
+    if (!sessionId) return null;
+    // 答案筆記在背景建立；輪詢到 Completed 後從佇列明細取 answerNoteId/slug/markId。
+    const detail = await pollAskQueueUntilDone(sessionId);
+    if (!detail.answerNoteId) return null;
+    return {
+      answerNoteId: detail.answerNoteId,
+      answerSlug: detail.answerNoteSlug ?? '',
+      markId: detail.markId ?? '',
+    };
   });
 }
 
@@ -1924,11 +1933,14 @@ export async function askNoteSelectionAnswer(
   }
 ): Promise<string | null> {
   return withAiQueueNotify(async () => {
-    const r = await fetchJson<{ answer: string }>(
+    const start = await fetchJson<{ sessionId: string }>(
       `/api/notes/${encodeURIComponent(noteId)}/ask-selection-answer`,
       { method: 'POST', body: JSON.stringify(input) }
     );
-    return r.data?.answer ?? null;
+    const sessionId = start.data?.sessionId;
+    if (!sessionId) return null;
+    const detail = await pollAskQueueUntilDone(sessionId);
+    return detail.resultText ?? null;
   });
 }
 
@@ -1938,11 +1950,14 @@ export async function askNoteSelectionAnswer(
  */
 export async function askAi(context: string, question: string): Promise<string | null> {
   return withAiQueueNotify(async () => {
-    const r = await fetchJson<{ answer: string }>('/api/ai/ask', {
+    const start = await fetchJson<{ sessionId: string }>('/api/ai/ask', {
       method: 'POST',
       body: JSON.stringify({ context, question }),
     });
-    return r.data?.answer ?? null;
+    const sessionId = start.data?.sessionId;
+    if (!sessionId) return null;
+    const detail = await pollAskQueueUntilDone(sessionId);
+    return detail.resultText ?? null;
   });
 }
 
@@ -2077,20 +2092,60 @@ export async function getNoteBacklinks(noteId: string): Promise<Backlink[]> {
  * @param noteId 筆記 ID
  * @param contentRaw 目前編輯器內容
  */
+/**
+ * 共用：啟動一個「非同步 AI 工作」後，輪詢佇列直到 Completed（回傳明細）或 Failed（拋錯）。
+ *
+ * 為什麼非同步輪詢：claude -p 在小機器冷啟動可達數十秒，同步等待會超過反向代理(Cloudflare)的 ~100 秒逾時 → 502。
+ * 改成：端點 POST 立即回 sessionId（<1 秒）→ 之後用「每次 <1 秒的 GET」輪詢佇列狀態，背景跑完才取回結果，全程不觸發逾時。
+ *
+ * @param sessionId 由非同步端點回傳的 AiSession id。
+ * @returns 完成時的佇列明細（含 resultText / answerNoteId 等）；Failed 或逾時拋例外。
+ */
+async function pollAskQueueUntilDone(sessionId: string): Promise<AskQueueDetailDto> {
+  const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
+  const deadlineAt = Date.now() + 5 * 60 * 1000; // 最長等 5 分鐘
+  while (Date.now() < deadlineAt) {
+    const detail = await getAskQueueDetail(sessionId);
+    if (detail) {
+      if (detail.status === 'Completed') return detail;
+      if (detail.status === 'Failed') {
+        throw new Error(detail.errorText || 'AI 處理失敗，請稍後重試。');
+      }
+    }
+    await sleep(2000); // Running / 尚未建立 → 稍候再查
+  }
+  throw new Error('AI 處理逾時，請稍後到「AI 處理佇列」查看。');
+}
+
+/**
+ * 啟動「非同步 AI 轉換」（排版/美化）：POST 立即回 sessionId → 輪詢取結果套用到編輯器。
+ * @param noteId 筆記 ID
+ * @param contentRaw 目前編輯器內容
+ * @param op 'reformat'（排版）或 'beautify'（美化）
+ * @returns 轉換結果（contentHtml 留空，由上層重新渲染）；失敗/逾時拋例外。
+ */
+async function startNoteAiTransform(
+  noteId: string,
+  contentRaw: string,
+  op: 'reformat' | 'beautify',
+): Promise<AiTransformResult | null> {
+  return withAiQueueNotify(async () => {
+    const start = await fetchJson<{ sessionId: string }>(
+      `/api/notes/${encodeURIComponent(noteId)}/${op}`,
+      { method: 'POST', body: JSON.stringify({ contentRaw }) },
+    );
+    const sessionId = start.data?.sessionId;
+    if (!sessionId) return null;
+    const detail = await pollAskQueueUntilDone(sessionId);
+    return { contentRaw: detail.resultText ?? '', contentHtml: '' };
+  });
+}
+
 export async function reformatNote(
   noteId: string,
   contentRaw: string
 ): Promise<AiTransformResult | null> {
-  return withAiQueueNotify(async () => {
-    const r = await fetchJson<AiTransformResult>(
-      `/api/notes/${encodeURIComponent(noteId)}/reformat`,
-      {
-        method: 'POST',
-        body: JSON.stringify({ contentRaw }),
-      }
-    );
-    return r.data ?? null;
-  });
+  return startNoteAiTransform(noteId, contentRaw, 'reformat');
 }
 
 /**
@@ -2102,16 +2157,7 @@ export async function beautifyNote(
   noteId: string,
   contentRaw: string
 ): Promise<AiTransformResult | null> {
-  return withAiQueueNotify(async () => {
-    const r = await fetchJson<AiTransformResult>(
-      `/api/notes/${encodeURIComponent(noteId)}/beautify`,
-      {
-        method: 'POST',
-        body: JSON.stringify({ contentRaw }),
-      }
-    );
-    return r.data ?? null;
-  });
+  return startNoteAiTransform(noteId, contentRaw, 'beautify');
 }
 
 // ============================================================================
@@ -2233,6 +2279,8 @@ export interface AskQueueDetailDto {
   updatedDateTime: string;
   /** 逐則串流訊息（完整 log；依序號排序） */
   messages: AiQueueMessageDto[];
+  /** AI 文字結果（非同步排版/美化/便利貼完成時有值；前端輪詢後取回套用到編輯器） */
+  resultText?: string | null;
 }
 
 /**

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { reformatNote, beautifyNote, type AiTransformResult } from '@/lib/api';
+import { reformatNote, beautifyNote } from '@/lib/api';
 
 interface NoteAiActionsProps {
   /** 筆記 ID */

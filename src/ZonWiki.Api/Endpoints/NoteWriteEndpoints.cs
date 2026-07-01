@@ -1,6 +1,7 @@
 using System.Text.RegularExpressions;
 using Markdig;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using ZonWiki.Api.Auth;
 using ZonWiki.Api.Notes;
@@ -113,9 +114,10 @@ public static class NoteWriteEndpoints
     /// </summary>
     private static async Task<IResult> AskSelectionHandler(
         HttpContext http,
+        ZonWikiDbContext db,
         AskQueueService queueService,
-        ILogger<object> logger,
-        INoteAiService aiService,
+        IServiceScopeFactory scopeFactory,
+        ILoggerFactory loggerFactory,
         Guid id,
         AskSelectionRequest request,
         CancellationToken ct)
@@ -124,28 +126,47 @@ public static class NoteWriteEndpoints
         if (userId == Guid.Empty)
         {
             return Results.Json(
-                ApiResponse<AskSelectionResultDto>.Fail("Invalid user identity", 401),
+                ApiResponse<AiAsyncStartedDto>.Fail("Invalid user identity", 401),
                 statusCode: StatusCodes.Status401Unauthorized);
         }
 
-        try
+        // 同步驗證（立即回 404/400）。
+        var owns = await db.Note.AnyAsync(n => n.Id == id && n.ValidFlag && n.UserId == userId, ct);
+        if (!owns)
         {
-            var dto = await queueService.ExecuteAskSelectionAsync(userId, id, request, aiService, ct);
-            return Results.Ok(ApiResponse<AskSelectionResultDto>.Ok(dto));
+            return Results.NotFound(ApiResponse<AiAsyncStartedDto>.Fail("Note not found", 404));
         }
-        catch (KeyNotFoundException)
+        var question = (request.Question ?? "").Trim();
+        if (string.IsNullOrEmpty(question))
         {
-            return Results.NotFound(ApiResponse<AskSelectionResultDto>.Fail("Note not found", 404));
+            return Results.BadRequest(ApiResponse<AiAsyncStartedDto>.Fail("Question cannot be empty", 400));
         }
-        catch (ArgumentException ex)
+        var selected = (request.AnchorText ?? "").Trim();
+
+        // 非同步：同步建 Running session 立即回 sessionId；答案筆記在背景建立（前端輪詢到 Completed 後用 answerNoteId 導向）。
+        var session = await queueService.CreateRunningNoteAiSessionAsync(userId, id, "floatingnote", question, selected, ct);
+        var sessionId = session.Id;
+
+        _ = Task.Run(async () =>
         {
-            return Results.BadRequest(ApiResponse<AskSelectionResultDto>.Fail(ex.Message, 400));
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Failed ask-selection (userId={UserId}, noteId={NoteId})", userId, id);
-            return Results.StatusCode(500);
-        }
+            using var scope = scopeFactory.CreateScope();
+            var bgDb = scope.ServiceProvider.GetRequiredService<ZonWikiDbContext>();
+            bgDb.SetCurrentUserId(userId);
+            var bgQueue = scope.ServiceProvider.GetRequiredService<AskQueueService>();
+            var bgAi = scope.ServiceProvider.GetRequiredService<INoteAiService>();
+            var bgLogger = loggerFactory.CreateLogger("NoteAiBackground");
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(200));
+            try
+            {
+                await bgQueue.FinishAskSelectionAsync(sessionId, userId, bgAi, request, cts.Token);
+            }
+            catch (Exception ex)
+            {
+                bgLogger.LogError(ex, "框選提問背景失敗（session={SessionId}）", sessionId);
+            }
+        });
+
+        return Results.Accepted(value: ApiResponse<AiAsyncStartedDto>.Ok(new AiAsyncStartedDto(sessionId)));
     }
 
     /// <summary>
@@ -156,8 +177,8 @@ public static class NoteWriteEndpoints
         HttpContext http,
         ZonWikiDbContext db,
         AskQueueService queueService,
-        ILogger<object> logger,
-        INoteAiService aiService,
+        IServiceScopeFactory scopeFactory,
+        ILoggerFactory loggerFactory,
         Guid id,
         AskSelectionRequest request,
         CancellationToken ct)
@@ -166,7 +187,7 @@ public static class NoteWriteEndpoints
         if (userId == Guid.Empty)
         {
             return Results.Json(
-                ApiResponse<AskSelectionAnswerDto>.Fail("Invalid user identity", 401),
+                ApiResponse<AiAsyncStartedDto>.Fail("Invalid user identity", 401),
                 statusCode: StatusCodes.Status401Unauthorized);
         }
 
@@ -174,39 +195,49 @@ public static class NoteWriteEndpoints
             .FirstOrDefaultAsync(n => n.Id == id && n.ValidFlag && n.UserId == userId, ct);
         if (sourceNote is null)
         {
-            return Results.NotFound(ApiResponse<AskSelectionAnswerDto>.Fail("Note not found", 404));
+            return Results.NotFound(ApiResponse<AiAsyncStartedDto>.Fail("Note not found", 404));
         }
 
         var question = (request.Question ?? "").Trim();
         var selected = (request.AnchorText ?? "").Trim();
         if (string.IsNullOrEmpty(question))
         {
-            return Results.BadRequest(ApiResponse<AskSelectionAnswerDto>.Fail("缺少問題", 400));
+            return Results.BadRequest(ApiResponse<AiAsyncStartedDto>.Fail("缺少問題", 400));
         }
 
-        try
+        // 把「整篇筆記內容 + 框選段落」一起當成上下文（沿用 AskAboutAsync，不改 AI 介面）。
+        var context =
+            $"【整篇筆記內容】\n{sourceNote.ContentRaw}\n\n" +
+            $"【使用者特別框選、想聚焦的段落】\n「{selected}」";
+
+        // 非同步：同步建 Running session 立即回 sessionId；後援鏈在背景跑（避免 claude 冷啟動阻塞請求→502）。
+        var session = await queueService.CreateRunningNoteAiSessionAsync(userId, id, "floatingnote", question, selected, ct);
+        var sessionId = session.Id;
+
+        _ = Task.Run(async () =>
         {
-            // 把「整篇筆記內容 + 框選段落」一起當成上下文（沿用 AskAboutAsync，不改 AI 介面）。
-            var context =
-                $"【整篇筆記內容】\n{sourceNote.ContentRaw}\n\n" +
-                $"【使用者特別框選、想聚焦的段落】\n「{selected}」";
-            // 便利貼模式：仍把這次提問追蹤成 AiSession 進「AI 處理中」佇列
-            //（Kind=floatingnote，無答案筆記/錨點；點佇列項目導回此來源筆記）。
-            var answer = await queueService.TrackAiAsync(
-                userId,
-                id,
-                "floatingnote",
-                question,
-                selected,
-                (onStage, ctk) => aiService.AskAboutAsync(context, question, ctk, onStage),
-                ct);
-            return Results.Ok(ApiResponse<AskSelectionAnswerDto>.Ok(new AskSelectionAnswerDto(answer)));
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Failed ask-selection-answer (userId={UserId}, noteId={NoteId})", userId, id);
-            return Results.StatusCode(500);
-        }
+            using var scope = scopeFactory.CreateScope();
+            var bgDb = scope.ServiceProvider.GetRequiredService<ZonWikiDbContext>();
+            bgDb.SetCurrentUserId(userId);
+            var bgQueue = scope.ServiceProvider.GetRequiredService<AskQueueService>();
+            var bgAi = scope.ServiceProvider.GetRequiredService<INoteAiService>();
+            var bgLogger = loggerFactory.CreateLogger("NoteAiBackground");
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(200));
+            try
+            {
+                await bgQueue.FinishNoteAiAsync(
+                    sessionId,
+                    userId,
+                    async (onStage, bgCt) => await bgAi.AskAboutAsync(context, question, bgCt, onStage),
+                    cts.Token);
+            }
+            catch (Exception ex)
+            {
+                bgLogger.LogError(ex, "便利貼提問背景失敗（session={SessionId}）", sessionId);
+            }
+        });
+
+        return Results.Accepted(value: ApiResponse<AiAsyncStartedDto>.Ok(new AiAsyncStartedDto(sessionId)));
     }
 
     // ==================== Create Note ====================
@@ -998,13 +1029,12 @@ public static class NoteWriteEndpoints
         HttpContext http,
         ZonWikiDbContext db,
         AskQueueService queueService,
-        ILogger<object> logger,
-        INoteAiService aiService,
+        IServiceScopeFactory scopeFactory,
+        ILoggerFactory loggerFactory,
         Guid id,
         AiTransformRequest request,
         CancellationToken ct)
-        => await TransformNoteContentAsync(http, db, queueService, logger, id, request, ct,
-            (content, onStage) => aiService.ReformatAsync(content, ct, onStage), "reformat");
+        => await StartTransformNoteAsync(http, db, queueService, scopeFactory, loggerFactory, id, request, ct, "reformat");
 
     // ==================== AI Beautify ====================
 
@@ -1012,44 +1042,45 @@ public static class NoteWriteEndpoints
         HttpContext http,
         ZonWikiDbContext db,
         AskQueueService queueService,
-        ILogger<object> logger,
-        INoteAiService aiService,
+        IServiceScopeFactory scopeFactory,
+        ILoggerFactory loggerFactory,
         Guid id,
         AiTransformRequest request,
         CancellationToken ct)
-        => await TransformNoteContentAsync(http, db, queueService, logger, id, request, ct,
-            (content, onStage) => aiService.BeautifyAsync(content, ct, onStage), "beautify");
+        => await StartTransformNoteAsync(http, db, queueService, scopeFactory, loggerFactory, id, request, ct, "beautify");
 
     /// <summary>
-    /// AI 排版／美化共用處理：對「請求帶來的目前內容」做轉換並回傳結果，
-    /// 「不寫入資料庫、不建立版本、不重解析連結」——避免覆蓋使用者尚未儲存的編輯，
-    /// 並消除與「保存」端點同時寫同一列的競態（最終由使用者按保存才寫入）。
+    /// AI 排版／美化共用處理（**非同步**）：建立 Running AiSession、立即回 202 + sessionId，
+    /// 實際的後援鏈轉換在背景 scope 執行（claude -p 在小機器冷啟動可達數十秒，同步會超過反向代理逾時 → 502）。
+    /// 結果存進 <c>AiSession.ResultText</c>，前端輪詢 <c>/api/ask-queue/{sessionId}</c> 取回後套用到編輯器。
+    /// 「不寫入筆記、不建版本」的精神不變——前端取回結果後仍由使用者按「保存」才落地。
     /// </summary>
     /// <param name="http">HTTP 內容（取得使用者身分）。</param>
-    /// <param name="db">資料庫內容（僅用於驗證筆記擁有權）。</param>
-    /// <param name="logger">記錄器。</param>
+    /// <param name="db">資料庫內容（驗證擁有權 + 同步建 session）。</param>
+    /// <param name="queueService">佇列服務（建 session）。</param>
+    /// <param name="scopeFactory">背景工作用的 DI scope 工廠。</param>
+    /// <param name="loggerFactory">背景工作記錄器。</param>
     /// <param name="id">筆記識別碼（驗證擁有權用）。</param>
     /// <param name="request">請求內容（目前的 Markdown）。</param>
-    /// <param name="ct">取消權杖。</param>
-    /// <param name="transform">實際的轉換函式（排版或美化）。</param>
-    /// <param name="opName">操作名稱（記錄用）。</param>
-    /// <returns>轉換結果（contentRaw + contentHtml）。</returns>
-    private static async Task<IResult> TransformNoteContentAsync(
+    /// <param name="ct">取消權杖（僅用於同步部分；背景另起逾時權杖）。</param>
+    /// <param name="opName">操作名稱（reformat／beautify）。</param>
+    /// <returns>202 Accepted + sessionId。</returns>
+    private static async Task<IResult> StartTransformNoteAsync(
         HttpContext http,
         ZonWikiDbContext db,
         AskQueueService queueService,
-        ILogger<object> logger,
+        IServiceScopeFactory scopeFactory,
+        ILoggerFactory loggerFactory,
         Guid id,
         AiTransformRequest request,
         CancellationToken ct,
-        Func<string, Func<AiStreamEvent, Task>, Task<string>> transform,
         string opName)
     {
         var userId = ExtractUserId(http);
         if (userId == Guid.Empty)
         {
             return Results.Json(
-                ApiResponse<AiTransformResultDto>.Fail("Invalid user identity", 401),
+                ApiResponse<AiAsyncStartedDto>.Fail("Invalid user identity", 401),
                 statusCode: StatusCodes.Status401Unauthorized);
         }
 
@@ -1057,12 +1088,10 @@ public static class NoteWriteEndpoints
         var owns = await db.Note.AnyAsync(n => n.Id == id && n.ValidFlag && n.UserId == userId, ct);
         if (!owns)
         {
-            return Results.NotFound(ApiResponse<AiTransformResultDto>.Fail("Note not found", 404));
+            return Results.NotFound(ApiResponse<AiAsyncStartedDto>.Fail("Note not found", 404));
         }
 
         var input = request?.ContentRaw ?? string.Empty;
-
-        // 佇列顯示標籤（美化／整理排版）。
         var label = opName switch
         {
             "beautify" => "美化筆記",
@@ -1070,28 +1099,38 @@ public static class NoteWriteEndpoints
             _ => opName,
         };
 
-        try
-        {
-            // 對「請求帶來的目前內容」做 AI 轉換（不是讀 DB 內容）；
-            // 透過 TrackAiAsync 追蹤成 AiSession，讓「美化／排版」也進「AI 處理中」佇列。
-            var transformed = await queueService.TrackAiAsync(
-                userId,
-                id,
-                opName,
-                label,
-                null,
-                (onStage, _) => transform(input, onStage),
-                ct);
-            var html = Markdown.ToHtml(transformed, NoteContentHelpers.MarkdownPipeline);
+        // 同步：建 Running session，立即取得 sessionId 回前端（前端據此輪詢）。
+        var session = await queueService.CreateRunningNoteAiSessionAsync(userId, id, opName, label, null, ct);
+        var sessionId = session.Id;
 
-            var dto = new AiTransformResultDto(transformed, html);
-            return Results.Ok(ApiResponse<AiTransformResultDto>.Ok(dto));
-        }
-        catch (Exception ex)
+        // 背景：開新 scope 跑後援鏈（不阻塞請求；避免 Cloudflare 100s 逾時 502）。
+        _ = Task.Run(async () =>
         {
-            logger.LogError(ex, "Failed to {Op} note (userId={UserId}, noteId={NoteId})", opName, userId, id);
-            return Results.StatusCode(500);
-        }
+            using var scope = scopeFactory.CreateScope();
+            var bgDb = scope.ServiceProvider.GetRequiredService<ZonWikiDbContext>();
+            bgDb.SetCurrentUserId(userId); // 背景無 HttpContext，明確設使用者隔離
+            var bgQueue = scope.ServiceProvider.GetRequiredService<AskQueueService>();
+            var bgAi = scope.ServiceProvider.GetRequiredService<INoteAiService>();
+            var bgLogger = loggerFactory.CreateLogger("NoteAiBackground");
+            // 後援鏈最壞情況（claude 慢 + 換家）給較長逾時；遠大於前端輪詢，但不影響任何 HTTP 請求。
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(200));
+            try
+            {
+                await bgQueue.FinishNoteAiAsync(
+                    sessionId,
+                    userId,
+                    async (onStage, bgCt) => opName == "beautify"
+                        ? await bgAi.BeautifyAsync(input, bgCt, onStage)
+                        : await bgAi.ReformatAsync(input, bgCt, onStage),
+                    cts.Token);
+            }
+            catch (Exception ex)
+            {
+                bgLogger.LogError(ex, "note-AI 背景啟動失敗（op={Op}, session={SessionId}）", opName, sessionId);
+            }
+        });
+
+        return Results.Accepted(value: ApiResponse<AiAsyncStartedDto>.Ok(new AiAsyncStartedDto(sessionId)));
     }
 
     // ==================== Helper Methods ====================

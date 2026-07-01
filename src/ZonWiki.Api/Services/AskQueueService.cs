@@ -270,7 +270,8 @@ public sealed class AskQueueService
             AskNodeId: session.AskNodeId,
             CreatedDateTime: session.CreatedDateTime,
             UpdatedDateTime: session.UpdatedDateTime,
-            Messages: messages);
+            Messages: messages,
+            ResultText: session.ResultText);
     }
 
     /// <summary>
@@ -536,5 +537,183 @@ public sealed class AskQueueService
             });
             await db.SaveChangesAsync(ct);
         };
+    }
+
+    /// <summary>
+    /// 建立一筆 Running 的 note-AI AiSession 並存檔（同步部分）：端點先呼叫它取得 sessionId 立即回前端，
+    /// 再把實際 AI 工作丟背景跑（見 <see cref="FinishNoteAiAsync"/>）。
+    /// 讓請求不被 claude 的長耗時阻塞（claude -p 在小機器冷啟動可達數十秒，同步會超過 Cloudflare 100s 逾時 → 502）。
+    /// </summary>
+    public async Task<AiSession> CreateRunningNoteAiSessionAsync(
+        Guid userId, Guid? noteId, string kind, string? label, string? anchorText, CancellationToken ct)
+    {
+        static string? Trunc(string? s) => s is null ? null : (s.Length > 2000 ? s[..2000] : s);
+        var session = new AiSession
+        {
+            UserId = userId,
+            NoteId = noteId,
+            Kind = kind,
+            QuestionText = Trunc(label),
+            AnchorText = Trunc(anchorText),
+            PromptText = label ?? kind,
+            Status = "Running",
+            CreatedUser = userId.ToString(),
+            UpdatedUser = userId.ToString(),
+        };
+        _db.AiSession.Add(session);
+        await _db.SaveChangesAsync(ct);
+        return session;
+    }
+
+    /// <summary>
+    /// 背景完成 note-AI 工作：在背景 scope 內呼叫（先 <c>SetCurrentUserId</c> 設使用者隔離，因背景無 HttpContext）。
+    /// 載入指定 session → 跑 aiCall（後援鏈，onStage 即時寫階段）→ 文字結果存 <see cref="AiSession.ResultText"/> → 標記 Completed/Failed。
+    /// 前端以輪詢 <c>/api/ask-queue/{sessionId}</c> 取得狀態與結果。
+    /// </summary>
+    /// <param name="sessionId">先前 <see cref="CreateRunningNoteAiSessionAsync"/> 建立的 session。</param>
+    /// <param name="userId">擁有者（背景無 HttpContext，需明確帶入設給 DbContext）。</param>
+    /// <param name="aiCall">實際 AI 呼叫：收 onStage 回呼與取消權杖，回傳文字結果。</param>
+    /// <param name="ct">取消權杖。</param>
+    public async Task FinishNoteAiAsync(
+        Guid sessionId,
+        Guid userId,
+        Func<Func<AiStreamEvent, Task>, CancellationToken, Task<string>> aiCall,
+        CancellationToken ct)
+    {
+        _db.SetCurrentUserId(userId);
+        var session = await _db.AiSession.FirstOrDefaultAsync(s => s.Id == sessionId && s.UserId == userId, ct);
+        if (session is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var onStage = BuildStageRecorder(_db, session, ct);
+            var result = await aiCall(onStage, ct);
+            session.ResultText = result;
+            ApplyCompleted(session);
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "背景 note-AI 失敗（session={SessionId}, kind={Kind}）", sessionId, session.Kind);
+            try
+            {
+                ApplyFailed(session, ex.Message);
+                await _db.SaveChangesAsync(CancellationToken.None);
+            }
+            catch (Exception logEx)
+            {
+                _logger.LogError(logEx, "標記 note-AI 失敗狀態時又出錯");
+            }
+        }
+    }
+
+    /// <summary>
+    /// 背景完成「框選提問」：載入指定 session → 跑後援鏈回答 → 建立答案筆記 + create 版本 + 來源錨點(NoteMark)
+    /// → 設 session 的 AnswerNoteId/MarkId/ResultText 並標記 Completed（皆於單次 SaveChanges 原子寫入）。
+    /// 與同步版 <see cref="ExecuteAskSelectionAsync"/> 邏輯一致，但改為背景執行（不阻塞請求，避免 claude 冷啟動→502）。
+    /// </summary>
+    public async Task FinishAskSelectionAsync(
+        Guid sessionId,
+        Guid userId,
+        INoteAiService aiService,
+        AskSelectionRequest request,
+        CancellationToken ct)
+    {
+        _db.SetCurrentUserId(userId);
+        var session = await _db.AiSession.FirstOrDefaultAsync(s => s.Id == sessionId && s.UserId == userId, ct);
+        if (session is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var sourceNote = await _db.Note
+                .FirstOrDefaultAsync(n => n.Id == session.NoteId && n.ValidFlag && n.UserId == userId, ct)
+                ?? throw new KeyNotFoundException("來源筆記不存在");
+
+            var question = (request.Question ?? "").Trim();
+            var selected = (request.AnchorText ?? "").Trim();
+
+            var onStage = BuildStageRecorder(_db, session, ct);
+            var answer = await aiService.AskAboutAsync(selected, question, ct, onStage);
+
+            var titleBase = question.Length <= 40 ? question : question[..40] + "…";
+            var answerContent =
+                $"> 來源：[[{sourceNote.Title}]]\n> 選取：「{selected}」\n\n" +
+                $"**問題**：{question}\n\n**回答**：\n\n{answer}";
+
+            var baseSlug = NoteContentHelpers.GenerateSlug(titleBase);
+            if (string.IsNullOrEmpty(baseSlug)) baseSlug = "note";
+            var slug = baseSlug;
+            for (var i = 2;
+                 await _db.Note.AnyAsync(n => n.UserId == userId && n.Slug == slug && n.ValidFlag, ct);
+                 i++)
+            {
+                slug = $"{baseSlug}-{i}";
+            }
+
+            var answerNote = new Note
+            {
+                UserId = userId,
+                Title = titleBase,
+                Slug = slug,
+                ContentRaw = answerContent,
+                ContentHtml = Markdown.ToHtml(answerContent, NoteContentHelpers.MarkdownPipeline),
+                ContentHash = NoteContentHelpers.ComputeContentHash(answerContent),
+                Kind = "note",
+                IsDraft = false,
+                CreatedUser = userId.ToString(),
+                UpdatedUser = userId.ToString(),
+            };
+            var mark = new NoteMark
+            {
+                UserId = userId,
+                NoteId = sourceNote.Id,
+                Kind = "link",
+                AnchorText = request.AnchorText ?? "",
+                AnchorStart = request.AnchorStart,
+                AnchorEnd = request.AnchorEnd,
+                AnchorPrefix = request.AnchorPrefix ?? "",
+                AnchorSuffix = request.AnchorSuffix ?? "",
+                TargetType = "note",
+                TargetId = answerNote.Id,
+                CreatedUser = userId.ToString(),
+                UpdatedUser = userId.ToString(),
+            };
+
+            _db.Note.Add(answerNote);
+            _db.NoteRevision.Add(new NoteRevision
+            {
+                UserId = userId,
+                NoteId = answerNote.Id,
+                RevisionNo = 1,
+                ChangeKind = "create",
+                Title = answerNote.Title,
+                ContentRaw = answerNote.ContentRaw,
+                CreatedUser = userId.ToString(),
+                UpdatedUser = userId.ToString(),
+            });
+            _db.NoteMark.Add(mark);
+            session.ResultText = answer;
+            ApplyCompleted(session, answerNote.Id, mark.Id);
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "背景框選提問失敗（session={SessionId}）", sessionId);
+            try
+            {
+                ApplyFailed(session, ex.Message);
+                await _db.SaveChangesAsync(CancellationToken.None);
+            }
+            catch (Exception logEx)
+            {
+                _logger.LogError(logEx, "標記框選提問失敗狀態時又出錯");
+            }
+        }
     }
 }

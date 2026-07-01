@@ -1,7 +1,6 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import type { AskQueueItemDto } from '@/lib/api';
 import { getAskQueue } from '@/lib/api';
 import { AI_QUEUE_CHANGED_EVENT } from '@/lib/aiQueue';
@@ -15,7 +14,6 @@ import { AI_QUEUE_CHANGED_EVENT } from '@/lib/aiQueue';
  *   點項目跳到來源筆記的框選處（?mark=）或畫布。
  */
 export function AiProcessingMenu() {
-  const router = useRouter();
   const [items, setItems] = useState<AskQueueItemDto[]>([]);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -127,10 +125,10 @@ export function AiProcessingMenu() {
     }
   };
 
-  // 點項目導航：一律導到「AI 處理佇列」頁面並預選該筆，可在那裡看完整 log（含失敗原因）、
-  // 再由明細頁的「前往來源」跳到畫布／來源筆記。
+  // 點項目導航：用「開新分頁」而非當前頁跳轉——避免使用者在編輯器有「AI 處理中（如排版結果尚未保存）」
+  // 時跳走而遺失。新分頁載入「AI 處理佇列」並預選該筆，可看完整 log（含失敗原因）。
   const handleItemClick = (item: AskQueueItemDto) => {
-    router.push(`/ai-queue?session=${encodeURIComponent(item.sessionId)}`);
+    window.open(`/ai-queue?session=${encodeURIComponent(item.sessionId)}`, '_blank', 'noopener,noreferrer');
     setOpen(false);
   };
 
@@ -317,10 +315,10 @@ export function AiProcessingMenu() {
               })
             )}
 
-            {/* footer：開啟完整「AI 處理佇列」頁（可按類別篩選、看完整 log） */}
+            {/* footer：以「新分頁」開啟完整「AI 處理佇列」頁（避免從編輯器跳走而遺失未保存的 AI 結果） */}
             <button
               onClick={() => {
-                router.push('/ai-queue');
+                window.open('/ai-queue', '_blank', 'noopener,noreferrer');
                 setOpen(false);
               }}
               style={{
