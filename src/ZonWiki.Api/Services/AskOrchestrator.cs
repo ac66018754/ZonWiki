@@ -112,7 +112,7 @@ public sealed class AskOrchestrator
             var question = askFrom.Content;
             // 有選模型 → 用該單一供應者（不變）；沒選模型（預設）→ 走後援鏈。
             var resolvedProvider = string.IsNullOrWhiteSpace(askFrom.Model)
-                ? await _factory.ResolveChainAsync(cancellationToken)
+                ? await _factory.ResolveChainAsync(cancellationToken: cancellationToken)
                 : await _factory.ResolveAsync(userId, askFrom.Model, cancellationToken);
 
             // 獲取祖先脈絡（不含自己）。限定在「本畫布」內追溯（canvasGuid 已驗證屬於目前使用者），
@@ -392,7 +392,7 @@ public sealed class AskOrchestrator
 
             // 有選模型 → 用該單一供應者（不變）；沒選模型（預設）→ 走後援鏈。
             var resolvedProvider = string.IsNullOrWhiteSpace(source.Model)
-                ? await _factory.ResolveChainAsync(cancellationToken)
+                ? await _factory.ResolveChainAsync(cancellationToken: cancellationToken)
                 : await _factory.ResolveAsync(userId, source.Model, cancellationToken);
 
             // 組建 Prompt：除了整份節點內容與框選文字，再附上祖先脈絡（修正「框選提問上下文太少」）。

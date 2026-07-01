@@ -107,6 +107,29 @@ public sealed class NoteContentHelpersTests
     }
 
     [Fact]
+    public void NestedToggles_ThreeLevels_RenderCorrectly()
+    {
+        // Arrange：H1>H2>H3 三層同長度 ::: 巢狀（對應「每個標題各自包一個 toggle」的排版慣例）。
+        var markdown =
+            ":::toggle H1 標題\nH1 導言\n\n" +
+            ":::toggle H2 標題\nH2 內文\n\n" +
+            ":::toggle H3 標題\nH3 內文\n" +
+            ":::\n:::\n:::";
+
+        // Act
+        var html = ToHtml(markdown);
+
+        // Assert：三個 details 皆正確渲染、三個標題都在、且不得殘留空的 <div></div>。
+        System.Text.RegularExpressions.Regex
+            .Matches(html, "<details class=\"md-toggle\">")
+            .Count.Should().Be(3);
+        html.Should().Contain("<summary class=\"md-toggle-summary\">H1 標題</summary>");
+        html.Should().Contain("<summary class=\"md-toggle-summary\">H2 標題</summary>");
+        html.Should().Contain("<summary class=\"md-toggle-summary\">H3 標題</summary>");
+        html.Should().NotContain("<div></div>");
+    }
+
+    [Fact]
     public void NonToggleContainer_KeepsDefaultDivBehavior()
     {
         // Arrange：非 toggle 的自訂容器，應維持 Markdig 預設 <div class="…">。

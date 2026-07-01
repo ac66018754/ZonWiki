@@ -135,9 +135,17 @@ public sealed class AiProviderFactory
     /// 「明確選定特定模型」的路徑仍用 <see cref="ResolveAsync"/>（單一供應者、不走鏈）。
     /// 任一家缺設定/金鑰/不安全 → 自動略過該家（鏈自動縮短，不報錯）；至少會有 Claude 一棒。
     /// </summary>
+    /// <param name="claudeModel">
+    /// 指定 claude CLI（第 1 棒）要用的模型（如 "haiku"／"sonnet"，對應 --model）。
+    /// null 表示用 settings.json 的預設（目前 sonnet）。不同功能可傳不同值：
+    /// 例如排版走 haiku（快、量大也夠用）、美化/問答走 sonnet（品質優先）。
+    /// 只影響 claude 這一棒；後面 Google AI Studio／banana 仍用各自 DB 設定的模型。
+    /// </param>
     /// <param name="cancellationToken">取消權杖。</param>
     /// <returns>以 <see cref="FallbackChainProvider"/> 包裝的有序鏈；測試模式回單一 Fake。</returns>
-    public async Task<ResolvedProvider> ResolveChainAsync(CancellationToken cancellationToken = default)
+    public async Task<ResolvedProvider> ResolveChainAsync(
+        string? claudeModel = null,
+        CancellationToken cancellationToken = default)
     {
         // 測試模式：固定用 Fake，忽略鏈，確保 E2E 穩定。
         if (_default is FakeAiProvider)
@@ -147,8 +155,9 @@ public sealed class AiProviderFactory
 
         var links = new List<ChainLink>
         {
-            // 第 1 棒：本機 claude CLI（settings.json 預設 sonnet；model=null 表示用其預設）。
-            new(ClaudeLinkLabel, _default, null),
+            // 第 1 棒：本機 claude CLI。claudeModel=null → 用 settings.json 預設（sonnet）；
+            // 傳入 "haiku"/"sonnet" 則以 --model 覆寫（依功能分派，見參數說明）。
+            new(ClaudeLinkLabel, _default, string.IsNullOrWhiteSpace(claudeModel) ? null : claudeModel),
         };
 
         // 第 2 棒：Google AI Studio（Gemini 直連，lite）共用列。

@@ -2103,8 +2103,8 @@ export async function getNoteBacklinks(noteId: string): Promise<Backlink[]> {
  */
 async function pollAskQueueUntilDone(sessionId: string): Promise<AskQueueDetailDto> {
   const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
-  // 前端輪詢上限需大於後端背景逾時(340s)，否則前端會先喊逾時；給 6.5 分鐘。
-  const deadlineAt = Date.now() + 390 * 1000;
+  // 前端輪詢上限需大於後端背景總預算(1800s)，否則前端會先喊逾時；給 31 分鐘。
+  const deadlineAt = Date.now() + 1860 * 1000;
   while (Date.now() < deadlineAt) {
     const detail = await getAskQueueDetail(sessionId);
     if (detail) {
