@@ -609,4 +609,111 @@ public sealed class AskQueueService
             }
         }
     }
+
+    /// <summary>
+    /// 背景完成「框選提問」：載入指定 session → 跑後援鏈回答 → 建立答案筆記 + create 版本 + 來源錨點(NoteMark)
+    /// → 設 session 的 AnswerNoteId/MarkId/ResultText 並標記 Completed（皆於單次 SaveChanges 原子寫入）。
+    /// 與同步版 <see cref="ExecuteAskSelectionAsync"/> 邏輯一致，但改為背景執行（不阻塞請求，避免 claude 冷啟動→502）。
+    /// </summary>
+    public async Task FinishAskSelectionAsync(
+        Guid sessionId,
+        Guid userId,
+        INoteAiService aiService,
+        AskSelectionRequest request,
+        CancellationToken ct)
+    {
+        _db.SetCurrentUserId(userId);
+        var session = await _db.AiSession.FirstOrDefaultAsync(s => s.Id == sessionId && s.UserId == userId, ct);
+        if (session is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var sourceNote = await _db.Note
+                .FirstOrDefaultAsync(n => n.Id == session.NoteId && n.ValidFlag && n.UserId == userId, ct)
+                ?? throw new KeyNotFoundException("來源筆記不存在");
+
+            var question = (request.Question ?? "").Trim();
+            var selected = (request.AnchorText ?? "").Trim();
+
+            var onStage = BuildStageRecorder(_db, session, ct);
+            var answer = await aiService.AskAboutAsync(selected, question, ct, onStage);
+
+            var titleBase = question.Length <= 40 ? question : question[..40] + "…";
+            var answerContent =
+                $"> 來源：[[{sourceNote.Title}]]\n> 選取：「{selected}」\n\n" +
+                $"**問題**：{question}\n\n**回答**：\n\n{answer}";
+
+            var baseSlug = NoteContentHelpers.GenerateSlug(titleBase);
+            if (string.IsNullOrEmpty(baseSlug)) baseSlug = "note";
+            var slug = baseSlug;
+            for (var i = 2;
+                 await _db.Note.AnyAsync(n => n.UserId == userId && n.Slug == slug && n.ValidFlag, ct);
+                 i++)
+            {
+                slug = $"{baseSlug}-{i}";
+            }
+
+            var answerNote = new Note
+            {
+                UserId = userId,
+                Title = titleBase,
+                Slug = slug,
+                ContentRaw = answerContent,
+                ContentHtml = Markdown.ToHtml(answerContent, NoteContentHelpers.MarkdownPipeline),
+                ContentHash = NoteContentHelpers.ComputeContentHash(answerContent),
+                Kind = "note",
+                IsDraft = false,
+                CreatedUser = userId.ToString(),
+                UpdatedUser = userId.ToString(),
+            };
+            var mark = new NoteMark
+            {
+                UserId = userId,
+                NoteId = sourceNote.Id,
+                Kind = "link",
+                AnchorText = request.AnchorText ?? "",
+                AnchorStart = request.AnchorStart,
+                AnchorEnd = request.AnchorEnd,
+                AnchorPrefix = request.AnchorPrefix ?? "",
+                AnchorSuffix = request.AnchorSuffix ?? "",
+                TargetType = "note",
+                TargetId = answerNote.Id,
+                CreatedUser = userId.ToString(),
+                UpdatedUser = userId.ToString(),
+            };
+
+            _db.Note.Add(answerNote);
+            _db.NoteRevision.Add(new NoteRevision
+            {
+                UserId = userId,
+                NoteId = answerNote.Id,
+                RevisionNo = 1,
+                ChangeKind = "create",
+                Title = answerNote.Title,
+                ContentRaw = answerNote.ContentRaw,
+                CreatedUser = userId.ToString(),
+                UpdatedUser = userId.ToString(),
+            });
+            _db.NoteMark.Add(mark);
+            session.ResultText = answer;
+            ApplyCompleted(session, answerNote.Id, mark.Id);
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "背景框選提問失敗（session={SessionId}）", sessionId);
+            try
+            {
+                ApplyFailed(session, ex.Message);
+                await _db.SaveChangesAsync(CancellationToken.None);
+            }
+            catch (Exception logEx)
+            {
+                _logger.LogError(logEx, "標記框選提問失敗狀態時又出錯");
+            }
+        }
+    }
 }
