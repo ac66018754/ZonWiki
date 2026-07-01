@@ -58,6 +58,12 @@ public class AiSession : AuditableEntity, IUserOwned
     public string? ErrorText { get; set; }
 
     /// <summary>
+    /// AI 的文字結果（可空）。非同步動作（排版／美化／便利貼提問）完成時填入，
+    /// 供前端輪詢佇列後取回套用到編輯器（框選提問另以 AnswerNoteId 表示結果，不用此欄）。
+    /// </summary>
+    public string? ResultText { get; set; }
+
+    /// <summary>
     /// 提問種類：node（對整個節點提問）或 floatingnote（對選取片段提問）。
     /// </summary>
     public string Kind { get; set; } = "node";

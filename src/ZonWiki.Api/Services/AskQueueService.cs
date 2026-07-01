@@ -270,7 +270,8 @@ public sealed class AskQueueService
             AskNodeId: session.AskNodeId,
             CreatedDateTime: session.CreatedDateTime,
             UpdatedDateTime: session.UpdatedDateTime,
-            Messages: messages);
+            Messages: messages,
+            ResultText: session.ResultText);
     }
 
     /// <summary>
@@ -536,5 +537,76 @@ public sealed class AskQueueService
             });
             await db.SaveChangesAsync(ct);
         };
+    }
+
+    /// <summary>
+    /// 建立一筆 Running 的 note-AI AiSession 並存檔（同步部分）：端點先呼叫它取得 sessionId 立即回前端，
+    /// 再把實際 AI 工作丟背景跑（見 <see cref="FinishNoteAiAsync"/>）。
+    /// 讓請求不被 claude 的長耗時阻塞（claude -p 在小機器冷啟動可達數十秒，同步會超過 Cloudflare 100s 逾時 → 502）。
+    /// </summary>
+    public async Task<AiSession> CreateRunningNoteAiSessionAsync(
+        Guid userId, Guid? noteId, string kind, string? label, string? anchorText, CancellationToken ct)
+    {
+        static string? Trunc(string? s) => s is null ? null : (s.Length > 2000 ? s[..2000] : s);
+        var session = new AiSession
+        {
+            UserId = userId,
+            NoteId = noteId,
+            Kind = kind,
+            QuestionText = Trunc(label),
+            AnchorText = Trunc(anchorText),
+            PromptText = label ?? kind,
+            Status = "Running",
+            CreatedUser = userId.ToString(),
+            UpdatedUser = userId.ToString(),
+        };
+        _db.AiSession.Add(session);
+        await _db.SaveChangesAsync(ct);
+        return session;
+    }
+
+    /// <summary>
+    /// 背景完成 note-AI 工作：在背景 scope 內呼叫（先 <c>SetCurrentUserId</c> 設使用者隔離，因背景無 HttpContext）。
+    /// 載入指定 session → 跑 aiCall（後援鏈，onStage 即時寫階段）→ 文字結果存 <see cref="AiSession.ResultText"/> → 標記 Completed/Failed。
+    /// 前端以輪詢 <c>/api/ask-queue/{sessionId}</c> 取得狀態與結果。
+    /// </summary>
+    /// <param name="sessionId">先前 <see cref="CreateRunningNoteAiSessionAsync"/> 建立的 session。</param>
+    /// <param name="userId">擁有者（背景無 HttpContext，需明確帶入設給 DbContext）。</param>
+    /// <param name="aiCall">實際 AI 呼叫：收 onStage 回呼與取消權杖，回傳文字結果。</param>
+    /// <param name="ct">取消權杖。</param>
+    public async Task FinishNoteAiAsync(
+        Guid sessionId,
+        Guid userId,
+        Func<Func<AiStreamEvent, Task>, CancellationToken, Task<string>> aiCall,
+        CancellationToken ct)
+    {
+        _db.SetCurrentUserId(userId);
+        var session = await _db.AiSession.FirstOrDefaultAsync(s => s.Id == sessionId && s.UserId == userId, ct);
+        if (session is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var onStage = BuildStageRecorder(_db, session, ct);
+            var result = await aiCall(onStage, ct);
+            session.ResultText = result;
+            ApplyCompleted(session);
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "背景 note-AI 失敗（session={SessionId}, kind={Kind}）", sessionId, session.Kind);
+            try
+            {
+                ApplyFailed(session, ex.Message);
+                await _db.SaveChangesAsync(CancellationToken.None);
+            }
+            catch (Exception logEx)
+            {
+                _logger.LogError(logEx, "標記 note-AI 失敗狀態時又出錯");
+            }
+        }
     }
 }
