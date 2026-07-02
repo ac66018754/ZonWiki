@@ -12,8 +12,50 @@ export interface OverlayItemView {
   color?: string | null;
   /** 便利貼文字。 */
   text?: string | null;
-  /** 型別專屬資料 JSON：slide→圖片清單。 */
+  /** 型別專屬資料 JSON：slide→圖片清單（見 {@link parseSlideData}）。 */
   dataJson?: string | null;
+}
+
+/**
+ * 圖片板 dataJson 的解析結果：標題 ＋ 圖片清單。
+ * 相容兩種格式：
+ * - 舊格式：純圖片陣列 `["url1","url2"]`（無標題）。
+ * - 新格式：物件 `{ title?: string, images: string[] }`（可自訂標題）。
+ */
+export interface SlideData {
+  /** 圖片板自訂標題（未設為空字串）。 */
+  title: string;
+  /** 圖片清單（網址或 data URL）。 */
+  images: string[];
+}
+
+/**
+ * 安全解析圖片板 dataJson（相容舊的「純陣列」與新的 `{title, images}` 物件格式）。
+ * @param dataJson 圖片板 NoteOverlayItem.dataJson。
+ * @returns 標題與圖片清單；解析失敗回 `{ title: '', images: [] }`。
+ */
+export function parseSlideData(dataJson: string | null | undefined): SlideData {
+  if (!dataJson) return { title: '', images: [] };
+  try {
+    const parsed = JSON.parse(dataJson);
+    // 舊格式：純陣列。
+    if (Array.isArray(parsed)) {
+      return { title: '', images: parsed.filter((x): x is string => typeof x === 'string') };
+    }
+    // 新格式：物件（含標題）。
+    if (parsed && typeof parsed === 'object') {
+      const images = Array.isArray((parsed as { images?: unknown }).images)
+        ? ((parsed as { images: unknown[] }).images.filter((x): x is string => typeof x === 'string'))
+        : [];
+      const title = typeof (parsed as { title?: unknown }).title === 'string'
+        ? (parsed as { title: string }).title
+        : '';
+      return { title, images };
+    }
+  } catch {
+    /* 格式錯誤 → 視為空 */
+  }
+  return { title: '', images: [] };
 }
 
 /** 圖片板左右切換鈕的定位樣式。 */

@@ -24,7 +24,7 @@ import {
 import { ShapeEl } from '@/lib/drawing/ShapeEl';
 import { StickyBody } from '@/components/overlay/StickyBody';
 import { SlideBody } from '@/components/overlay/SlideBody';
-import { STICKY_COLORS } from '@/components/overlay/overlayShared';
+import { STICKY_COLORS, parseSlideData } from '@/components/overlay/overlayShared';
 import { DrawingTextBox, parseTextExtra, type TextExtra } from '@/components/drawing/TextBox';
 import { DrawingToolbar } from '@/components/drawing/DrawingToolbar';
 import { TextPropsPanel } from '@/components/drawing/TextPropsPanel';
@@ -372,6 +372,27 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
     if (window.confirm(`刪除這張${label}？（之後可在「垃圾桶 → 便利貼」還原）`)) remove(item.id);
   };
 
+  // ── 圖片板 dataJson 結構 { title?, images }：標題與圖片清單共存，改標題不動圖片、加圖不掉標題 ──
+  /** 讀圖片板標題（相容舊的純陣列格式，見 parseSlideData）。 */
+  const slideTitle = (item: NoteOverlayItem): string => parseSlideData(item.dataJson).title;
+  /** 合併寫入圖片板 dataJson（保留另一欄，並把舊的純陣列格式一併升級為物件格式）。 */
+  const writeSlideData = (item: NoteOverlayItem, patch: Partial<{ title: string; images: string[] }>) => {
+    const cur = parseSlideData(item.dataJson);
+    const json = JSON.stringify({ title: cur.title, images: cur.images, ...patch });
+    patchLocal(item.id, { dataJson: json });
+    persist(item.id, { dataJson: json });
+  };
+
+  // ── 標題（便利貼/圖片板通用）：兩者的標題都存在各自的 dataJson，讀/寫走各自的合併函式 ──
+  /** 讀取項目標題（便利貼、圖片板皆可）。 */
+  const itemTitle = (item: NoteOverlayItem): string =>
+    item.kind === 'slide' ? slideTitle(item) : stickyTitle(item);
+  /** 寫入項目標題（便利貼、圖片板皆可；各自保留另一欄資料）。 */
+  const setItemTitle = (item: NoteOverlayItem, title: string) => {
+    if (item.kind === 'slide') writeSlideData(item, { title });
+    else writeStickyData(item, { title });
+  };
+
   // ── 「釘住浮動 / 跟著內文」切換（#5）──
   // pinned=true：position:fixed、portal 到 body、可拖到整個畫面（含側欄），但不隨內文捲動（像章節目錄表）。
   // pinned=false（預設）：position:absolute 疊在內文上，隨內文捲動、被內文區裁切（原本的便利貼行為）。
@@ -409,6 +430,59 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
         }
       });
   };
+
+  // ── 便利貼/圖片板「跟著所在的 toggle 一起收合」（使用者需求）──
+  // 非釘住（貼在內文上、隨內文捲動）的便利貼/圖片板，若它落在某個 <details class="md-toggle"> 摺疊區塊
+  // 範圍內，當該區塊被收合時，這張便利貼/圖片板也一起收合（只剩標題）——免得它孤零零浮在收合後錯位的內容上。
+  // 作法：趁 details「展開」（量得到內容區）時，記錄「此 details ⊃ 哪些非釘住項目」；該 details「收合」時，
+  // 把記錄到的項目一併加入 collapsedIds。toggle 事件不冒泡 → 於容器用 capture 監聽，可涵蓋事後才注入的 details。
+  const toggleAssocRef = useRef<Map<Element, Set<string>>>(new Map());
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    /** 趁展開時，重新記錄每個開啟中的 details 涵蓋了哪些「非釘住」便利貼/圖片板。 */
+    const refreshAssoc = () => {
+      const cRect = container.getBoundingClientRect();
+      const overlayItems = itemsRef.current.filter(
+        (i) => (i.kind === 'sticky' || i.kind === 'slide') && !isPinned(i),
+      );
+      container.querySelectorAll<HTMLDetailsElement>('details.md-toggle').forEach((d) => {
+        if (!d.open) return; // 收合時量不到內容區，只在展開時更新關聯
+        const r = d.getBoundingClientRect();
+        // getBoundingClientRect 為視窗座標；減去容器頂端＝內容座標（與便利貼 x/y 同一系、免受捲動影響）。
+        const top = r.top - cRect.top;
+        const bottom = r.bottom - cRect.top;
+        const ids = new Set<string>();
+        for (const it of overlayItems) if (it.y >= top && it.y <= bottom) ids.add(it.id);
+        toggleAssocRef.current.set(d, ids);
+      });
+    };
+
+    const onToggle = (e: Event) => {
+      const d = e.target;
+      if (!(d instanceof HTMLDetailsElement) || !d.classList.contains('md-toggle')) return;
+      if (d.open) {
+        refreshAssoc(); // 展開：更新關聯
+        return;
+      }
+      // 收合：把落在此 details 內的非釘住項目一起收合。
+      const ids = toggleAssocRef.current.get(d);
+      if (ids && ids.size) {
+        setCollapsedIds((prev) => {
+          const next = new Set(prev);
+          ids.forEach((id) => next.add(id));
+          return next;
+        });
+      }
+      refreshAssoc(); // 收合後其他 details 位置改變，順手重算它們的關聯
+    };
+
+    container.addEventListener('toggle', onToggle, true);
+    refreshAssoc();
+    return () => container.removeEventListener('toggle', onToggle, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [containerRef]);
 
   // ── 拖曳 / 縮放 ──
   const startDrag = (e: React.PointerEvent, item: NoteOverlayItem, mode: 'move' | 'resize') => {
@@ -722,19 +796,19 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
             padding: '2px 4px 2px 6px', cursor: 'move', background: 'rgba(0,0,0,0.06)', flexShrink: 0,
           }}
         >
-          {/* 標題：便利貼可點擊自訂；圖片板固定。 */}
-          {editingTitleId === item.id && isSticky ? (
+          {/* 標題：便利貼與圖片板都可點擊自訂（各自存在自己的 dataJson）。 */}
+          {editingTitleId === item.id ? (
             <input
               value={titleDraft}
               autoFocus
               onChange={(e) => setTitleDraft(e.target.value)}
               onPointerDown={(e) => e.stopPropagation()}
-              onBlur={() => { writeStickyData(item, { title: titleDraft.trim() }); setEditingTitleId(null); }}
+              onBlur={() => { setItemTitle(item, titleDraft.trim()); setEditingTitleId(null); }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') e.currentTarget.blur();
                 if (e.key === 'Escape') setEditingTitleId(null);
               }}
-              placeholder="便利貼標題…"
+              placeholder={isSticky ? '便利貼標題…' : '圖片板標題…'}
               style={{
                 flex: 1, minWidth: 0, border: '1px solid rgba(0,0,0,0.2)', borderRadius: 3,
                 padding: '0 4px', fontSize: 'var(--text-xs)', background: 'rgba(255,255,255,0.8)', color: '#333', outline: 'none',
@@ -743,19 +817,18 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
           ) : (
             <span
               onClick={(e) => {
-                if (!isSticky) return;
                 e.stopPropagation();
-                setTitleDraft(stickyTitle(item));
+                setTitleDraft(itemTitle(item));
                 setEditingTitleId(item.id);
               }}
-              onPointerDown={(e) => { if (isSticky) e.stopPropagation(); }}
-              title={isSticky ? '點擊修改標題' : undefined}
+              onPointerDown={(e) => e.stopPropagation()}
+              title="點擊修改標題"
               style={{
                 flex: '0 1 auto', maxWidth: '50%', minWidth: 0, fontSize: 'var(--text-xs)', color: 'var(--text-secondary)',
-                cursor: isSticky ? 'text' : 'move', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                cursor: 'text', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
               }}
             >
-              {isSticky ? (stickyTitle(item) || '便利貼') : '圖片板'}
+              {itemTitle(item) || (isSticky ? '便利貼' : '圖片板')}
             </span>
           )}
           {/* 可拖曳的留白（標題與按鈕之間）：讓人好抓著拖曳整張便利貼。 */}
@@ -808,11 +881,7 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
         ) : (
           <SlideBody
             item={item}
-            onImagesChange={(imgs) => {
-              const json = JSON.stringify(imgs);
-              patchLocal(item.id, { dataJson: json });
-              persist(item.id, { dataJson: json });
-            }}
+            onImagesChange={(imgs) => writeSlideData(item, { images: imgs })}
           />
         ))}
 
