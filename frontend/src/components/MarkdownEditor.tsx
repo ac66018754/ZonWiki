@@ -1,83 +1,11 @@
 "use client";
 
-import { useMemo, useRef, useState, type ComponentPropsWithoutRef } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { parseToggleSegments, TOGGLE_SNIPPET } from "@/lib/toggleBlocks";
+import { useEffect, useRef, useState } from "react";
+import { ToggleAwareMarkdown } from "@/components/MarkdownPreview";
+import { TOGGLE_SNIPPET, PROTECT_SNIPPET } from "@/lib/toggleBlocks";
 
-/**
- * 預覽中的程式碼區塊：包一層容器並加上「複製」按鈕。
- * react-markdown 會把 ```code``` 渲染成 <pre><code>…</code></pre>，
- * 這裡覆寫 pre 的渲染以加入複製鈕（醒目化與換行樣式見 globals.css 的 .md-preview pre）。
- * 複製時直接從 DOM 讀同層的 <pre> 文字（避免 useRef，與本檔其餘 React 風格一致）。
- */
-function PreWithCopy(props: ComponentPropsWithoutRef<"pre"> & { node?: unknown }) {
-  const [copied, setCopied] = useState(false);
-  const { children, ...rest } = props;
-  // 移除 react-markdown 注入的 node，避免被展開到 DOM。
-  delete (rest as { node?: unknown }).node;
-
-  const copy = async (e: React.MouseEvent<HTMLButtonElement>) => {
-    const pre = e.currentTarget.parentElement?.querySelector("pre");
-    const text = pre?.textContent ?? "";
-    try {
-      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
-    } catch {
-      /* 忽略複製失敗 */
-    }
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1500);
-  };
-
-  return (
-    <div className="code-block-wrap">
-      <button
-        type="button"
-        className={`code-copy-btn${copied ? " copied" : ""}`}
-        onClick={copy}
-        aria-label="複製程式碼"
-      >
-        {copied ? "已複製" : "複製"}
-      </button>
-      <pre {...rest}>{children}</pre>
-    </div>
-  );
-}
-
-/**
- * 摺疊區塊感知的 Markdown 預覽。
- *
- * 把內容切成「一般 Markdown 段」與「toggle 段」：一般段交給 react-markdown，
- * toggle 段渲染成真正的 <details>（原生摺疊），內文再遞迴渲染以支援巢狀 toggle。
- * 安全性：標題為純文字（React 自動轉義）、內文走 react-markdown（未啟用 raw HTML），故無 XSS。
- * 與後端 Markdig 的 :::toggle 渲染對齊，編輯預覽與實際閱讀檢視外觀一致。
- */
-function ToggleAwareMarkdown({ value }: { value: string }) {
-  // 只在 value 改變時重新解析（切換檢視等其他重繪不必重跑）。
-  const segments = useMemo(() => parseToggleSegments(value), [value]);
-  return (
-    <>
-      {segments.map((seg, i) => {
-        // 以「型別＋位置＋內容前綴」當 key：內容變動（如重排 toggle）時會換 key →
-        // 重新掛載並套用各自宣告的預設展開狀態，避免 index key 把舊 DOM 展開狀態錯位到新元素。
-        const keyHint = (seg.type === "toggle" ? seg.title : seg.text).slice(0, 24);
-        const key = `${seg.type}-${i}-${keyHint}`;
-        return seg.type === "toggle" ? (
-          <details key={key} className="md-toggle" open={seg.open}>
-            <summary className="md-toggle-summary">{seg.title || "詳細內容"}</summary>
-            <div className="md-toggle-body">
-              <ToggleAwareMarkdown value={seg.body} />
-            </div>
-          </details>
-        ) : (
-          <ReactMarkdown key={key} remarkPlugins={[remarkGfm]} components={{ pre: PreWithCopy }}>
-            {seg.text}
-          </ReactMarkdown>
-        );
-      })}
-    </>
-  );
-}
+/** 彈出預覽視窗與編輯器之間的即時同步頻道名稱（同源 BroadcastChannel）。 */
+export const PREVIEW_CHANNEL = "zonwiki:note-preview";
 
 /**
  * 共用 Markdown 編輯器：文字輸入框 + 格式工具列。
@@ -87,7 +15,7 @@ function ToggleAwareMarkdown({ value }: { value: string }) {
  * - 不選文字直接按格式鍵 → 插入標記並把游標放到正確位置，接著打字即可。
  *
  * 不熟 Markdown 的人也能用按鈕快速產生格式；熟的人仍可直接打字。
- * 可選 withPreview：提供 編輯／並排／預覽 三種檢視。
+ * 可選 withPreview：提供 編輯／並排／預覽 三種檢視，並可把預覽「彈出成獨立視窗」即時同步。
  */
 type ViewMode = "edit" | "split" | "preview";
 
@@ -101,6 +29,7 @@ export function MarkdownEditor({
   className,
   textareaClassName,
   ariaLabel = "Markdown 編輯器",
+  taRef,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -109,16 +38,84 @@ export function MarkdownEditor({
   placeholder?: string;
   /** 編輯區最小高度（px）。 */
   minHeight?: number;
-  /** 是否提供 編輯／並排／預覽 切換。 */
+  /** 是否提供 編輯／並排／預覽 切換（以及「彈出預覽」）。 */
   withPreview?: boolean;
   /** 外層額外 class（例如畫布需要 nodrag）。 */
   className?: string;
   /** textarea 額外 class（沿用既有樣式時）。 */
   textareaClassName?: string;
   ariaLabel?: string;
+  /** 上層若需讀取目前選取範圍（如「局部排版」），可傳入 ref 取得 textarea 元素。 */
+  taRef?: React.RefObject<HTMLTextAreaElement | null>;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const [view, setView] = useState<ViewMode>("edit");
+  // 「彈出預覽獨立視窗」狀態與同步頻道。
+  const [poppedOut, setPoppedOut] = useState(false);
+  const channelRef = useRef<BroadcastChannel | null>(null);
+  const popupRef = useRef<Window | null>(null);
+
+  // 以 ref 持有最新內容，供 openPopout 的非同步 onmessage 取用最新值（避免讀 ref.current 觸發編譯器規則）。
+  const valueRef = useRef(value);
+  useEffect(() => { valueRef.current = value; }, [value]);
+
+  // 把內部 textarea 元素同步到（可選的）外部 taRef，供上層讀取選取範圍（局部排版）。
+  useEffect(() => {
+    if (taRef) taRef.current = ref.current;
+  });
+
+  /** 關閉彈出預覽（釋放頻道、標記為未彈出）。 */
+  const closePopout = () => {
+    channelRef.current?.close();
+    channelRef.current = null;
+    setPoppedOut(false);
+  };
+
+  /** 開啟／聚焦「獨立預覽視窗」：以 BroadcastChannel 即時把編輯框最新 markdown 推給它渲染。 */
+  const openPopout = () => {
+    if (poppedOut) { popupRef.current?.focus(); return; }
+    if (typeof window === "undefined" || typeof BroadcastChannel === "undefined") return;
+    const ch = new BroadcastChannel(PREVIEW_CHANNEL);
+    ch.onmessage = (e: MessageEvent) => {
+      const data = e.data as { type?: string } | null;
+      if (data?.type === "preview-ready") {
+        // 預覽視窗載入完成 → 立刻補送目前內容（valueRef 持有最新值）。
+        ch.postMessage({ type: "content", markdown: valueRef.current });
+      } else if (data?.type === "preview-closing") {
+        closePopout();
+      }
+    };
+    channelRef.current = ch;
+    popupRef.current = window.open(
+      "/notes/preview-popout",
+      "zonwiki-note-preview",
+      "width=780,height=920,menubar=no,toolbar=no,location=no,status=no",
+    );
+    setPoppedOut(true);
+  };
+
+  // 彈出後：每次內容變動就把最新 markdown 推給獨立預覽視窗（即時渲染）。
+  useEffect(() => {
+    if (poppedOut) channelRef.current?.postMessage({ type: "content", markdown: value });
+  }, [value, poppedOut]);
+
+  // 彈出後：定時偵測獨立視窗是否已被使用者關閉（關了就恢復內嵌預覽）。
+  useEffect(() => {
+    if (!poppedOut) return;
+    const timer = window.setInterval(() => {
+      if (popupRef.current?.closed) closePopout();
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [poppedOut]);
+
+  // 卸載時關閉頻道與視窗，避免殘留。
+  useEffect(() => {
+    return () => {
+      channelRef.current?.close();
+      channelRef.current = null;
+      try { popupRef.current?.close(); } catch { /* 跨視窗關閉可能受限，忽略 */ }
+    };
+  }, []);
 
   /** 還原 textarea 的選取狀態（在 onChange 觸發重繪後）。 */
   const restore = (start: number, end: number) => {
@@ -223,8 +220,27 @@ export function MarkdownEditor({
     restore(pos, pos);
   };
 
+  /** 把選取包成「保護區塊」`:::protect … :::`（AI 重排時會跳過）；沒選取則插入樣板。 */
+  const wrapProtect = () => {
+    const ta = ref.current;
+    if (!ta) return;
+    const s = ta.selectionStart;
+    const e = ta.selectionEnd;
+    const sel = value.slice(s, e);
+    if (!sel.trim()) { insertBlock(PROTECT_SNIPPET); return; }
+    const before = value.slice(0, s);
+    const after = value.slice(e);
+    const nlBefore = before.length > 0 && !before.endsWith("\n") ? "\n" : "";
+    const nlAfter = after.length > 0 && !after.startsWith("\n") ? "\n" : "";
+    const openTag = ":::protect\n";
+    const block = `${nlBefore}${openTag}${sel}\n:::${nlAfter}`;
+    onChange(before + block + after);
+    const start = s + nlBefore.length + openTag.length;
+    restore(start, start + sel.length);
+  };
+
   // 工具列：常用的 Markdown 格式都備齊（標題 1~3、粗/斜/刪除線、清單/編號/待辦、引用、
-  // 行內/區塊程式碼、表格、圖片、分隔線、連結）。
+  // 行內/區塊程式碼、表格、摺疊、保護、圖片、分隔線、連結）。
   const tools: { label: React.ReactNode; title: string; run: () => void }[] = [
     { label: "H1", title: "標題 1（行首 # ）", run: () => linePrefix("# ") },
     { label: "H2", title: "標題 2（行首 ## ）", run: () => linePrefix("## ") },
@@ -240,13 +256,15 @@ export function MarkdownEditor({
     { label: "</>", title: "程式碼區塊", run: codeBlock },
     { label: "⊞", title: "表格", run: () => insertBlock("| 欄位 1 | 欄位 2 |\n| --- | --- |\n| 內容 | 內容 |") },
     { label: "▸", title: "摺疊區塊（Notion 式 toggle：點標題可摺疊／展開）", run: () => insertBlock(TOGGLE_SNIPPET) },
+    { label: "🔒", title: "保護區塊（框住不想被 AI 重排的內容；重排時會原樣保留）", run: wrapProtect },
     { label: "🖼", title: "插入圖片（選檔上傳；也可直接貼上剪貼簿圖片）", run: () => fileInputRef.current?.click() },
     { label: "―", title: "分隔線", run: () => insertBlock("---") },
     { label: "🔗", title: "連結", run: () => wrap("[", "](url)", "文字") },
   ];
 
-  const showEditor = !withPreview || view !== "preview";
-  const showPreview = withPreview && view !== "edit";
+  // 彈出後：編輯區佔滿全寬、不顯示內嵌預覽（預覽在獨立視窗）。
+  const showEditor = poppedOut || !withPreview || view !== "preview";
+  const showPreview = !poppedOut && withPreview && view !== "edit";
 
   return (
     <div className={`mde ${className || ""}`}>
@@ -273,11 +291,22 @@ export function MarkdownEditor({
                 type="button"
                 className={`mde-view-btn ${view === m ? "mde-view-btn--on" : ""}`}
                 onClick={() => setView(m)}
+                disabled={poppedOut && m !== "edit"}
+                title={poppedOut ? "預覽已彈出成獨立視窗" : undefined}
                 tabIndex={-1}
               >
                 {m === "edit" ? "編輯" : m === "split" ? "並排" : "預覽"}
               </button>
             ))}
+            <button
+              type="button"
+              className={`mde-view-btn ${poppedOut ? "mde-view-btn--on" : ""}`}
+              onClick={poppedOut ? closePopout : openPopout}
+              title={poppedOut ? "關閉獨立預覽視窗、恢復內嵌預覽" : "把預覽彈出成獨立視窗（可拖到另一個螢幕，即時同步）"}
+              tabIndex={-1}
+            >
+              {poppedOut ? "⇲ 收回預覽" : "⬈ 彈出預覽"}
+            </button>
           </div>
         )}
       </div>
@@ -320,6 +349,12 @@ export function MarkdownEditor({
           </div>
         )}
       </div>
+
+      {poppedOut && (
+        <div className="mde-popout-hint">
+          預覽已彈出成獨立視窗（即時同步中）。編輯區已切換全寬；關閉該視窗或按「⇲ 收回預覽」即可恢復內嵌預覽。
+        </div>
+      )}
     </div>
   );
 }
