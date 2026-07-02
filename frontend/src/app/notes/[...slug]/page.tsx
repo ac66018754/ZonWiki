@@ -79,6 +79,8 @@ export default function NotesDetailPage() {
   const [aiBusy, setAiBusy] = useState(false);
   // 預覽內文容器參考（供 NoteMarksLayer 套用文字標註）。
   const previewRef = useRef<HTMLDivElement | null>(null);
+  // 編輯器 textarea 參考：供「局部排版（重排選取範圍）」讀取目前選取位置。
+  const editorTaRef = useRef<HTMLTextAreaElement | null>(null);
 
   // 編輯時的分類/標籤：選項池與目前選取
   const [allCategories, setAllCategories] = useState<NoteCategory[]>([]);
@@ -667,6 +669,7 @@ export default function NotesDetailPage() {
                 onError={(message) => setError(message)}
                 disabled={isSaving}
                 onBusyChange={setAiBusy}
+                taRef={editorTaRef}
               />
             </div>
 
@@ -675,7 +678,8 @@ export default function NotesDetailPage() {
               onChange={setEditContent}
               withPreview
               minHeight={400}
-              placeholder="用 Markdown 撰寫內容…（可用工具列套用格式）"
+              placeholder="用 Markdown 撰寫內容…（可用工具列套用格式；🔒 可框住不想被 AI 重排的內容）"
+              taRef={editorTaRef}
             />
           </div>
         ) : (
