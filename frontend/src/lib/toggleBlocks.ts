@@ -176,23 +176,37 @@ export const TOGGLE_SNIPPET = ":::toggle 標題\n內容\n:::";
 /** protect 區塊樣板（供工具列「保護區塊」在沒有選取時插入）。 */
 export const PROTECT_SNIPPET = ":::protect\n（貼上不想被 AI 重排的內容）\n:::";
 
-/** 占位符：把保護區塊「抽掉、換成這個」再送去重排；重排後再換回原文。用不常見符號降低被模型改動的機率。 */
-const protectPlaceholder = (index: number): string => `⟦PROTECTED-BLOCK-${index}⟧`;
-/** 偵測是否還殘留任何保護占位符（還原後不應再有）。 */
-const PROTECT_PLACEHOLDER_ANY = /⟦PROTECTED-BLOCK-\d+⟧/;
+/** protect 切段的結果段落。 */
+export interface ProtectSplitSegment {
+  /** text＝可送 AI 重排的一般段；protect＝保護區塊（原樣保留、不送 AI）。 */
+  type: "text" | "protect";
+  /** 該段原始內容（protect 段含完整 `:::protect … :::` 圍欄）。 */
+  content: string;
+}
 
 /**
- * 把所有 `:::protect … :::` 區塊（含頂層與巢狀）抽出、換成占位符行，得到「可安全送 AI 重排」的版本。
- * 被保護的內容「完全不會送給 AI」（可靠：非靠 AI 自律），重排後再以 {@link restoreProtectedRegions} 換回原文。
+ * 把 Markdown 依 `:::protect … :::` 區塊（含頂層與巢狀）切成有序段落（text／protect 交替）。
+ *
+ * 供「保護排版」用：只把 **text 段各自單獨** 送 AI 重排、protect 段原樣保留，再依序拼回。
+ * 為何不用「占位符」：實測發現只要內容中夾入任何占位符標記行（如 `⟦PROTECTED-BLOCK-0⟧`、`<!--x-->`、
+ * `［保留］`…），模型（在「不改變內容」的排版模式下）就會判定「內容已結構化 / 有特殊標記」而**整段原樣返回、
+ * 完全不排版**——連該排的其餘內容也沒排。改成「把非保護段單獨送」可完全避開此問題（單獨的乾淨內容都排得好）。
  * @param markdown 原始 Markdown。
- * @returns masked＝已把保護區換成占位符的內容；regions＝依序保存的原始保護區塊（含 ::: 圍欄）。
+ * @returns 依序的段落；串接所有段的 content 即回到原文。
  */
-export function maskProtectedRegions(markdown: string): { masked: string; regions: string[] } {
+export function splitByProtect(markdown: string): ProtectSplitSegment[] {
   const lines = markdown.split("\n");
-  const out: string[] = [];
-  const regions: string[] = [];
+  const segments: ProtectSplitSegment[] = [];
+  let buffer: string[] = [];
   let inFence = false;
   let fenceChar = "";
+
+  const flushText = (): void => {
+    if (buffer.length > 0) {
+      segments.push({ type: "text", content: buffer.join("\n") });
+      buffer = [];
+    }
+  };
 
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
@@ -206,45 +220,19 @@ export function maskProtectedRegions(markdown: string): { masked: string; region
       } else if (trimmed.startsWith(fenceChar.repeat(3))) {
         inFence = false;
       }
-      out.push(line);
+      buffer.push(line);
       continue;
     }
     if (!inFence && PROTECT_OPEN_PATTERN.test(trimmed)) {
       const { body, end } = collectContainerBody(lines, i + 1);
       const closeLine = end < lines.length ? lines[end] : ":::";
-      const block = [line, ...body, closeLine].join("\n"); // 完整 :::protect … ::: 原樣保存
-      out.push(protectPlaceholder(regions.length));
-      regions.push(block);
+      flushText();
+      segments.push({ type: "protect", content: [line, ...body, closeLine].join("\n") });
       i = end; // 跳過整個保護區塊
       continue;
     }
-    out.push(line);
+    buffer.push(line);
   }
-  return { masked: out.join("\n"), regions };
-}
-
-/**
- * 把 {@link maskProtectedRegions} 產生的占位符換回原始保護區塊。
- * @param masked 重排後、仍含占位符的內容。
- * @param regions 原始保護區塊（順序須與 mask 時一致）。
- * @returns restored＝換回原文後的內容；ok＝是否每個占位符都成功找到並換回、且沒有殘留占位符
- *   （ok=false 代表模型把占位符弄丟或改動 → 呼叫端應放棄套用、保留原內容以免破壞保護區）。
- */
-export function restoreProtectedRegions(
-  masked: string,
-  regions: string[],
-): { restored: string; ok: boolean } {
-  let restored = masked;
-  let ok = true;
-  for (let k = 0; k < regions.length; k += 1) {
-    const ph = protectPlaceholder(k);
-    if (!restored.includes(ph)) {
-      ok = false;
-      continue;
-    }
-    // 用函式型替換避免 regions[k] 內的 $ 被當成特殊替換樣式；字串搜尋只換第一個（占位符唯一）。
-    restored = restored.replace(ph, () => regions[k]);
-  }
-  if (PROTECT_PLACEHOLDER_ANY.test(restored)) ok = false; // 還有殘留占位符（重複/多餘）→ 視為失敗
-  return { restored, ok };
+  flushText();
+  return segments;
 }

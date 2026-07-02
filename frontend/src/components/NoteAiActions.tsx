@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import { reformatNote, beautifyNote, type AiTransformResult } from '@/lib/api';
-import { maskProtectedRegions, restoreProtectedRegions } from '@/lib/toggleBlocks';
+import { splitByProtect } from '@/lib/toggleBlocks';
 
 interface NoteAiActionsProps {
   /** 筆記 ID */
@@ -52,26 +52,33 @@ export function NoteAiActions({
     err instanceof Error ? err.message : `${label}出錯，請稍後重試。`;
 
   /**
-   * 遮罩保護區 → 呼叫 AI → 還原保護區並驗證。
-   * @returns 處理後內容；失敗（AI 無結果或保護區還原失敗）回 null（已透過 onError 提示）。
+   * 保護排版：依 `:::protect` 切段，「只把非保護段各自單獨」送 AI，保護段原樣保留，再依序拼回。
+   * 不用占位符——實測占位符會讓模型判定內容已結構化而整段不排（連該排的也沒排）；單獨送乾淨內容則穩定。
+   * @returns 處理後內容；任一段 AI 失敗回 null（已透過 onError 提示；保護內容始終原樣、不受影響）。
    */
   const transformWithProtect = async (
     label: string,
     content: string,
     apiFn: (id: string, c: string) => Promise<AiTransformResult | null>,
   ): Promise<string | null> => {
-    const { masked, regions } = maskProtectedRegions(content);
-    const result = await apiFn(noteId, masked);
-    if (!result) {
-      onError?.(`${label}失敗，請稍後重試。`);
-      return null;
+    const segments = splitByProtect(content);
+    // 無保護區 → 單次重排（快路徑）。
+    if (!segments.some((s) => s.type === 'protect')) {
+      const r = await apiFn(noteId, content);
+      if (!r) { onError?.(`${label}失敗，請稍後重試。`); return null; }
+      return r.contentRaw;
     }
-    const { restored, ok } = restoreProtectedRegions(result.contentRaw, regions);
-    if (!ok) {
-      onError?.(`${label}：保護區還原失敗，未套用（保護內容保持原樣）。`);
-      return null;
+    // 有保護區 → 逐段：protect 段原樣保留；text 段各自單獨送 AI 重排。
+    const parts: string[] = [];
+    for (const seg of segments) {
+      if (seg.type === 'protect') { parts.push(seg.content); continue; }
+      if (!seg.content.trim()) continue; // 跳過純空白間隙
+      const r = await apiFn(noteId, seg.content);
+      if (!r) { onError?.(`${label}失敗，請稍後重試（保護內容未變動）。`); return null; }
+      parts.push(r.contentRaw.replace(/^\n+|\n+$/g, ''));
     }
-    return restored;
+    // 各段之間以空行分隔（保護區為區塊級，前後留空行是正確 Markdown）。
+    return parts.join('\n\n');
   };
 
   // 調整排版（整篇）
