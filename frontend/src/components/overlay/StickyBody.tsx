@@ -182,21 +182,20 @@ export function StickyBody({
 
   return (
     <>
-      {/* 預覽模式：把內文當 Markdown 渲染（唯讀，點一下回編輯）。 */}
+      {/* 預覽模式：把內文當 Markdown 渲染（唯讀）。
+          刻意不綁「點內容切回編輯」——會誤觸；要編輯請按底部「✏️ 編輯」鈕。 */}
       {preview ? (
         <div
           className="sticky-markdown markdown-prose"
-          onClick={() => setPreview(false)}
-          title="點擊回到編輯"
           data-testid="sticky-markdown"
           style={{
-            flex: 1, minHeight: 0, overflow: 'auto', padding: '6px', cursor: 'text',
+            flex: 1, minHeight: 0, overflow: 'auto', padding: '6px', cursor: 'auto',
             fontSize: 'var(--text-sm)', lineHeight: 1.5, color: '#333', wordBreak: 'break-word',
           }}
         >
           {text.trim()
             ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
-            : <span style={{ color: '#999' }}>（空白便利貼，點擊編輯）</span>}
+            : <span style={{ color: '#999' }}>（空白便利貼，按下方「編輯」開始輸入）</span>}
         </div>
       ) : (
       /* 編輯模式：文字框（永遠顯示清晰文字）＋ 其下「重點底圖」（只畫重點色塊、文字透明）。
