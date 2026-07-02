@@ -174,6 +174,16 @@ export default function NotesDetailPage() {
     [note],
   );
 
+  // 「全部展開／收合」：改用 effect 套用到目前 DOM 的所有 details——
+  // 先前直接在點擊時 setOpen，但內文渲染層（NoteMarksLayer 等）在同次重繪會把 .markdown-prose 重新注入、
+  // 把 details 重建成預設收合，導致「全部展開」按了沒反應（全部收合看似 OK 只因預設就收合）。
+  // 放進 effect（父層 effect 於子層之後執行）→ 在重注入之後才套用，故一定生效；也隨 previewHtml 變動重套。
+  useEffect(() => {
+    previewRef.current
+      ?.querySelectorAll<HTMLDetailsElement>('details.md-toggle')
+      .forEach((d) => { d.open = allTogglesExpanded; });
+  }, [allTogglesExpanded, previewHtml]);
+
   // 共用「復原 / 重做」：手繪塗鴉與畫重點共用同一條 Ctrl+Z 堆疊，僅在預覽分頁掛上單一鍵盤監聽。
   useUndoHotkeys(activeTab === 'preview');
   // 切換筆記時清空堆疊，避免跨筆記誤復原。
@@ -443,7 +453,12 @@ export default function NotesDetailPage() {
         >
           <button
             onClick={() => {
-              // 只在「筆記情境」內返回：從堆疊取上一個筆記情境頁（別篇筆記／分類頁）。
+              // 編輯中：「返回」無條件回到本篇筆記頁（退出編輯、切回閱讀），不走返回堆疊、不導航離開。
+              if (isEditing) {
+                setIsEditing(false);
+                return;
+              }
+              // 閱讀中：只在「筆記情境」內返回：從堆疊取上一個筆記情境頁（別篇筆記／分類頁）。
               // 堆疊起點（從首頁/搜尋/直接開網址進來）→ 回該篇筆記的分類頁（無分類則回筆記清單），
               // 刻意不回到 zonwiki 首頁等非筆記情境。
               const current = window.location.pathname + window.location.search;
@@ -456,7 +471,7 @@ export default function NotesDetailPage() {
               }
             }}
             className="btn-secondary"
-            title="返回上一個筆記情境頁（別篇筆記／分類頁）"
+            title={isEditing ? '返回本篇筆記（退出編輯）' : '返回上一個筆記情境頁（別篇筆記／分類頁）'}
             style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 'var(--spacing-1)' }}
           >
             ← 返回
@@ -483,13 +498,7 @@ export default function NotesDetailPage() {
                   toggle 是後端渲染的原生 <details>，直接設 .open 即可。 */}
               {activeTab === 'preview' && previewHtml.includes('md-toggle') && (
                 <button
-                  onClick={() => {
-                    const next = !allTogglesExpanded;
-                    previewRef.current
-                      ?.querySelectorAll<HTMLDetailsElement>('details.md-toggle')
-                      .forEach((d) => { d.open = next; });
-                    setAllTogglesExpanded(next);
-                  }}
+                  onClick={() => setAllTogglesExpanded((v) => !v)}
                   className="btn-secondary"
                   title={allTogglesExpanded ? '收合整頁所有摺疊區塊' : '展開整頁所有摺疊區塊'}
                 >
