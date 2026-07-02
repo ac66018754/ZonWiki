@@ -1,8 +1,7 @@
 'use client';
 
 import { useRef, useState } from 'react';
-import { safeParse } from '@/lib/drawing/shapes';
-import { navBtn, type OverlayItemView } from './overlayShared';
+import { navBtn, parseSlideData, type OverlayItemView } from './overlayShared';
 
 /**
  * 圖片板內容：固定大小（可手動拖曳調整）、可放多張圖片、手動切換（不自動輪播）。
@@ -15,7 +14,7 @@ export function SlideBody({
   item: OverlayItemView;
   onImagesChange: (imgs: string[]) => void;
 }) {
-  const images: string[] = item.dataJson ? safeParse<string[]>(item.dataJson, []) : [];
+  const images: string[] = parseSlideData(item.dataJson).images;
   const [idx, setIdx] = useState(0);
   const [url, setUrl] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
