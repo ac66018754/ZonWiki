@@ -136,10 +136,9 @@ public sealed class AiProviderFactory
     /// 任一家缺設定/金鑰/不安全 → 自動略過該家（鏈自動縮短，不報錯）；至少會有 Claude 一棒。
     /// </summary>
     /// <param name="claudeModel">
-    /// 指定 claude CLI（第 1 棒）要用的模型（如 "haiku"／"sonnet"，對應 --model）。
-    /// null 表示用 settings.json 的預設（目前 sonnet）。不同功能可傳不同值：
-    /// 例如排版走 haiku（快、量大也夠用）、美化/問答走 sonnet（品質優先）。
-    /// 只影響 claude 這一棒；後面 Google AI Studio／banana 仍用各自 DB 設定的模型。
+    /// 指定 claude CLI（第 1 棒）要用的模型（如 "sonnet"／"haiku"，對應 --model）。
+    /// null 表示用 settings.json 的預設（目前 sonnet）。保留「不同功能可傳不同值」的彈性
+    /// （目前排版/美化/問答皆傳 sonnet）。只影響 claude 這一棒；後面 Google AI Studio／banana 仍用各自 DB 設定的模型。
     /// </param>
     /// <param name="cancellationToken">取消權杖。</param>
     /// <returns>以 <see cref="FallbackChainProvider"/> 包裝的有序鏈；測試模式回單一 Fake。</returns>

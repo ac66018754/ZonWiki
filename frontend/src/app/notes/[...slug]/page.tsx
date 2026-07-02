@@ -460,6 +460,34 @@ export default function NotesDetailPage() {
           {/* 編輯中時隱藏「編輯 / 匯出 / 刪除」（避免與下方編輯區的取消/保存混淆）；編輯區自有取消/保存。 */}
           {!isEditing && (
             <div style={{ display: 'flex', gap: 'var(--spacing-2)', flexShrink: 0 }}>
+              {/* 一鍵收合／展開整頁的摺疊區塊（只在預覽分頁、且內容真的有 toggle 時才出現）。
+                  toggle 是後端渲染的原生 <details>，直接設 .open 即可，不需 React 狀態。 */}
+              {activeTab === 'preview' && previewHtml.includes('md-toggle') && (
+                <>
+                  <button
+                    onClick={() =>
+                      previewRef.current
+                        ?.querySelectorAll<HTMLDetailsElement>('details.md-toggle')
+                        .forEach((d) => { d.open = false; })
+                    }
+                    className="btn-secondary"
+                    title="收合整頁所有摺疊區塊"
+                  >
+                    ⊟ 全部收合
+                  </button>
+                  <button
+                    onClick={() =>
+                      previewRef.current
+                        ?.querySelectorAll<HTMLDetailsElement>('details.md-toggle')
+                        .forEach((d) => { d.open = true; })
+                    }
+                    className="btn-secondary"
+                    title="展開整頁所有摺疊區塊"
+                  >
+                    ⊞ 全部展開
+                  </button>
+                </>
+              )}
               <button
                 onClick={() => {
                   setEditTitle(note.title);
