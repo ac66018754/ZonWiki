@@ -105,8 +105,13 @@ internal static class NoteContentHelpers
             _ = colons;
         }
 
-        // 無巢狀（maxDepth==0，頂層兄弟 Markdig 本來就對）或圍欄不平衡（stack 未清空）→ 不動、原樣回傳。
-        if (maxDepth == 0 || stack.Count != 0)
+        // 無巢狀（maxDepth==0，頂層兄弟 Markdig 本來就對）→ 不動、原樣回傳。
+        //
+        // 圍欄「不平衡」（未閉合的 toggle）不再放棄正規化：前端 parseToggleSegments 對未閉合是容忍的
+        // （子項仍巢狀進外層、延伸到 EOF），若後端這裡因不平衡就 return 原文，Markdig 同長度 ::: 會把子項
+        // 誤解析成兄弟 → 筆記頁與編輯預覽渲染不一致（實測 bug）。未閉合的 open 在上面的迴圈已記了深度，
+        // 照樣依深度重寫冒號（外層冒號較多），Markdig 會在 EOF 自動收尾外層容器 → 與前端一致。
+        if (maxDepth == 0)
         {
             return markdown;
         }

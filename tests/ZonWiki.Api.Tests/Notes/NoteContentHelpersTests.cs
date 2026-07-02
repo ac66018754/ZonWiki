@@ -151,6 +151,27 @@ public sealed class NoteContentHelpersTests
     }
 
     [Fact]
+    public void RenderToHtml_UnclosedOuterToggle_StillNestsChildren()
+    {
+        // 「疑問」未閉合（EOF 前少了收尾 :::），內含兩個子 toggle。
+        // 前端 parseToggleSegments 容忍未閉合、會把子項巢狀進「疑問」；後端渲染也應一致
+        // （不可因圍欄不平衡就整個放棄正規化 → 否則 Markdig 同長度會把子項變成兄弟）。
+        var markdown =
+            ":::toggle 金句\n金句\n:::\n" +
+            ":::toggle 疑問\n" +
+            ":::toggle 2. A\na\n:::\n" +
+            ":::toggle 3. B\nb\n:::"; // 「疑問」沒有收尾 :::
+        var html = NoteContentHelpers.RenderToHtml(markdown);
+
+        System.Text.RegularExpressions.Regex.Matches(html, "<details").Count.Should().Be(4);
+        var pos3 = html.IndexOf("3. B</summary>", System.StringComparison.Ordinal);
+        pos3.Should().BeGreaterThan(0);
+        // 3.B 的 </summary> 之後應還有 2 個 </details>（3.B 自己 + 外層「疑問」）→ 證明子項巢狀於「疑問」內。
+        System.Text.RegularExpressions.Regex.Matches(html[pos3..], "</details>")
+            .Count.Should().Be(2, "未閉合的『疑問』仍應把子項巢狀在內（與前端預覽一致）");
+    }
+
+    [Fact]
     public void NormalizeToggleFences_TopLevelSiblingsNoNesting_ReturnsUnchanged()
     {
         // 頂層兄弟 toggle、無巢狀 → Markdig 本來就對，正規化不應改動原文。
