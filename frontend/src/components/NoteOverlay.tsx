@@ -382,15 +382,31 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
     if (window.confirm(`刪除這張${label}？（之後可在「垃圾桶 → 便利貼」還原）`)) remove(item.id);
   };
 
-  // ── 圖片板 dataJson 結構 { title?, images }：標題與圖片清單共存，改標題不動圖片、加圖不掉標題 ──
+  // ── 圖片板 dataJson 結構 { title?, images, pinned? }：各欄共存，改一欄不動其他欄 ──
+  /**
+   * 讀取項目 dataJson 的「物件形式」並保留所有欄位；舊的純陣列（圖片板）視為 `{ images }`。
+   * 供泛用地讀/寫共同欄位（如 pinned），不會把便利貼的 highlights 或圖片板的 images 弄丟。
+   */
+  const rawDataObj = (item: NoteOverlayItem): Record<string, unknown> => {
+    try {
+      const parsed = JSON.parse(item.dataJson || '');
+      if (Array.isArray(parsed)) return { images: parsed };
+      if (parsed && typeof parsed === 'object') return parsed as Record<string, unknown>;
+    } catch { /* 空/壞 → {} */ }
+    return {};
+  };
   /** 讀圖片板標題（相容舊的純陣列格式，見 parseSlideData）。 */
   const slideTitle = (item: NoteOverlayItem): string => parseSlideData(item.dataJson).title;
-  /** 合併寫入圖片板 dataJson（保留另一欄，並把舊的純陣列格式一併升級為物件格式）。 */
-  const writeSlideData = (item: NoteOverlayItem, patch: Partial<{ title: string; images: string[] }>) => {
-    const cur = parseSlideData(item.dataJson);
-    const json = JSON.stringify({ title: cur.title, images: cur.images, ...patch });
+  /** 合併寫入圖片板 dataJson（保留既有所有欄位——含 pinned；並把舊的純陣列格式一併升級為物件格式）。 */
+  const writeSlideData = (item: NoteOverlayItem, patch: Record<string, unknown>) => {
+    const json = JSON.stringify({ ...rawDataObj(item), ...patch });
     patchLocal(item.id, { dataJson: json });
     persist(item.id, { dataJson: json });
+  };
+  /** 寫入 pinned 旗標（便利貼、圖片板皆可；各自保留其他欄位）。 */
+  const setPinnedFlag = (item: NoteOverlayItem, pinned: boolean) => {
+    if (item.kind === 'slide') writeSlideData(item, { pinned });
+    else writeStickyData(item, { pinned });
   };
 
   // ── 標題（便利貼/圖片板通用）：兩者的標題都存在各自的 dataJson，讀/寫走各自的合併函式 ──
@@ -407,7 +423,7 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
   // pinned=true：position:fixed、portal 到 body、可拖到整個畫面（含側欄），但不隨內文捲動（像章節目錄表）。
   // pinned=false（預設）：position:absolute 疊在內文上，隨內文捲動、被內文區裁切（原本的便利貼行為）。
   // x/y 的意義隨 pinned 改變（fixed＝視窗座標、absolute＝相對內文座標），切換時換算座標讓它停在原地。
-  const isPinned = (item: NoteOverlayItem): boolean => stickyDataObj(item).pinned === true;
+  const isPinned = (item: NoteOverlayItem): boolean => rawDataObj(item).pinned === true;
   const togglePin = (item: NoteOverlayItem) => {
     const pinned = !isPinned(item);
     const rect = containerRef.current?.getBoundingClientRect();
@@ -420,7 +436,7 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
     }
     patchLocal(item.id, { x: nx, y: ny });
     persist(item.id, { x: nx, y: ny });
-    writeStickyData(item, { pinned });
+    setPinnedFlag(item, pinned);
   };
 
   /**
@@ -435,29 +451,50 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
         const y = 28 + (i % 8) * 26;
         patchLocal(item.id, { x, y });
         persist(item.id, { x, y });
-        if (item.kind === 'sticky' && isPinned(item)) {
-          writeStickyData(item, { pinned: false });
-        }
+        if (isPinned(item)) setPinnedFlag(item, false);
       });
   };
 
   // ── 便利貼/圖片板「跟著所在的 toggle 一起收合」（使用者需求）──
-  // 規格：非釘住（position:absolute、貼在內文上隨內文捲動）的便利貼/圖片板，若它的「左上角的點」落在某個
-  // <details class="md-toggle"> 摺疊區塊內，當該 details（或其任一祖先 details）收合時，這張也一起「隱藏」
-  // （看不見）；再把 toggle 展開就恢復顯示（可逆）。釘住（pinned/fixed）者不受影響（它不貼著任何文字）。
+  // 規格：非釘住（position:absolute、貼在內文上隨捲動）的便利貼/圖片板，若其「左上角的點」最靠近的文字所在的
+  // <details class="md-toggle">（或其任一祖先 details）被收合，這張就一起「隱藏」；再展開就恢復（可逆）。
+  // 釘住（fixed）者不受影響（它不貼著任何文字）。
   //
-  // 多層巢狀：點若在 H3⊂H2⊂H1 內，三層各自的 rect 都包含該點；趁「展開且實際可見」時記錄每層的關聯，
-  // 收合任一層（該層 details 進入 !open）就會把它算進「收合聯集」。只要還有任一祖先 details 是收合的，就維持隱藏。
+  // 【為何用 DOM 錨點、而非幾何範圍——決定性關鍵】收合是「同一輸入→同一輸出」的需求。純用幾何（點是否落在
+  // details 的 rect 內）會因「內層收合使外層 rect 縮短」「上方兄弟 toggle 收合使整段內容上移」而讓判定隨
+  // 『收合歷史』飄移，出現「有時不隱藏、有時不出現、多按幾下又好」的非決定性。改法：把項目錨定到它左上角點
+  // 下方「真正的內容元素」（DOM 祖先鏈穩定、不受版面位移影響），再以純 DOM 判斷「該元素是否位於某個收合中的
+  // <details> 內」決定隱藏——純函式、決定性。
   //
-  // 座標：便利貼 item.x/item.y 是相對「overlay 容器」（position:absolute → 其絕對定位子代的定位原點）。
-  // 故用 overlayRef 的螢幕矩形當原點，算出便利貼左上角的「螢幕座標點」，再與 details 的 getBoundingClientRect
-  // （同為螢幕座標）比對——避免用 .markdown-prose（有 padding）當原點造成的偏移。
-  // toggle 事件不冒泡 → 於容器用 capture 監聽，可涵蓋事後才注入的 details。
-  const toggleAssocRef = useRef<Map<HTMLDetailsElement, Set<string>>>(new Map());
+  // 錨點建立時機：只在「目前錨點可見（不在收合 details 內）或尚未建立」時，才用 elementsFromPoint 重抓點下的
+  // 可見內容元素；若目前錨點已被收合（該藏），就保留它、不重抓（否則會抓到位移後的別段內容而誤判）。
+  const stickyAnchorRef = useRef<Map<string, Element>>(new Map());
   const [collapsedByToggle, setCollapsedByToggle] = useState<Set<string>>(new Set());
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
+
+    /** 元素是否位於某個「收合中」的 <details.md-toggle> 內（純 DOM 祖先判斷，不依賴任何版面量測）。 */
+    const inClosedToggle = (el: Element): boolean => {
+      let p: Element | null = el;
+      while (p && p !== container) {
+        if (p instanceof HTMLDetailsElement && p.classList.contains('md-toggle') && !p.open) return true;
+        p = p.parentElement;
+      }
+      return false;
+    };
+
+    /** 找左上角螢幕點下方「真正可見的內容元素」（在內文容器內、非 overlay、非 summary、不在收合 details 內）。 */
+    const contentElAt = (px: number, py: number): Element | null => {
+      if (px < 0 || py < 0 || px > window.innerWidth || py > window.innerHeight) return null; // 視窗外 → elementsFromPoint 無效
+      for (const el of document.elementsFromPoint(px, py)) {
+        if (el === container || !container.contains(el)) continue; // 跳過 overlay 與外部元素
+        if (el.tagName === 'SUMMARY') continue;                    // 摘要列即使收合也可見，不當內容錨點
+        if (inClosedToggle(el)) continue;                          // 只認可見內容
+        return el;
+      }
+      return null;
+    };
 
     const recompute = () => {
       const origin = overlayRef.current?.getBoundingClientRect();
@@ -465,31 +502,27 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
       const nonPinned = itemsRef.current.filter(
         (i) => (i.kind === 'sticky' || i.kind === 'slide') && !isPinned(i),
       );
-      const assoc = toggleAssocRef.current;
+      const anchors = stickyAnchorRef.current;
+      const liveIds = new Set(nonPinned.map((i) => i.id));
+      for (const id of Array.from(anchors.keys())) if (!liveIds.has(id)) anchors.delete(id); // 清掉已不存在項目
 
-      // 1) 趁「展開且實際可見（rect 有高度）」時，記錄每個 details 涵蓋哪些便利貼（左上角點落在其螢幕矩形內）。
-      //    收合中、或被外層收合而隱藏（rect 高度為 0）者：保留上次關聯、不覆寫（否則巢狀隱藏時會誤清）。
-      container.querySelectorAll<HTMLDetailsElement>('details.md-toggle').forEach((d) => {
-        const r = d.getBoundingClientRect();
-        if (!d.open || r.height <= 0) return;
-        const ids = new Set<string>();
-        for (const it of nonPinned) {
-          const px = origin.left + it.x;
-          const py = origin.top + it.y;
-          if (px >= r.left && px <= r.right && py >= r.top && py <= r.bottom) ids.add(it.id);
-        }
-        assoc.set(d, ids);
-      });
-
-      // 2) 清掉已不在 DOM 的 details（例如筆記重渲染）避免關聯無限累積。
-      for (const d of Array.from(assoc.keys())) if (!d.isConnected) assoc.delete(d);
-
-      // 3) 收合聯集＝所有「目前收合中」的 details 其記錄到的便利貼聯集（可逆：展開後該層退出聯集）。
       const hidden = new Set<string>();
-      for (const [d, ids] of assoc) if (!d.open) ids.forEach((id) => hidden.add(id));
+      for (const it of nonPinned) {
+        const cur = anchors.get(it.id);
+        const curHidden = !!cur && cur.isConnected && inClosedToggle(cur);
+        if (!curHidden) {
+          // 目前可見/未建立/已脫離 DOM → 依左上角點重抓錨點；已被收合藏起者則保留錨點、不重抓。
+          const el = contentElAt(origin.left + it.x, origin.top + it.y);
+          if (el) anchors.set(it.id, el);
+          else if (!cur || !cur.isConnected) anchors.delete(it.id); // 點上無可用內容 → 無錨點（永遠顯示）
+        }
+        const a = anchors.get(it.id);
+        if (a && a.isConnected && inClosedToggle(a)) hidden.add(it.id);
+      }
       setCollapsedByToggle((prev) => (sameStringSet(prev, hidden) ? prev : hidden));
     };
 
+    // toggle 事件不冒泡 → 於容器用 capture 監聽，可涵蓋事後才注入的 details。
     const onToggle = (e: Event) => {
       const d = e.target;
       if (!(d instanceof HTMLDetailsElement) || !d.classList.contains('md-toggle')) return;
@@ -801,7 +834,7 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
           display: 'flex', flexDirection: 'column',
           borderRadius: 'var(--radius-md)', boxShadow: 'var(--shadow-md)', overflow: 'hidden',
           border: '1px solid var(--border-default)',
-          background: isSticky ? (item.color || STICKY_COLORS[0]) : 'var(--bg-surface)',
+          background: item.color || (isSticky ? STICKY_COLORS[0] : 'var(--bg-surface)'),
         }}
         onPointerDown={() => bringToFront(item)}
         data-testid={`overlay-item-${item.kind}`}
@@ -853,18 +886,16 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
           {editingTitleId !== item.id && (
             <span aria-hidden="true" style={{ flex: 1, alignSelf: 'stretch', cursor: 'move' }} />
           )}
-          {/* 📌 釘住浮動 / 跟著內文 切換（便利貼專屬） */}
-          {isSticky && (
-            <button
-              onClick={() => togglePin(item)}
-              onPointerDown={(e) => e.stopPropagation()}
-              title={pinned ? '已釘住浮動（可拖到任何地方）；點擊改為跟著內文捲動' : '跟著內文捲動；點擊改為釘住浮動、可拖到任何地方'}
-              data-testid="overlay-item-pin"
-              style={{ ...chromeBtnStyle, opacity: pinned ? 1 : 0.5 }}
-            >
-              📌
-            </button>
-          )}
+          {/* 📌 釘住浮動 / 跟著內文 切換（便利貼、圖片板皆可） */}
+          <button
+            onClick={() => togglePin(item)}
+            onPointerDown={(e) => e.stopPropagation()}
+            title={pinned ? '已釘住浮動（可拖到任何地方）；點擊改為跟著內文捲動' : '跟著內文捲動；點擊改為釘住浮動、可拖到任何地方'}
+            data-testid="overlay-item-pin"
+            style={{ ...chromeBtnStyle, opacity: pinned ? 1 : 0.5 }}
+          >
+            📌
+          </button>
           {/* － 收合（只剩標題） */}
           <button
             onClick={() => toggleCollapse(item.id)}
@@ -900,6 +931,7 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
           <SlideBody
             item={item}
             onImagesChange={(imgs) => writeSlideData(item, { images: imgs })}
+            onColor={(c) => { patchLocal(item.id, { color: c }); persist(item.id, { color: c }); }}
           />
         ))}
 
