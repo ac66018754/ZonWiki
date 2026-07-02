@@ -33,6 +33,7 @@ import { NoteEditHistory } from '@/components/NoteEditHistory';
 import { NoteBacklinks } from '@/components/NoteBacklinks';
 import { SearchableMultiSelect } from '@/components/SearchableMultiSelect';
 import { MarkdownEditor } from '@/components/MarkdownEditor';
+import { recordNoteNav, getNoteBackTarget } from '@/lib/noteNav';
 import { LinkedEntitiesBar } from '@/components/LinkedEntitiesBar';
 import { NoteMarksLayer } from '@/components/NoteMarksLayer';
 import { NoteOverlay } from '@/components/NoteOverlay';
@@ -159,6 +160,8 @@ export default function NotesDetailPage() {
   useEffect(() => {
     if (note?.id && slug) {
       try { localStorage.setItem('zonwiki:last-note-slug', slug); } catch { /* ignore */ }
+      // 記錄到「筆記情境返回堆疊」：抵達此筆記頁時 push（供返回鈕只在筆記情境內移動）。
+      recordNoteNav(window.location.pathname + window.location.search);
     }
   }, [note?.id, slug]);
   // 由內文 HTML 萃取章節（h1/h2/h3）並為各標題補上錨點 id（供目錄點擊捲動）。
@@ -435,9 +438,21 @@ export default function NotesDetailPage() {
           }}
         >
           <button
-            onClick={() => router.back()}
+            onClick={() => {
+              // 只在「筆記情境」內返回：從堆疊取上一個筆記情境頁（別篇筆記／分類頁）。
+              // 堆疊起點（從首頁/搜尋/直接開網址進來）→ 回該篇筆記的分類頁（無分類則回筆記清單），
+              // 刻意不回到 zonwiki 首頁等非筆記情境。
+              const current = window.location.pathname + window.location.search;
+              const target = getNoteBackTarget(current);
+              if (target) {
+                router.push(target);
+              } else {
+                const catId = note?.categories?.[0]?.id;
+                router.push(catId ? `/notes?categoryId=${catId}` : '/notes');
+              }
+            }}
             className="btn-secondary"
-            title="返回上一個瀏覽的地方"
+            title="返回上一個筆記情境頁（別篇筆記／分類頁）"
             style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 'var(--spacing-1)' }}
           >
             ← 返回
