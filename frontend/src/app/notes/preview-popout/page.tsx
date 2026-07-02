@@ -1,8 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ToggleAwareMarkdown } from "@/components/MarkdownPreview";
 import { PREVIEW_CHANNEL } from "@/components/MarkdownEditor";
+
+/** 右鍵定位時，往上找到的「區塊級」元素標籤（取其文字前綴回送編輯器定位來源行）。 */
+const BLOCK_TAGS = new Set(["P", "LI", "H1", "H2", "H3", "H4", "H5", "H6", "SUMMARY", "TD", "TH", "PRE", "BLOCKQUOTE"]);
 
 /**
  * 獨立預覽視窗（由編輯器「⬈ 彈出預覽」以 window.open 開啟）。
@@ -14,10 +17,12 @@ import { PREVIEW_CHANNEL } from "@/components/MarkdownEditor";
 export default function PreviewPopoutPage() {
   const [markdown, setMarkdown] = useState<string>("");
   const [connected, setConnected] = useState(false);
+  const channelRef = useRef<BroadcastChannel | null>(null);
 
   useEffect(() => {
     if (typeof BroadcastChannel === "undefined") return;
     const ch = new BroadcastChannel(PREVIEW_CHANNEL);
+    channelRef.current = ch;
     ch.onmessage = (e: MessageEvent) => {
       const data = e.data as { type?: string; markdown?: string } | null;
       if (data?.type === "content" && typeof data.markdown === "string") {
@@ -36,8 +41,24 @@ export default function PreviewPopoutPage() {
     return () => {
       window.removeEventListener("beforeunload", onUnload);
       ch.close();
+      channelRef.current = null;
     };
   }, []);
+
+  /**
+   * 右鍵預覽某一行 → 把該區塊的文字前綴回送編輯器，讓編輯框捲到對應來源行（該行落在編輯框頂端）。
+   * 抑制瀏覽器預設右鍵選單。
+   */
+  const onContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
+    let el = e.target as HTMLElement | null;
+    while (el && el !== e.currentTarget && !BLOCK_TAGS.has(el.tagName)) {
+      el = el.parentElement;
+    }
+    const text = (el?.textContent || "").trim().slice(0, 40);
+    if (!text) return;
+    e.preventDefault();
+    channelRef.current?.postMessage({ type: "reveal-source", text });
+  };
 
   return (
     <div
@@ -71,7 +92,12 @@ export default function PreviewPopoutPage() {
           {connected ? "● 已同步" : "○ 等待編輯器內容…"}
         </span>
       </div>
-      <div className="markdown-prose md-preview" style={{ padding: "20px 24px", maxWidth: 900, margin: "0 auto", width: "100%", boxSizing: "border-box" }}>
+      <div
+        className="markdown-prose md-preview"
+        style={{ padding: "20px 24px", maxWidth: 900, margin: "0 auto", width: "100%", boxSizing: "border-box" }}
+        onContextMenu={onContextMenu}
+        title="右鍵點某一行 → 編輯視窗會捲到該行"
+      >
         {markdown.trim() ? (
           <ToggleAwareMarkdown value={markdown} />
         ) : (
