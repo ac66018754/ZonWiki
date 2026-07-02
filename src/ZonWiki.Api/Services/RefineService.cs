@@ -356,7 +356,7 @@ public sealed class RefineService
             Title = title,
             Slug = slug,
             ContentRaw = contentRaw,
-            ContentHtml = Markdown.ToHtml(contentRaw, NoteContentHelpers.MarkdownPipeline),
+            ContentHtml = NoteContentHelpers.RenderToHtml(contentRaw),
             ContentHash = NoteContentHelpers.ComputeContentHash(contentRaw),
             Kind = "note",
             CreatedUser = userKey,

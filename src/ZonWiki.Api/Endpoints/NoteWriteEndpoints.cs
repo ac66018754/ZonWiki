@@ -289,7 +289,7 @@ public static class NoteWriteEndpoints
 
             // 內容允許為空（先建立、再編輯）；null 一律轉空字串避免後續 NPE。
             var contentRaw = request.ContentRaw ?? string.Empty;
-            var contentHtml = Markdown.ToHtml(contentRaw, NoteContentHelpers.MarkdownPipeline);
+            var contentHtml = NoteContentHelpers.RenderToHtml(contentRaw);
             var contentHash = NoteContentHelpers.ComputeContentHash(contentRaw);
 
             // 建立筆記實體
@@ -409,7 +409,7 @@ public static class NoteWriteEndpoints
             if (!string.IsNullOrWhiteSpace(request.ContentRaw))
             {
                 note.ContentRaw = request.ContentRaw;
-                note.ContentHtml = Markdown.ToHtml(request.ContentRaw, NoteContentHelpers.MarkdownPipeline);
+                note.ContentHtml = NoteContentHelpers.RenderToHtml(request.ContentRaw);
                 note.ContentHash = NoteContentHelpers.ComputeContentHash(request.ContentRaw);
                 contentChanged = true;
             }

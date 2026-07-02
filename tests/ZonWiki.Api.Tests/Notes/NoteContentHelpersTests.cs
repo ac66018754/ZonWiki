@@ -130,6 +130,43 @@ public sealed class NoteContentHelpersTests
     }
 
     [Fact]
+    public void RenderToHtml_SiblingTogglesInsideOuter_NestsUnderParent()
+    {
+        // 外層「省」內含兩個兄弟 toggle（通用、91APP）——同長度 ::: 寫法。
+        // 直接用 Markdig 會把「省」在「通用」後就關掉、91APP 變成兄弟；
+        // RenderToHtml 會先正規化冒號，讓 91APP 正確巢狀在「省」內（與前端編輯預覽一致）。
+        var markdown =
+            ":::toggle 省\n省內文\n" +
+            ":::toggle 通用\n通用內文\n:::\n" +
+            ":::toggle 91APP\n91內文\n:::\n" +
+            ":::";
+        var html = NoteContentHelpers.RenderToHtml(markdown);
+
+        System.Text.RegularExpressions.Regex.Matches(html, "<details").Count.Should().Be(3);
+        var pos91 = html.IndexOf("91APP</summary>", System.StringComparison.Ordinal);
+        pos91.Should().BeGreaterThan(0);
+        // 91APP 的 </summary> 之後應還有「2 個」</details>（91APP 自己 + 外層「省」）→ 證明 91APP 在省內。
+        System.Text.RegularExpressions.Regex.Matches(html[pos91..], "</details>")
+            .Count.Should().Be(2, "外層「省」的 </details> 應在 91APP 之後（91APP 巢狀於省內）");
+    }
+
+    [Fact]
+    public void NormalizeToggleFences_TopLevelSiblingsNoNesting_ReturnsUnchanged()
+    {
+        // 頂層兄弟 toggle、無巢狀 → Markdig 本來就對，正規化不應改動原文。
+        var md = "# 標題\n:::toggle A\n內容\n:::\n一般段落。\n:::toggle B\n內容\n:::";
+        NoteContentHelpers.NormalizeToggleFences(md).Should().Be(md);
+    }
+
+    [Fact]
+    public void NormalizeToggleFences_IgnoresColonsInsideCodeFence()
+    {
+        // 程式碼區塊內的 ::: 不可被當成容器（否則會誤判巢狀、破壞內容）。
+        var md = "```\n:::toggle 這是程式碼不是容器\n:::\n```\n正常段落。";
+        NoteContentHelpers.NormalizeToggleFences(md).Should().Be(md);
+    }
+
+    [Fact]
     public void NonToggleContainer_KeepsDefaultDivBehavior()
     {
         // Arrange：非 toggle 的自訂容器，應維持 Markdig 預設 <div class="…">。
