@@ -38,15 +38,11 @@ public sealed class GeminiNoteAiService : INoteAiService
         NoteFormatConventions.OutputOnly;
 
     /// <summary>
-    /// 排版走 haiku：純排版（不改語意）不需最強模型，haiku 串流快、輸出量大時更省時、較不易撞逾時。
-    /// 對應 claude CLI 的 --model haiku。
+    /// 筆記 AI（排版／美化／問答）統一走 sonnet：品質優先。對應 claude CLI 的 --model sonnet。
+    /// 註：保留「依功能可分派不同模型」的能力（ResolveChainAsync 的 claudeModel 參數），
+    /// 目前三者皆指向此常數；日後若要讓某功能改用其他模型，改此處對應呼叫即可。
     /// </summary>
-    private const string ReformatClaudeModel = "haiku";
-
-    /// <summary>
-    /// 美化與問答走 sonnet：涉及潤飾措辭／理解與回答，品質優先。對應 claude CLI 的 --model sonnet。
-    /// </summary>
-    private const string QualityClaudeModel = "sonnet";
+    private const string NoteAiClaudeModel = "sonnet";
 
     /// <summary>
     /// 建立筆記 AI 服務。
@@ -69,7 +65,7 @@ public sealed class GeminiNoteAiService : INoteAiService
         string contentRaw,
         CancellationToken cancellationToken,
         Func<AiStreamEvent, Task>? onStage = null) =>
-        TransformAsync(ReformatSystemPrompt, contentRaw, cancellationToken, onStage, ReformatClaudeModel);
+        TransformAsync(ReformatSystemPrompt, contentRaw, cancellationToken, onStage, NoteAiClaudeModel);
 
     /// <summary>
     /// 內容美化：保留原意下潤飾措辭、結構與可讀性。
@@ -81,7 +77,7 @@ public sealed class GeminiNoteAiService : INoteAiService
         string contentRaw,
         CancellationToken cancellationToken,
         Func<AiStreamEvent, Task>? onStage = null) =>
-        TransformAsync(BeautifySystemPrompt, contentRaw, cancellationToken, onStage, QualityClaudeModel);
+        TransformAsync(BeautifySystemPrompt, contentRaw, cancellationToken, onStage, NoteAiClaudeModel);
 
     /// <summary>
     /// 框選提問：以選取文字為脈絡回答問題（Markdown）。
@@ -100,7 +96,7 @@ public sealed class GeminiNoteAiService : INoteAiService
             "較長的補充或完整程式碼／指令可用「一行 :::toggle 摘要標題、內容、再一行 :::」摺疊收納（預設收合）。" +
             "只輸出回答內容本身，不要重述問題、不要加任何開場白或說明、也不要用 ``` 把整篇包起來。";
         var prompt = $"選取的文字：\n「{selectedText}」\n\n問題：{question}";
-        return TransformAsync(askSystem, prompt, cancellationToken, onStage, QualityClaudeModel);
+        return TransformAsync(askSystem, prompt, cancellationToken, onStage, NoteAiClaudeModel);
     }
 
     /// <summary>
@@ -134,7 +130,7 @@ public sealed class GeminiNoteAiService : INoteAiService
         }
 
         // 走「後援鏈」：Claude → Google AI Studio → banana（取代原本單一共用預設）。
-        // claudeModel 依功能分派（排版 haiku、美化/問答 sonnet）；只影響 claude 這一棒。
+        // claudeModel 目前排版/美化/問答皆為 sonnet；只影響 claude 這一棒（保留日後可分派不同模型的彈性）。
         var resolved = await _factory.ResolveChainAsync(claudeModel, cancellationToken);
 
         var accumulated = new StringBuilder();

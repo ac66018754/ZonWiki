@@ -131,7 +131,7 @@ public static class AiIntegrationEndpoints
             }
 
             var created = note is null;
-            var contentHtml = Markdown.ToHtml(contentRaw, NoteContentHelpers.MarkdownPipeline);
+            var contentHtml = NoteContentHelpers.RenderToHtml(contentRaw);
             var contentHash = NoteContentHelpers.ComputeContentHash(contentRaw);
 
             if (note is null)
