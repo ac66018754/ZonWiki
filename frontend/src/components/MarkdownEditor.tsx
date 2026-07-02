@@ -71,18 +71,55 @@ export function MarkdownEditor({
     setPoppedOut(false);
   };
 
+  /**
+   * 依「文字前綴」在編輯框找到來源行，把該行捲到編輯框頂端（供彈出預覽右鍵某行時定位）。
+   * 用鏡像 div 量測「該字元位置之前的內容高度」＝該行 Y 位移，能正確處理自動換行。
+   */
+  const scrollEditorToText = (text: string) => {
+    const ta = ref.current;
+    const target = text.trim();
+    if (!ta || !target) return;
+    const idx = ta.value.indexOf(target);
+    if (idx < 0) return;
+    const cs = window.getComputedStyle(ta);
+    const padL = parseFloat(cs.paddingLeft) || 0;
+    const padR = parseFloat(cs.paddingRight) || 0;
+    const mirror = document.createElement("div");
+    mirror.style.position = "absolute";
+    mirror.style.visibility = "hidden";
+    mirror.style.whiteSpace = "pre-wrap";
+    mirror.style.wordBreak = "break-word";
+    mirror.style.boxSizing = "content-box";
+    mirror.style.width = `${Math.max(0, ta.clientWidth - padL - padR)}px`;
+    mirror.style.fontFamily = cs.fontFamily;
+    mirror.style.fontSize = cs.fontSize;
+    mirror.style.fontWeight = cs.fontWeight;
+    mirror.style.lineHeight = cs.lineHeight;
+    mirror.style.letterSpacing = cs.letterSpacing;
+    mirror.textContent = ta.value.slice(0, idx) || " ";
+    document.body.appendChild(mirror);
+    const y = mirror.scrollHeight; // 該行之前的內容高度＝該行在內容座標的 Y
+    document.body.removeChild(mirror);
+    ta.focus();
+    ta.setSelectionRange(idx, idx);
+    ta.scrollTop = Math.max(0, y); // 讓該行落在可視內容頂端
+  };
+
   /** 開啟／聚焦「獨立預覽視窗」：以 BroadcastChannel 即時把編輯框最新 markdown 推給它渲染。 */
   const openPopout = () => {
     if (poppedOut) { popupRef.current?.focus(); return; }
     if (typeof window === "undefined" || typeof BroadcastChannel === "undefined") return;
     const ch = new BroadcastChannel(PREVIEW_CHANNEL);
     ch.onmessage = (e: MessageEvent) => {
-      const data = e.data as { type?: string } | null;
+      const data = e.data as { type?: string; text?: string } | null;
       if (data?.type === "preview-ready") {
         // 預覽視窗載入完成 → 立刻補送目前內容（valueRef 持有最新值）。
         ch.postMessage({ type: "content", markdown: valueRef.current });
       } else if (data?.type === "preview-closing") {
         closePopout();
+      } else if (data?.type === "reveal-source" && typeof data.text === "string") {
+        // 彈出預覽右鍵某行 → 把該行捲到編輯框頂端。
+        scrollEditorToText(data.text);
       }
     };
     channelRef.current = ch;
