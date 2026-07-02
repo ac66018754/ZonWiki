@@ -276,6 +276,52 @@ export function MarkdownEditor({
     restore(start, start + sel.length);
   };
 
+  /** 縮排單位（兩個空白，符合 Markdown 巢狀清單慣例）。 */
+  const INDENT_UNIT = "  ";
+
+  /** Tab 縮排 / Shift+Tab 退縮排（取代預設「跳離輸入框」）。單行則於游標處插入/移除；多行則整段行首增減。 */
+  const onEditorKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key !== "Tab") return;
+    const ta = ref.current;
+    if (!ta) return;
+    e.preventDefault();
+    const s = ta.selectionStart;
+    const en = ta.selectionEnd;
+
+    // 無選取 + Tab：直接在游標處插入縮排。
+    if (s === en && !e.shiftKey) {
+      onChange(value.slice(0, s) + INDENT_UNIT + value.slice(en));
+      restore(s + INDENT_UNIT.length, s + INDENT_UNIT.length);
+      return;
+    }
+
+    // 有選取 或 Shift+Tab：對「選取涵蓋的每一行」行首增減縮排。
+    const lineStart = value.lastIndexOf("\n", s - 1) + 1;
+    let lineEnd = value.indexOf("\n", en > s ? en - 1 : en);
+    if (lineEnd === -1) lineEnd = value.length;
+    const lines = value.slice(lineStart, lineEnd).split("\n");
+
+    if (e.shiftKey) {
+      // 退縮排：每行移除開頭最多 2 個空白（或 1 個 tab）。
+      let removedFirst = 0;
+      let removedTotal = 0;
+      const out = lines.map((line, i) => {
+        const m = line.match(/^( {1,2}|\t)/);
+        const rm = m ? m[0].length : 0;
+        if (i === 0) removedFirst = rm;
+        removedTotal += rm;
+        return line.slice(rm);
+      });
+      onChange(value.slice(0, lineStart) + out.join("\n") + value.slice(lineEnd));
+      restore(Math.max(lineStart, s - removedFirst), Math.max(lineStart, en - removedTotal));
+    } else {
+      // 縮排：每行行首加縮排。
+      const out = lines.map((line) => INDENT_UNIT + line);
+      onChange(value.slice(0, lineStart) + out.join("\n") + value.slice(lineEnd));
+      restore(s + INDENT_UNIT.length, en + INDENT_UNIT.length * lines.length);
+    }
+  };
+
   // 工具列：常用的 Markdown 格式都備齊（標題 1~3、粗/斜/刪除線、清單/編號/待辦、引用、
   // 行內/區塊程式碼、表格、摺疊、保護、圖片、分隔線、連結）。
   const tools: { label: React.ReactNode; title: string; run: () => void }[] = [
@@ -372,6 +418,7 @@ export function MarkdownEditor({
             onChange={(e) => onChange(e.target.value)}
             onBlur={onBlur}
             onPaste={onPasteImage}
+            onKeyDown={onEditorKeyDown}
             placeholder={placeholder}
             aria-label={ariaLabel}
           />

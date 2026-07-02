@@ -1306,6 +1306,16 @@ li {
   line-height: var(--line-height-normal);
 }
 
+/* Tailwind v4 preflight 會把 ul/ol 的 list-style 清成 none → 筆記內容的編號清單只剩縮排、數字消失。
+   筆記閱讀（.markdown-prose 注入 HTML）與編輯預覽（.md-preview）的清單要恢復標記（數字／圓點）。
+   用 list-style: revert 恢復瀏覽器預設（含巢狀層級的標記交替），不影響上面設定的 padding-left。 */
+.markdown-prose ul,
+.markdown-prose ol,
+.md-preview ul,
+.md-preview ol {
+  list-style: revert;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
