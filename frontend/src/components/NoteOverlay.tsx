@@ -35,6 +35,13 @@ import { TextPropsPanel } from '@/components/drawing/TextPropsPanel';
  */
 export const NOTE_ASK_STICKY_EVENT = 'zonwiki:note-ask-sticky';
 
+/** 兩個字串集合內容是否相同（供避免無意義的 state 更新/重繪）。 */
+function sameStringSet(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const v of a) if (!b.has(v)) return false;
+  return true;
+}
+
 /** 便利貼/圖片板標題列上的小圖示按鈕樣式（－ 收合、🗑 刪除）。 */
 const chromeBtnStyle: React.CSSProperties = {
   flexShrink: 0,
@@ -74,6 +81,9 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
   const [items, setItems] = useState<NoteOverlayItem[]>([]);
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [mounted, setMounted] = useState(false);
+  // 疊在內文上的浮層容器（position:absolute; inset:0）——非釘住便利貼/圖片板的絕對定位原點。
+  // 用它的螢幕矩形換算便利貼左上角螢幕座標，供「跟著 toggle 收合」判定（見下方 collapsedByToggle 效果）。
+  const overlayRef = useRef<HTMLDivElement | null>(null);
 
   // 繪圖工具狀態
   const [tool, setTool] = useState<DrawTool>(null);
@@ -432,54 +442,62 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
   };
 
   // ── 便利貼/圖片板「跟著所在的 toggle 一起收合」（使用者需求）──
-  // 非釘住（貼在內文上、隨內文捲動）的便利貼/圖片板，若它落在某個 <details class="md-toggle"> 摺疊區塊
-  // 範圍內，當該區塊被收合時，這張便利貼/圖片板也一起收合（只剩標題）——免得它孤零零浮在收合後錯位的內容上。
-  // 作法：趁 details「展開」（量得到內容區）時，記錄「此 details ⊃ 哪些非釘住項目」；該 details「收合」時，
-  // 把記錄到的項目一併加入 collapsedIds。toggle 事件不冒泡 → 於容器用 capture 監聽，可涵蓋事後才注入的 details。
-  const toggleAssocRef = useRef<Map<Element, Set<string>>>(new Map());
+  // 規格：非釘住（position:absolute、貼在內文上隨內文捲動）的便利貼/圖片板，若它的「左上角的點」落在某個
+  // <details class="md-toggle"> 摺疊區塊內，當該 details（或其任一祖先 details）收合時，這張也一起「隱藏」
+  // （看不見）；再把 toggle 展開就恢復顯示（可逆）。釘住（pinned/fixed）者不受影響（它不貼著任何文字）。
+  //
+  // 多層巢狀：點若在 H3⊂H2⊂H1 內，三層各自的 rect 都包含該點；趁「展開且實際可見」時記錄每層的關聯，
+  // 收合任一層（該層 details 進入 !open）就會把它算進「收合聯集」。只要還有任一祖先 details 是收合的，就維持隱藏。
+  //
+  // 座標：便利貼 item.x/item.y 是相對「overlay 容器」（position:absolute → 其絕對定位子代的定位原點）。
+  // 故用 overlayRef 的螢幕矩形當原點，算出便利貼左上角的「螢幕座標點」，再與 details 的 getBoundingClientRect
+  // （同為螢幕座標）比對——避免用 .markdown-prose（有 padding）當原點造成的偏移。
+  // toggle 事件不冒泡 → 於容器用 capture 監聽，可涵蓋事後才注入的 details。
+  const toggleAssocRef = useRef<Map<HTMLDetailsElement, Set<string>>>(new Map());
+  const [collapsedByToggle, setCollapsedByToggle] = useState<Set<string>>(new Set());
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
-    /** 趁展開時，重新記錄每個開啟中的 details 涵蓋了哪些「非釘住」便利貼/圖片板。 */
-    const refreshAssoc = () => {
-      const cRect = container.getBoundingClientRect();
-      const overlayItems = itemsRef.current.filter(
+    const recompute = () => {
+      const origin = overlayRef.current?.getBoundingClientRect();
+      if (!origin) return;
+      const nonPinned = itemsRef.current.filter(
         (i) => (i.kind === 'sticky' || i.kind === 'slide') && !isPinned(i),
       );
+      const assoc = toggleAssocRef.current;
+
+      // 1) 趁「展開且實際可見（rect 有高度）」時，記錄每個 details 涵蓋哪些便利貼（左上角點落在其螢幕矩形內）。
+      //    收合中、或被外層收合而隱藏（rect 高度為 0）者：保留上次關聯、不覆寫（否則巢狀隱藏時會誤清）。
       container.querySelectorAll<HTMLDetailsElement>('details.md-toggle').forEach((d) => {
-        if (!d.open) return; // 收合時量不到內容區，只在展開時更新關聯
         const r = d.getBoundingClientRect();
-        // getBoundingClientRect 為視窗座標；減去容器頂端＝內容座標（與便利貼 x/y 同一系、免受捲動影響）。
-        const top = r.top - cRect.top;
-        const bottom = r.bottom - cRect.top;
+        if (!d.open || r.height <= 0) return;
         const ids = new Set<string>();
-        for (const it of overlayItems) if (it.y >= top && it.y <= bottom) ids.add(it.id);
-        toggleAssocRef.current.set(d, ids);
+        for (const it of nonPinned) {
+          const px = origin.left + it.x;
+          const py = origin.top + it.y;
+          if (px >= r.left && px <= r.right && py >= r.top && py <= r.bottom) ids.add(it.id);
+        }
+        assoc.set(d, ids);
       });
+
+      // 2) 清掉已不在 DOM 的 details（例如筆記重渲染）避免關聯無限累積。
+      for (const d of Array.from(assoc.keys())) if (!d.isConnected) assoc.delete(d);
+
+      // 3) 收合聯集＝所有「目前收合中」的 details 其記錄到的便利貼聯集（可逆：展開後該層退出聯集）。
+      const hidden = new Set<string>();
+      for (const [d, ids] of assoc) if (!d.open) ids.forEach((id) => hidden.add(id));
+      setCollapsedByToggle((prev) => (sameStringSet(prev, hidden) ? prev : hidden));
     };
 
     const onToggle = (e: Event) => {
       const d = e.target;
       if (!(d instanceof HTMLDetailsElement) || !d.classList.contains('md-toggle')) return;
-      if (d.open) {
-        refreshAssoc(); // 展開：更新關聯
-        return;
-      }
-      // 收合：把落在此 details 內的非釘住項目一起收合。
-      const ids = toggleAssocRef.current.get(d);
-      if (ids && ids.size) {
-        setCollapsedIds((prev) => {
-          const next = new Set(prev);
-          ids.forEach((id) => next.add(id));
-          return next;
-        });
-      }
-      refreshAssoc(); // 收合後其他 details 位置改變，順手重算它們的關聯
+      recompute();
     };
 
     container.addEventListener('toggle', onToggle, true);
-    refreshAssoc();
+    recompute();
     return () => container.removeEventListener('toggle', onToggle, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [containerRef]);
@@ -907,6 +925,7 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
       {extraHeight > 0 && <div aria-hidden style={{ height: extraHeight, pointerEvents: 'none' }} />}
 
       <div
+        ref={overlayRef}
         style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 20, overflow: 'hidden' }}
         data-testid="note-overlay"
       >
@@ -948,8 +967,11 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
             />
           )}
         </svg>
-        {/* 非 pinned 便利貼/圖片板：position:absolute 疊在內文上、隨內文捲動、被內文區裁切（原本行為）。 */}
-        {items.filter((i) => (i.kind === 'sticky' || i.kind === 'slide') && !isPinned(i)).map(renderOverlayItem)}
+        {/* 非 pinned 便利貼/圖片板：position:absolute 疊在內文上、隨內文捲動、被內文區裁切（原本行為）。
+            collapsedByToggle 內者＝其左上角所在的 toggle 目前收合中 → 一起隱藏（展開 toggle 即恢復）。 */}
+        {items
+          .filter((i) => (i.kind === 'sticky' || i.kind === 'slide') && !isPinned(i) && !collapsedByToggle.has(i.id))
+          .map(renderOverlayItem)}
         {/* 純文字框（Snipaste 風格：可打字、設背景、旋轉縮放；與開問啦畫布共用元件）。
             繪圖中時設為不可互動，讓底下手繪 SVG 接管指標。 */}
         {items.filter((i) => i.kind === 'text').map((item) => (
