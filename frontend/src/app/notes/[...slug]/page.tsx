@@ -95,6 +95,101 @@ export default function NotesDetailPage() {
     return p ? `${categoryPath(p.parentId, cats)}${p.name} / ` : '';
   };
 
+  // ── 未儲存變更離開防護（#16，對齊 TaskEditorModal 的交易式暫存/放棄確認）─────────────
+  // 兩組 id 陣列是否為同一集合（忽略順序）：分類/標籤選取的先後不視為變更。
+  const isSameIdSet = (a: readonly string[], b: readonly string[]): boolean => {
+    if (a.length !== b.length) return false;
+    const other = new Set(b);
+    return a.every((id) => other.has(id));
+  };
+
+  // 是否有未儲存變更：僅在「編輯中」且四項編輯值與載入的筆記基準不同時為 true。
+  const hasUnsavedChanges = useMemo(() => {
+    if (!isEditing || !note) return false;
+    if (editTitle !== note.title) return true;
+    if (editContent !== note.contentRaw) return true;
+    const baseCatIds = (note.categories ?? []).map((c) => c.id);
+    const baseTagIds = (note.tags ?? []).map((t) => t.id);
+    if (!isSameIdSet(editCatIds, baseCatIds)) return true;
+    if (!isSameIdSet(editTagIds, baseTagIds)) return true;
+    return false;
+  }, [isEditing, note, editTitle, editContent, editCatIds, editTagIds]);
+
+  // 有未儲存變更時詢問是否放棄；回傳 Promise<true>＝可離開（沿用 W6 的 ConfirmDialog）。
+  const confirmDiscardIfDirty = useCallback(async () => {
+    if (!hasUnsavedChanges) return true;
+    return confirm({
+      title: '放棄未儲存的變更？',
+      message:
+        '此筆記有未儲存的變更，要放棄並離開嗎？\n' +
+        '（標題／內容／分類／標籤的修改，未按「保存」都不會生效。）',
+      danger: true,
+      confirmLabel: '放棄並離開',
+    });
+  }, [hasUnsavedChanges, confirm]);
+
+  // 硬離開防護：整頁重新整理／關閉分頁／改網址列時，用瀏覽器原生 beforeunload 警示。
+  // （原生對話框無法自訂文案，僅在有未儲存變更時掛上，離開編輯即卸除。）
+  useEffect(() => {
+    if (!hasUnsavedChanges) return;
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      // 舊瀏覽器需設定 returnValue 才會跳出確認；現代瀏覽器顯示制式文案。
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [hasUnsavedChanges]);
+
+  // 軟離開防護（切換筆記／站內路由離開）：App Router 無官方路由攔截 API，
+  // 故在 capture 階段攔站內 <a> 點擊，先跳 ConfirmDialog 詢問，放棄才手動導頁。
+  useEffect(() => {
+    if (!hasUnsavedChanges) return;
+    const handleAnchorClick = (event: MouseEvent) => {
+      // 只處理單純左鍵、無修飾鍵的點擊；其餘（開新分頁/中鍵等）交給瀏覽器預設行為。
+      if (
+        event.defaultPrevented ||
+        event.button !== 0 ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.shiftKey ||
+        event.altKey
+      ) {
+        return;
+      }
+      const anchor = (event.target as HTMLElement | null)?.closest?.('a');
+      if (!anchor) return;
+      const href = anchor.getAttribute('href');
+      if (!href || href.startsWith('#')) return; // 純錨點捲動不算離開
+      if (anchor.target && anchor.target !== '_self') return; // 開新分頁
+      if (anchor.hasAttribute('download')) return;
+      // 解析為絕對網址：外部連結（不同 origin）交給瀏覽器預設（由 beforeunload 接手）。
+      let destination: URL;
+      try {
+        destination = new URL(href, window.location.href);
+      } catch {
+        return;
+      }
+      if (destination.origin !== window.location.origin) return;
+      // 目的地與目前頁面相同則略過（避免對自身連結誤攔）。
+      const current = window.location.pathname + window.location.search;
+      if (destination.pathname + destination.search === current) return;
+
+      // 攔下預設導頁與後續傳播（避免 Next.js Link 的點擊處理同時觸發）。
+      event.preventDefault();
+      event.stopPropagation();
+      void confirmDiscardIfDirty().then((canLeave) => {
+        if (canLeave) {
+          setIsEditing(false); // 先解除編輯，卸除防護後再導頁
+          router.push(destination.pathname + destination.search + destination.hash);
+        }
+      });
+    };
+    // capture 階段攔截：先於 React 綁在根節點的合成事件與 Next.js Link 的處理。
+    document.addEventListener('click', handleAnchorClick, true);
+    return () => document.removeEventListener('click', handleAnchorClick, true);
+  }, [hasUnsavedChanges, confirmDiscardIfDirty, router]);
+
   // 留言狀態
   const [commentContent, setCommentContent] = useState('');
   const [isPostingComment, setIsPostingComment] = useState(false);
@@ -487,7 +582,10 @@ export default function NotesDetailPage() {
           }}
         >
           <button
-            onClick={() => router.back()}
+            onClick={async () => {
+              // 返回上一頁前，若編輯中有未儲存變更先詢問是否放棄（#16）。
+              if (await confirmDiscardIfDirty()) router.back();
+            }}
             className="btn-secondary"
             title="返回上一個瀏覽的地方"
             style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 'var(--spacing-1)' }}
@@ -582,7 +680,10 @@ export default function NotesDetailPage() {
               />
               <div style={{ display: 'flex', gap: 'var(--spacing-2)', flexShrink: 0 }}>
                 <button
-                  onClick={() => setIsEditing(false)}
+                  onClick={async () => {
+                    // 關閉編輯前，若有未儲存變更先詢問是否放棄（#16）。
+                    if (await confirmDiscardIfDirty()) setIsEditing(false);
+                  }}
                   className="btn-secondary"
                   disabled={isSaving}
                 >
