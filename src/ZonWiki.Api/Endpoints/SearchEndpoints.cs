@@ -34,7 +34,10 @@ public static class SearchEndpoints
         /// 相關性排序：
         /// - 以 pg_trgm 的 similarity() 計算查詢字串與各欄位的相似度，做為相關性分數；
         ///   標題／名稱命中權重高於內文命中（見 <see cref="ContentSimilarityWeight"/>）。
-        /// - 各類型先各自以標題相似度排序並取 limit 筆，最後跨類型再依相關性分數合併排序。
+        /// - 多欄位類型（note/task/node）：撈回所有 ILIKE 命中列，先算完「標題＋內文」合併相關性分數，
+        ///   再依該分數排序並取 limit 筆；不可在合併前以單一欄位（標題）截斷，否則僅內文命中的相關列會漏掉。
+        /// - 單欄位類型（canvas/tag/category/capture）：該欄位相似度即相關性，於 SQL 端排序取 limit 筆即可。
+        /// - 最後跨類型再依相關性分數合併排序、取 limit 筆。
         ///
         /// 隔離策略（重要）：
         /// - Note / TaskCard / Canvas / Tag / Category / CaptureItem 皆實作 IUserOwned，
@@ -89,12 +92,13 @@ public static class SearchEndpoints
             // 再於記憶體端組 DTO（含片段擷取與相關性分數合併）」。
 
             // 1. 筆記（標題＋原始內容）
+            // 重要：不可在 SQL 端「先依標題相似度排序再 Take(limit)」，否則只靠內文命中、標題不相關的列
+            // 會在合併相關性分數之前就被整批截掉，永遠進不了候選池（finding #W8-1）。
+            // 正確作法：撈回所有 ILIKE 命中列與標題／內文兩個相似度，於記憶體端算完合併相關性分數後才截斷。
             var noteRows = await db.Note
                 .Where(n => n.ValidFlag &&
                     (EF.Functions.ILike(n.Title, pattern, LikeEscapeChar) ||
                      EF.Functions.ILike(n.ContentRaw, pattern, LikeEscapeChar)))
-                .OrderByDescending(n => EF.Functions.TrigramsSimilarity(n.Title, term))
-                .Take(limit)
                 .AsNoTracking()
                 .Select(n => new
                 {
@@ -107,23 +111,26 @@ public static class SearchEndpoints
                 })
                 .ToListAsync(ct);
 
-            var noteScored = noteRows.Select(row => new ScoredSearchResult(
-                new SearchResultDto(
-                    TypeNote,
-                    row.Id.ToString(),
-                    row.Title,
-                    ExtractSnippet(row.ContentRaw, keywordLower, SnippetMaxLength),
-                    $"/notes/{row.Slug}"),
-                CombineRelevance(row.TitleSimilarity, row.ContentSimilarity),
-                TypeRankNote));
+            var noteScored = noteRows
+                .Select(row => new ScoredSearchResult(
+                    new SearchResultDto(
+                        TypeNote,
+                        row.Id.ToString(),
+                        row.Title,
+                        ExtractSnippet(row.ContentRaw, keywordLower, SnippetMaxLength),
+                        $"/notes/{row.Slug}"),
+                    CombineRelevance(row.TitleSimilarity, row.ContentSimilarity),
+                    TypeRankNote))
+                // 合併相關性分數算完之後才截斷，確保內文命中列有公平機會進入候選池。
+                .OrderByDescending(scored => scored.Relevance)
+                .Take(limit);
 
             // 2. 任務卡片（標題＋內容）
+            // 同筆記：不可在合併相關性分數前依標題相似度截斷（finding #W8-1）。
             var taskRows = await db.TaskCard
                 .Where(t => t.ValidFlag &&
                     (EF.Functions.ILike(t.Title, pattern, LikeEscapeChar) ||
                      EF.Functions.ILike(t.Content, pattern, LikeEscapeChar)))
-                .OrderByDescending(t => EF.Functions.TrigramsSimilarity(t.Title, term))
-                .Take(limit)
                 .AsNoTracking()
                 .Select(t => new
                 {
@@ -135,15 +142,19 @@ public static class SearchEndpoints
                 })
                 .ToListAsync(ct);
 
-            var taskScored = taskRows.Select(row => new ScoredSearchResult(
-                new SearchResultDto(
-                    TypeTask,
-                    row.Id.ToString(),
-                    row.Title,
-                    ExtractSnippet(row.Content, keywordLower, SnippetMaxLength),
-                    "/tasks"),
-                CombineRelevance(row.TitleSimilarity, row.ContentSimilarity),
-                TypeRankTask));
+            var taskScored = taskRows
+                .Select(row => new ScoredSearchResult(
+                    new SearchResultDto(
+                        TypeTask,
+                        row.Id.ToString(),
+                        row.Title,
+                        ExtractSnippet(row.Content, keywordLower, SnippetMaxLength),
+                        "/tasks"),
+                    CombineRelevance(row.TitleSimilarity, row.ContentSimilarity),
+                    TypeRankTask))
+                // 合併相關性分數算完之後才截斷。
+                .OrderByDescending(scored => scored.Relevance)
+                .Take(limit);
 
             // 3. 畫布（名稱）
             var canvasRows = await db.Canvas
@@ -174,6 +185,7 @@ public static class SearchEndpoints
             // 節點的 URL 格式為 /canvas?canvasId={CanvasId}&nodeId={NodeId}
             // 跨帳號隔離：Node 非 IUserOwned、無全域過濾，必須明確以「所屬 Canvas 屬於目前使用者」過濾，
             // 否則會撈到所有使用者的節點（跨帳號外洩）。此處以 Canvas.UserId 比對目前登入者。
+            // 同筆記：不可在合併相關性分數前依標題相似度截斷（finding #W8-1）。
             var nodeRows = await db.Node
                 .Where(n => n.ValidFlag &&
                     n.Canvas != null &&
@@ -181,8 +193,6 @@ public static class SearchEndpoints
                     n.Canvas.ValidFlag &&
                     (EF.Functions.ILike(n.Title, pattern, LikeEscapeChar) ||
                      EF.Functions.ILike(n.Content, pattern, LikeEscapeChar)))
-                .OrderByDescending(n => EF.Functions.TrigramsSimilarity(n.Title, term))
-                .Take(limit)
                 .AsNoTracking()
                 .Select(n => new
                 {
@@ -195,15 +205,19 @@ public static class SearchEndpoints
                 })
                 .ToListAsync(ct);
 
-            var nodeScored = nodeRows.Select(row => new ScoredSearchResult(
-                new SearchResultDto(
-                    TypeNode,
-                    row.Id.ToString(),
-                    string.IsNullOrEmpty(row.Title) ? "（無標題）" : row.Title,
-                    ExtractSnippet(row.Content, keywordLower, SnippetMaxLength),
-                    $"/canvas?canvasId={row.CanvasId}&nodeId={row.Id}"),
-                CombineRelevance(row.TitleSimilarity, row.ContentSimilarity),
-                TypeRankNode));
+            var nodeScored = nodeRows
+                .Select(row => new ScoredSearchResult(
+                    new SearchResultDto(
+                        TypeNode,
+                        row.Id.ToString(),
+                        string.IsNullOrEmpty(row.Title) ? "（無標題）" : row.Title,
+                        ExtractSnippet(row.Content, keywordLower, SnippetMaxLength),
+                        $"/canvas?canvasId={row.CanvasId}&nodeId={row.Id}"),
+                    CombineRelevance(row.TitleSimilarity, row.ContentSimilarity),
+                    TypeRankNode))
+                // 合併相關性分數算完之後才截斷。
+                .OrderByDescending(scored => scored.Relevance)
+                .Take(limit);
 
             // 5. 標籤（名稱）
             // Tag 為 IUserOwned，靠全域過濾限定本人；點按導向以此標籤篩選的筆記清單。
