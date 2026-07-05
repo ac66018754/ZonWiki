@@ -173,5 +173,14 @@ public sealed class ZonWikiDbContext(
         // 開問啦節點：標題 + 內容
         Trigram<Node>(modelBuilder, node => node.Title, "IX_Node_Title_Trgm");
         Trigram<Node>(modelBuilder, node => node.Content, "IX_Node_Content_Trgm");
+
+        // 標籤：名稱（全站搜尋 #20 納入標籤範圍）
+        Trigram<Tag>(modelBuilder, tag => tag.Name, "IX_Tag_Name_Trgm");
+
+        // 分類：名稱（全站搜尋 #20 納入分類範圍）
+        Trigram<Category>(modelBuilder, category => category.Name, "IX_Category_Name_Trgm");
+
+        // 快速捕捉（Inbox 收件匣）：原始內容（全站搜尋 #20 納入快速捕捉範圍）
+        Trigram<CaptureItem>(modelBuilder, capture => capture.RawContent, "IX_CaptureItem_RawContent_Trgm");
     }
 }

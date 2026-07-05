@@ -205,6 +205,12 @@ export function GlobalSearch() {
         return { label: "畫布", emoji: "🎨" };
       case "node":
         return { label: "節點", emoji: "◇" };
+      case "tag":
+        return { label: "標籤", emoji: "🏷️" };
+      case "category":
+        return { label: "分類", emoji: "📁" };
+      case "capture":
+        return { label: "快速捕捉", emoji: "📥" };
       case "quicklink":
         return { label: "連結", emoji: "🔗" };
       case "function":

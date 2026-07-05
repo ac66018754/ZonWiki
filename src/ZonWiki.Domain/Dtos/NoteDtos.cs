@@ -550,9 +550,9 @@ public sealed record NoteTagDto(
 
 /// <summary>
 /// 全站搜尋結果資料傳輸物件。
-/// 支援搜尋筆記、任務卡片、畫布與節點。
+/// 支援搜尋筆記、任務卡片、畫布、節點、標籤、分類與快速捕捉。
 /// </summary>
-/// <param name="Type">結果類型（note / task / canvas / node）。</param>
+/// <param name="Type">結果類型（note / task / canvas / node / tag / category / capture）。</param>
 /// <param name="Id">結果識別碼。</param>
 /// <param name="Title">結果標題。</param>
 /// <param name="Snippet">結果內容摘要（搜尋片段、節點開頭部分，可空）。</param>

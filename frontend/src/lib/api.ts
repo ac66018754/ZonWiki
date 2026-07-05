@@ -391,8 +391,16 @@ export interface HomePageAggregate {
  * 搜尋結果 (統合)
  */
 export interface SearchResult {
-  /** 類型 (note|task|canvas|node|quicklink) */
-  type: "note" | "task" | "canvas" | "node" | "quicklink";
+  /** 類型 (note|task|canvas|node|tag|category|capture|quicklink) */
+  type:
+    | "note"
+    | "task"
+    | "canvas"
+    | "node"
+    | "tag"
+    | "category"
+    | "capture"
+    | "quicklink";
   /** 結果 ID */
   id: string;
   /** 標題 */
