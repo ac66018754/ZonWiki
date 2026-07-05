@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ZonWiki.Api.Auth;
+using ZonWiki.Api.Common;
 using ZonWiki.Domain.Common;
 using ZonWiki.Domain.Dtos;
 using ZonWiki.Domain.Entities;
@@ -110,7 +111,7 @@ public static class TaskEndpoints
             db.TaskCard.Add(card);
             await db.SaveChangesAsync(ct);
 
-            var dto = MapToDetailDto(card);
+            var dto = MapToDetailDto(card, db.Entry(card).GetConcurrencyVersion());
             return Results.Created($"/api/tasks/{card.Id}", ApiResponse<TaskCardDetailDto>.Ok(dto));
         });
 
@@ -141,7 +142,7 @@ public static class TaskEndpoints
                 return Results.NotFound(ApiResponse<object>.Fail("卡片不存在或已刪除"));
             }
 
-            var dto = MapToDetailDto(card);
+            var dto = MapToDetailDto(card, db.Entry(card).GetConcurrencyVersion());
             return Results.Ok(ApiResponse<TaskCardDetailDto>.Ok(dto));
         });
 
@@ -241,9 +242,22 @@ public static class TaskEndpoints
             card.UpdatedDateTime = DateTime.UtcNow;
             card.UpdatedUser = userId;
 
-            await db.SaveChangesAsync(ct);
+            // 樂觀鎖（#4/#34）：若前端帶回 baseVersion，以其比對 xmin 偵測併發衝突。
+            db.Entry(card).ApplyBaseVersion(request.BaseVersion);
 
-            var dto = MapToDetailDto(card);
+            try
+            {
+                await db.SaveChangesAsync(ct);
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // 載入後被其他來源改過 → 回 409，讓前端提示覆蓋或重新載入。
+                return Results.Json(
+                    ApiResponse<TaskCardDetailDto>.Fail("此項已被其他來源修改", 409),
+                    statusCode: StatusCodes.Status409Conflict);
+            }
+
+            var dto = MapToDetailDto(card, db.Entry(card).GetConcurrencyVersion());
             return Results.Ok(ApiResponse<TaskCardDetailDto>.Ok(dto));
         });
 
@@ -512,7 +526,13 @@ public static class TaskEndpoints
             card.HomeSortOrder);
     }
 
-    private static TaskCardDetailDto MapToDetailDto(TaskCard card)
+    /// <summary>
+    /// 將 TaskCard 實體映射為詳細 DTO。
+    /// </summary>
+    /// <param name="card">任務卡片實體。</param>
+    /// <param name="version">樂觀鎖版本（xmin，#4/#34）；由呼叫端以 <c>db.Entry(card).GetConcurrencyVersion()</c> 取得。</param>
+    /// <returns>任務卡片詳細 DTO。</returns>
+    private static TaskCardDetailDto MapToDetailDto(TaskCard card, long version)
     {
         var subTasks = MapSubTasks(card);
         return new(
@@ -535,6 +555,7 @@ public static class TaskEndpoints
             card.TargetDateTime,
             card.TargetGranularity,
             card.IsPinnedToHome,
-            card.HomeSortOrder);
+            card.HomeSortOrder,
+            version);
     }
 }

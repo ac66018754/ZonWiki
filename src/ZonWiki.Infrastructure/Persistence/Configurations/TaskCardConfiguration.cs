@@ -18,6 +18,11 @@ public sealed class TaskCardConfiguration : IEntityTypeConfiguration<TaskCard>
     {
         builder.HasKey(t => t.Id);
 
+        // 樂觀鎖（#4/#34）：以 PostgreSQL 系統欄 xmin 當併發權杖（免新增欄位）。
+        // 更新時比對載入當下的 xmin；期間被其他來源改過則 SaveChanges 丟
+        // DbUpdateConcurrencyException，端點回 409。
+        builder.UseXminConcurrencyToken();
+
         builder.Property(t => t.Title).IsRequired().HasMaxLength(500);
         builder.Property(t => t.Status).IsRequired().HasMaxLength(64);
         builder.Property(t => t.CreatedUser).IsRequired().HasMaxLength(128);

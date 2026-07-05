@@ -114,6 +114,10 @@ public sealed record NoteSummaryDto(
 /// <param name="CommentCount">有效留言數。</param>
 /// <param name="Categories">此筆記所屬的分類（編輯時用以預選）。</param>
 /// <param name="Tags">此筆記貼上的標籤（編輯時用以預選）。</param>
+/// <param name="Version">
+/// 樂觀鎖併發權杖（PostgreSQL xmin，#4/#34）。前端保存時原封帶回為 baseVersion，
+/// 供後端偵測「載入後是否被其他來源改過」；0＝未知（不參與併發檢查）。
+/// </param>
 public sealed record NoteDetailDto(
     Guid Id,
     string Title,
@@ -126,7 +130,8 @@ public sealed record NoteDetailDto(
     DateTime UpdatedDateTime,
     int CommentCount,
     List<TagRefDto>? Categories = null,
-    List<TagRefDto>? Tags = null);
+    List<TagRefDto>? Tags = null,
+    long Version = 0);
 
 /// <summary>
 /// 留言資料傳輸物件。
@@ -180,12 +185,17 @@ public sealed record CreateNoteRequest(
 /// <param name="IsDraft">是否為草稿（可空；若無傳則保留原值）。</param>
 /// <param name="CategoryIds">分類識別碼清單（覆寫現有）。</param>
 /// <param name="TagIds">標籤識別碼清單（覆寫現有；若標籤不存在則自動建立）。</param>
+/// <param name="BaseVersion">
+/// 樂觀鎖 baseVersion（前端載入筆記時記下的 Version；#4/#34）。
+/// 帶值時後端以其比對 xmin，衝突回 409；null＝不做併發檢查（last-write-wins）。
+/// </param>
 public sealed record UpdateNoteRequest(
     string? Title = null,
     string? ContentRaw = null,
     bool? IsDraft = null,
     List<Guid>? CategoryIds = null,
-    List<Guid>? TagIds = null);
+    List<Guid>? TagIds = null,
+    long? BaseVersion = null);
 
 /// <summary>
 /// AI 排版／美化的請求內容。對「編輯器目前的內容」做轉換（而非伺服器上的已存內容），

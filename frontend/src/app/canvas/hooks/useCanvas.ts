@@ -11,6 +11,7 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { kaiwenApi } from '../kaiwen-api'
 import { logger } from '@/lib/logger'
+import { ConflictError } from '@/lib/errors'
 import type { CanvasGraphDto, NodeDto, EdgeDto, InlineLinkDto, HighlightDto } from '../kaiwen-types'
 
 export interface CanvasState {
@@ -313,6 +314,13 @@ export function useCanvas(
   const eventSourceRef = useRef<EventSource | null>(null)
   const sequenceRef = useRef(0)
 
+  // 以 ref 鏡射目前節點清單，供動作（如更新內容）讀取「該節點目前的樂觀鎖版本」（#4/#34），
+  // 避免因閉包捕捉到過期的 nodes 而拿到舊版本。
+  const nodesRef = useRef<NodeDto[]>(nodes)
+  useEffect(() => {
+    nodesRef.current = nodes
+  }, [nodes])
+
   // 用 ref 保存通知回調：onNotification 由父層以 inline 函式傳入（每次重繪都是新參考），
   // 若讓 handleSseEvent 直接相依它，handleSseEvent 會每次重建 → 下方 SSE useEffect 不斷
   // 「關閉並重新訂閱 + 重抓整張圖(loadGraph)」→ 每隔幾秒整批節點重渲染（週期性閃爍 + 卡頓）。
@@ -550,21 +558,49 @@ export function useCanvas(
     },
 
     updateNodeContent: async (nodeId: string, content: string) => {
-      try {
-        setPending((prev) => new Set(prev).add(nodeId))
-        await kaiwenApi.updateNodeContent(nodeId, content)
-        // 樂觀更新本地節點內容：不倚賴 SSE NodeUpdated 廣播（實測該廣播不一定回得來，
-        // 會造成「編輯後需刷新才看得到內容」）。若稍後 SSE 仍送達，NodeUpdated 會以
-        // 伺服器版本覆寫，結果一致（冪等）。
+      // 樂觀更新本地節點內容 + 版本，供下一次保存帶對的 baseVersion。
+      // 不倚賴 SSE NodeUpdated 廣播（實測不一定回得來，會造成「編輯後需刷新才看得到內容」）。
+      const applyLocal = (updated: NodeDto | undefined, fallbackContent: string) => {
         setNodes((prev) =>
           prev.map((n) =>
             n.Node_Id === nodeId
-              ? { ...n, Node_Content: content, Node_UpdatedDateTime: new Date().toISOString() }
+              ? {
+                  ...n,
+                  Node_Content: updated?.Node_Content ?? fallbackContent,
+                  Node_Version: updated?.Node_Version ?? n.Node_Version,
+                  Node_UpdatedDateTime:
+                    updated?.Node_UpdatedDateTime ?? new Date().toISOString(),
+                }
               : n
           )
         )
+      }
+
+      try {
+        setPending((prev) => new Set(prev).add(nodeId))
+        // 樂觀鎖（#4/#34）：帶目前節點的版本，讓後端偵測「載入後是否被其他來源改過」。
+        const baseVersion = nodesRef.current.find((n) => n.Node_Id === nodeId)?.Node_Version
+        const updated = await kaiwenApi.updateNodeContent(nodeId, content, baseVersion)
+        applyLocal(updated, content)
         setError(null)
       } catch (err) {
+        if (err instanceof ConflictError) {
+          // 併發衝突：讓使用者選擇「重新載入最新版」或「以自己的版本覆蓋」。
+          const reload = window.confirm(
+            '此節點已被其他來源修改。\n\n' +
+              '按「確定」重新載入最新版本（放棄本次修改）；\n' +
+              '按「取消」以您目前的內容覆蓋。'
+          )
+          if (reload) {
+            await loadGraph()
+          } else {
+            // 覆蓋：不帶 baseVersion 再送一次（last-write-wins）。
+            const updated = await kaiwenApi.updateNodeContent(nodeId, content)
+            applyLocal(updated, content)
+            setError(null)
+          }
+          return
+        }
         const message = err instanceof Error ? err.message : '無法更新節點'
         setError(message)
       } finally {

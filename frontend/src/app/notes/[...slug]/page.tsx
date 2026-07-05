@@ -24,6 +24,7 @@ import {
   type TaskGroup,
   getCurrentUser,
 } from '@/lib/api';
+import { ConflictError } from '@/lib/errors';
 import { TaskEditorModal } from '@/app/tasks/components/TaskEditorModal';
 import { formatFullDateTime, formatDateTime as formatDateTimeUtil } from '@/lib/formatters';
 import { DEFAULT_TIMEZONE } from '@/lib/constants';
@@ -298,14 +299,48 @@ export default function NotesDetailPage() {
       return;
     }
 
-    try {
-      setIsSaving(true);
-      const saved = await updateNote(note.id, {
+    // 以指定 baseVersion 送出更新（undefined＝不做併發檢查、覆蓋）。
+    const doUpdate = (baseVersion?: number) =>
+      updateNote(note.id, {
         title: editTitle,
         contentRaw: editContent,
         categoryIds: editCatIds,
         tagIds: editTagIds,
+        baseVersion,
       });
+
+    try {
+      setIsSaving(true);
+
+      let saved: NoteDetail | null;
+      try {
+        // 樂觀鎖（#4/#34）：帶目前載入版本，偵測「載入後是否被其他來源改過」。
+        saved = await doUpdate(note.version);
+      } catch (e) {
+        if (e instanceof ConflictError) {
+          const reload = window.confirm(
+            '此筆記已被其他來源修改。\n\n' +
+              '按「確定」重新載入最新版本（放棄本次修改）；\n' +
+              '按「取消」以您目前的內容覆蓋。'
+          );
+          if (reload) {
+            const latest = await getNote(slug);
+            if (latest) {
+              setNote(latest);
+              setEditTitle(latest.title);
+              setEditContent(latest.contentRaw);
+              setEditCatIds((latest.categories ?? []).map((c) => c.id));
+              setEditTagIds((latest.tags ?? []).map((t) => t.id));
+            }
+            setError('此筆記已被其他來源修改，已載入最新版本，請重新確認後再儲存。');
+            return;
+          }
+          // 覆蓋：不帶 baseVersion 再送一次（last-write-wins）。
+          saved = await doUpdate(undefined);
+        } else {
+          throw e;
+        }
+      }
 
       // 保存失敗（後端回 400 等，updateNote 會回 null）：維持編輯模式並提示，
       // 絕不可誤判成功而退出編輯、靜默丟失本次的內容／分類／標籤修改。

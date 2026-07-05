@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using ZonWiki.Api.Auth;
+using ZonWiki.Api.Common;
 using ZonWiki.Api.RateLimiting;
 using ZonWiki.Api.Services;
 using ZonWiki.Domain.Common;
@@ -725,7 +726,9 @@ public static class KaiWenCanvasEndpoints
                 n.Origin,
                 n.AiSessionId.HasValue ? n.AiSessionId.Value.ToString() : null,
                 n.CreatedDateTime.ToString("O"),
-                n.UpdatedDateTime.ToString("O")))
+                n.UpdatedDateTime.ToString("O"),
+                // 樂觀鎖版本（#4/#34）：投影 xmin 系統欄，供前端編輯內容保存時帶回為 baseVersion。
+                (long)EF.Property<uint>(n, "xmin")))
             .ToListAsync(ct);
 
         var edges = await db.Edge
@@ -958,7 +961,8 @@ public static class KaiWenCanvasEndpoints
             node.Origin,
             node.AiSessionId.HasValue ? node.AiSessionId.Value.ToString() : null,
             node.CreatedDateTime.ToString("O"),
-            node.UpdatedDateTime.ToString("O"));
+            node.UpdatedDateTime.ToString("O"),
+            db.Entry(node).GetConcurrencyVersion());
 
         return CanvasJsonHelper.JsonOk(ApiResponse<NodeDto>.Ok(dto), StatusCodes.Status201Created);
     }
@@ -1013,7 +1017,20 @@ public static class KaiWenCanvasEndpoints
             if (request.Title is not null) node.Title = request.Title;
         }
 
-        await db.SaveChangesAsync(ct);
+        // 樂觀鎖（#4/#34）：若前端帶回 baseVersion，以其比對 xmin 偵測併發衝突。
+        // 佈局多為高頻拖曳，前端通常不帶 baseVersion（維持 last-write-wins）；帶了才檢查。
+        db.Entry(node).ApplyBaseVersion(request?.BaseVersion);
+
+        try
+        {
+            await db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return CanvasJsonHelper.JsonError(
+                ApiResponse<NodeDto>.Fail("此項已被其他來源修改", 409),
+                StatusCodes.Status409Conflict);
+        }
 
         var dto = new NodeDto(
             node.Id.ToString(),
@@ -1031,7 +1048,8 @@ public static class KaiWenCanvasEndpoints
             node.Origin,
             node.AiSessionId.HasValue ? node.AiSessionId.Value.ToString() : null,
             node.CreatedDateTime.ToString("O"),
-            node.UpdatedDateTime.ToString("O"));
+            node.UpdatedDateTime.ToString("O"),
+            db.Entry(node).GetConcurrencyVersion());
 
         return CanvasJsonHelper.JsonOk(ApiResponse<NodeDto>.Ok(dto));
     }
@@ -1079,7 +1097,21 @@ public static class KaiWenCanvasEndpoints
 
         // 更新節點內容
         node.Content = req.Content ?? string.Empty;
-        await db.SaveChangesAsync(ct);
+
+        // 樂觀鎖（#4/#34）：若前端帶回 baseVersion，以其比對 xmin 偵測併發衝突
+        //（節點內容編輯是主要的多來源衝突情境）。
+        db.Entry(node).ApplyBaseVersion(req.BaseVersion);
+
+        try
+        {
+            await db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return CanvasJsonHelper.JsonError(
+                ApiResponse<NodeDto>.Fail("此項已被其他來源修改", 409),
+                StatusCodes.Status409Conflict);
+        }
 
         var dto = new NodeDto(
             node.Id.ToString(),
@@ -1097,7 +1129,8 @@ public static class KaiWenCanvasEndpoints
             node.Origin,
             node.AiSessionId.HasValue ? node.AiSessionId.Value.ToString() : null,
             node.CreatedDateTime.ToString("O"),
-            node.UpdatedDateTime.ToString("O"));
+            node.UpdatedDateTime.ToString("O"),
+            db.Entry(node).GetConcurrencyVersion());
 
         return CanvasJsonHelper.JsonOk(ApiResponse<NodeDto>.Ok(dto));
     }
@@ -1152,7 +1185,8 @@ public static class KaiWenCanvasEndpoints
             node.Origin,
             node.AiSessionId.HasValue ? node.AiSessionId.Value.ToString() : null,
             node.CreatedDateTime.ToString("O"),
-            node.UpdatedDateTime.ToString("O"));
+            node.UpdatedDateTime.ToString("O"),
+            db.Entry(node).GetConcurrencyVersion());
 
         return CanvasJsonHelper.JsonOk(ApiResponse<NodeDto>.Ok(dto));
     }

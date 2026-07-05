@@ -10,6 +10,7 @@
  */
 
 import { withAiQueueNotify } from './aiQueue';
+import { ConflictError } from './errors';
 
 const BROWSER_API_BASE =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5009";
@@ -188,6 +189,8 @@ export interface NoteDetail {
   commentCount: number;
   /** 是否為草稿 */
   isDraft?: boolean;
+  /** 樂觀鎖版本（PostgreSQL xmin，#4/#34）；保存時原封帶回為 baseVersion 供後端偵測併發衝突 */
+  version?: number;
   /** @deprecated 相容舊欄位名 */
   categoryId?: string;
   /** @deprecated 相容舊欄位名 */
@@ -268,6 +271,8 @@ export interface TaskCard {
   createdDateTime: string;
   /** 更新時間 (UTC) */
   updatedDateTime: string;
+  /** 樂觀鎖版本（PostgreSQL xmin，#4/#34）；保存時原封帶回為 baseVersion 供後端偵測併發衝突 */
+  version?: number;
 }
 
 /**
@@ -427,9 +432,16 @@ async function fetchJson<T>(
     window.dispatchEvent(new CustomEvent("zonwiki:unauthorized"));
   }
 
-  // 401/404/400 不視為例外，回傳已解析的 ApiResponse 主體（含 error 訊息）供呼叫端就地處理。
-  // 400（client error）帶有明確錯誤訊息（如「目前密碼錯誤」），不應拋例外被當成連線失敗。
-  if (!res.ok && res.status !== 401 && res.status !== 404 && res.status !== 400) {
+  // 401/404/400/409 不視為連線例外，回傳已解析的 ApiResponse 主體（含 error 訊息與 statusCode）
+  // 供呼叫端就地處理。400（client error）帶明確錯誤訊息（如「目前密碼錯誤」）；
+  // 409（樂觀鎖衝突，#4/#34）帶「此項已被其他來源修改」，呼叫端據 statusCode 轉成 ConflictError。
+  if (
+    !res.ok &&
+    res.status !== 401 &&
+    res.status !== 404 &&
+    res.status !== 400 &&
+    res.status !== 409
+  ) {
     throw new Error(`API ${path} failed with ${res.status}`);
   }
 
@@ -1132,6 +1144,8 @@ export async function updateNote(
     categoryIds: string[];
     tagIds: string[];
     isDraft: boolean;
+    /** 樂觀鎖 baseVersion（#4/#34）：帶值時後端比對 xmin，衝突丟 ConflictError；不帶＝last-write-wins */
+    baseVersion: number;
   }>
 ): Promise<NoteDetail | null> {
   const r = await fetchJson<NoteDetail>(
@@ -1141,6 +1155,10 @@ export async function updateNote(
       body: JSON.stringify(payload),
     }
   );
+  // 樂觀鎖衝突（#4/#34）：轉成 ConflictError 讓呼叫端提示「覆蓋或重新載入」。
+  if (!r.success && r.statusCode === 409) {
+    throw new ConflictError(r.error ?? undefined);
+  }
   return r.data ?? null;
 }
 
@@ -1317,6 +1335,8 @@ export interface UpdateTaskCardPayload {
   clearTargetDateTime?: boolean;
   /** 清空目標期粒度 */
   clearTargetGranularity?: boolean;
+  /** 樂觀鎖 baseVersion（#4/#34）：帶值時後端比對 xmin，衝突丟 ConflictError；不帶＝last-write-wins */
+  baseVersion?: number;
 }
 
 /**
@@ -1330,6 +1350,11 @@ export async function updateTaskCard(
     method: "PUT",
     body: JSON.stringify(payload),
   });
+  // 樂觀鎖衝突（#4/#34）：轉成 ConflictError 讓呼叫端提示「覆蓋或重新載入」。
+  // 只有帶 baseVersion 的編輯保存會走到這裡；快速欄位更新（拖曳狀態/日期）不帶版本，不受影響。
+  if (!r.success && r.statusCode === 409) {
+    throw new ConflictError(r.error ?? undefined);
+  }
   return r.data ?? null;
 }
 

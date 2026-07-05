@@ -3,6 +3,7 @@ using Markdig;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ZonWiki.Api.Auth;
+using ZonWiki.Api.Common;
 using ZonWiki.Api.Notes;
 using ZonWiki.Api.Services;
 using ZonWiki.Domain.Common;
@@ -317,7 +318,8 @@ public static class NoteWriteEndpoints
                 note.IsDraft,
                 note.CreatedDateTime,
                 note.UpdatedDateTime,
-                0);
+                0,
+                Version: db.Entry(note).GetConcurrencyVersion());
 
             // Location 標頭只能是 ASCII；slug 可能含中文（GenerateSlug 保留 Unicode），故 URL 編碼，
             // 否則會丟 InvalidOperationException: Invalid non-ASCII character in header。
@@ -444,6 +446,9 @@ public static class NoteWriteEndpoints
                 await ParseAndCreateWikiLinksAsync(db, userId, id, note.ContentRaw, ct);
             }
 
+            // 樂觀鎖（#4/#34）：若前端帶回 baseVersion，以其比對 xmin 偵測併發衝突。
+            db.Entry(note).ApplyBaseVersion(request.BaseVersion);
+
             await db.SaveChangesAsync(ct);
 
             var dto = new NoteDetailDto(
@@ -456,9 +461,17 @@ public static class NoteWriteEndpoints
                 note.IsDraft,
                 note.CreatedDateTime,
                 note.UpdatedDateTime,
-                await db.Comment.CountAsync(c => c.NoteId == id && c.ValidFlag, ct));
+                await db.Comment.CountAsync(c => c.NoteId == id && c.ValidFlag, ct),
+                Version: db.Entry(note).GetConcurrencyVersion());
 
             return Results.Ok(ApiResponse<NoteDetailDto>.Ok(dto));
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // 載入後被其他來源（另一裝置／外部 AI）改過 → 回 409，讓前端提示覆蓋或重新載入。
+            return Results.Json(
+                ApiResponse<NoteDetailDto>.Fail("此項已被其他來源修改", 409),
+                statusCode: StatusCodes.Status409Conflict);
         }
         catch (Exception ex)
         {

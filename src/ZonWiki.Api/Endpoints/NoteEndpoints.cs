@@ -113,7 +113,9 @@ public static class NoteEndpoints
                     n.NoteTags
                         .Where(nt => nt.ValidFlag && nt.Tag != null && nt.Tag.ValidFlag)
                         .Select(nt => new TagRefDto(nt.Tag!.Id, nt.Tag.Name))
-                        .ToList()))
+                        .ToList(),
+                    // 樂觀鎖版本（#4/#34）：投影 xmin 系統欄，供前端保存時帶回為 baseVersion。
+                    (long)EF.Property<uint>(n, "xmin")))
                 .FirstOrDefaultAsync(ct);
 
             if (note is null)

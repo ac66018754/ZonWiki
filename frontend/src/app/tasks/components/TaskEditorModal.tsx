@@ -34,6 +34,7 @@ import { EntityLinkPopover } from "@/components/EntityLinkPopover";
 import { LinkedEntitiesBar } from "@/components/LinkedEntitiesBar";
 import { logger } from "@/lib/logger";
 import { showToast } from "@/lib/toast";
+import { ConflictError } from "@/lib/errors";
 import type { LinkEntityType } from "@/lib/api";
 
 /** 連結浮動視窗的開啟狀態（針對某個子任務）。 */
@@ -125,6 +126,8 @@ export function TaskEditorModal({
 
   // 是否有未存變更（用於關閉 / 切換子任務前自動存檔）。載入 / 存檔後清為 false。
   const dirtyRef = useRef(false);
+  // 樂觀鎖（#4/#34）覆蓋旗標：使用者於衝突時選擇「覆蓋」時設為 true，讓本次保存略過 baseVersion。
+  const overwriteRef = useRef(false);
   const markDirty = useCallback(() => {
     dirtyRef.current = true;
     setSavedFlash(false);
@@ -284,7 +287,11 @@ export function TaskEditorModal({
   /** 實際寫入（卡片欄位 + 標籤 + 子任務暫存變更）。 */
   const doSave = useCallback(async () => {
     if (!taskId || !title.trim()) return;
-    await updateTaskCard(taskId, buildPayload());
+    // 樂觀鎖（#4/#34）：帶目前卡片版本；overwriteRef=true 時略過（覆蓋、last-write-wins）。
+    await updateTaskCard(taskId, {
+      ...buildPayload(),
+      baseVersion: overwriteRef.current ? undefined : card?.version,
+    });
     await assignTaskTags(taskId, selectedTagIds);
     await flushSubtasks(card?.subTasks ?? [], subTasks, taskId);
     dirtyRef.current = false;
@@ -312,6 +319,38 @@ export function TaskEditorModal({
       // 醒目的小彈窗提示（自動淡出消失，無關閉鈕）
       showToast("任務已儲存", { type: "success" });
     } catch (e) {
+      if (e instanceof ConflictError) {
+        // 併發衝突（#4/#34）：讓使用者選「重新載入最新版」或「以自己的版本覆蓋」。
+        const reload = window.confirm(
+          "此任務已被其他來源修改。\n\n" +
+            "按「確定」重新載入最新版本（放棄本次修改）；\n" +
+            "按「取消」以您目前的內容覆蓋。"
+        );
+        if (reload) {
+          const latest = await getTaskCard(taskId);
+          if (latest) {
+            setCard(latest);
+            populateFields(latest);
+          }
+          showToast("此任務已被其他來源修改，已載入最新版本", { type: "info" });
+        } else {
+          // 覆蓋：略過 baseVersion 再存一次。
+          overwriteRef.current = true;
+          try {
+            await doSave();
+            const fresh = await getTaskCard(taskId);
+            if (fresh) {
+              setCard(fresh);
+              populateFields(fresh);
+            }
+            setSavedFlash(true);
+            showToast("任務已儲存（已覆蓋）", { type: "success" });
+          } finally {
+            overwriteRef.current = false;
+          }
+        }
+        return;
+      }
       logger.error("儲存任務失敗：", e);
       setSaveError(true);
     } finally {
