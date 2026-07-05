@@ -49,7 +49,7 @@ public sealed class AuditingSaveChangesInterceptor : SaveChangesInterceptor
                     }
                     entry.Entity.CreatedDateTime = now;
                     entry.Entity.UpdatedDateTime = now;
-                    entry.Entity.ValidFlag = entry.Entity.ValidFlag;
+                    // 註：ValidFlag 預設 true 已由 AuditableEntity 欄位初始化保證，此處不需再指派。
 
                     // 使用者隔離：IUserOwned 實體若未明確指定擁有者，建立時自動帶入目前使用者。
                     // 已顯式設定者（如 Note/TaskCard、或刻意用共用 UserId 的系統 AI 模型）不覆寫。

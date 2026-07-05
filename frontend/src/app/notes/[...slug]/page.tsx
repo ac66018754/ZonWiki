@@ -292,14 +292,27 @@ export default function NotesDetailPage() {
   const handleSave = async () => {
     if (!note) return;
 
+    // 前端先擋：標題不可為空（與後端規則一致，給即時回饋、免一次無謂往返）。
+    if (!editTitle.trim()) {
+      setError('標題不可為空');
+      return;
+    }
+
     try {
       setIsSaving(true);
-      await updateNote(note.id, {
+      const saved = await updateNote(note.id, {
         title: editTitle,
         contentRaw: editContent,
         categoryIds: editCatIds,
         tagIds: editTagIds,
       });
+
+      // 保存失敗（後端回 400 等，updateNote 會回 null）：維持編輯模式並提示，
+      // 絕不可誤判成功而退出編輯、靜默丟失本次的內容／分類／標籤修改。
+      if (!saved) {
+        setError('保存失敗，請檢查內容後再試一次。');
+        return;
+      }
 
       // 重新載入
       const updated = await getNote(slug);

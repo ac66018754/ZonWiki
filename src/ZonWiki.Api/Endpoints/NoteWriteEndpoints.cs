@@ -363,14 +363,23 @@ public static class NoteWriteEndpoints
         {
             var contentChanged = false;
 
-            // 更新標題（若傳入）
-            if (!string.IsNullOrWhiteSpace(request.Title))
+            // 更新標題：以 is not null 判斷「有無傳入該欄位」（PATCH 語意），與值本身分開。
+            // 有傳入才動；但標題不可清空——傳入純空白視為無效（筆記必須有標題）。
+            if (request.Title is not null)
             {
-                note.Title = request.Title.Trim();
+                var trimmedTitle = request.Title.Trim();
+                if (trimmedTitle.Length == 0)
+                {
+                    return Results.Json(
+                        ApiResponse<NoteDetailDto>.Fail("標題不可為空", 400),
+                        statusCode: StatusCodes.Status400BadRequest);
+                }
+                note.Title = trimmedTitle;
             }
 
-            // 更新內容（若傳入）
-            if (!string.IsNullOrWhiteSpace(request.ContentRaw))
+            // 更新內容：同樣以 is not null 判斷有無傳入。
+            // 允許傳入空字串＝「清空內容」（與「未傳入、不更動」明確區分——修正舊版無法清空的缺陷）。
+            if (request.ContentRaw is not null)
             {
                 note.ContentRaw = request.ContentRaw;
                 note.ContentHtml = Markdown.ToHtml(request.ContentRaw, NoteContentHelpers.MarkdownPipeline);

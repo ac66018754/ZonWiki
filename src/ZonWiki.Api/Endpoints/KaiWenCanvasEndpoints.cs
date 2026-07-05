@@ -2005,6 +2005,7 @@ public static class KaiWenCanvasEndpoints
         ZonWikiDbContext db,
         SaveModelsConfigRequest req,
         IDataProtectionProvider protectionProvider,
+        ILoggerFactory loggerFactory,
         CancellationToken ct)
     {
         if (currentUser.UserId == Guid.Empty)
@@ -2146,10 +2147,13 @@ public static class KaiWenCanvasEndpoints
         }
         catch (Exception ex)
         {
-            // 記錄例外以供除錯
+            // 安全：完整例外只記在 server 端（可能含 SQL 片段/約束名等內部細節），
+            // 對前端只回固定友善訊息＋500（內部失敗非使用者輸入錯誤，不應回 400）。
+            loggerFactory.CreateLogger("SaveModelsConfig")
+                .LogError(ex, "儲存 AI 模型設定失敗（UserId={UserId}）", currentUser.UserId);
             return CanvasJsonHelper.JsonError(
-                ApiResponse<List<AiModelConfigDto>>.Fail($"Failed to save models config: {ex.Message}"),
-                StatusCodes.Status400BadRequest);
+                ApiResponse<List<AiModelConfigDto>>.Fail("儲存 AI 模型設定失敗，請稍後再試。"),
+                StatusCodes.Status500InternalServerError);
         }
     }
 
