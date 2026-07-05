@@ -1,6 +1,5 @@
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
-using System.Text.Json;
 using ZonWiki.Api.Auth;
 using ZonWiki.Api.Services;
 using ZonWiki.Domain.Common;
@@ -959,14 +958,20 @@ public static class KaiWenCanvasEndpoints
     }
 
     /// <summary>
-    /// 更新節點的佈局屬性（位置、大小、顏色、Z-index 等）。
-    /// 請求體為動態 JSON，可包含任何欄位（X, Y, Width, Height, ZIndex, Color, Title 等）。
+    /// 更新節點的佈局屬性（位置、大小、顏色、Z-index、標題）。
+    /// 以強型別 <see cref="UpdateNodeLayoutRequest"/> 綁定請求體（各欄位可空＝部分更新，null 表不更新）。
+    /// 由 Minimal API 負責 JSON 反序列化：格式錯誤會自動回 400（不再手動 StreamReader/靜默 catch）。
     /// </summary>
+    /// <param name="nodeId">節點識別碼（路由參數）。</param>
+    /// <param name="request">佈局更新請求（可空欄位表部分更新；請求體可為 null=不更新任何欄位）。</param>
+    /// <param name="currentUser">目前使用者。</param>
+    /// <param name="db">資料庫內容。</param>
+    /// <param name="ct">取消權杖。</param>
     private static async Task<IResult> UpdateNodeLayout(
         string nodeId,
+        UpdateNodeLayoutRequest? request,
         ICurrentUser currentUser,
         ZonWikiDbContext db,
-        IHttpContextAccessor httpContextAccessor,
         CancellationToken ct)
     {
         if (currentUser.UserId == Guid.Empty)
@@ -990,49 +995,16 @@ public static class KaiWenCanvasEndpoints
             return CanvasJsonHelper.JsonError(ApiResponse<NodeDto>.Fail("Node not found", 404), StatusCodes.Status404NotFound);
         }
 
-        // 讀取請求體為 JSON
-        var httpContext = httpContextAccessor.HttpContext;
-        if (httpContext is null)
+        // 部分更新：只套用有帶值（非 null）的欄位；空請求體則不變更任何欄位。
+        if (request is not null)
         {
-            return Results.StatusCode(StatusCodes.Status500InternalServerError);
-        }
-
-        using var reader = new StreamReader(httpContext.Request.Body);
-        var bodyText = await reader.ReadToEndAsync(ct);
-
-        if (!string.IsNullOrWhiteSpace(bodyText))
-        {
-            try
-            {
-                using var doc = JsonDocument.Parse(bodyText);
-                var root = doc.RootElement;
-
-                // 動態更新欄位
-                if (root.TryGetProperty("X", out var xProp) && xProp.TryGetDouble(out var x))
-                    node.X = x;
-
-                if (root.TryGetProperty("Y", out var yProp) && yProp.TryGetDouble(out var y))
-                    node.Y = y;
-
-                if (root.TryGetProperty("Width", out var wProp) && wProp.TryGetDouble(out var w))
-                    node.Width = w;
-
-                if (root.TryGetProperty("Height", out var hProp) && hProp.TryGetDouble(out var h))
-                    node.Height = h;
-
-                if (root.TryGetProperty("ZIndex", out var zProp) && zProp.TryGetInt32(out var z))
-                    node.ZIndex = z;
-
-                if (root.TryGetProperty("Color", out var colorProp) && colorProp.ValueKind != System.Text.Json.JsonValueKind.Null)
-                    node.Color = colorProp.GetString();
-
-                if (root.TryGetProperty("Title", out var titleProp) && titleProp.ValueKind != System.Text.Json.JsonValueKind.Null)
-                    node.Title = titleProp.GetString() ?? string.Empty;
-            }
-            catch
-            {
-                // JSON 解析失敗，忽略
-            }
+            if (request.X.HasValue) node.X = request.X.Value;
+            if (request.Y.HasValue) node.Y = request.Y.Value;
+            if (request.Width.HasValue) node.Width = request.Width.Value;
+            if (request.Height.HasValue) node.Height = request.Height.Value;
+            if (request.ZIndex.HasValue) node.ZIndex = request.ZIndex.Value;
+            if (request.Color is not null) node.Color = request.Color;
+            if (request.Title is not null) node.Title = request.Title;
         }
 
         await db.SaveChangesAsync(ct);

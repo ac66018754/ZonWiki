@@ -87,6 +87,26 @@ public sealed record CreateNodeRequest(
 public sealed record UpdateNodeContentRequest(string Content);
 
 /// <summary>
+/// 更新節點佈局的請求（PATCH，部分更新）。
+/// 每個欄位皆為可空：null 代表「本次不更新該欄位」，只更新有帶值的欄位。
+/// </summary>
+/// <param name="X">X 座標；null 表不更新。</param>
+/// <param name="Y">Y 座標；null 表不更新。</param>
+/// <param name="Width">寬度；null 表不更新。</param>
+/// <param name="Height">高度；null 表不更新。</param>
+/// <param name="ZIndex">堆疊層級；null 表不更新。</param>
+/// <param name="Color">顏色；null 表不更新。</param>
+/// <param name="Title">標題；null 表不更新。</param>
+public sealed record UpdateNodeLayoutRequest(
+    double? X = null,
+    double? Y = null,
+    double? Width = null,
+    double? Height = null,
+    int? ZIndex = null,
+    string? Color = null,
+    string? Title = null);
+
+/// <summary>
 /// 設定節點 AI 模型的請求。
 /// </summary>
 /// <param name="Model">模型別名（如 opus / sonnet / haiku）。</param>
