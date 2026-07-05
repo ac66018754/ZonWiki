@@ -24,6 +24,7 @@ import { SettingsModal } from './kaiwen-components/SettingsModal'
 import { NotificationCenter } from './kaiwen-components/NotificationCenter'
 import { CanvasMenu } from './kaiwen-components/CanvasMenu'
 import { logger } from '@/lib/logger'
+import { useConfirm } from '@/components/ConfirmProvider'
 import type { CanvasDto, AiModelDto } from './kaiwen-types'
 import './kaiwen.css'
 
@@ -51,6 +52,7 @@ export function KaiWenCanvas({
   timezone = 'Asia/Taipei',
   isAuthenticated = true,
 }: KaiWenCanvasProps) {
+  const confirm = useConfirm()
   // 畫布清單狀態
   const [canvases, setCanvases] = useState<CanvasDto[]>([])
   const [canvasId, setCanvasId] = useState<string | null>(
@@ -298,7 +300,7 @@ export function KaiWenCanvas({
   }
 
   const deleteCurrentCanvas = async () => {
-    if (!canvasId || !window.confirm('確定要刪除這張畫布嗎？')) return
+    if (!canvasId || !(await confirm({ message: '確定要刪除這張畫布嗎？', danger: true }))) return
     const deletingId = canvasId
     try {
       await kaiwenApi.deleteCanvas(deletingId)

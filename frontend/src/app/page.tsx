@@ -27,6 +27,7 @@ import {
 } from "@/lib/formatters";
 import { DEFAULT_TIMEZONE } from "@/lib/constants";
 import { SkeletonCard, SkeletonListItem } from "@/components/Skeleton";
+import { useConfirm } from "@/components/ConfirmProvider";
 
 // 注意：formatDateTime、formatDate、getDayName 函數已移至 lib/formatters.ts
 // 這裡使用包裝版本，以確保使用用戶時區
@@ -92,6 +93,7 @@ export function HomePageClient({ user }: HomePageClientProps) {
   // 客戶端快取（SWR）：首頁聚合資料切走再回來直接吃快取、瞬間顯示。
   // data 無樂觀更新（新增/刪除捕捉後一律重抓），故直接使用 SWR 資料。
   const { data, isLoading: loading, mutate: mutateHome } = useHomePage();
+  const confirm = useConfirm();
   const [error, setError] = useState<string | null>(null);
 
   // 首頁「快速操作列」狀態：精煉/快速記錄是否展開、新增任務/筆記彈窗是否開啟。
@@ -213,7 +215,7 @@ export function HomePageClient({ user }: HomePageClientProps) {
   // 刪除最近記錄（軟刪，進垃圾桶）
   const handleDeleteCapture = useCallback(
     async (id: string) => {
-      if (!window.confirm("刪除這則快速記錄？（會進垃圾桶，可還原）")) return;
+      if (!(await confirm({ message: "刪除這則快速記錄？（會進垃圾桶，可還原）", danger: true }))) return;
       try {
         await deleteCapture(id);
         await reloadHome();

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { updateSubTask, deleteSubTask, type SubTask, type CurrentUser } from "@/lib/api";
 import { FALLBACK_TZ, formatDisplay } from "../taskUtils";
+import { useConfirm } from "@/components/ConfirmProvider";
 
 /** `zonwiki:open-subtask` 事件攜帶的資料。 */
 interface OpenSubtaskDetail {
@@ -19,6 +20,7 @@ interface OpenSubtaskDetail {
  * 任何變更後派發 `zonwiki:tasks-changed`，讓所在頁面重新載入任務以同步。
  */
 export function SubtaskViewerModal({ user }: { user: CurrentUser | null }) {
+  const confirm = useConfirm();
   const [sub, setSub] = useState<SubTask | null>(null);
   const [parentTitle, setParentTitle] = useState("");
   const [editing, setEditing] = useState(false);
@@ -70,7 +72,7 @@ export function SubtaskViewerModal({ user }: { user: CurrentUser | null }) {
   };
 
   const remove = async () => {
-    if (!window.confirm("刪除這個子任務？（會進垃圾桶）")) return;
+    if (!(await confirm({ message: "刪除這個子任務？（會進垃圾桶）", danger: true }))) return;
     setBusy(true);
     const ok = await deleteSubTask(sub.id);
     setBusy(false);

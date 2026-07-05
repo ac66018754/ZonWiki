@@ -40,6 +40,7 @@ import { NoteOverlay } from '@/components/NoteOverlay';
 import { TocPanel } from '@/components/TocPanel';
 import { buildToc } from '@/lib/toc';
 import { useUndoHotkeys, resetUndo } from '@/lib/undoManager';
+import { useConfirm } from '@/components/ConfirmProvider';
 
 /**
  * 筆記詳細編輯與查看頁面
@@ -64,6 +65,7 @@ export default function NotesDetailPage() {
     ? routeParams.slug.map((s) => decodeURIComponent(s)).join('/')
     : decodeURIComponent(String(routeParams.slug ?? ''));
   const router = useRouter();
+  const confirm = useConfirm();
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [note, setNote] = useState<NoteDetail | null>(null);
   const [comments, setComments] = useState<Comment[]>([]);
@@ -318,11 +320,13 @@ export default function NotesDetailPage() {
         saved = await doUpdate(note.version);
       } catch (e) {
         if (e instanceof ConflictError) {
-          const reload = window.confirm(
-            '此筆記已被其他來源修改。\n\n' +
+          const reload = await confirm({
+            title: '筆記已被修改',
+            message:
+              '此筆記已被其他來源修改。\n\n' +
               '按「確定」重新載入最新版本（放棄本次修改）；\n' +
-              '按「取消」以您目前的內容覆蓋。'
-          );
+              '按「取消」以您目前的內容覆蓋。',
+          });
           if (reload) {
             const latest = await getNote(slug);
             if (latest) {
@@ -387,7 +391,7 @@ export default function NotesDetailPage() {
 
   // 刪除筆記
   const handleDelete = async () => {
-    if (!note || !confirm('確定要刪除此筆記嗎？')) return;
+    if (!note || !(await confirm({ message: '確定要刪除此筆記嗎？', danger: true }))) return;
 
     try {
       await deleteNote(note.id);

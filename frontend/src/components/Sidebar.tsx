@@ -21,6 +21,7 @@ import {
 } from "@/lib/api";
 import { NOTE_DND_MIME } from "@/lib/constants";
 import { logger } from "@/lib/logger";
+import { useConfirm } from "@/components/ConfirmProvider";
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
@@ -52,6 +53,7 @@ const PROFILE_NAV: { href: string; label: string; icon: string; desc: string }[]
  */
 export function Sidebar({ user }: { user: CurrentUser | null }) {
   void user;
+  const confirm = useConfirm();
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
@@ -499,7 +501,7 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
   };
 
   const handleDeleteCategory = async (cat: NoteCategory) => {
-    if (!window.confirm(`確定刪除分類「${cat.name}」？`)) return;
+    if (!(await confirm({ message: `確定刪除分類「${cat.name}」？`, danger: true }))) return;
     setError(null);
     try {
       await deleteNoteCategory(cat.id);
@@ -542,7 +544,7 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
   };
 
   const handleDeleteTag = async (tag: NoteTag) => {
-    if (!window.confirm(`確定刪除標籤「${tag.name}」？`)) return;
+    if (!(await confirm({ message: `確定刪除標籤「${tag.name}」？`, danger: true }))) return;
     setError(null);
     try {
       await deleteNoteTag(tag.id);

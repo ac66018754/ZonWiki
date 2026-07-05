@@ -12,6 +12,7 @@ import {
 import { formatDateTime } from "@/lib/formatters";
 import { DEFAULT_TIMEZONE } from "@/lib/constants";
 import { logger } from "@/lib/logger";
+import { useConfirm } from "@/components/ConfirmProvider";
 
 /**
  * 統一垃圾桶頁面（/trash）。
@@ -35,6 +36,7 @@ const GROUP_ORDER: { name: string; icon: string }[] = [
 ];
 
 export default function TrashPage() {
+  const confirm = useConfirm();
   const [items, setItems] = useState<TrashItem[]>([]);
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [loading, setLoading] = useState(true);
@@ -106,7 +108,7 @@ export default function TrashPage() {
 
   const handlePurge = async (item: TrashItem) => {
     if (busyId) return;
-    if (!window.confirm(`永久刪除「${item.title}」？此操作無法復原。`)) return;
+    if (!(await confirm({ message: `永久刪除「${item.title}」？此操作無法復原。`, danger: true, confirmLabel: "永久刪除" }))) return;
     setBusyId(item.id);
     try {
       const ok = await purgeTrashItem(item.type, item.id);

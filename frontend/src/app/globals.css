@@ -1700,6 +1700,35 @@ button:disabled,
     opacity: 1;
   }
 }
+/* #52 觸控命中區：觸控裝置（無 hover 能力）上，把幾個「視覺刻意很小」的圖示鈕
+   命中區擴大到至少 44×44px（WCAG 2.5.5 Target Size 與行動裝置基本盤），
+   但視覺尺寸維持不變——用一層透明、置中、撐到 ≥44px 的 ::after 疊在按鈕上，
+   點到透明區等同點到按鈕本身（比直接放大 padding 更不影響既有版面）。
+   涵蓋：標題圖示鈕(.icon-btn 36)、樹狀展開箭頭(.nt-caret 18)、
+   分類/標籤列操作鈕(.nt-actions button 24)、排序鈕(.nt-sortbtn 20)。 */
+@media (hover: none) {
+  .icon-btn,
+  .nt-caret,
+  .nt-actions button,
+  .nt-sortbtn {
+    position: relative;
+  }
+  .icon-btn::after,
+  .nt-caret::after,
+  .nt-actions button::after,
+  .nt-sortbtn::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    /* 命中區至少 44px；仍不小於按鈕本身視覺大小 */
+    min-width: 44px;
+    min-height: 44px;
+    width: 100%;
+    height: 100%;
+  }
+}
 /* 排序模式的「↑ 上移 / ↓ 下移 / ⤴ 移到頂層」小按鈕：手機無法做樹狀拖放，改用按鈕重排。 */
 .nt-sortbtn {
   width: 20px;

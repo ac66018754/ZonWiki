@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { kaiwenApi } from '../kaiwen-api'
 import type { SystemPromptDto } from '../kaiwen-types'
+import { useConfirm } from '@/components/ConfirmProvider'
 
 interface SystemPromptSectionProps {
   /**
@@ -21,6 +22,7 @@ type Draft = { Title: string; Content: string; IsGlobal: boolean }
  * 不在此設定被哪些分類選用（那在「畫布分類區」設定）。
  */
 export function SystemPromptSection({ onChanged }: SystemPromptSectionProps) {
+  const confirm = useConfirm()
   const [list, setList] = useState<SystemPromptDto[]>([])
   const [drafts, setDrafts] = useState<Record<string, Draft>>({})
   const [newP, setNewP] = useState<Draft>({ Title: '', Content: '', IsGlobal: false })
@@ -139,8 +141,8 @@ export function SystemPromptSection({ onChanged }: SystemPromptSectionProps) {
                     </button>
                     <button
                       className="rounded border border-[var(--kw-danger)] px-2 py-0.5 text-xs text-[var(--kw-danger)] hover:bg-[var(--kw-danger-soft-bg)]"
-                      onClick={() => {
-                        if (window.confirm(`刪除 System Prompt「${p.SystemPrompt_Title}」？`)) run(() => kaiwenApi.deleteSystemPrompt(p.SystemPrompt_Id))
+                      onClick={async () => {
+                        if (await confirm({ message: `刪除 System Prompt「${p.SystemPrompt_Title}」？`, danger: true })) run(() => kaiwenApi.deleteSystemPrompt(p.SystemPrompt_Id))
                       }}
                     >
                       刪除

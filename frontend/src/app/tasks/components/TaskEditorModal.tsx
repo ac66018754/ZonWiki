@@ -44,6 +44,7 @@ import { DateTimePicker } from "@/components/DateTimePicker";
 import { EntityLinkPopover } from "@/components/EntityLinkPopover";
 import { LinkedEntitiesBar } from "@/components/LinkedEntitiesBar";
 import { logger } from "@/lib/logger";
+import { useConfirm } from "@/components/ConfirmProvider";
 import { showToast } from "@/lib/toast";
 import { ConflictError } from "@/lib/errors";
 import type { LinkEntityType } from "@/lib/api";
@@ -96,6 +97,7 @@ export function TaskEditorModal({
   onNavigateToSubtask: (subtaskId: string) => void;
 }) {
   const tz = user?.timeZone || FALLBACK_TZ;
+  const confirm = useConfirm();
 
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -337,11 +339,13 @@ export function TaskEditorModal({
     } catch (e) {
       if (e instanceof ConflictError) {
         // 併發衝突（#4/#34）：讓使用者選「重新載入最新版」或「以自己的版本覆蓋」。
-        const reload = window.confirm(
-          "此任務已被其他來源修改。\n\n" +
+        const reload = await confirm({
+          title: "任務已被修改",
+          message:
+            "此任務已被其他來源修改。\n\n" +
             "按「確定」重新載入最新版本（放棄本次修改）；\n" +
-            "按「取消」以您目前的內容覆蓋。"
-        );
+            "按「取消」以您目前的內容覆蓋。",
+        });
         if (reload) {
           const latest = await getTaskCard(taskId);
           if (latest) {
@@ -374,23 +378,27 @@ export function TaskEditorModal({
     }
   }, [taskId, title, doSave, populateFields]);
 
-  /** 有未存變更時詢問是否放棄；回傳 true＝可離開。 */
-  const confirmDiscardIfDirty = useCallback(() => {
+  /** 有未存變更時詢問是否放棄；回傳 Promise<true>＝可離開。 */
+  const confirmDiscardIfDirty = useCallback(async () => {
     if (!dirtyRef.current) return true;
-    return window.confirm(
-      "此任務有未儲存的變更，要放棄並離開嗎？\n（包含子任務的新增 / 解除 / 改名 / 排序，未按「儲存」都不會生效。）"
-    );
-  }, []);
+    return confirm({
+      title: "放棄未儲存的變更？",
+      message:
+        "此任務有未儲存的變更，要放棄並離開嗎？\n（包含子任務的新增 / 解除 / 改名 / 排序，未按「儲存」都不會生效。）",
+      danger: true,
+      confirmLabel: "放棄並離開",
+    });
+  }, [confirm]);
 
   /** 關閉（或返回父任務）：未儲存變更一律不寫入；若有變更先確認。 */
-  const requestClose = useCallback(() => {
-    if (confirmDiscardIfDirty()) onClose();
+  const requestClose = useCallback(async () => {
+    if (await confirmDiscardIfDirty()) onClose();
   }, [confirmDiscardIfDirty, onClose]);
 
   /** 進入子任務：未儲存變更一律不寫入；若有變更先確認，再推入導覽堆疊。 */
   const navigateToSubtask = useCallback(
-    (subtaskId: string) => {
-      if (confirmDiscardIfDirty()) onNavigateToSubtask(subtaskId);
+    async (subtaskId: string) => {
+      if (await confirmDiscardIfDirty()) onNavigateToSubtask(subtaskId);
     },
     [confirmDiscardIfDirty, onNavigateToSubtask]
   );

@@ -16,6 +16,7 @@ import { formatDateTime, formatShort } from '../lib/datetime'
 import { captureSelection } from '../lib/anchor'
 import { NodeContent } from './NodeContent'
 import { SelectionPopover } from './SelectionPopover'
+import { useConfirm } from '@/components/ConfirmProvider'
 
 /**
  * 節點資料結構
@@ -144,6 +145,7 @@ interface ActiveSelection {
  * 5. 選取框：滑鼠釋放時顯示的提問/標註彈窗（位置由 SelectionPopover 控制）
  */
 function QaNodeComponent({ data, selected }: NodeProps<QaRfNode>) {
+  const confirm = useConfirm()
   const { node } = data
 
   // 節點來源決定可用動作
@@ -306,11 +308,12 @@ function QaNodeComponent({ data, selected }: NodeProps<QaRfNode>) {
               <button
                 className="nodrag kw-muted text-xs hover:text-[var(--kw-danger)]"
                 title="刪除節點（可在垃圾桶復原）"
-                onClick={() => {
+                onClick={async () => {
                   if (
-                    window.confirm(
-                      '確定要刪除此節點嗎？\n刪除後會移到「垃圾桶」，可隨時復原。'
-                    )
+                    await confirm({
+                      message: '確定要刪除此節點嗎？\n刪除後會移到「垃圾桶」，可隨時復原。',
+                      danger: true,
+                    })
                   ) {
                     data.onDelete()
                   }

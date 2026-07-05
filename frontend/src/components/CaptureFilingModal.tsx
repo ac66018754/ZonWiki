@@ -11,6 +11,7 @@ import {
   deleteCapture,
 } from "@/lib/api";
 import { logger } from "@/lib/logger";
+import { useConfirm } from "@/components/ConfirmProvider";
 
 /**
  * 捕捉分流彈窗：
@@ -30,6 +31,7 @@ export function CaptureFilingModal({
   /** 內容變更（建立/刪除）後通知首頁刷新 */
   onChanged: () => void;
 }) {
+  const confirm = useConfirm();
   const [tab, setTab] = useState<"note" | "taskcard">("note");
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
@@ -101,7 +103,7 @@ export function CaptureFilingModal({
 
   const handleDeleteCapture = async () => {
     if (!captureId) return;
-    if (!window.confirm("刪除這則快速記錄？（會進垃圾桶，可還原）")) return;
+    if (!(await confirm({ message: "刪除這則快速記錄？（會進垃圾桶，可還原）", danger: true }))) return;
     setBusy(true);
     try {
       await deleteCapture(captureId);

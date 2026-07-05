@@ -12,6 +12,7 @@ import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { kaiwenApi } from '../kaiwen-api'
 import { logger } from '@/lib/logger'
 import { ConflictError } from '@/lib/errors'
+import { useConfirm } from '@/components/ConfirmProvider'
 import type { CanvasGraphDto, NodeDto, EdgeDto, InlineLinkDto, HighlightDto } from '../kaiwen-types'
 
 export interface CanvasState {
@@ -303,6 +304,7 @@ export function useCanvas(
   canvasId: string | null,
   onNotification?: (message: string) => void
 ): CanvasState {
+  const confirm = useConfirm()
   const [nodes, setNodes] = useState<NodeDto[]>([])
   const [edges, setEdges] = useState<EdgeDto[]>([])
   const [inlineLinks, setInlineLinks] = useState<InlineLinkDto[]>([])
@@ -586,11 +588,13 @@ export function useCanvas(
       } catch (err) {
         if (err instanceof ConflictError) {
           // 併發衝突：讓使用者選擇「重新載入最新版」或「以自己的版本覆蓋」。
-          const reload = window.confirm(
-            '此節點已被其他來源修改。\n\n' +
+          const reload = await confirm({
+            title: '節點已被修改',
+            message:
+              '此節點已被其他來源修改。\n\n' +
               '按「確定」重新載入最新版本（放棄本次修改）；\n' +
-              '按「取消」以您目前的內容覆蓋。'
-          )
+              '按「取消」以您目前的內容覆蓋。',
+          })
           if (reload) {
             await loadGraph()
           } else {
