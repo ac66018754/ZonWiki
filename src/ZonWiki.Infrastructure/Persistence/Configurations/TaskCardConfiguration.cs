@@ -25,6 +25,8 @@ public sealed class TaskCardConfiguration : IEntityTypeConfiguration<TaskCard>
 
         builder.HasIndex(t => new { t.UserId, t.Status });
         builder.HasIndex(t => new { t.UserId, t.DueDateTime });
+        // 行事曆／排程視圖依「使用者 + 預計時間」查詢，補上複合索引避免全表掃描（#37）。
+        builder.HasIndex(t => new { t.UserId, t.PlannedDateTime });
         builder.HasIndex(t => t.GroupId);
 
         // 卡片可不屬於任何群組；刪除群組不連動刪除卡片（卡片改為未分組）。
