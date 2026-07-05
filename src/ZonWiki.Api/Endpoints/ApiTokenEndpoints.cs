@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using ZonWiki.Api.RateLimiting;
 using ZonWiki.Domain.Common;
 using ZonWiki.Domain.Entities;
 using ZonWiki.Infrastructure.Auth;
@@ -160,7 +161,9 @@ public static class ApiTokenEndpoints
                 logger.LogError(ex, "Failed to create API token (userId={UserId})", currentUser.UserId);
                 return Results.StatusCode(500);
             }
-        });
+        })
+        // 權杖產生為敏感操作：以 UserId 分區限流，避免（例如被 CSRF/盜用 cookie）短時間大量產生 PAT。
+        .RequireRateLimiting(RateLimitingExtensions.PatPolicy);
 
         // 撤銷權杖（軟刪除）。冪等：找不到也回成功。
         app.MapDelete("/api/me/tokens/{id:guid}", async (

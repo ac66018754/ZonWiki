@@ -1,4 +1,5 @@
 using ZonWiki.Api.Auth;
+using ZonWiki.Api.RateLimiting;
 using ZonWiki.Domain.Common;
 using ZonWiki.Infrastructure.Notes;
 
@@ -60,6 +61,8 @@ public static class AiEndpoints
                 logger.LogError(ex, "Failed /api/ai/ask");
                 return Results.StatusCode(500);
             }
-        }).RequireAuthorization();
+        })
+        .RequireAuthorization()
+        .RequireRateLimiting(RateLimitingExtensions.AiPolicy); // 每使用者限流：防迴圈灌爆付費 LLM
     }
 }

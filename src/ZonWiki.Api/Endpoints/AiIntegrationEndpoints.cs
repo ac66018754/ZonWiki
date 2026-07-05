@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ZonWiki.Api.Auth;
 using ZonWiki.Api.Notes;
+using ZonWiki.Api.RateLimiting;
 using ZonWiki.Domain.Common;
 using ZonWiki.Domain.Entities;
 using ZonWiki.Infrastructure.Persistence;
@@ -75,7 +76,10 @@ public static class AiIntegrationEndpoints
     {
         app.MapPost("/api/ai/notes", CreateOrUpsertNoteHandler)
             .WithName("AiCreateNote")
-            .WithTags("AI Integration");
+            .WithTags("AI Integration")
+            // PAT 驗證的對外整合端點：以 UserId／權杖分區的 TokenBucket 限流，
+            // 防止被盜權杖或外部自動化迴圈灌爆寫入／付費資源。逾限回 429。
+            .RequireRateLimiting(RateLimitingExtensions.PatPolicy);
     }
 
     /// <summary>

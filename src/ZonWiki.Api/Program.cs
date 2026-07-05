@@ -3,6 +3,7 @@ using Serilog;
 using Serilog.Events;
 using ZonWiki.Api.Auth;
 using ZonWiki.Api.Endpoints;
+using ZonWiki.Api.RateLimiting;
 using ZonWiki.Api.Realtime;
 using ZonWiki.Api.Services;
 using ZonWiki.Domain.Common;
@@ -35,9 +36,16 @@ builder.Services.AddSerilog((services, loggerConfiguration) =>
 });
 
 const string CorsPolicyName = "ZonWikiCors";
-var allowedOrigins = builder.Configuration
+
+// CORS 允許來源：一律優先採設定（環境變數 Cors__AllowedOrigins 或 appsettings 的 Cors:AllowedOrigins）。
+// 缺省時的回退僅限「開發環境」退回 http://localhost:3000（本機前端）；
+// 正式環境必須由環境變數/設定「顯性」提供（見 docs：prod 要設 Cors__AllowedOrigins），
+// 缺省即回退為「不允許任何跨域來源」，避免正式環境靜默沿用 localhost 這種過度寬鬆/不合實情的設定。
+var configuredOrigins = builder.Configuration
     .GetSection("Cors:AllowedOrigins")
-    .Get<string[]>() ?? ["http://localhost:3000"];
+    .Get<string[]>();
+var allowedOrigins = configuredOrigins
+    ?? (builder.Environment.IsDevelopment() ? ["http://localhost:3000"] : []);
 
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentUser, CurrentUserService>();
@@ -53,6 +61,10 @@ builder.Services.AddCors(options =>
 
 builder.Services.AddZonWikiInfrastructure(builder.Configuration);
 builder.Services.AddZonWikiAuth(builder.Configuration, out var authConfigured);
+
+// 端點限流（審查 #30/#58）：對 AI 提問／精煉、PAT 驗證、密碼登入端點加限流。
+// 單機記憶體計數（不引入 Redis，見 docs/DECISIONS.md）；具名 policy 於各端點以 RequireRateLimiting 掛載。
+builder.Services.AddZonWikiRateLimiting();
 
 // AI 與 SSE 服務（P4 - 開問啦移植）
 builder.Services.AddSingleton<SseHub>();
@@ -153,6 +165,10 @@ app.UseCors(CorsPolicyName);
 // 驗證與授權：一律啟用（Cookie auth + 本機密碼 auth）
 app.UseAuthentication();
 app.UseAuthorization();
+
+// 限流中介軟體：置於驗證/授權之後，使限流分區函式能讀到已驗證的 user_id 宣告（per-user 分區）。
+// 具名 policy 於各端點以 RequireRateLimiting 掛載；逾限回 429＋Retry-After（見 RateLimitingExtensions）。
+app.UseRateLimiter();
 
 app.MapHealthChecks("/healthz").AllowAnonymous();
 app.MapGet("/", () => Results.Ok(new { name = "ZonWiki API", status = "alive", authConfigured })).AllowAnonymous();

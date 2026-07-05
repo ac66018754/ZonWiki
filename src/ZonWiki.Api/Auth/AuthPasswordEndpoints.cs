@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using ZonWiki.Api.RateLimiting;
 using ZonWiki.Domain.Common;
 using ZonWiki.Domain.Entities;
 using ZonWiki.Infrastructure.Persistence;
@@ -84,13 +85,17 @@ public static class AuthPasswordEndpoints
         var group = app.MapGroup("/api/auth")
             .WithTags("Authentication");
 
+        // 註冊／登入皆為匿名端點：以「用戶端 IP」分區的較嚴 FixedWindow 限流，
+        // 防止暴力破解（登入）與帳號灌爆（註冊）。逾限回 429。
         group.MapPost("/register", RegisterAsync)
             .WithName("Register")
             .WithOpenApi()
             .Produces(StatusCodes.Status200OK)
             .Produces(StatusCodes.Status400BadRequest)
             .Produces(StatusCodes.Status409Conflict)
-            .AllowAnonymous();
+            .Produces(StatusCodes.Status429TooManyRequests)
+            .AllowAnonymous()
+            .RequireRateLimiting(RateLimitingExtensions.LoginPolicy);
 
         group.MapPost("/login", LoginAsync)
             .WithName("Login")
@@ -98,7 +103,9 @@ public static class AuthPasswordEndpoints
             .Produces(StatusCodes.Status200OK)
             .Produces(StatusCodes.Status400BadRequest)
             .Produces(StatusCodes.Status401Unauthorized)
-            .AllowAnonymous();
+            .Produces(StatusCodes.Status429TooManyRequests)
+            .AllowAnonymous()
+            .RequireRateLimiting(RateLimitingExtensions.LoginPolicy);
 
         group.MapPost("/change-password", ChangePasswordAsync)
             .WithName("ChangePassword")
