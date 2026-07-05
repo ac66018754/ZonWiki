@@ -708,28 +708,43 @@ public static class KaiWenCanvasEndpoints
         }
 
         // 逐一查詢（同一個 DbContext 不可並行多查詢，否則會丟「A second operation was started…」例外）
-        var nodes = await db.Node
+        //
+        // 樂觀鎖版本（#4/#34）：xmin 是 PostgreSQL 的 xid 系統欄。若在投影裡直接寫
+        // (long)EF.Property<uint>(n, "xmin")，EF 會把 (long) 轉型下推成 SQL 的
+        // CAST(xmin AS bigint)——但 PostgreSQL 不允許 xid→bigint 轉型，執行期會丟
+        // 「42846: cannot cast type xid to bigint」，導致整張畫布載入 500。
+        // 因此改以「原生 xid→uint 讀出（不加任何轉型、不下推 CAST）」，材質化後再於記憶體
+        // 把 uint 版本安全放大為 long 回填 DTO。
+        var nodeRows = await db.Node
             .Where(n => n.CanvasId == canvasGuid)
-            .Select(n => new NodeDto(
-                n.Id.ToString(),
-                n.CanvasId.ToString(),
-                n.Title,
-                n.Content,
-                n.ParentId.HasValue ? n.ParentId.Value.ToString() : null,
-                n.X,
-                n.Y,
-                n.Width,
-                n.Height,
-                n.ZIndex,
-                n.Color,
-                n.Model,
-                n.Origin,
-                n.AiSessionId.HasValue ? n.AiSessionId.Value.ToString() : null,
-                n.CreatedDateTime.ToString("O"),
-                n.UpdatedDateTime.ToString("O"),
-                // 樂觀鎖版本（#4/#34）：投影 xmin 系統欄，供前端編輯內容保存時帶回為 baseVersion。
-                (long)EF.Property<uint>(n, "xmin")))
+            .Select(n => new
+            {
+                Dto = new NodeDto(
+                    n.Id.ToString(),
+                    n.CanvasId.ToString(),
+                    n.Title,
+                    n.Content,
+                    n.ParentId.HasValue ? n.ParentId.Value.ToString() : null,
+                    n.X,
+                    n.Y,
+                    n.Width,
+                    n.Height,
+                    n.ZIndex,
+                    n.Color,
+                    n.Model,
+                    n.Origin,
+                    n.AiSessionId.HasValue ? n.AiSessionId.Value.ToString() : null,
+                    n.CreatedDateTime.ToString("O"),
+                    n.UpdatedDateTime.ToString("O"),
+                    // 版本先以 0 佔位，材質化後再回填（見上方註解）。
+                    0L),
+                Version = EF.Property<uint>(n, "xmin"),
+            })
             .ToListAsync(ct);
+
+        var nodes = nodeRows
+            .Select(row => row.Dto with { Node_Version = (long)row.Version })
+            .ToList();
 
         var edges = await db.Edge
             .Where(e => e.CanvasId == canvasGuid)

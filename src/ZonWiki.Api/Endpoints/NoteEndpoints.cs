@@ -92,36 +92,47 @@ public static class NoteEndpoints
             string slug,
             CancellationToken ct) =>
         {
-            var note = await db.Note
+            // 樂觀鎖版本（#4/#34）：xmin 是 PostgreSQL 的 xid 系統欄。若在投影裡直接寫
+            // (long)EF.Property<uint>(n, "xmin")，EF 會把 (long) 轉型下推成 SQL 的
+            // CAST(xmin AS bigint)——但 PostgreSQL 不允許 xid→bigint 轉型，執行期會丟
+            // 「42846: cannot cast type xid to bigint」，導致筆記載入 500。
+            // 因此改以「原生 xid→uint 讀出（不加任何轉型）」，材質化後再於記憶體放大為 long 回填。
+            var noteRow = await db.Note
                 .Where(n => n.ValidFlag && n.Slug == slug)
-                .Select(n => new NoteDetailDto(
-                    n.Id,
-                    n.Title,
-                    n.Slug,
-                    n.ContentHtml,
-                    n.ContentRaw,
-                    n.Kind,
-                    n.IsDraft,
-                    n.CreatedDateTime,
-                    n.UpdatedDateTime,
-                    n.Comments.Count(c => c.ValidFlag),
-                    // 編輯時用以預選：此筆記目前的分類與標籤（分類/標籤被軟刪除時排除）。
-                    n.NoteCategories
-                        .Where(nc => nc.ValidFlag && nc.Category != null && nc.Category.ValidFlag)
-                        .Select(nc => new TagRefDto(nc.Category!.Id, nc.Category.Name))
-                        .ToList(),
-                    n.NoteTags
-                        .Where(nt => nt.ValidFlag && nt.Tag != null && nt.Tag.ValidFlag)
-                        .Select(nt => new TagRefDto(nt.Tag!.Id, nt.Tag.Name))
-                        .ToList(),
-                    // 樂觀鎖版本（#4/#34）：投影 xmin 系統欄，供前端保存時帶回為 baseVersion。
-                    (long)EF.Property<uint>(n, "xmin")))
+                .Select(n => new
+                {
+                    Dto = new NoteDetailDto(
+                        n.Id,
+                        n.Title,
+                        n.Slug,
+                        n.ContentHtml,
+                        n.ContentRaw,
+                        n.Kind,
+                        n.IsDraft,
+                        n.CreatedDateTime,
+                        n.UpdatedDateTime,
+                        n.Comments.Count(c => c.ValidFlag),
+                        // 編輯時用以預選：此筆記目前的分類與標籤（分類/標籤被軟刪除時排除）。
+                        n.NoteCategories
+                            .Where(nc => nc.ValidFlag && nc.Category != null && nc.Category.ValidFlag)
+                            .Select(nc => new TagRefDto(nc.Category!.Id, nc.Category.Name))
+                            .ToList(),
+                        n.NoteTags
+                            .Where(nt => nt.ValidFlag && nt.Tag != null && nt.Tag.ValidFlag)
+                            .Select(nt => new TagRefDto(nt.Tag!.Id, nt.Tag.Name))
+                            .ToList(),
+                        // 版本先以 0 佔位，材質化後再回填（見上方註解）。
+                        0L),
+                    Version = EF.Property<uint>(n, "xmin"),
+                })
                 .FirstOrDefaultAsync(ct);
 
-            if (note is null)
+            if (noteRow is null)
             {
                 return Results.NotFound(ApiResponse<NoteDetailDto>.Fail("Note not found", 404));
             }
+
+            var note = noteRow.Dto with { Version = (long)noteRow.Version };
 
             return Results.Ok(ApiResponse<NoteDetailDto>.Ok(note));
         });
