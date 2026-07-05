@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { enhanceCodeBlocks } from '@/lib/codeBlocks';
@@ -25,7 +26,6 @@ import {
   getCurrentUser,
 } from '@/lib/api';
 import { ConflictError } from '@/lib/errors';
-import { TaskEditorModal } from '@/app/tasks/components/TaskEditorModal';
 import { formatFullDateTime, formatDateTime as formatDateTimeUtil } from '@/lib/formatters';
 import { DEFAULT_TIMEZONE } from '@/lib/constants';
 import { SkeletonCard } from '@/components/Skeleton';
@@ -33,15 +33,39 @@ import { NoteAiActions } from '@/components/NoteAiActions';
 import { NoteEditHistory } from '@/components/NoteEditHistory';
 import { NoteBacklinks } from '@/components/NoteBacklinks';
 import { SearchableMultiSelect } from '@/components/SearchableMultiSelect';
-import { MarkdownEditor } from '@/components/MarkdownEditor';
 import { LinkedEntitiesBar } from '@/components/LinkedEntitiesBar';
-import { NoteMarksLayer } from '@/components/NoteMarksLayer';
-import { NoteOverlay } from '@/components/NoteOverlay';
 import { TocPanel } from '@/components/TocPanel';
 import { buildToc } from '@/lib/toc';
 import { useUndoHotkeys, resetUndo } from '@/lib/undoManager';
 import { useConfirm } from '@/components/ConfirmProvider';
 import { registerNavigationGuard } from '@/lib/navigationGuard';
+
+// ── 重量級用戶端元件延遲載入（修 #10：dev 模式 Turbopack render worker 崩潰 500）────────────
+// 這四個元件（Markdown 編輯器、文字標註層、浮動白板、任務編輯彈窗）合計約 2,900 行，全為
+// 互動式，且僅在特定條件下才渲染（編輯中／預覽分頁／開啟任務彈窗），對 SSR 首屏 HTML 無貢獻。
+// 原本以靜態 import 全數塞進本路由的伺服器端模組評估圖；在長時運行、HMR 記憶體累積的 dev
+// server 上，單一 render worker 編譯／SSR 此超重路由時峰值記憶體過高而崩潰，Next 便回報
+//「Jest worker encountered 2 child process exceptions, exceeding retry limit」→ 該頁 500。
+// 改用 next/dynamic 且 ssr:false 後：
+//   1) 這些模組不再進入伺服器端 render worker 的評估圖，直接消除該 worker 的崩潰來源；
+//   2) NoteOverlay／NoteMarksLayer 使用 createPortal（需要 document），本就不適合 SSR。
+// 皆為具名匯出，故以 .then 取出對應成員；ssr:false 在本檔（'use client'）中為合法用法。
+const MarkdownEditor = dynamic(
+  () => import('@/components/MarkdownEditor').then((mod) => mod.MarkdownEditor),
+  { ssr: false },
+);
+const NoteMarksLayer = dynamic(
+  () => import('@/components/NoteMarksLayer').then((mod) => mod.NoteMarksLayer),
+  { ssr: false },
+);
+const NoteOverlay = dynamic(
+  () => import('@/components/NoteOverlay').then((mod) => mod.NoteOverlay),
+  { ssr: false },
+);
+const TaskEditorModal = dynamic(
+  () => import('@/app/tasks/components/TaskEditorModal').then((mod) => mod.TaskEditorModal),
+  { ssr: false },
+);
 
 /**
  * 筆記詳細編輯與查看頁面
