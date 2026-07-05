@@ -6,11 +6,11 @@
  * 特色：
  * - 沿用 Modal 的 .modal / .modal-overlay 樣式（外觀與站內其他對話框一致）
  * - 破壞性操作用 danger（紅色）主要按鈕
- * - Enter 確認、Esc 取消
+ * - Esc 取消；Enter 交由瀏覽器原生行為觸發「目前聚焦的按鈕」（預設聚焦在取消鈕）
  * - 焦點陷阱（useFocusTrap）：進入聚焦首個可聚焦元素、Tab 循環、關閉後還原焦點
  */
 
-import React, { ReactNode, useRef } from "react";
+import { ReactNode, useRef } from "react";
 import { Button } from "./Button";
 import { useFocusTrap } from "@/hooks/useFocusTrap";
 
@@ -66,17 +66,13 @@ export function ConfirmDialog({
 
   if (!isOpen) return null;
 
-  /**
-   * 對話框層級的鍵盤處理：
-   * - Enter：確認（避免焦點在取消鈕時仍能快速確認）
-   * - Esc 已由 useFocusTrap 處理，這裡不重複攔截
-   */
-  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      onConfirm();
-    }
-  };
+  // 註：刻意不在容器層攔截 Enter。
+  // 先前版本在此 div 的 onKeyDown 上一律 event.preventDefault() + onConfirm()，
+  // 會抑制瀏覽器「Enter 觸發目前聚焦按鈕」的原生行為，導致不論焦點在取消或確認鈕，
+  // Enter 都固定觸發「確認」——對危險操作（清空垃圾桶、永久刪除、放棄未存變更等）
+  // 等同反轉使用者意圖並造成資料遺失風險。
+  // 移除攔截後：焦點陷阱預設聚焦 DOM 順序上第一個按鈕（取消鈕），按 Enter 會安全地
+  // 觸發取消；使用者可 Tab 到確認鈕後再按 Enter 確認。Esc 仍由 useFocusTrap 處理。
 
   return (
     // 暗背景：點擊（僅背景本身）視為取消。對話框內容置於其內，靠 overlay 的 flex 置中。
@@ -93,7 +89,6 @@ export function ConfirmDialog({
         aria-modal="true"
         aria-labelledby="confirm-dialog-title"
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={handleKeyDown}
         tabIndex={-1}
       >
         <div className="modal__header">

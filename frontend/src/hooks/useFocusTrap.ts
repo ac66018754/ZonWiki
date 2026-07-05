@@ -83,6 +83,13 @@ export function useFocusTrap(
       if (event.key === "Escape") {
         if (onEscapeRef.current) {
           event.preventDefault();
+          // stopPropagation：Esc 只能由本焦點陷阱處理，不可再冒泡到外層 Modal
+          // 既有的 document/window Escape 監聽。否則「在確認對話框按 Esc 取消」會
+          // 連帶關閉底下整個 Modal（TrashModal / CaptureFilingModal），或在
+          // TaskEditorModal 造成「放棄變更？」對話框閃退又重開的迴圈。
+          // 本監聽掛在 capture 階段（addEventListener 第三參數 true），會早於
+          // 各 Modal 的 bubble 階段監聽執行，故此處攔截即可阻止其收到事件。
+          event.stopPropagation();
           onEscapeRef.current();
         }
         return;
