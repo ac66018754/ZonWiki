@@ -92,7 +92,10 @@ public static class TaskEndpoints
                 DueDateTime = request.DueDateTime,
                 GroupId = request.GroupId,
                 SortOrder = request.SortOrder,
-                RecurrenceRule = request.RecurrenceRule,
+                // 空白重複規則正規化為 null（＝一次性任務，不被具現化背景服務當母規則）。
+                RecurrenceRule = string.IsNullOrWhiteSpace(request.RecurrenceRule)
+                    ? null
+                    : request.RecurrenceRule,
                 ParentId = request.ParentId,
                 // 建立時即為 done → 記下完成時間。
                 CompletedDateTime = request.Status == "done" ? DateTime.UtcNow : null,
@@ -209,8 +212,11 @@ public static class TaskEndpoints
                 card.GroupId = null;
             if (request.SortOrder.HasValue)
                 card.SortOrder = request.SortOrder.Value;
+            // 重複規則：傳 null＝不更新；傳空白＝停止重複（清為 null，不再被具現化）；傳規則＝設定母規則。
             if (request.RecurrenceRule != null)
-                card.RecurrenceRule = request.RecurrenceRule;
+                card.RecurrenceRule = string.IsNullOrWhiteSpace(request.RecurrenceRule)
+                    ? null
+                    : request.RecurrenceRule;
             // 新增欄位更新邏輯
             if (request.IsLongTerm.HasValue)
                 card.IsLongTerm = request.IsLongTerm.Value;

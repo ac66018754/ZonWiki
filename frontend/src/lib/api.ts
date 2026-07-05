@@ -1284,6 +1284,8 @@ export async function createTaskCard(payload: {
   groupId?: string;
   plannedDateTime?: string | null;
   dueDateTime?: string | null;
+  /** 重複規則（iCal RRULE；不重複時省略或傳空字串） */
+  recurrenceRule?: string | null;
   /** 父任務 ID（建立為某任務的子任務時帶入） */
   parentId?: string | null;
   /** 是否為長期任務 */
@@ -1315,6 +1317,8 @@ export interface UpdateTaskCardPayload {
   plannedDateTime?: string;
   dueDateTime?: string;
   sortOrder?: number;
+  /** 重複規則（iCal RRULE）；傳空字串＝停止重複（清為 null）；不傳＝不更新 */
+  recurrenceRule?: string;
   /** 父任務 ID（設定父子關係）；改為頂層任務請用 clearParentId */
   parentId?: string | null;
   /** 是否為長期任務（null/未傳＝不更新） */

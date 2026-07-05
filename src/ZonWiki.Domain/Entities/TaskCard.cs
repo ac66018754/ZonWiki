@@ -55,8 +55,24 @@ public class TaskCard : AuditableEntity, IUserOwned
 
     /// <summary>
     /// 重複規則（iCal RRULE 字串，nullable）。一次性任務為 null。
+    /// 設有此規則者為「母規則（範本）」，其發生日由背景服務具現化成一張張可打勾的實體子任務卡。
     /// </summary>
     public string? RecurrenceRule { get; set; }
+
+    /// <summary>
+    /// 重複來源（母規則卡）識別碼（nullable）。
+    /// 非 null＝本卡片是由某母規則卡「具現化」出來的一次發生（可獨立打勾完成）；
+    /// null＝一般任務或母規則卡本身。用來記錄「母規則→已產生的實體」以避免重複產生。
+    /// 刻意設計為純量欄位（不建關聯導覽）：母規則軟刪除後其既有發生仍為獨立、可保留的實體。
+    /// </summary>
+    public Guid? RecurrenceSourceId { get; set; }
+
+    /// <summary>
+    /// 本卡片對應的「發生時間」（UTC，nullable）。
+    /// 僅具現化出來的發生卡片有值＝該次發生的排定時間；一般任務與母規則卡為 null。
+    /// 搭配 <see cref="RecurrenceSourceId"/> 作為「同一母規則、同一發生時間至多一張」的去重依據。
+    /// </summary>
+    public DateTime? RecurrenceOccurrenceDateTime { get; set; }
 
     /// <summary>
     /// 父任務識別碼（nullable，自我參照）。null＝頂層任務；非 null＝某任務的「子任務」。

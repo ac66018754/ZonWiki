@@ -74,6 +74,9 @@ builder.Services.AddScoped<AskOrchestrator>();
 builder.Services.AddScoped<AskQueueService>();
 builder.Services.AddScoped<RefineService>(); // 精煉成筆記協調器
 
+// 重複規則「到期具現化」背景服務（#17）：每日把母規則的到期發生具現化成可打勾的實體任務卡。
+builder.Services.AddHostedService<RecurringTaskMaterializationService>();
+
 var connectionString = builder.Configuration.GetConnectionString(
     DependencyInjection.PostgresConnectionName)
     ?? throw new InvalidOperationException("Postgres connection string missing.");

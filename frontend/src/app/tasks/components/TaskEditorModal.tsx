@@ -26,6 +26,17 @@ import {
   STATUS_META,
   PRIORITY_META,
 } from "../taskUtils";
+import {
+  type RecurrenceState,
+  type RecurrenceMode,
+  type WeekdayCode,
+  emptyRecurrence,
+  parseRrule,
+  buildRrule,
+  clampMonthDay,
+  WEEKDAY_ORDER,
+  WEEKDAY_LABELS,
+} from "../recurrence";
 import { SubtaskChecklist, isTempSubtaskId } from "./SubtaskChecklist";
 import { SearchableMultiSelect } from "@/components/SearchableMultiSelect";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
@@ -103,6 +114,8 @@ export function TaskEditorModal({
   const [groupId, setGroupId] = useState<string>("");
   const [plannedIso, setPlannedIso] = useState<string | null>(null);
   const [dueIso, setDueIso] = useState<string | null>(null);
+  // 重複規則（#17）：結構化狀態，儲存時組成 RRULE 存入 recurrenceRule。
+  const [recurrence, setRecurrence] = useState<RecurrenceState>(emptyRecurrence());
   // 長期任務（#1）：標記 + 粗粒度目標期（"" / "month" / "quarter" / "year" 與其代表日 UTC）。
   const [isLongTerm, setIsLongTerm] = useState(false);
   const [targetGranularity, setTargetGranularity] = useState<string>("");
@@ -149,6 +162,7 @@ export function TaskEditorModal({
     setGroupId(c.groupId || "");
     setPlannedIso(c.plannedDateTime ?? null);
     setDueIso(c.dueDateTime ?? null);
+    setRecurrence(parseRrule(c.recurrenceRule));
     setIsLongTerm(!!c.isLongTerm);
     setTargetGranularity(c.targetGranularity || "");
     setTargetIso(c.targetDateTime ?? null);
@@ -218,6 +232,8 @@ export function TaskEditorModal({
     else payload.clearGroupId = true;
     if (parentId) payload.parentId = parentId;
     else payload.clearParentId = true;
+    // 重複規則（#17）：組成 RRULE；不重複時送空字串＝清為 null（停止重複）。
+    payload.recurrenceRule = buildRrule(recurrence) ?? "";
     // 長期任務 + 釘選到首頁（皆送目前值；後端 null＝不更新，故一律明送布林）。
     payload.isLongTerm = isLongTerm;
     payload.isPinnedToHome = isPinnedToHome;
@@ -233,7 +249,7 @@ export function TaskEditorModal({
     return payload;
   }, [
     title, content, status, priority, plannedIso, dueIso, groupId, parentId,
-    isLongTerm, isPinnedToHome, targetGranularity, targetIso,
+    isLongTerm, isPinnedToHome, targetGranularity, targetIso, recurrence,
   ]);
 
   /**
@@ -683,6 +699,114 @@ export function TaskEditorModal({
                     tz={tz}
                     ariaLabel="截止日期"
                   />
+                </div>
+
+                {/* 重複規則（#17）：不重複／每天／每週選星期／每月選日／自訂 RRULE。
+                    儲存後由後端背景服務把到期發生具現化成一張張可打勾的實體任務卡。 */}
+                <div className="tk-field">
+                  <label className="tk-field-label">重複</label>
+                  <div className="tk-seg" style={{ flexWrap: "wrap" }}>
+                    {([
+                      ["none", "不重複"],
+                      ["daily", "每天"],
+                      ["weekly", "每週"],
+                      ["monthly", "每月"],
+                      ["custom", "自訂"],
+                    ] as [RecurrenceMode, string][]).map(([mode, label]) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        className={`tk-seg-btn ${recurrence.mode === mode ? "tk-seg-btn--on" : ""}`}
+                        onClick={() => {
+                          setRecurrence((prev) => ({ ...prev, mode }));
+                          markDirty();
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* 每週：選星期（週一起） */}
+                  {recurrence.mode === "weekly" && (
+                    <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      {WEEKDAY_ORDER.map((code: WeekdayCode) => {
+                        const on = recurrence.weekdays.includes(code);
+                        return (
+                          <button
+                            key={code}
+                            type="button"
+                            className={`tk-seg-btn ${on ? "tk-seg-btn--on" : ""}`}
+                            style={{ minWidth: 40 }}
+                            aria-pressed={on}
+                            onClick={() => {
+                              setRecurrence((prev) => ({
+                                ...prev,
+                                weekdays: on
+                                  ? prev.weekdays.filter((w) => w !== code)
+                                  : [...prev.weekdays, code],
+                              }));
+                              markDirty();
+                            }}
+                          >
+                            {WEEKDAY_LABELS[code]}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {recurrence.mode === "weekly" && recurrence.weekdays.length === 0 && (
+                    <div style={{ marginTop: 4, fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>
+                      未選任何星期＝視同不重複
+                    </div>
+                  )}
+
+                  {/* 每月：選日（1-31） */}
+                  {recurrence.mode === "monthly" && (
+                    <div style={{ marginTop: 8, display: "flex", gap: 6, alignItems: "center" }}>
+                      <span style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>每月</span>
+                      <select
+                        style={ctlStyle}
+                        value={recurrence.monthDay}
+                        onChange={(e) => {
+                          setRecurrence((prev) => ({ ...prev, monthDay: clampMonthDay(Number(e.target.value)) }));
+                          markDirty();
+                        }}
+                        aria-label="每月第幾日"
+                      >
+                        {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
+                          <option key={d} value={d}>{d}</option>
+                        ))}
+                      </select>
+                      <span style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>日</span>
+                    </div>
+                  )}
+
+                  {/* 自訂 RRULE */}
+                  {recurrence.mode === "custom" && (
+                    <div style={{ marginTop: 8 }}>
+                      <input
+                        type="text"
+                        style={{ ...ctlStyle, width: "100%", fontFamily: "var(--font-mono, monospace)" }}
+                        value={recurrence.custom}
+                        onChange={(e) => {
+                          setRecurrence((prev) => ({ ...prev, custom: e.target.value }));
+                          markDirty();
+                        }}
+                        placeholder="FREQ=WEEKLY;INTERVAL=2;BYDAY=MO"
+                        aria-label="自訂 RRULE"
+                      />
+                      <div style={{ marginTop: 4, fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>
+                        iCal RRULE 格式；支援 FREQ／INTERVAL／BYDAY／BYMONTHDAY／COUNT／UNTIL
+                      </div>
+                    </div>
+                  )}
+
+                  {recurrence.mode !== "none" && (
+                    <div style={{ marginTop: 6, fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>
+                      需設定「開始日期」作為重複的起算時間；到期發生會自動產生為可打勾的任務。
+                    </div>
+                  )}
                 </div>
 
                 {/* 父任務 */}

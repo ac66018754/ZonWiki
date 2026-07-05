@@ -46,6 +46,10 @@ public sealed class TaskCardConfiguration : IEntityTypeConfiguration<TaskCard>
             .WithMany(t => t.Children)
             .HasForeignKey(t => t.ParentId)
             .OnDelete(DeleteBehavior.Restrict);
+
+        // 重複規則具現化（#17）：以「母規則 + 發生時間」查已產生的發生卡（含軟刪除，作為去重依據）。
+        // RecurrenceSourceId 刻意為純量欄位（無關聯導覽），故不設定 FK，只建查詢索引。
+        builder.HasIndex(t => new { t.RecurrenceSourceId, t.RecurrenceOccurrenceDateTime });
     }
 }
 
