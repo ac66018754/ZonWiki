@@ -41,6 +41,7 @@ import { TocPanel } from '@/components/TocPanel';
 import { buildToc } from '@/lib/toc';
 import { useUndoHotkeys, resetUndo } from '@/lib/undoManager';
 import { useConfirm } from '@/components/ConfirmProvider';
+import { registerNavigationGuard } from '@/lib/navigationGuard';
 
 /**
  * 筆記詳細編輯與查看頁面
@@ -141,8 +142,25 @@ export default function NotesDetailPage() {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [hasUnsavedChanges]);
 
-  // 軟離開防護（切換筆記／站內路由離開）：App Router 無官方路由攔截 API，
-  // 故在 capture 階段攔站內 <a> 點擊，先跳 ConfirmDialog 詢問，放棄才手動導頁。
+  // 軟離開防護 A｜全站導頁守門：把「未儲存變更確認」登記進共用的 navigationGuard，
+  // 供所有「以 router.push 導頁但非 <a>」或「自管導頁的 <a>」入口（全域搜尋、指令面板、
+  // Header 的『筆記』導覽等）在導頁前徵詢——這是涵蓋全站切換筆記/任務的正確作法
+  // （對照 W7 只攔 <a> 的漏洞：div onClick / Enter 鍵路徑完全攔不到）。
+  // confirmDiscardIfDirty 於無未儲存變更時直接放行，故非編輯中登記亦無副作用。
+  useEffect(() => {
+    return registerNavigationGuard(confirmDiscardIfDirty);
+  }, [confirmDiscardIfDirty]);
+
+  // 軟離開防護 B｜站內 <a> 連結（如左側欄分類/筆記、內文連結）：App Router 無官方
+  // 路由攔截 API，且這類「純 Next <Link>」不會主動呼叫上面的守門，故仍在 capture 階段
+  // 攔其點擊，先確認再手動導頁。
+  //   注意（修 W7 對抗式復審 finding #1）：此處「只 preventDefault、不 stopPropagation」——
+  //   capture 階段對 document 呼叫 stopPropagation 會讓事件根本傳不到 target，
+  //   連累別的元件掛在 <a> 上的 onClick（如 Header『筆記』的 handleNotesNav 依 localStorage
+  //   導回上次瀏覽的那篇）完全不執行、行為悄悄改變。改為只 preventDefault：Next <Link> 會
+  //   因 defaultPrevented 而不自行導頁，其餘 onClick 仍能各自執行。
+  //   另對「自管導頁」的 <a>（標記 data-skip-leave-guard，如 Header『筆記』）一律略過，
+  //   交由該元件自行透過守門確認，避免雙重導頁/導到錯的目的地。
   useEffect(() => {
     if (!hasUnsavedChanges) return;
     const handleAnchorClick = (event: MouseEvent) => {
@@ -159,6 +177,8 @@ export default function NotesDetailPage() {
       }
       const anchor = (event.target as HTMLElement | null)?.closest?.('a');
       if (!anchor) return;
+      // 自管導頁的連結（自己會透過 navigationGuard 確認）→ 不由本攔截器插手。
+      if (anchor.closest('[data-skip-leave-guard]')) return;
       const href = anchor.getAttribute('href');
       if (!href || href.startsWith('#')) return; // 純錨點捲動不算離開
       if (anchor.target && anchor.target !== '_self') return; // 開新分頁
@@ -175,9 +195,9 @@ export default function NotesDetailPage() {
       const current = window.location.pathname + window.location.search;
       if (destination.pathname + destination.search === current) return;
 
-      // 攔下預設導頁與後續傳播（避免 Next.js Link 的點擊處理同時觸發）。
+      // 只攔下預設導頁（Next <Link> 會因 defaultPrevented 而不自行導頁）；
+      // 不呼叫 stopPropagation，讓同一 <a> 上其他 onClick 仍能執行自己的邏輯。
       event.preventDefault();
-      event.stopPropagation();
       void confirmDiscardIfDirty().then((canLeave) => {
         if (canLeave) {
           setIsEditing(false); // 先解除編輯，卸除防護後再導頁

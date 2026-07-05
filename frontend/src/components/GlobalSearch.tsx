@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { searchAll, SearchResult } from "@/lib/api";
 import { logger } from "@/lib/logger";
+import { confirmNavigation } from "@/lib/navigationGuard";
 
 /**
  * 搜尋結果項目（在後端內容結果之外，再加上前端的「功能/頁面」項目）。
@@ -121,9 +122,14 @@ export function GlobalSearch() {
   }, []);
 
   /**
-   * 導航到選中結果
+   * 導航到選中結果。
+   *
+   * 導頁前先過全站導頁守門 confirmNavigation()（如筆記編輯中有未儲存變更會先確認）——
+   * 修 W7 對抗式復審 finding #2：搜尋結果列是 <div onClick>（非 <a>）、Enter 更無 click，
+   * 舊的「只攔 <a>」防護攔不到，會靜默丟失未儲存修改。被取消就留在原地、保留下拉。
    */
-  const navigateToResult = (result: SearchItem) => {
+  const navigateToResult = async (result: SearchItem) => {
+    if (!(await confirmNavigation())) return;
     router.push(result.url);
     setIsOpen(false);
     setQuery("");
@@ -146,7 +152,7 @@ export function GlobalSearch() {
       case "Enter":
         e.preventDefault();
         if (results[activeIndex]) {
-          navigateToResult(results[activeIndex]);
+          void navigateToResult(results[activeIndex]);
         }
         break;
       case "Escape":
