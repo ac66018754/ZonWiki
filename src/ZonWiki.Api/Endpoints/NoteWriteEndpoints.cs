@@ -1255,7 +1255,13 @@ public static class NoteWriteEndpoints
     /// <summary>
     /// 解析 ContentRaw 的 wiki 連結（[[X]] 格式）並建立 NoteLink。
     /// 若同使用者內存在相符的 slug 或標題，填入 TargetNoteId；否則 TargetNoteId 為 null。
+    /// 效能：先收集去重所有 anchorText，單一 WHERE...IN 一次撈回候選筆記（避免每個連結各查一次的 N+1）。
     /// </summary>
+    /// <param name="db">資料庫內容。</param>
+    /// <param name="userId">擁有者使用者識別碼。</param>
+    /// <param name="sourceNoteId">來源筆記識別碼。</param>
+    /// <param name="contentRaw">筆記原始內容（Markdown）。</param>
+    /// <param name="ct">取消權杖。</param>
     private static async Task ParseAndCreateWikiLinksAsync(
         ZonWikiDbContext db,
         Guid userId,
@@ -1263,40 +1269,47 @@ public static class NoteWriteEndpoints
         string contentRaw,
         CancellationToken ct)
     {
-        var matches = WikiLinkRegex.Matches(contentRaw);
-
-        foreach (Match match in matches)
+        // 逐個出現的 anchorText（保留原始出現順序；重複出現＝建多條連結，維持原有行為）。
+        var anchorTexts = ExtractAnchorTexts(contentRaw);
+        if (anchorTexts.Count == 0)
         {
-            var anchorText = match.Groups[1].Value.Trim();
-            if (string.IsNullOrEmpty(anchorText))
-                continue;
+            return;
+        }
 
-            // 嘗試比對 slug 或標題
-            Guid? targetNoteId = null;
+        var resolver = await WikiLinkTargetResolver.BuildAsync(db, userId, anchorTexts, ct);
 
-            // 先比對 slug（更精確）
-            var targetNote = await db.Note
-                .FirstOrDefaultAsync(
-                    n => n.UserId == userId && n.ValidFlag &&
-                         (n.Slug == NoteContentHelpers.GenerateSlug(anchorText) || n.Title == anchorText),
-                    ct);
-
-            if (targetNote != null)
-            {
-                targetNoteId = targetNote.Id;
-            }
-
-            // 建立連結
-            var link = new NoteLink
+        foreach (var anchorText in anchorTexts)
+        {
+            db.NoteLink.Add(new NoteLink
             {
                 UserId = userId,
                 SourceNoteId = sourceNoteId,
-                TargetNoteId = targetNoteId,
+                TargetNoteId = resolver.Resolve(anchorText),
                 AnchorText = anchorText,
                 CreatedUser = userId.ToString(),
                 UpdatedUser = userId.ToString(),
-            };
-            db.NoteLink.Add(link);
+            });
         }
+    }
+
+    /// <summary>
+    /// 從內容擷取所有非空的 wiki 連結錨點文字（[[X]] 內的 X，已 Trim）。
+    /// 保留原始出現順序與重複（重複出現代表要建立多條連結）。
+    /// </summary>
+    /// <param name="contentRaw">筆記原始內容。</param>
+    /// <returns>錨點文字清單（可能含重複）。</returns>
+    private static List<string> ExtractAnchorTexts(string contentRaw)
+    {
+        var anchorTexts = new List<string>();
+        foreach (Match match in WikiLinkRegex.Matches(contentRaw))
+        {
+            var anchorText = match.Groups[1].Value.Trim();
+            if (!string.IsNullOrEmpty(anchorText))
+            {
+                anchorTexts.Add(anchorText);
+            }
+        }
+
+        return anchorTexts;
     }
 }
