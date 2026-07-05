@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using ZonWiki.Api.Auth;
+using ZonWiki.Api.RateLimiting;
 using ZonWiki.Api.Services;
 using ZonWiki.Domain.Common;
 using ZonWiki.Domain.Dtos;
@@ -151,26 +152,31 @@ public static class KaiWenCanvasEndpoints
             .Produces<ApiResponse<object>>(StatusCodes.Status404NotFound);
 
         // AI 提問端點
+        // 每使用者限流：這三個端點會 fire-and-forget 呼叫付費 LLM，
+        // 若無節流可被同一被盜 cookie／裝置無限觸發，燒爆 LLM 額度或撐爆 VM 記憶體（審查 #30/#58）。
         group.MapPost("/canvases/{canvasId}/ask", AskNode)
             .WithName("AskNode")
             .WithOpenApi()
             .Produces<ApiResponse<object>>(StatusCodes.Status202Accepted)
             .Produces<ApiResponse<object>>(StatusCodes.Status400BadRequest)
-            .Produces<ApiResponse<object>>(StatusCodes.Status401Unauthorized);
+            .Produces<ApiResponse<object>>(StatusCodes.Status401Unauthorized)
+            .RequireRateLimiting(RateLimitingExtensions.AiPolicy);
 
         group.MapPost("/canvases/{canvasId}/ask-followup", AskFollowup)
             .WithName("AskFollowup")
             .WithOpenApi()
             .Produces<ApiResponse<object>>(StatusCodes.Status202Accepted)
             .Produces<ApiResponse<object>>(StatusCodes.Status400BadRequest)
-            .Produces<ApiResponse<object>>(StatusCodes.Status401Unauthorized);
+            .Produces<ApiResponse<object>>(StatusCodes.Status401Unauthorized)
+            .RequireRateLimiting(RateLimitingExtensions.AiPolicy);
 
         group.MapPost("/canvases/{canvasId}/ask-inline-link", AskInlineLink)
             .WithName("AskInlineLink")
             .WithOpenApi()
             .Produces<ApiResponse<object>>(StatusCodes.Status202Accepted)
             .Produces<ApiResponse<object>>(StatusCodes.Status400BadRequest)
-            .Produces<ApiResponse<object>>(StatusCodes.Status401Unauthorized);
+            .Produces<ApiResponse<object>>(StatusCodes.Status401Unauthorized)
+            .RequireRateLimiting(RateLimitingExtensions.AiPolicy);
 
         group.MapPost("/canvases/{canvasId}/cancel", CancelAsk)
             .WithName("CancelAsk")
