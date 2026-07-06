@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
 using ZonWiki.Api.Endpoints;
+using ZonWiki.Api.Services;
 using ZonWiki.Domain.Common;
 using ZonWiki.Domain.Dtos;
 using ZonWiki.Domain.Entities;
@@ -218,7 +219,7 @@ public sealed class UpdateNodeLayoutEndpointTests : IAsyncLifetime
     {
         var task = (Task<IResult>)UpdateNodeLayoutMethod.Invoke(
             null,
-            new object?[] { nodeId, request, currentUser, _db, CancellationToken.None })!;
+            new object?[] { nodeId, request, currentUser, new CanvasService(_db), _db, CancellationToken.None })!;
         return await task;
     }
 

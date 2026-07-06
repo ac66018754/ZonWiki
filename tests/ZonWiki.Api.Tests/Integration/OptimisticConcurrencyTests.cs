@@ -7,6 +7,7 @@ using Testcontainers.PostgreSql;
 using Xunit;
 using ZonWiki.Api.Common;
 using ZonWiki.Api.Endpoints;
+using ZonWiki.Api.Services;
 using ZonWiki.Domain.Common;
 using ZonWiki.Domain.Dtos;
 using ZonWiki.Domain.Entities;
@@ -160,7 +161,7 @@ public sealed class OptimisticConcurrencyTests : IAsyncLifetime
         {
             var result = await InvokeAsync(
                 SetNodeModelMethod,
-                new object?[] { nodeId.ToString(), _currentUser, db, new SetNodeModelRequest("opus"), CancellationToken.None });
+                new object?[] { nodeId.ToString(), _currentUser, new CanvasService(db), db, new SetNodeModelRequest("opus"), CancellationToken.None });
 
             StatusOf(result).Should().Be(StatusCodes.Status200OK);
             dto = NodeOf(result);
@@ -183,7 +184,7 @@ public sealed class OptimisticConcurrencyTests : IAsyncLifetime
         {
             var result = await InvokeAsync(
                 UpdateNodeContentMethod,
-                new object?[] { nodeId.ToString(), _currentUser, db, new UpdateNodeContentRequest("更新後內容"), CancellationToken.None });
+                new object?[] { nodeId.ToString(), _currentUser, new CanvasService(db), db, new UpdateNodeContentRequest("更新後內容"), CancellationToken.None });
 
             StatusOf(result).Should().Be(StatusCodes.Status200OK);
             dto = NodeOf(result);
@@ -211,7 +212,7 @@ public sealed class OptimisticConcurrencyTests : IAsyncLifetime
         await using var db = NewDb();
         var result = await InvokeAsync(
             UpdateNodeContentMethod,
-            new object?[] { nodeId.ToString(), _currentUser, db, new UpdateNodeContentRequest("我的內容", staleVersion), CancellationToken.None });
+            new object?[] { nodeId.ToString(), _currentUser, new CanvasService(db), db, new UpdateNodeContentRequest("我的內容", staleVersion), CancellationToken.None });
 
         StatusOf(result).Should().Be(StatusCodes.Status409Conflict);
     }
@@ -229,7 +230,7 @@ public sealed class OptimisticConcurrencyTests : IAsyncLifetime
         {
             var result = await InvokeAsync(
                 UpdateNodeContentMethod,
-                new object?[] { nodeId.ToString(), _currentUser, db, new UpdateNodeContentRequest("正確版本的更新", currentVersion), CancellationToken.None });
+                new object?[] { nodeId.ToString(), _currentUser, new CanvasService(db), db, new UpdateNodeContentRequest("正確版本的更新", currentVersion), CancellationToken.None });
 
             StatusOf(result).Should().Be(StatusCodes.Status200OK);
             dto = NodeOf(result);
@@ -254,7 +255,7 @@ public sealed class OptimisticConcurrencyTests : IAsyncLifetime
         await using var db = NewDb();
         var result = await InvokeAsync(
             UpdateNodeLayoutMethod,
-            new object?[] { nodeId.ToString(), new UpdateNodeLayoutRequest(X: 123), _currentUser, db, CancellationToken.None });
+            new object?[] { nodeId.ToString(), new UpdateNodeLayoutRequest(X: 123), _currentUser, new CanvasService(db), db, CancellationToken.None });
 
         // 不帶 baseVersion → 不做併發檢查 → 200（last-write-wins）。
         StatusOf(result).Should().Be(StatusCodes.Status200OK);
@@ -388,7 +389,7 @@ public sealed class OptimisticConcurrencyTests : IAsyncLifetime
         {
             var result = await InvokeAsync(
                 GetHandler("GetCanvasGraph"),
-                new object?[] { _canvasId.ToString(), _currentUser, db, CancellationToken.None });
+                new object?[] { _canvasId.ToString(), _currentUser, new CanvasService(db), db, CancellationToken.None });
 
             StatusOf(result).Should().Be(StatusCodes.Status200OK);
             var graph = (ApiResponse<CanvasGraphDto>)((IValueHttpResult)result).Value!;
@@ -486,7 +487,7 @@ public sealed class OptimisticConcurrencyTests : IAsyncLifetime
         await using var db = NewDb();
         var result = await InvokeAsync(
             CreateNodeMethod,
-            new object?[] { _canvasId.ToString(), _currentUser, db, new CreateNodeRequest(Content: content), CancellationToken.None });
+            new object?[] { _canvasId.ToString(), _currentUser, new CanvasService(db), db, new CreateNodeRequest(Content: content), CancellationToken.None });
 
         StatusOf(result).Should().Be(StatusCodes.Status201Created);
         var dto = NodeOf(result);

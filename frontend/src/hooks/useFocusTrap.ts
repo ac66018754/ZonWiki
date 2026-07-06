@@ -44,9 +44,12 @@ export function useFocusTrap(
   isActive: boolean,
   options?: UseFocusTrapOptions
 ): void {
-  // 以 ref 保存 onEscape，避免它在每次 render 產生新函式而反覆重掛監聽器
+  // 以 ref 保存 onEscape，避免它在每次 render 產生新函式而反覆重掛監聽器。
+  // 於 effect 內更新（而非 render 期間直接寫 ref），避免 React 「render 期間寫 ref」反模式。
   const onEscapeRef = useRef<UseFocusTrapOptions["onEscape"]>(options?.onEscape);
-  onEscapeRef.current = options?.onEscape;
+  useEffect(() => {
+    onEscapeRef.current = options?.onEscape;
+  });
 
   useEffect(() => {
     if (!isActive) return;
