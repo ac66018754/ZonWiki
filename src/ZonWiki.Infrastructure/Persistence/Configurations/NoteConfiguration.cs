@@ -17,6 +17,11 @@ public sealed class NoteConfiguration : IEntityTypeConfiguration<Note>
     {
         builder.HasKey(n => n.Id);
 
+        // 樂觀鎖（#4/#34）：以 PostgreSQL 系統欄 xmin 當併發權杖（免新增欄位）。
+        // 更新時比對載入當下的 xmin；若期間被其他來源改過，SaveChanges 會丟
+        // DbUpdateConcurrencyException，端點據此回 409，避免多來源同時編輯靜默互相覆蓋。
+        builder.UseXminConcurrencyToken();
+
         builder.Property(n => n.Title).IsRequired().HasMaxLength(500);
         builder.Property(n => n.Slug).IsRequired().HasMaxLength(500);
         builder.Property(n => n.ContentHash).IsRequired().HasMaxLength(128);

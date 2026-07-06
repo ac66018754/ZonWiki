@@ -18,6 +18,11 @@ public sealed class TaskCardConfiguration : IEntityTypeConfiguration<TaskCard>
     {
         builder.HasKey(t => t.Id);
 
+        // 樂觀鎖（#4/#34）：以 PostgreSQL 系統欄 xmin 當併發權杖（免新增欄位）。
+        // 更新時比對載入當下的 xmin；期間被其他來源改過則 SaveChanges 丟
+        // DbUpdateConcurrencyException，端點回 409。
+        builder.UseXminConcurrencyToken();
+
         builder.Property(t => t.Title).IsRequired().HasMaxLength(500);
         builder.Property(t => t.Status).IsRequired().HasMaxLength(64);
         builder.Property(t => t.CreatedUser).IsRequired().HasMaxLength(128);
@@ -25,6 +30,8 @@ public sealed class TaskCardConfiguration : IEntityTypeConfiguration<TaskCard>
 
         builder.HasIndex(t => new { t.UserId, t.Status });
         builder.HasIndex(t => new { t.UserId, t.DueDateTime });
+        // 行事曆／排程視圖依「使用者 + 預計時間」查詢，補上複合索引避免全表掃描（#37）。
+        builder.HasIndex(t => new { t.UserId, t.PlannedDateTime });
         builder.HasIndex(t => t.GroupId);
 
         // 卡片可不屬於任何群組；刪除群組不連動刪除卡片（卡片改為未分組）。
@@ -39,6 +46,10 @@ public sealed class TaskCardConfiguration : IEntityTypeConfiguration<TaskCard>
             .WithMany(t => t.Children)
             .HasForeignKey(t => t.ParentId)
             .OnDelete(DeleteBehavior.Restrict);
+
+        // 重複規則具現化（#17）：以「母規則 + 發生時間」查已產生的發生卡（含軟刪除，作為去重依據）。
+        // RecurrenceSourceId 刻意為純量欄位（無關聯導覽），故不設定 FK，只建查詢索引。
+        builder.HasIndex(t => new { t.RecurrenceSourceId, t.RecurrenceOccurrenceDateTime });
     }
 }
 

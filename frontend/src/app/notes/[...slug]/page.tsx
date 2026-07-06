@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { enhanceCodeBlocks } from '@/lib/codeBlocks';
@@ -11,8 +12,6 @@ import {
   deleteNote,
   listNoteComments,
   addNoteComment,
-  listNoteCategories,
-  listNoteTags,
   createNoteCategory,
   createNoteTag,
   listTaskGroups,
@@ -20,11 +19,10 @@ import {
   type NoteCategory,
   type NoteTag,
   type Comment,
-  type CurrentUser,
   type TaskGroup,
-  getCurrentUser,
 } from '@/lib/api';
-import { TaskEditorModal } from '@/app/tasks/components/TaskEditorModal';
+import { useCurrentUser, useNoteCategories, useNoteTags } from '@/lib/swr';
+import { ConflictError } from '@/lib/errors';
 import { formatFullDateTime, formatDateTime as formatDateTimeUtil } from '@/lib/formatters';
 import { DEFAULT_TIMEZONE } from '@/lib/constants';
 import { SkeletonCard } from '@/components/Skeleton';
@@ -32,16 +30,43 @@ import { NoteAiActions } from '@/components/NoteAiActions';
 import { NoteEditHistory } from '@/components/NoteEditHistory';
 import { NoteBacklinks } from '@/components/NoteBacklinks';
 import { SearchableMultiSelect } from '@/components/SearchableMultiSelect';
-import { MarkdownEditor } from '@/components/MarkdownEditor';
 import { recordNoteNav, getNoteBackTarget } from '@/lib/noteNav';
 import { LinkedEntitiesBar } from '@/components/LinkedEntitiesBar';
-import { NoteMarksLayer } from '@/components/NoteMarksLayer';
-import { NoteOverlay } from '@/components/NoteOverlay';
 import { TocPanel } from '@/components/TocPanel';
 import { ToggleAwareMarkdown } from '@/components/MarkdownPreview';
 import { buildToc } from '@/lib/toc';
 import { useUndoHotkeys, resetUndo } from '@/lib/undoManager';
+import { useConfirm } from '@/components/ConfirmProvider';
+import { registerNavigationGuard } from '@/lib/navigationGuard';
+import { emitNoteActiveCategory } from '@/lib/noteEvents';
 import { noteEditChannelName, NOTE_EDIT_MAX_CONTENT, type NoteEditMessage } from '@/lib/noteEditChannel';
+
+// ── 重量級用戶端元件延遲載入（修 #10：dev 模式 Turbopack render worker 崩潰 500）────────────
+// 這四個元件（Markdown 編輯器、文字標註層、浮動白板、任務編輯彈窗）合計約 2,900 行，全為
+// 互動式，且僅在特定條件下才渲染（編輯中／預覽分頁／開啟任務彈窗），對 SSR 首屏 HTML 無貢獻。
+// 原本以靜態 import 全數塞進本路由的伺服器端模組評估圖；在長時運行、HMR 記憶體累積的 dev
+// server 上，單一 render worker 編譯／SSR 此超重路由時峰值記憶體過高而崩潰，Next 便回報
+//「Jest worker encountered 2 child process exceptions, exceeding retry limit」→ 該頁 500。
+// 改用 next/dynamic 且 ssr:false 後：
+//   1) 這些模組不再進入伺服器端 render worker 的評估圖，直接消除該 worker 的崩潰來源；
+//   2) NoteOverlay／NoteMarksLayer 使用 createPortal（需要 document），本就不適合 SSR。
+// 皆為具名匯出，故以 .then 取出對應成員；ssr:false 在本檔（'use client'）中為合法用法。
+const MarkdownEditor = dynamic(
+  () => import('@/components/MarkdownEditor').then((mod) => mod.MarkdownEditor),
+  { ssr: false },
+);
+const NoteMarksLayer = dynamic(
+  () => import('@/components/NoteMarksLayer').then((mod) => mod.NoteMarksLayer),
+  { ssr: false },
+);
+const NoteOverlay = dynamic(
+  () => import('@/components/NoteOverlay').then((mod) => mod.NoteOverlay),
+  { ssr: false },
+);
+const TaskEditorModal = dynamic(
+  () => import('@/app/tasks/components/TaskEditorModal').then((mod) => mod.TaskEditorModal),
+  { ssr: false },
+);
 
 /**
  * 筆記詳細編輯與查看頁面
@@ -66,7 +91,10 @@ export default function NotesDetailPage() {
     ? routeParams.slug.map((s) => decodeURIComponent(s)).join('/')
     : decodeURIComponent(String(routeParams.slug ?? ''));
   const router = useRouter();
-  const [user, setUser] = useState<CurrentUser | null>(null);
+  const confirm = useConfirm();
+  // 目前登入者（時區顯示）改由共用的 SWR 快取取得，不再與筆記一起手動抓。
+  const { data: userData } = useCurrentUser();
+  const user = userData ?? null;
   const [note, setNote] = useState<NoteDetail | null>(null);
   const [comments, setComments] = useState<Comment[]>([]);
   const [loading, setLoading] = useState(true);
@@ -90,9 +118,22 @@ export default function NotesDetailPage() {
   // 「編輯」按鈕點下展開的小選單：可選「編輯頁（頁內）」或「編輯彈窗（獨立視窗）」。
   const [showEditMenu, setShowEditMenu] = useState(false);
 
-  // 編輯時的分類/標籤：選項池與目前選取
+  // 編輯時的分類/標籤：選項池與目前選取。
+  // 選項池改由共用的 SWR 快取（useNoteCategories/useNoteTags）供給，並在取得資料時 seed 到
+  // 本地 state；本地 state 仍保留，用於承載「就地新增分類/標籤」的樂觀更新（hybrid，與筆記清單頁一致）。
+  // 同時解構 mutate，供「就地新增分類/標籤」後主動重新驗證共用快取
+  //（SwrProvider 關閉了 revalidateIfStale/revalidateOnFocus，新鮮度須靠操作後主動 mutate 維持），
+  // 讓常駐的 Sidebar 與其他消費者立即反映新分類/標籤，避免雙軌狀態不同步。
+  const { data: catData, mutate: mutateCategories } = useNoteCategories();
+  const { data: tagData, mutate: mutateTags } = useNoteTags();
   const [allCategories, setAllCategories] = useState<NoteCategory[]>([]);
   const [allTags, setAllTags] = useState<NoteTag[]>([]);
+  useEffect(() => {
+    if (catData) setAllCategories(catData);
+  }, [catData]);
+  useEffect(() => {
+    if (tagData) setAllTags(tagData);
+  }, [tagData]);
   const [editCatIds, setEditCatIds] = useState<string[]>([]);
   const [editTagIds, setEditTagIds] = useState<string[]>([]);
 
@@ -102,6 +143,120 @@ export default function NotesDetailPage() {
     const p = cats.find((c) => c.id === parentId);
     return p ? `${categoryPath(p.parentId, cats)}${p.name} / ` : '';
   };
+
+  // ── 未儲存變更離開防護（#16，對齊 TaskEditorModal 的交易式暫存/放棄確認）─────────────
+  // 兩組 id 陣列是否為同一集合（忽略順序）：分類/標籤選取的先後不視為變更。
+  const isSameIdSet = (a: readonly string[], b: readonly string[]): boolean => {
+    if (a.length !== b.length) return false;
+    const other = new Set(b);
+    return a.every((id) => other.has(id));
+  };
+
+  // 是否有未儲存變更：僅在「編輯中」且四項編輯值與載入的筆記基準不同時為 true。
+  const hasUnsavedChanges = useMemo(() => {
+    if (!isEditing || !note) return false;
+    if (editTitle !== note.title) return true;
+    if (editContent !== note.contentRaw) return true;
+    const baseCatIds = (note.categories ?? []).map((c) => c.id);
+    const baseTagIds = (note.tags ?? []).map((t) => t.id);
+    if (!isSameIdSet(editCatIds, baseCatIds)) return true;
+    if (!isSameIdSet(editTagIds, baseTagIds)) return true;
+    return false;
+  }, [isEditing, note, editTitle, editContent, editCatIds, editTagIds]);
+
+  // 有未儲存變更時詢問是否放棄；回傳 Promise<true>＝可離開（沿用 W6 的 ConfirmDialog）。
+  const confirmDiscardIfDirty = useCallback(async () => {
+    if (!hasUnsavedChanges) return true;
+    return confirm({
+      title: '放棄未儲存的變更？',
+      message:
+        '此筆記有未儲存的變更，要放棄並離開嗎？\n' +
+        '（標題／內容／分類／標籤的修改，未按「保存」都不會生效。）',
+      danger: true,
+      confirmLabel: '放棄並離開',
+    });
+  }, [hasUnsavedChanges, confirm]);
+
+  // 硬離開防護：整頁重新整理／關閉分頁／改網址列時，用瀏覽器原生 beforeunload 警示。
+  // （原生對話框無法自訂文案，僅在有未儲存變更時掛上，離開編輯即卸除。）
+  useEffect(() => {
+    if (!hasUnsavedChanges) return;
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      // 舊瀏覽器需設定 returnValue 才會跳出確認；現代瀏覽器顯示制式文案。
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [hasUnsavedChanges]);
+
+  // 軟離開防護 A｜全站導頁守門：把「未儲存變更確認」登記進共用的 navigationGuard，
+  // 供所有「以 router.push 導頁但非 <a>」或「自管導頁的 <a>」入口（全域搜尋、指令面板、
+  // Header 的『筆記』導覽等）在導頁前徵詢——這是涵蓋全站切換筆記/任務的正確作法
+  // （對照 W7 只攔 <a> 的漏洞：div onClick / Enter 鍵路徑完全攔不到）。
+  // confirmDiscardIfDirty 於無未儲存變更時直接放行，故非編輯中登記亦無副作用。
+  useEffect(() => {
+    return registerNavigationGuard(confirmDiscardIfDirty);
+  }, [confirmDiscardIfDirty]);
+
+  // 軟離開防護 B｜站內 <a> 連結（如左側欄分類/筆記、內文連結）：App Router 無官方
+  // 路由攔截 API，且這類「純 Next <Link>」不會主動呼叫上面的守門，故仍在 capture 階段
+  // 攔其點擊，先確認再手動導頁。
+  //   注意（修 W7 對抗式復審 finding #1）：此處「只 preventDefault、不 stopPropagation」——
+  //   capture 階段對 document 呼叫 stopPropagation 會讓事件根本傳不到 target，
+  //   連累別的元件掛在 <a> 上的 onClick（如 Header『筆記』的 handleNotesNav 依 localStorage
+  //   導回上次瀏覽的那篇）完全不執行、行為悄悄改變。改為只 preventDefault：Next <Link> 會
+  //   因 defaultPrevented 而不自行導頁，其餘 onClick 仍能各自執行。
+  //   另對「自管導頁」的 <a>（標記 data-skip-leave-guard，如 Header『筆記』）一律略過，
+  //   交由該元件自行透過守門確認，避免雙重導頁/導到錯的目的地。
+  useEffect(() => {
+    if (!hasUnsavedChanges) return;
+    const handleAnchorClick = (event: MouseEvent) => {
+      // 只處理單純左鍵、無修飾鍵的點擊；其餘（開新分頁/中鍵等）交給瀏覽器預設行為。
+      if (
+        event.defaultPrevented ||
+        event.button !== 0 ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.shiftKey ||
+        event.altKey
+      ) {
+        return;
+      }
+      const anchor = (event.target as HTMLElement | null)?.closest?.('a');
+      if (!anchor) return;
+      // 自管導頁的連結（自己會透過 navigationGuard 確認）→ 不由本攔截器插手。
+      if (anchor.closest('[data-skip-leave-guard]')) return;
+      const href = anchor.getAttribute('href');
+      if (!href || href.startsWith('#')) return; // 純錨點捲動不算離開
+      if (anchor.target && anchor.target !== '_self') return; // 開新分頁
+      if (anchor.hasAttribute('download')) return;
+      // 解析為絕對網址：外部連結（不同 origin）交給瀏覽器預設（由 beforeunload 接手）。
+      let destination: URL;
+      try {
+        destination = new URL(href, window.location.href);
+      } catch {
+        return;
+      }
+      if (destination.origin !== window.location.origin) return;
+      // 目的地與目前頁面相同則略過（避免對自身連結誤攔）。
+      const current = window.location.pathname + window.location.search;
+      if (destination.pathname + destination.search === current) return;
+
+      // 只攔下預設導頁（Next <Link> 會因 defaultPrevented 而不自行導頁）；
+      // 不呼叫 stopPropagation，讓同一 <a> 上其他 onClick 仍能執行自己的邏輯。
+      event.preventDefault();
+      void confirmDiscardIfDirty().then((canLeave) => {
+        if (canLeave) {
+          setIsEditing(false); // 先解除編輯，卸除防護後再導頁
+          router.push(destination.pathname + destination.search + destination.hash);
+        }
+      });
+    };
+    // capture 階段攔截：先於 React 綁在根節點的合成事件與 Next.js Link 的處理。
+    document.addEventListener('click', handleAnchorClick, true);
+    return () => document.removeEventListener('click', handleAnchorClick, true);
+  }, [hasUnsavedChanges, confirmDiscardIfDirty, router]);
 
   // 留言狀態
   const [commentContent, setCommentContent] = useState('');
@@ -220,14 +375,8 @@ export default function NotesDetailPage() {
   const noteCatIdsKey = (note?.categories ?? []).map((c) => c.id).join(',');
   useEffect(() => {
     const ids = noteCatIdsKey ? noteCatIdsKey.split(',') : [];
-    window.dispatchEvent(
-      new CustomEvent('zonwiki:note-active-category', { detail: { categoryIds: ids } })
-    );
-    return () => {
-      window.dispatchEvent(
-        new CustomEvent('zonwiki:note-active-category', { detail: { categoryIds: [] } })
-      );
-    };
+    emitNoteActiveCategory(ids);
+    return () => emitNoteActiveCategory([]);
   }, [noteCatIdsKey]);
 
   // AI 操作回調：AI（排版/美化/撤銷）只更新編輯器內容，不寫 DB、也不重抓筆記
@@ -272,21 +421,13 @@ export default function NotesDetailPage() {
     return () => clearTimeout(timer);
   }, [markId, previewHtml]);
 
-  // 載入筆記詳細
+  // 載入筆記詳細（分類/標籤選項池與使用者已改由 SWR 供給，故此處只抓筆記本身）
   useEffect(() => {
     const load = async () => {
       try {
         setLoading(true);
-        const [currentUser, noteData, cats, tgs] = await Promise.all([
-          getCurrentUser(),
-          getNote(slug),
-          listNoteCategories(),
-          listNoteTags(),
-        ]);
+        const noteData = await getNote(slug);
 
-        setUser(currentUser);
-        setAllCategories(cats);
-        setAllTags(tgs);
         if (noteData) {
           setNote(noteData);
           setEditTitle(noteData.title);
@@ -317,14 +458,63 @@ export default function NotesDetailPage() {
   const handleSave = async () => {
     if (!note) return;
 
-    try {
-      setIsSaving(true);
-      await updateNote(note.id, {
+    // 前端先擋：標題不可為空（與後端規則一致，給即時回饋、免一次無謂往返）。
+    if (!editTitle.trim()) {
+      setError('標題不可為空');
+      return;
+    }
+
+    // 以指定 baseVersion 送出更新（undefined＝不做併發檢查、覆蓋）。
+    const doUpdate = (baseVersion?: number) =>
+      updateNote(note.id, {
         title: editTitle,
         contentRaw: editContent,
         categoryIds: editCatIds,
         tagIds: editTagIds,
+        baseVersion,
       });
+
+    try {
+      setIsSaving(true);
+
+      let saved: NoteDetail | null;
+      try {
+        // 樂觀鎖（#4/#34）：帶目前載入版本，偵測「載入後是否被其他來源改過」。
+        saved = await doUpdate(note.version);
+      } catch (e) {
+        if (e instanceof ConflictError) {
+          const reload = await confirm({
+            title: '筆記已被修改',
+            message:
+              '此筆記已被其他來源修改。\n\n' +
+              '按「確定」重新載入最新版本（放棄本次修改）；\n' +
+              '按「取消」以您目前的內容覆蓋。',
+          });
+          if (reload) {
+            const latest = await getNote(slug);
+            if (latest) {
+              setNote(latest);
+              setEditTitle(latest.title);
+              setEditContent(latest.contentRaw);
+              setEditCatIds((latest.categories ?? []).map((c) => c.id));
+              setEditTagIds((latest.tags ?? []).map((t) => t.id));
+            }
+            setError('此筆記已被其他來源修改，已載入最新版本，請重新確認後再儲存。');
+            return;
+          }
+          // 覆蓋：不帶 baseVersion 再送一次（last-write-wins）。
+          saved = await doUpdate(undefined);
+        } else {
+          throw e;
+        }
+      }
+
+      // 保存失敗（後端回 400 等，updateNote 會回 null）：維持編輯模式並提示，
+      // 絕不可誤判成功而退出編輯、靜默丟失本次的內容／分類／標籤修改。
+      if (!saved) {
+        setError('保存失敗，請檢查內容後再試一次。');
+        return;
+      }
 
       // 重新載入
       const updated = await getNote(slug);
@@ -474,7 +664,7 @@ export default function NotesDetailPage() {
 
   // 刪除筆記
   const handleDelete = async () => {
-    if (!note || !confirm('確定要刪除此筆記嗎？')) return;
+    if (!note || !(await confirm({ message: '確定要刪除此筆記嗎？', danger: true }))) return;
 
     try {
       await deleteNote(note.id);
@@ -570,10 +760,12 @@ export default function NotesDetailPage() {
           }}
         >
           <button
-            onClick={() => {
-              // 編輯中：「返回」無條件回到本篇筆記頁（退出編輯、切回閱讀），不走返回堆疊、不導航離開。
+            onClick={async () => {
+              // 編輯中：先確認未儲存變更（#16），放棄才退出編輯、切回閱讀（不走返回堆疊、不離開本頁）。
               if (isEditing) {
-                setIsEditing(false);
+                if (await confirmDiscardIfDirty()) {
+                  setIsEditing(false);
+                }
                 return;
               }
               // 閱讀中：只在「筆記情境」內返回：從堆疊取上一個筆記情境頁（別篇筆記／分類頁）。
@@ -762,7 +954,10 @@ export default function NotesDetailPage() {
               />
               <div style={{ display: 'flex', gap: 'var(--spacing-2)', flexShrink: 0 }}>
                 <button
-                  onClick={() => setIsEditing(false)}
+                  onClick={async () => {
+                    // 關閉編輯前，若有未儲存變更先詢問是否放棄（#16）。
+                    if (await confirmDiscardIfDirty()) setIsEditing(false);
+                  }}
                   className="btn-secondary"
                   disabled={isSaving}
                 >
@@ -812,6 +1007,8 @@ export default function NotesDetailPage() {
                       const cat = await createNoteCategory({ name, parentId: null });
                       if (cat) {
                         setAllCategories((c) => [...c, cat]);
+                        // 重新驗證共用快取，讓 Sidebar 等消費者立即看到新分類
+                        mutateCategories();
                         return { id: cat.id, name: cat.name };
                       }
                     } catch (e) {
@@ -843,6 +1040,8 @@ export default function NotesDetailPage() {
                       const tag = await createNoteTag(name);
                       if (tag) {
                         setAllTags((t) => [...t, tag]);
+                        // 重新驗證共用快取，讓 Sidebar 等消費者立即看到新標籤
+                        mutateTags();
                         return { id: tag.id, name: tag.name };
                       }
                     } catch (e) {

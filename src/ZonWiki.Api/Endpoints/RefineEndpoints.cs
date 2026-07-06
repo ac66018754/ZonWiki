@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.EntityFrameworkCore;
 using ZonWiki.Api.Auth;
+using ZonWiki.Api.RateLimiting;
 using ZonWiki.Api.Services;
 using ZonWiki.Domain.Common;
 using ZonWiki.Domain.Entities;
@@ -82,7 +83,9 @@ public static class RefineEndpoints
             });
 
             return Results.Ok(ApiResponse<object>.Ok(new { sessionId }));
-        }).RequireAuthorization();
+        })
+        .RequireAuthorization()
+        .RequireRateLimiting(RateLimitingExtensions.AiPolicy); // 每使用者限流：精煉會 spawn yt-dlp/ffmpeg＋付費 API
 
         // POST /api/refine/upload —— 上傳音訊/影片檔精煉成筆記（路 A2）。
         // 適用「手機/電腦自己（住宅 IP、已登入）抓下來的 IG/影片檔」：ZonWiki 只負責轉錄＋整理，
@@ -212,6 +215,7 @@ public static class RefineEndpoints
             return Results.Ok(ApiResponse<object>.Ok(new { sessionId }));
         })
         .RequireAuthorization()
+        .RequireRateLimiting(RateLimitingExtensions.AiPolicy) // 每使用者限流：上傳精煉同樣觸發轉檔＋付費轉錄
         .DisableAntiforgery();
     }
 

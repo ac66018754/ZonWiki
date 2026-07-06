@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using ZonWiki.Domain.Entities;
+using ZonWiki.Infrastructure.Persistence.Configurations;
 
 namespace ZonWiki.Infrastructure.Persistence;
 
@@ -26,6 +27,14 @@ public static class ModelBuilderExtensions
 
             foreach (var property in entityType.GetProperties())
             {
+                // 樂觀鎖 xmin 影子屬性（#4/#34）對應 PostgreSQL 系統欄，欄名必須維持原生 "xmin"，
+                // 不可套用 {Table}_{Property} 前綴——否則 Npgsql 會把它當成一般欄位、
+                // 在 Migration 產生 AddColumn（系統欄不可新增，且失去 xmin 併發語意）。
+                if (property.Name == XminConcurrencyConfiguration.XminPropertyName)
+                {
+                    continue;
+                }
+
                 property.SetColumnName($"{tableName}_{property.Name}");
             }
 

@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using ZonWiki.Api.Auth;
+using ZonWiki.Api.RateLimiting;
 using ZonWiki.Api.Services;
 using ZonWiki.Domain.Common;
 using ZonWiki.Domain.Dtos;
@@ -84,6 +85,7 @@ public static class AiEndpoints
             });
 
             return Results.Accepted(value: ApiResponse<AiAsyncStartedDto>.Ok(new AiAsyncStartedDto(sessionId)));
-        }).RequireAuthorization();
+        }).RequireAuthorization()
+        .RequireRateLimiting(RateLimitingExtensions.AiPolicy); // 每使用者限流（合併保留 W2）：防迴圈灌爆付費 LLM
     }
 }

@@ -35,6 +35,8 @@ desktop.ini
 # Claude Code 本機設定（含本機路徑/權限，不進版控）
 # ------------------------------------------------------------
 .claude/settings.local.json
+# Claude Code 代理用的 git worktree（git 內部 plumbing，純本機；清除請用 git worktree remove）
+.claude/worktrees/
 
 # ------------------------------------------------------------
 # .NET / C#
@@ -51,6 +53,7 @@ x86/
 *.lscache
 *.coverage
 *.coveragexml
+*.cobertura.xml
 TestResults/
 coverage/
 .dotnet/

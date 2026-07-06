@@ -6,6 +6,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { GlobalSearch } from "./GlobalSearch";
 import { AiProcessingMenu } from "./AiProcessingMenu";
+import { confirmNavigation } from "@/lib/navigationGuard";
 import { useCanvasToolbar } from "./CanvasToolbarContext";
 import {
   toggleMobileNav,
@@ -38,17 +39,28 @@ export function Header({ user }: { user: CurrentUser | null }) {
   /**
    * 點「筆記」導覽：若記得「最後看的筆記」就直接回到那篇（含捲動位置），
    * 否則退回筆記清單 /notes。每次點擊都即時讀 localStorage，確保拿到最新一篇。
+   *
+   * 導頁前先過全站導頁守門 confirmNavigation()（如筆記編輯中有未儲存變更會先確認）；
+   * 使用者取消就留在原地。這個 <a> 標了 data-skip-leave-guard，讓筆記頁的 <a> 攔截器
+   * 不插手、由本函式自行決定「導回上次那篇」的正確目的地（避免被攔去 /notes 清單）。
    */
   const handleNotesNav = (e: React.MouseEvent) => {
+    // 修飾鍵 / 非左鍵（開新分頁、另開視窗等）交給瀏覽器預設行為，不攔。
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+    // 一律自行導頁：先算目的地（記得的最後一篇；否則清單），再過守門確認。
+    e.preventDefault();
+    let target = "/notes";
     try {
       const slug = localStorage.getItem("zonwiki:last-note-slug");
       if (slug) {
-        e.preventDefault();
-        router.push(`/notes/${slug.split("/").map(encodeURIComponent).join("/")}`);
+        target = `/notes/${slug.split("/").map(encodeURIComponent).join("/")}`;
       }
     } catch {
-      /* localStorage 不可用 → 用預設 href 進清單 */
+      /* localStorage 不可用 → 進清單 */
     }
+    void confirmNavigation().then((canLeave) => {
+      if (canLeave) router.push(target);
+    });
   };
   // 僅在掛載後才渲染工具列：SSR 與首次 hydration 都輸出 null（與伺服器一致），
   // 避免「伺服器渲染主題鈕、客戶端已渲染工具列」的 hydration 不一致 (#418)。
@@ -235,7 +247,12 @@ export function Header({ user }: { user: CurrentUser | null }) {
               <span className="nav-hint">({hintKeys.openCanvas})</span>
             )}
           </Link>
-          <Link href="/notes" className="nav-item" onClick={handleNotesNav}>
+          <Link
+            href="/notes"
+            className="nav-item"
+            onClick={handleNotesNav}
+            data-skip-leave-guard
+          >
             筆記
             {showHints && hintKeys.openNotes && (
               <span className="nav-hint">({hintKeys.openNotes})</span>

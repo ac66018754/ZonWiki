@@ -1,0 +1,832 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ZonWiki 六角色技術審查報告</title>
+<style>
+  :root {
+    /* 中性色帶輕微冷調（slate），非純灰 —— 工程審查的沉穩感 */
+    --ground: #eef1f5;
+    --surface: #ffffff;
+    --surface-2: #f5f7fa;
+    --ink: #171b21;
+    --ink-2: #454e5b;
+    --ink-3: #6b7482;
+    --line: #dde2e9;
+    --line-strong: #c3cad4;
+    --accent: #3a4a7a;        /* 深板岩藍靛 —— 結構/標題，安靜不搶戲 */
+    --accent-soft: #eef1f9;
+    /* 語意嚴重度色（與 accent 分離） */
+    --sev-crit: #c1272d;
+    --sev-crit-bg: #fbe9e9;
+    --sev-high: #d9640a;
+    --sev-high-bg: #fcefe1;
+    --sev-med: #1f6fb2;
+    --sev-med-bg: #e7f0f8;
+    --sev-low: #5f6b7a;
+    --sev-low-bg: #eceff2;
+    --good: #1f8a4c;
+    --good-bg: #e6f4ec;
+    --shadow: 0 1px 2px rgba(20,25,35,.04), 0 3px 10px rgba(20,25,35,.05);
+    --shadow-lg: 0 8px 30px rgba(20,25,35,.10);
+    --mono: "Cascadia Code", "SF Mono", "JetBrains Mono", Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft JhengHei", "PingFang TC", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ground: #0d1117;
+      --surface: #161b22;
+      --surface-2: #1c222b;
+      --ink: #e7edf5;
+      --ink-2: #aeb8c6;
+      --ink-3: #7d8794;
+      --line: #29313c;
+      --line-strong: #3a4552;
+      --accent: #93a6de;
+      --accent-soft: #1a2233;
+      --sev-crit: #f2686d; --sev-crit-bg: #2c1618;
+      --sev-high: #e8913f; --sev-high-bg: #2c1e12;
+      --sev-med: #5aa9e6; --sev-med-bg: #12212e;
+      --sev-low: #93a0b0; --sev-low-bg: #1b2029;
+      --good: #4cbd77; --good-bg: #10261a;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 3px 12px rgba(0,0,0,.35);
+      --shadow-lg: 0 10px 34px rgba(0,0,0,.5);
+    }
+  }
+  :root[data-theme="light"] {
+    --ground:#eef1f5; --surface:#fff; --surface-2:#f5f7fa; --ink:#171b21; --ink-2:#454e5b; --ink-3:#6b7482;
+    --line:#dde2e9; --line-strong:#c3cad4; --accent:#3a4a7a; --accent-soft:#eef1f9;
+    --sev-crit:#c1272d; --sev-crit-bg:#fbe9e9; --sev-high:#d9640a; --sev-high-bg:#fcefe1;
+    --sev-med:#1f6fb2; --sev-med-bg:#e7f0f8; --sev-low:#5f6b7a; --sev-low-bg:#eceff2;
+    --good:#1f8a4c; --good-bg:#e6f4ec;
+    --shadow:0 1px 2px rgba(20,25,35,.04),0 3px 10px rgba(20,25,35,.05); --shadow-lg:0 8px 30px rgba(20,25,35,.10);
+  }
+  :root[data-theme="dark"] {
+    --ground:#0d1117; --surface:#161b22; --surface-2:#1c222b; --ink:#e7edf5; --ink-2:#aeb8c6; --ink-3:#7d8794;
+    --line:#29313c; --line-strong:#3a4552; --accent:#93a6de; --accent-soft:#1a2233;
+    --sev-crit:#f2686d; --sev-crit-bg:#2c1618; --sev-high:#e8913f; --sev-high-bg:#2c1e12;
+    --sev-med:#5aa9e6; --sev-med-bg:#12212e; --sev-low:#93a0b0; --sev-low-bg:#1b2029;
+    --good:#4cbd77; --good-bg:#10261a;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 3px 12px rgba(0,0,0,.35); --shadow-lg:0 10px 34px rgba(0,0,0,.5);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--ground); color: var(--ink);
+    font-family: var(--sans); line-height: 1.75;
+    font-size: 16px; -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 0 20px 96px; }
+  a { color: var(--accent); }
+
+  /* ---------- Header ---------- */
+  header.masthead {
+    padding: 56px 0 34px; border-bottom: 2px solid var(--line-strong); margin-bottom: 40px;
+  }
+  .eyebrow {
+    font-size: 12px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase;
+    color: var(--accent); margin-bottom: 16px;
+  }
+  h1.title {
+    font-size: clamp(30px, 4.4vw, 46px); font-weight: 800; line-height: 1.15;
+    letter-spacing: -.02em; margin: 0 0 14px; text-wrap: balance;
+  }
+  .lede { font-size: 18px; color: var(--ink-2); max-width: 62ch; margin: 0 0 26px; }
+  .meta-row { display: flex; flex-wrap: wrap; gap: 10px 26px; font-size: 13.5px; color: var(--ink-3); }
+  .meta-row b { color: var(--ink-2); font-weight: 600; }
+
+  /* ---------- Section scaffolding ---------- */
+  section { margin-top: 56px; }
+  .sec-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 8px; }
+  .sec-num {
+    font-family: var(--mono); font-size: 13px; font-weight: 700; color: var(--accent);
+    letter-spacing: .04em;
+  }
+  h2 { font-size: 26px; font-weight: 800; letter-spacing: -.015em; margin: 0; line-height: 1.2; }
+  .sec-sub { color: var(--ink-2); font-size: 15.5px; margin: 6px 0 26px; max-width: 68ch; }
+
+  /* ---------- Summary tiles ---------- */
+  .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin: 26px 0; }
+  .tile {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+    padding: 18px 18px 16px; box-shadow: var(--shadow); position: relative; overflow: hidden;
+  }
+  .tile::before { content:""; position:absolute; left:0; top:0; bottom:0; width:4px; }
+  .tile.crit::before { background: var(--sev-crit); }
+  .tile.high::before { background: var(--sev-high); }
+  .tile.med::before  { background: var(--sev-med); }
+  .tile.low::before  { background: var(--sev-low); }
+  .tile .n { font-size: 34px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+  .tile.crit .n { color: var(--sev-crit); } .tile.high .n { color: var(--sev-high); }
+  .tile.med .n { color: var(--sev-med); } .tile.low .n { color: var(--sev-low); }
+  .tile .k { font-size: 12.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-3); margin-top: 8px; }
+
+  .verify-band {
+    display: flex; flex-wrap: wrap; gap: 12px 30px; align-items: center;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+    padding: 16px 20px; box-shadow: var(--shadow); margin: 8px 0 4px; font-size: 14px;
+  }
+  .verify-band .vitem { display: flex; align-items: baseline; gap: 8px; }
+  .verify-band .vn { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .verify-band .vlabel { color: var(--ink-2); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+
+  /* ---------- Callout / verdict box ---------- */
+  .verdict {
+    background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--accent);
+    border-radius: 10px; padding: 20px 22px; box-shadow: var(--shadow); margin-top: 24px;
+  }
+  .verdict p { margin: 0 0 12px; }
+  .verdict p:last-child { margin-bottom: 0; }
+
+  /* ---------- Priority (cross-cutting) cards ---------- */
+  .prio { display: flex; flex-direction: column; gap: 16px; }
+  .pcard {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+    padding: 20px 22px; box-shadow: var(--shadow); position: relative;
+  }
+  .pcard-top { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+  .prank {
+    font-family: var(--mono); font-weight: 700; font-size: 14px; color: var(--surface);
+    background: var(--accent); width: 30px; height: 30px; border-radius: 8px;
+    display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+  }
+  .pcard h3 { margin: 0; font-size: 18.5px; font-weight: 700; letter-spacing: -.01em; }
+  .pcard .body { color: var(--ink-2); font-size: 15px; }
+  .pcard .body b { color: var(--ink); }
+  .goal-tags { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 14px; }
+  .gtag {
+    font-size: 11.5px; font-weight: 600; padding: 3px 10px; border-radius: 20px;
+    background: var(--accent-soft); color: var(--accent); border: 1px solid var(--line);
+    letter-spacing: .02em;
+  }
+  .gtag.warn { background: var(--sev-high-bg); color: var(--sev-high); border-color: transparent; }
+
+  /* ---------- Role sections ---------- */
+  .role-head {
+    display: flex; align-items: center; gap: 14px; margin: 12px 0 6px;
+  }
+  .role-badge {
+    font-family: var(--mono); font-size: 12.5px; font-weight: 700; letter-spacing: .04em;
+    color: var(--accent); background: var(--accent-soft); border: 1px solid var(--line);
+    padding: 5px 12px; border-radius: 8px; white-space: nowrap;
+  }
+  .assess { color: var(--ink-2); font-size: 15px; margin: 4px 0 16px; }
+  .strengths {
+    background: var(--good-bg); border: 1px solid transparent; border-radius: 10px;
+    padding: 14px 18px; margin-bottom: 22px;
+  }
+  .strengths .sh { font-size: 12.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--good); margin-bottom: 8px; }
+  .strengths ul { margin: 0; padding-left: 18px; }
+  .strengths li { margin: 5px 0; font-size: 14px; color: var(--ink-2); }
+
+  /* ---------- Finding cards ---------- */
+  .finding {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 11px;
+    padding: 16px 18px 16px 20px; margin-bottom: 13px; box-shadow: var(--shadow);
+    position: relative; border-left: 5px solid var(--sev-low);
+  }
+  .finding.crit { border-left-color: var(--sev-crit); }
+  .finding.high { border-left-color: var(--sev-high); }
+  .finding.med  { border-left-color: var(--sev-med); }
+  .finding.low  { border-left-color: var(--sev-low); }
+  .f-top { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+  .f-title { font-size: 16px; font-weight: 700; letter-spacing: -.01em; flex: 1 1 60%; min-width: 260px; line-height: 1.4; }
+  .badges { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .sev {
+    font-size: 11px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase;
+    padding: 3px 9px; border-radius: 6px; white-space: nowrap;
+  }
+  .sev.crit { background: var(--sev-crit-bg); color: var(--sev-crit); }
+  .sev.high { background: var(--sev-high-bg); color: var(--sev-high); }
+  .sev.med  { background: var(--sev-med-bg); color: var(--sev-med); }
+  .sev.low  { background: var(--sev-low-bg); color: var(--sev-low); }
+  .chip {
+    font-size: 11px; font-weight: 700; letter-spacing: .04em; padding: 3px 9px; border-radius: 6px;
+    white-space: nowrap; border: 1px solid var(--line-strong);
+  }
+  .chip.confirmed { color: var(--good); border-color: var(--good); }
+  .chip.plausible { color: var(--ink-3); }
+  .chip.cat { color: var(--ink-3); border-style: dashed; }
+  .chip.effort { color: var(--accent); border-color: var(--accent); font-family: var(--mono); }
+  .f-loc {
+    font-family: var(--mono); font-size: 12px; color: var(--ink-3); margin: 2px 0 10px;
+    background: var(--surface-2); padding: 6px 10px; border-radius: 6px;
+    overflow-x: auto; white-space: nowrap; border: 1px solid var(--line);
+  }
+  .f-body { font-size: 14.5px; color: var(--ink-2); }
+  .f-body .lbl { font-weight: 700; color: var(--ink); }
+  .f-body p { margin: 6px 0; }
+  .f-adjust {
+    margin-top: 10px; padding: 9px 13px; border-radius: 8px; font-size: 13px;
+    background: var(--sev-high-bg); color: var(--ink-2); border: 1px dashed var(--sev-high);
+  }
+  .f-adjust b { color: var(--sev-high); }
+
+  /* ---------- Live UI figures ---------- */
+  .measure-tbl { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 14px; }
+  .measure-tbl th, .measure-tbl td { padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--line); }
+  .measure-tbl th { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); font-weight: 700; }
+  .measure-tbl td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .fail { color: var(--sev-crit); font-weight: 700; }
+  .pass { color: var(--good); font-weight: 700; }
+  .tbl-scroll { overflow-x: auto; }
+
+  hr.div { border: none; border-top: 1px solid var(--line); margin: 44px 0 0; }
+  footer { margin-top: 60px; padding-top: 24px; border-top: 1px solid var(--line); color: var(--ink-3); font-size: 13px; }
+
+  @media (max-width: 680px) {
+    .tiles { grid-template-columns: repeat(2, 1fr); }
+    .wrap { padding: 0 15px 60px; }
+    header.masthead { padding: 40px 0 26px; }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .finding, .pcard, .tile { transition: box-shadow .18s ease, transform .18s ease; }
+    .finding:hover, .pcard:hover { box-shadow: var(--shadow-lg); }
+  }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+</style>
+
+</head>
+<body>
+
+<button id="themeToggle" type="button" aria-label="切換亮暗主題" title="切換亮暗主題">🌗 主題</button>
+<style>
+  #themeToggle{position:fixed;top:14px;right:14px;z-index:999;font-family:var(--sans);
+    font-size:13px;font-weight:600;padding:7px 13px;border-radius:20px;cursor:pointer;
+    background:var(--surface);color:var(--ink);border:1px solid var(--line-strong);
+    box-shadow:var(--shadow);}
+  #themeToggle:hover{border-color:var(--accent);}
+  @media print{#themeToggle{display:none;}}
+</style>
+<script>
+(function(){
+  var root=document.documentElement, KEY="zonwiki-review-theme";
+  try{var s=localStorage.getItem(KEY); if(s){root.setAttribute("data-theme",s);}}catch(e){}
+  function cur(){var a=root.getAttribute("data-theme"); if(a)return a;
+    return (window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches)?"dark":"light";}
+  document.addEventListener("DOMContentLoaded",function(){
+    var btn=document.getElementById("themeToggle"); if(!btn)return;
+    btn.addEventListener("click",function(){
+      var next=cur()==="dark"?"light":"dark";
+      root.setAttribute("data-theme",next);
+      try{localStorage.setItem(KEY,next);}catch(e){}
+    });
+  });
+})();
+</script>
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="eyebrow">技術審查報告 · Multi-Role Adversarial Audit</div>
+    <h1 class="title">ZonWiki 六角色全面體檢</h1>
+    <p class="lede">以 PM、前端、後端、QA、UI/UX、SRE 六個技術主管視角，對程式碼、腳本、系統架構、實測 UI/UX 做對抗式審查——每一則發現都由獨立 skeptic 代理實讀原始碼查證真偽後才留下。目標對齊你的四個核心訴求：<b>好擴充、反應快、使用者友善、成本低廉</b>。</p>
+    <div class="meta-row">
+      <span><b>日期</b> 2026-07-05</span>
+      <span><b>方法</b> 6 角色 × 對抗式驗證 + Playwright 實測</span>
+      <span><b>代理數</b> 61 個子代理 / 516 次工具呼叫</span>
+      <span><b>範圍</b> 前端 148 檔・後端 210 檔・腳本・CI・compose・4 主題</span>
+    </div>
+  </header>
+
+  <!-- ============ SUMMARY ============ -->
+  <section id="summary">
+    <div class="sec-head"><span class="sec-num">00</span><h2>總覽</h2></div>
+    <p class="sec-sub">55 則程式碼／架構／腳本發現 + 3 則我親自 Playwright 實測的執行期發現。下面是按「審查者原評嚴重度」的分布；對抗式驗證後有數則被建議調整（詳見各卡片）。</p>
+
+    <div class="tiles">
+      <div class="tile crit"><div class="n">2</div><div class="k">Critical</div></div>
+      <div class="tile high"><div class="n">16</div><div class="k">High</div></div>
+      <div class="tile med"><div class="n">27</div><div class="k">Medium</div></div>
+      <div class="tile low"><div class="n">10</div><div class="k">Low</div></div>
+    </div>
+
+    <div class="verify-band">
+      <div class="vitem"><span class="dot" style="background:var(--good)"></span><span class="vn" style="color:var(--good)">45</span><span class="vlabel">CONFIRMED（實證屬實）</span></div>
+      <div class="vitem"><span class="dot" style="background:var(--ink-3)"></span><span class="vn" style="color:var(--ink-3)">10</span><span class="vlabel">PLAUSIBLE（方向對、嚴重度待調）</span></div>
+      <div class="vitem"><span class="dot" style="background:var(--sev-crit)"></span><span class="vn">0</span><span class="vlabel">REFUTED（被推翻）</span></div>
+    </div>
+
+    <div class="verdict">
+      <p><b>一句話結論：</b>這是一個「完成度遠超一般個人專案、但工程安全網嚴重不足」的系統。四大模組都能實際運作、資料隔離與軟刪除等價值觀級鐵則落實得扎實、文件量與誠實度也在水準之上——底子是好的。</p>
+      <p>但它同時具備一組會侵蝕你四個核心訴求的系統性缺口：<b>CI 完全不跑測試就自動部署到 prod</b>、<b>前端 38K 行零測試</b>、<b>全站無 rate limiting（AI 端點直接燒錢）</b>、<b>無併發控制（多裝置同時編輯會靜默覆蓋）</b>、<b>四主題可讀性與錯誤色票有實測缺陷</b>、以及<b>部署腳本的 zone 疑似指向已搬走的舊 VM（自動部署可能已斷）</b>。這些都屬於「平常沒事、出事很痛」的類別，優先度應高於任何新功能。</p>
+      <p><b>關於 2 則 Critical：</b>兩則在對抗式驗證後都被建議降級——「CI 不跑測試」由 skeptic 判為 <b>HIGH</b>（屬流程/品質防線而非安全漏洞）；「無 DB 備份」查證後發現其實有一份「每日 pg_dump→GCS」的<b>文件化 runbook</b>，只是未碼化進版控、也無法從 repo 證實 prod 真的在跑，故降為 <b>MEDIUM（運維驗證缺口）</b>。誠實呈現：實質 Critical 為 0，但上述兩點仍是最該先動的 High/Medium。</p>
+    </div>
+  </section>
+
+  <!-- ============ CROSS-CUTTING PRIORITIES ============ -->
+  <section id="priorities">
+    <div class="sec-head"><span class="sec-num">01</span><h2>跨角色優先處理項</h2></div>
+    <p class="sec-sub">把 55 則發現收斂成 7 條主線，按「對你四個訴求的傷害 × 修復槓桿」排序。每條標注它衝擊哪個核心目標。前三條做完，這專案的「安全又快速擴充」體質會有質變。</p>
+
+    <div class="prio">
+
+      <div class="pcard">
+        <div class="pcard-top"><span class="prank">1</span><h3>測試與 CI 是最大系統性破口</h3></div>
+        <div class="body"><b>CI（build.yml）完全不跑 <code>dotnet test</code></b>，deploy.yml 只要 build 成功就自動 SSH 進 VM 部署——5.9K 行後端測試（含 934 行資料隔離）<b>從不在管線把關</b>，且無 <code>pull_request</code> 觸發，開 PR 不跑任何檢查。更糟的是命名為「EndpointsTests」的最大宗測試<b>根本沒測到 endpoint</b>：不發 HTTP、只在 InMemory DB 上做 CRUD，等於在測 EF Core 本身；其中還有「設 X 讀回還是 X」的<b>同義反覆測試</b>。前端 38K 行則是零測試、零測試工具。README 三處宣稱的「覆蓋率 ≥ 80%」在工具鏈上<b>完全沒有落實</b>，是無法兌現的口號。</div>
+        <div class="goal-tags"><span class="gtag warn">好擴充</span><span class="gtag warn">安全擴充</span><span class="gtag">QA-Lead</span><span class="gtag">SRE-Lead</span></div>
+      </div>
+
+      <div class="pcard">
+        <div class="pcard-top"><span class="prank">2</span><h3>全站無 Rate Limiting —— AI 端點直接燒錢</h3></div>
+        <div class="body">全 repo grep 不到任何 <code>AddRateLimiter</code>。對外的 PAT（Bearer）與 AI 提問／精煉端點會實際觸發<b>付費 LLM 呼叫</b>（HttpClient timeout 甚至設到 600 秒），且以無上限的 <code>Task.Run</code> fire-and-forget spawn yt-dlp/ffmpeg 子行程。一個被盜權杖或迴圈就能在 2GB VM 上堆爆記憶體、或灌爆外部 API 額度。密碼登入端點也無嘗試次數限制（可暴力破解）。直接牴觸<b>成本低廉</b>與<b>反應快</b>。</div>
+        <div class="goal-tags"><span class="gtag warn">成本低廉</span><span class="gtag warn">反應快</span><span class="gtag warn">安全</span><span class="gtag">Backend-Lead</span><span class="gtag">SRE-Lead</span></div>
+      </div>
+
+      <div class="pcard">
+        <div class="pcard-top"><span class="prank">3</span><h3>無併發控制：多裝置同時編輯會靜默覆蓋</h3></div>
+        <div class="body">Note／Node／Task 全部是 last-write-wins，實體<b>無任何 rowversion／xmin 併發權杖</b>，而 README FAQ 卻明確宣稱「目前採樂觀鎖」——反向承諾了不存在的保護。手機＋電腦、或使用者＋外部 AI 同時改同一筆時，後存者靜默覆蓋前者且雙方都收到成功。<b>部分緩解</b>：每次 update 都寫 NoteRevision/NodeRevision 版本快照可還原，故非永久遺失；但完全無衝突偵測。對一個以「長期存放知識」為賣點的系統，這最傷信任。</div>
+        <div class="goal-tags"><span class="gtag warn">使用者友善</span><span class="gtag">正確性</span><span class="gtag">PM-Lead</span><span class="gtag">Backend-Lead</span></div>
+      </div>
+
+      <div class="pcard">
+        <div class="pcard-top"><span class="prank">4</span><h3>部署鏈疑似已斷 + 上線韌性缺口</h3></div>
+        <div class="body">deploy.yml 仍寫 <code>--zone=us-central1-a</code>，但 VM 已於 2026-07-01 遷到 <b>asia-east1-b（彰化）</b>——gcloud ssh 找不到實例會讓自動部署<b>紅燈失敗</b>（「以為部署了、其實沒有」）。此外：api/web 容器<b>無 healthcheck</b>（行程活著但假死時不會重啟）、啟動即 <code>MigrateAsync</code> 無回滾（壞 migration＝全站起不來）、deploy 用 <code>:latest</code>＋<code>image prune</code> 讓回退困難、DB 備份未碼化也無成功/失敗告警。</div>
+        <div class="goal-tags"><span class="gtag warn">成本低廉</span><span class="gtag">韌性</span><span class="gtag">SRE-Lead</span></div>
+      </div>
+
+      <div class="pcard">
+        <div class="pcard-top"><span class="prank">5</span><h3>四主題可讀性與錯誤回饋有實測缺陷</h3></div>
+        <div class="body">兩個「會實際壞掉」的 UI bug（我與 UIUX 代理用 contrast-check 雙重實測）：<b>①錯誤色票 <code>--status-error-*</code> 從未定義</b>，導致錯誤 toast／登入失敗框在四主題下<b>全失去紅色警示</b>（退成透明塊，只剩一個 ⚠️ emoji）；<b>②次要文字色 <code>--text-tertiary</code> 四主題對比全數不達 WCAG AA</b>（暖紙 2.72 / 明亮 2.89 / 暗色 3.77 / 夜間 4.12，門檻 4.5），用於占位符、計數、提示等大量文字。另有觸控目標 &lt;44px、暗色警告文字 3.45:1。</div>
+        <div class="goal-tags"><span class="gtag warn">使用者友善</span><span class="gtag">無障礙</span><span class="gtag">UIUX-Lead</span></div>
+      </div>
+
+      <div class="pcard">
+        <div class="pcard-top"><span class="prank">6</span><h3>架構債：God 檔 + 雙軌狀態管理</h3></div>
+        <div class="body">數個遠超專案自訂「800 行」上限的單體檔：前端 <code>lib/api.ts</code> <b>2497 行 / 113 個匯出</b>、<code>Sidebar.tsx</code> 1397 行（<b>27 個 useState、整棵樹每次 render 全重繪</b>）；後端 <code>KaiWenCanvasEndpoints.cs</code> <b>2216 行</b>（無 Service 層、DTO 映射逐字複製 5+ 處）。前端還<b>雙軌並存</b>：SWR 快取層與元件本地 useState + <code>window</code> 事件匯流排並行，同一份資料一次換頁被重複抓數次。這些直接抵觸「好擴充」——加新模組沒有乾淨落點。</div>
+        <div class="goal-tags"><span class="gtag warn">好擴充</span><span class="gtag">反應快</span><span class="gtag">Frontend-Lead</span><span class="gtag">Backend-Lead</span></div>
+      </div>
+
+      <div class="pcard">
+        <div class="pcard-top"><span class="prank">7</span><h3>文件與現實脫節、決策無留痕</h3></div>
+        <div class="body">README 標「最後更新 2026-06-11」但功能加到 07-01；MCP 工具數同文件內<b>自相矛盾（16 vs 19，實際是 45）</b>；「測試結構」列出<b>不存在的幻影檔案</b>與跑不動的示範指令；宣稱「支援多人使用」實為多帳號隔離（無分享/協作）。且<b>鐵則 #16 要求的 <code>docs/DECISIONS.md</code> 不存在</b>——zone、備份、金鑰路徑、CORS 等基礎設施取捨全無決策留痕。這是公開 MIT repo 的門面與可維護性訊號。</div>
+        <div class="goal-tags"><span class="gtag warn">可維護性</span><span class="gtag">誠信</span><span class="gtag">PM-Lead</span><span class="gtag">QA-Lead</span></div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============ LIVE UI/UX ============ -->
+  <section id="live">
+    <div class="sec-head"><span class="sec-num">02</span><h2>實測 UI/UX（Playwright · 本機 3000/5009）</h2></div>
+    <p class="sec-sub">我親自啟動後端、以 QA 測試帳號實走首頁／筆記／任務／行事曆／開問啦，並在 375px 手機寬與四主題下驗證。截圖存於 <code>zonwiki-ui-tests/review-2026-07-05/</code>。</p>
+
+    <div class="finding high">
+      <div class="f-top">
+        <div class="f-title">筆記詳情頁在 dev 模式直接 500（可重現）</div>
+        <div class="badges"><span class="sev high">High</span><span class="chip confirmed">DEV 實證</span><span class="chip cat">reliability</span></div>
+      </div>
+      <div class="f-loc">frontend/src/app/notes/[...slug]/page.tsx（1135 行，全前端最重路由）</div>
+      <div class="f-body">
+        <p><span class="lbl">現象：</span>開任一筆記 <code>/notes/{title}</code> → Next.js 16 Turbopack worker 崩潰（"Jest worker encountered 2 child process exceptions, exceeding retry limit"），頁面顯示 Runtime Error，重載仍重現。</p>
+        <p><span class="lbl">已排除：</span>後端完全正常（所有 API 回 200、&lt;8ms）、Node 記憶體健康（非鐵則 #19 的洩漏）。純粹是前端最重路由在 dev 編譯崩潰。<span class="lbl">「看筆記」是最核心動作。</span></p>
+        <p><span class="lbl">建議：</span>用 production build 確認是否也影響 prod（Turbopack dev worker 崩潰在生產預編譯下通常不同）；無論如何，這條路由的體積（1135 行）本身就是優先 #6 的拆分對象，拆小可同時降低崩潰面。</p>
+      </div>
+    </div>
+
+    <div class="finding high">
+      <div class="f-top">
+        <div class="f-title">四主題次要文字對比不達 WCAG AA（與 UIUX 代理雙重實測一致）</div>
+        <div class="badges"><span class="sev high">High</span><span class="chip confirmed">CONFIRMED ×2</span><span class="chip cat">accessibility</span></div>
+      </div>
+      <div class="f-body">
+        <p>我用 <code>contrast-check.cjs</code> 實測的數字，與 UIUX 代理獨立跑出的完全吻合——兩種方法互相驗證。<code>--text-tertiary</code> 用於占位符、時間戳、分類計數、空狀態說明等大量要讀的文字：</p>
+        <div class="tbl-scroll">
+        <table class="measure-tbl">
+          <thead><tr><th>主題</th><th>前景 / 背景</th><th>對比</th><th>內文 AA (≥4.5)</th></tr></thead>
+          <tbody>
+            <tr><td>暖紙 warmpaper</td><td class="num">#9b9b9b / #fefcfa</td><td class="num">2.72:1</td><td class="fail">✗ 連大字 3:1 都不到</td></tr>
+            <tr><td>明亮 light</td><td class="num">#8b949e / #f6f8fa</td><td class="num">2.89:1</td><td class="fail">✗ 連大字 3:1 都不到</td></tr>
+            <tr><td>暗色 dark</td><td class="num">#6e7681 / #161b22</td><td class="num">3.77:1</td><td class="fail">✗ 內文不合格</td></tr>
+            <tr><td>夜間 night</td><td class="num">#6e7681 / #0d1117</td><td class="num">4.12:1</td><td class="fail">✗ 內文不合格</td></tr>
+          </tbody>
+        </table>
+        </div>
+        <p><span class="lbl">另外實測：</span>暗色主題次要按鈕前景 <code>#79c0ff</code> on <code>#0d47a1</code> = 4.44:1（小字未達 AA）、暗色警告文字 3.45:1。<span class="lbl">建議：</span>亮色主題把 tertiary 調暗到約 <code>#767676</code>、暗色調亮，逐一 contrast-check 複驗。</p>
+      </div>
+    </div>
+
+    <div class="finding low">
+      <div class="f-top">
+        <div class="f-title">運作正常、體驗良好的部分（實測確認）</div>
+        <div class="badges"><span class="sev low">正面</span><span class="chip confirmed">CONFIRMED</span></div>
+      </div>
+      <div class="f-body">
+        <p>首頁、筆記清單、任務清單、<span class="lbl">任務編輯彈窗（雙欄設計＋分段控制＋完整 Markdown 工具列，做得很好）</span>、行事曆月視圖、開問啦畫布都渲染乾淨、<b>0 console error</b>。手機 375px <b>無水平溢出</b>、漢堡選單正常、週格重排為 2 欄、區塊良好堆疊。四主題設計系統（token 驅動、FOUC 由 blocking script 避免、prefers-reduced-motion、focus-visible、hover:none 觸控降級）底子相當扎實。</p>
+      </div>
+    </div>
+  </section>
+
+  <hr class="div">
+
+  <!-- ============ PM ============ -->
+  <section id="pm">
+    <div class="role-head"><span class="role-badge">PM-Lead</span></div>
+    <div class="sec-head"><span class="sec-num">03</span><h2>產品完整性</h2></div>
+    <p class="assess">野心大、完成度出乎意料高；問題是「廣度勝過深度、承諾勝過交付」。README 對外承諾了「多人使用」「樂觀鎖」等其實沒做的能力，數個功能（重複規則、筆記併發）停在半成品，缺首次引導與跨裝置併發保護。加上龐大功能面全靠單人維護、前端零測試，<b>可持續性是最需正視的產品風險</b>。</p>
+    <div class="strengths">
+      <div class="sh">做得好</div>
+      <ul>
+        <li>資料隔離扎實且吃過教訓：全域查詢過濾（UserId + ValidFlag）＋ fail-closed 物化攔截器，曾修掉一個 CRITICAL 搜尋洩漏——安全邊界被認真對待。</li>
+        <li>統一垃圾桶集中所有軟刪除、可還原、顯示刪除時間，完全符合「禁硬刪、可救回」鐵則。</li>
+        <li>ActivityLog 由 SaveChanges 攔截器自動記錄（連 AI 建的節點都記），內建可稽核性。</li>
+        <li>文件誠實：README 連修過的 bug 與決策脈絡都記錄，對維護者是真實資產。</li>
+      </ul>
+    </div>
+
+    <div class="finding high">
+      <div class="f-top"><div class="f-title">README 宣稱樂觀鎖存在，實為 last-write-wins 無條件覆蓋</div><div class="badges"><span class="sev high">High</span><span class="chip plausible">PLAUSIBLE</span><span class="chip cat">correctness</span><span class="chip effort">M</span></div></div>
+      <div class="f-loc">README.md:794 · notes/[...slug]/page.tsx:292-318 · Domain/Entities 無 ConcurrencyToken</div>
+      <div class="f-body"><p>FAQ 白紙黑字寫「採樂觀鎖（EF Core [Timestamp] 欄）」，但整個 Domain 找不到任何 RowVersion/xmin。存檔直接覆蓋、不帶版本比對；外部 AI 經 PAT/MCP 走同一路徑。</p><p><span class="lbl">建議：</span>先修 README 誠實描述現況；要做就對 Note/TaskCard 加 xmin 併發 token，衝突回 409 讓前端提示。</p></div>
+      <div class="f-adjust"><b>驗證修正 → 建議降 MEDIUM：</b>後端每次 update 都寫 NoteRevision 快照且有還原端點，被覆蓋內容可復原、非永久遺失。真問題是「無衝突提示 + README 謊稱有樂觀鎖」。</div>
+    </div>
+
+    <div class="finding high">
+      <div class="f-top"><div class="f-title">對外承諾「支援多人使用」，實為多帳號隔離、無分享/協作/邀請</div><div class="badges"><span class="sev high">High</span><span class="chip plausible">PLAUSIBLE</span><span class="chip cat">feature-gap</span><span class="chip effort">S</span></div></div>
+      <div class="f-loc">README.md:3 · docs/design/升級執行計畫.md:55 · Domain 無 Workspace/Member/Share</div>
+      <div class="f-body"><p>升級計畫已決策「拿掉 Workspace、只切 User」。實際能力是多使用者各自隔離、彼此完全看不到——連一篇筆記都無法分享。</p><p><span class="lbl">建議：</span>定位語改為「個人（單人）知識系統」或明標「多帳號隔離，協作為 roadmap」。</p></div>
+      <div class="f-adjust"><b>驗證修正 → 建議降 LOW/MEDIUM：</b>「支援多人使用」字面為真（確實支援多位使用者各自隔離），屬用語易被誤讀成「協作」的文案清晰度問題，非不實承諾。</div>
+    </div>
+
+    <div class="finding med">
+      <div class="f-top"><div class="f-title">docs/DECISIONS.md 不存在，違反鐵則 #16；決策散落且含壞連結</div><div class="badges"><span class="sev med">Medium</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">dx</span><span class="chip effort">S</span></div></div>
+      <div class="f-loc">專案根目錄（缺）· 升級執行計畫.md:4 連向不存在的 待討論清單.md</div>
+      <div class="f-body"><p>決策目前散在「升級執行計畫.md」表格（非鐵則要求的敘事格式）。<span class="lbl">建議：</span>建 docs/DECISIONS.md，把 DB-as-truth、拿掉 Workspace、共用預設 AI 模型、快捷鍵存 DB 等關鍵決策各補一則；修壞連結。</p></div>
+    </div>
+
+    <div class="finding med">
+      <div class="f-top"><div class="f-title">沒有首次使用引導：空 DB + AI 需手動設定，新使用者卡冷啟動</div><div class="badges"><span class="sev med">Medium</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">ux</span><span class="chip effort">M</span></div></div>
+      <div class="f-loc">frontend/src/app（無 onboarding/tour）· README.md:426-452（AI 需手動設金鑰）</div>
+      <div class="f-body"><p>新註冊帳號進來是四個空模組，且 AI 預設不可用需自行設定。<span class="lbl">建議：</span>首登歡迎卡（三步：建筆記→建任務→設 AI）或可一鍵刪除的範例資料；AI 入口做「尚未設定模型，點此設定」導引而非靜默失效。</p></div>
+      <div class="f-adjust"><b>驗證補充：</b>首頁已有「快速操作列」四個帶提示的入口按鈕，並非零引導；真正缺的是 in-app 首次導覽／範例資料／AI 開箱即用。</div>
+    </div>
+
+    <div class="finding med">
+      <div class="f-top"><div class="f-title">筆記編輯器無「未儲存變更」離開防護，與任務編輯器不對稱</div><div class="badges"><span class="sev med">Medium</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">resilience</span><span class="chip effort">M</span></div></div>
+      <div class="f-loc">notes/[...slug]/page.tsx（無 beforeunload）· 對照 tasks/TaskEditorModal.tsx（有交易式暫存）</div>
+      <div class="f-body"><p>任務編輯器做了完整交易式編輯與放棄確認，筆記編輯器沒有等價保護——編輯到一半誤觸換筆記/上一頁/關分頁，內容直接消失無提示。<span class="lbl">建議：</span>複用任務側已驗證的暫存/放棄模式，把兩個編輯器的資料保護拉齊。</p></div>
+    </div>
+
+    <div class="finding med">
+      <div class="f-top"><div class="f-title">「重複規則」是半成品：schema 與文件都有，卻無設定 UI、無循環引擎</div><div class="badges"><span class="sev med">Medium</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">feature-gap</span><span class="chip effort">L</span></div></div>
+      <div class="f-loc">Domain/Entities/TaskCard.cs:57-59（RecurrenceRule）· Api 無 BackgroundService</div>
+      <div class="f-body"><p>欄位定義了、README 承諾了，但 Web 無從設定，且即便經 API 設定亦<b>不會產生任何週期實例</b>（無排程服務）。<span class="lbl">建議：</span>短期把 README 標為 roadmap；要做就補 RRULE 設定 UI ＋ 排程/查詢時展開，並記進 DECISIONS。</p></div>
+    </div>
+
+    <div class="finding med">
+      <div class="f-top"><div class="f-title">README 過時且自相矛盾：更新日期落後、MCP 工具數前後不一</div><div class="badges"><span class="sev med">Medium</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">dx</span><span class="chip effort">S</span></div></div>
+      <div class="f-loc">README.md:810（最後更新 06-11）· 40/604/773 寫「16」、560 寫「19」</div>
+      <div class="f-body"><p><span class="lbl">驗證補充：</span>實際註冊工具數為 <b>45</b>，故 16 與 19 皆錯且嚴重低估；第 560 行的清單本身也不完整。<span class="lbl">建議：</span>以 <code>mcp/src/index.ts</code> 實際 45 個為準統一 README 三處與 MCP使用說明.md，更新日期，並考慮改用 CHANGELOG。</p></div>
+    </div>
+
+    <div class="finding med">
+      <div class="f-top"><div class="f-title">範疇蔓延 vs 單人維護：巨大功能面 + 前端零測試 + 數千行巨檔</div><div class="badges"><span class="sev med">Medium</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">architecture</span><span class="chip effort">L</span></div></div>
+      <div class="f-loc">frontend 0 測試 · api.ts 2497 · Sidebar 1397 · KaiWenCanvasEndpoints 2216</div>
+      <div class="f-body"><p>功能面極寬（浮層便利貼/手繪/輪播、畫布 AI、語音捕捉、可改鍵快捷鍵、PDF、分鐘級拖拉…），每個只能淺測、改一處風險擴散。<span class="lbl">建議：</span>做一次「核心 vs 邊緣」盤點，把錦上添花功能凍結為維護級，集中資源打磨筆記/任務/搜尋三主線，並為關鍵前端流程補最小測試止血。</p></div>
+    </div>
+
+    <div class="finding low">
+      <div class="f-top"><div class="f-title">全域搜尋偏弱：無標籤/分類/留言、LIKE 比對、無相關性排序</div><div class="badges"><span class="sev low">Low</span><span class="chip plausible">PLAUSIBLE</span><span class="chip cat">feature-gap</span><span class="chip effort">M</span></div></div>
+      <div class="f-loc">SearchEndpoints.cs:25-32（僅 Note/Task/Canvas/Node 標題與內容）</div>
+      <div class="f-body"><p>對標 Obsidian/Logseq 明顯落後。<span class="lbl">建議：</span>擴充搜尋範圍到標籤/分類/捕捉；中期引入 PostgreSQL 全文檢索（tsvector + ts_rank）做相關性排序，加類型/標籤篩選與鍵盤跳轉。</p></div>
+    </div>
+  </section>
+
+  <hr class="div">
+
+  <!-- ============ FRONTEND ============ -->
+  <section id="fe">
+    <div class="role-head"><span class="role-badge">Frontend-Tech-Lead</span></div>
+    <div class="sec-head"><span class="sec-num">04</span><h2>前端工程</h2></div>
+    <p class="assess">個人專案裡屬中上：型別安全極佳（全庫僅 1 處 any）、註解與繁中 summary 完整、SWR 與 SSE 穩定化（useCanvas 明確避開重訂閱迴圈）。弱點集中在「規模化」：雙軌狀態管理、God 檔、清單無分頁/虛擬化/程式碼分割、零單元測試——正好侵蝕「好擴充、反應快、成本低廉」的自我定位。</p>
+
+    <div class="finding high">
+      <div class="f-top"><div class="f-title">狀態管理雙軌並存：SWR 層與元件本地 state 各抓一份，重複請求</div><div class="badges"><span class="sev high">High</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">architecture</span><span class="chip effort">L</span></div></div>
+      <div class="f-loc">lib/swr.ts vs Sidebar.tsx:107-146 · notes/[...slug]/page.tsx:66-68 · getCurrentUser 在 11 檔直呼</div>
+      <div class="f-body"><p>SWR 快取 hook 與「自己 useState + 手動 fetch + window CustomEvent 通知重抓」兩套真相並行。Sidebar 每次 pathname 改變就重抓全部筆記。同一份資料一次換頁被打數次 API、快取無法跨頁共用。<span class="lbl">建議：</span>收斂為單一資料流，跨元件失效改用 SWR <code>mutate(key)</code> 而非 window 事件。</p></div>
+      <div class="f-adjust"><b>驗證補充：</b>Sidebar 因 useEffect 早於 early-return、元件常駐 layout，導致<b>全站任何換頁</b>（含側欄隱藏的 /tasks、首頁、垃圾桶）都會 listNotes() 重抓整份筆記——比原描述範圍更廣。</div>
+    </div>
+
+    <div class="finding high">
+      <div class="f-top"><div class="f-title">Sidebar 是 1397 行、27 個 useState 的 God Component，整棵樹每次全重繪</div><div class="badges"><span class="sev high">High</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">performance</span><span class="chip effort">L</span></div></div>
+      <div class="f-loc">components/Sidebar.tsx:53-1397（renderNode 遞迴 870-1079）</div>
+      <div class="f-body"><p>renderNode/renderNoteRow 是元件內普通函數（非 memo 子元件）。任一 state 變動（拖曳每次 hover、收合切換、開編輯器）都重跑整個元件、重建整棵含所有筆記列的 JSX。<span class="lbl">建議：</span>樹節點抽成 <code>React.memo</code> 子元件，拖曳/收合狀態隔離，依關注點拆成多檔（目標 &lt;400 行/檔）。</p></div>
+    </div>
+
+    <div class="finding high">
+      <div class="f-top"><div class="f-title">lib/api.ts 為 2497 行、113 個匯出函數的單體 API 模組</div><div class="badges"><span class="sev high">High</span><span class="chip plausible">PLAUSIBLE</span><span class="chip cat">architecture</span><span class="chip effort">L</span></div></div>
+      <div class="f-loc">frontend/src/lib/api.ts（全檔）</div>
+      <div class="f-body"><p>所有領域的型別與 API 函數塞同一檔，3 倍超出 800 行慣例。新增模組沒有清楚落點，違反「好擴充」。<span class="lbl">建議：</span>按領域拆 <code>lib/api/{notes,tasks,canvas,auth}.ts</code> + 共用 <code>client.ts</code>，用 index barrel 維持既有 import 相容逐步遷移。</p></div>
+      <div class="f-adjust"><b>驗證修正 → 建議降 MEDIUM（但應優先處理）：</b>純維護性問題、無 bug 風險；因是所有前端資料存取的單一 chokepoint 故值得優先。</div>
+    </div>
+
+    <div class="finding med">
+      <div class="f-top"><div class="f-title">清單 API 無分頁上限、UI 無虛擬化，隨資料量線性變慢</div><div class="badges"><span class="sev med">Medium</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">performance</span><span class="chip effort">M</span></div></div>
+      <div class="f-loc">lib/api.ts:1065 listNotes / 1237 listTaskCards（皆一次抓全部）· 無虛擬化套件</div>
+      <div class="f-body"><p>清單端點無 limit/offset 一律回全部；前端 <code>.map</code> 全量渲染。數百上千筆時進頁全抓＋全渲染會卡。<span class="lbl">建議：</span>後端加分頁；長清單導入 <code>@tanstack/react-virtual</code>；收合分類不渲染子筆記 DOM。</p></div>
+    </div>
+
+    <div class="finding med">
+      <div class="f-top"><div class="f-title">零程式碼分割：無任何 next/dynamic，重量級元件全靜態載入</div><div class="badges"><span class="sev med">Medium</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">performance</span><span class="chip effort">S</span></div></div>
+      <div class="f-loc">全庫 grep next/dynamic = 0 · React Flow / MarkdownEditor / NoteOverlay(977)</div>
+      <div class="f-body"><p>只靠路由級分割。編輯器/白板/畫布這類「互動時才需要」的重程式碼被打進初始 bundle。<span class="lbl">建議：</span>MarkdownEditor 進編輯模式才載、NoteOverlay 開啟才載、React Flow 用 <code>dynamic + ssr:false</code>。</p></div>
+    </div>
+
+    <div class="finding med">
+      <div class="f-top"><div class="f-title">前端 0 單元測試，違反 80% 覆蓋率鐵則</div><div class="badges"><span class="sev med">Medium</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">testing</span><span class="chip effort">L</span></div></div>
+      <div class="f-loc">frontend/（148 個 ts/tsx、~38K 行，無任何 *.test.ts）</div>
+      <div class="f-body"><p>最適合測的純函數（formatters、buildToc、parseToggleSegments、查詢字串組裝）全無保護。<span class="lbl">建議：</span>導入 Vitest + RTL，先補 lib/ 純函數（成本低價值高），CI 加測試關卡。</p></div>
+    </div>
+
+    <div class="finding med">
+      <div class="f-top"><div class="f-title">前端直接 dangerouslySetInnerHTML 渲染後端 HTML，無前端消毒層</div><div class="badges"><span class="sev med">Medium</span><span class="chip plausible">PLAUSIBLE</span><span class="chip cat">security</span><span class="chip effort">S</span></div></div>
+      <div class="f-loc">notes/[...slug]/page.tsx:817 · components/ArticleView.tsx:89</div>
+      <div class="f-body"><p>已裝 react-markdown 卻未用於此處。<span class="lbl">建議：</span>加 DOMPurify 或改走受控渲染作第二道防線。</p></div>
+      <div class="f-adjust"><b>驗證修正 → 建議降 LOW：</b>筆記 HTML 皆由後端 DisableHtml 管線產生（有測試佐證），現況無可利用 XSS；ArticleView 的外部內容已被 HtmlToText 剝成純文字，且其 /a 路由因 getArticle() 恆回 null 為 dead code。實質僅為縱深防禦建議，另建議清理 dead code。</div>
+    </div>
+
+    <div class="finding low">
+      <div class="f-top"><div class="f-title">跨元件溝通大量依賴 window CustomEvent 當狀態匯流排</div><div class="badges"><span class="sev low">Low</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">architecture</span><span class="chip effort">M</span></div></div>
+      <div class="f-loc">全庫 84 處 addEventListener / 45 檔 · Sidebar.tsx:123-210</div>
+      <div class="f-body"><p>元件間同步繞過 React 資料流、detail 型別弱。<span class="lbl">建議：</span>改走 SWR mutate 或型別化的輕量 event bus，window 事件僅留給真正全域的鍵盤/快捷鍵。（目前監聽點皆已正確 cleanup，無既存洩漏。）</p></div>
+    </div>
+
+    <div class="finding low">
+      <div class="f-top"><div class="f-title">Modal 焦點管理不完整、無 focus trap</div><div class="badges"><span class="sev low">Low</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">accessibility</span><span class="chip effort">S</span></div></div>
+      <div class="f-loc">全庫 13 處 role="dialog"，僅 3 處 Modal ref · 基礎 Modal.tsx 連 Escape 關閉都缺</div>
+      <div class="f-body"><p>彈窗開啟時 Tab 可跑到背景、關閉後焦點不回觸發按鈕。<span class="lbl">建議：</span>做共用 <code>useFocusTrap</code> hook（聚焦首個元素、循環 Tab、Escape 關、關後 restore）套用到 13 個 dialog。</p></div>
+    </div>
+  </section>
+
+  <hr class="div">
+
+  <!-- ============ BACKEND ============ -->
+  <section id="be">
+    <div class="role-head"><span class="role-badge">Backend-Tech-Lead</span></div>
+    <div class="sec-head"><span class="sec-num">05</span><h2>後端工程</h2></div>
+    <p class="assess">單人專案中屬中上：多租戶隔離用了「全域查詢過濾 + fail-closed 具現化攔截器 + 每個畫布子實體手動 Canvas.UserId Join」三層縱深，且註解把歷史漏洞與修法都記錄下來。弱點集中在「規模化與濫用防護」與「架構凝聚度」：全站零 rate limiting、AI 端點無上限 fire-and-forget，以及 2216 行的巨型端點檔。無致命的跨帳號外洩或注入。</p>
+
+    <div class="finding high">
+      <div class="f-top"><div class="f-title">全站零 rate limiting，AI／精煉端點可被無上限觸發（成本濫用/DoS）</div><div class="badges"><span class="sev high">High</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">cost</span><span class="chip effort">M</span></div></div>
+      <div class="f-loc">Program.cs（未 AddRateLimiter）· RefineEndpoints.cs:66,194 · KaiWenCanvasEndpoints.cs:1800,1847,1894</div>
+      <div class="f-body"><p>所有寫入與 AI 端點皆無節流；<code>_ = Task.Run(...)</code> fire-and-forget 無併發上限，每次 spawn yt-dlp/ffmpeg 子行程 + 呼叫付費 API。<span class="lbl">建議：</span>導入 .NET RateLimiter 對 AI/寫入端點掛 per-user 限流，並為背景工作加全域併發閘（SemaphoreSlim/有界 Channel）＋每使用者同時 Running 數量上限。</p></div>
+    </div>
+
+    <div class="finding high">
+      <div class="f-top"><div class="f-title">SaveModelsConfig 把例外訊息回傳給客戶端，洩漏內部錯誤細節</div><div class="badges"><span class="sev high">High</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">security</span><span class="chip effort">S</span></div></div>
+      <div class="f-loc">KaiWenCanvasEndpoints.cs:2147-2153</div>
+      <div class="f-body"><p>catch 回 <code>Fail($"...{ex.Message}")</code> 且以 400 表達 500 級錯誤；ex.Message 可能含 SQL 片段/約束名。此端點正是處理加密 API 金鑰的敏感路徑，且<b>連 log 都沒寫</b>（註解說要記卻沒 logger.LogError）。<span class="lbl">建議：</span>對外回固定友善訊息、改 500，完整例外記進 logger。</p></div>
+    </div>
+
+    <div class="finding med">
+      <div class="f-top"><div class="f-title">KaiWenCanvasEndpoints 2216 行：無 Service 層、DTO 映射大量重複</div><div class="badges"><span class="sev med">Medium</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">architecture</span><span class="chip effort">L</span></div></div>
+      <div class="f-loc">KaiWenCanvasEndpoints.cs（整檔）· NodeDto 映射重複於 705/940/1040/1106/1161</div>
+      <div class="f-body"><p><code>new NodeDto(15欄位)</code> 在 5+ 處逐字複製；資料存取與業務邏輯全內嵌端點方法。改一欄位得手動同步多處、極易映射漂移。<span class="lbl">建議：</span>抽 CanvasService（承載擁有權驗證＋CRUD）、映射集中成 static ToDto，依子領域拆檔。</p></div>
+    </div>
+
+    <div class="finding med">
+      <div class="f-top"><div class="f-title">Wiki 連結解析為 N+1 查詢：每個 [[連結]] 逐一往返資料庫</div><div class="badges"><span class="sev med">Medium</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">performance</span><span class="chip effort">S</span></div></div>
+      <div class="f-loc">NoteWriteEndpoints.cs:1250-1292 · 同類亦在 AiIntegrationEndpoints.cs:410-434</div>
+      <div class="f-body"><p>每個 <code>[[X]]</code> 在 foreach 內 await 一次 FirstOrDefaultAsync。K 個連結 = K 趟序列化往返。<span class="lbl">建議：</span>先收集所有 anchorText 去重，用單一 <code>WHERE ... IN</code> 撈回候選、記憶體比對，K 趟收斂成 1 趟（兩處一併修）。</p></div>
+    </div>
+
+    <div class="finding med">
+      <div class="f-top"><div class="f-title">Node／Note 全無樂觀鎖，並發編輯靜默覆蓋（lost update）</div><div class="badges"><span class="sev med">Medium</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">correctness</span><span class="chip effort">M</span></div></div>
+      <div class="f-loc">KaiWenCanvasEndpoints.cs:1064-1104,965-1058 · NoteWriteEndpoints.cs:337-459</div>
+      <div class="f-body"><p>讀→改→SaveChanges，無 rowversion/xmin。多裝置同時編輯後寫者無條件覆蓋、雙方都收成功。<span class="lbl">建議：</span>加 PostgreSQL xmin 併發權杖，<code>DbUpdateConcurrencyException</code> 回 409。（有 NodeRevision/NoteRevision 部分緩解、可還原但無衝突偵測。）</p></div>
+    </div>
+
+    <div class="finding med">
+      <div class="f-top"><div class="f-title">SSRF 守門有 TOCTOU／DNS-rebinding 與轉址破口</div><div class="badges"><span class="sev med">Medium</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">security</span><span class="chip effort">M</span></div></div>
+      <div class="f-loc">Refine/RefineUrlGuard.cs:18-59（43-49 解析失敗即放行）· ArticleFetchService.cs:49 · YtDlpService.cs:105</div>
+      <div class="f-body"><p>守門先 DNS 解析核對，但 yt-dlp 與 HttpClient 各自重新解析（可被 rebind 到 169.254.169.254）；不驗 3xx 轉址目標；解析失敗直接放行；未處理 IPv4-mapped IPv6。GCP 中繼資料端點是高價值目標。<span class="lbl">建議：</span>HttpClient <code>AllowAutoRedirect=false</code> 逐個轉址重驗、用釘住的 IP 連線、解析失敗改 fail-closed、補 IPv4-mapped 判斷。</p></div>
+    </div>
+
+    <div class="finding med">
+      <div class="f-top"><div class="f-title">UpdateNoteHandler 無法把內容/標題清空（IsNullOrWhiteSpace 當「有無傳入」誤用）</div><div class="badges"><span class="sev med">Medium</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">correctness</span><span class="chip effort">S</span></div></div>
+      <div class="f-loc">NoteWriteEndpoints.cs:367-379</div>
+      <div class="f-body"><p><code>if (!IsNullOrWhiteSpace(request.Title))</code> 把「未傳欄位（PATCH）」與「傳空字串（要清空）」混為一談，使用者永遠無法清空內容。<span class="lbl">建議：</span>改用 <code>is not null</code> 判斷是否傳入，值本身允許空字串。</p></div>
+      <div class="f-adjust"><b>驗證修正 → LOW~MEDIUM：</b>語意誤用屬實、修法簡單，但「清空整篇」屬低頻操作。</div>
+    </div>
+
+    <div class="finding low">
+      <div class="f-top"><div class="f-title">Calendar 重疊查詢用 COALESCE 比較，無法命中索引且缺 PlannedDateTime 索引</div><div class="badges"><span class="sev low">Low</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">performance</span><span class="chip effort">S</span></div></div>
+      <div class="f-loc">CalendarEndpoints.cs:50-68 · TaskCardConfiguration.cs:26-28（只有 UserId,Status / UserId,DueDateTime）</div>
+      <div class="f-body"><p><code>(Planned ?? Due)</code> COALESCE 讓 range 條件不 sargable。<span class="lbl">建議：</span>加 <code>(UserId, PlannedDateTime)</code> 索引，或改寫成兩個實欄位各自可用索引的 OR 條件。（UserId 前綴仍可收斂範圍，非全表掃描。）</p></div>
+    </div>
+
+    <div class="finding low">
+      <div class="f-top"><div class="f-title">UpdateNodeLayout 手動解析 body、大小寫敏感、JSON 錯誤靜默吞掉</div><div class="badges"><span class="sev low">Low</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">dx</span><span class="chip effort">S</span></div></div>
+      <div class="f-loc">KaiWenCanvasEndpoints.cs:965-1036（catch{} 靜默於 1032-1035）</div>
+      <div class="f-body"><p>不用強型別 DTO，自己 StreamReader + TryGetProperty（大小寫敏感），送壞資料回 200 但什麼都沒改。<span class="lbl">建議：</span>改強型別 request record（nullable 表達 partial update），解析失敗回 400。</p></div>
+    </div>
+
+    <div class="finding low">
+      <div class="f-top"><div class="f-title">AuditingSaveChangesInterceptor 有無效自我指派（死碼/誤導）</div><div class="badges"><span class="sev low">Low</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">correctness</span><span class="chip effort">S</span></div></div>
+      <div class="f-loc">Persistence/AuditingSaveChangesInterceptor.cs:52</div>
+      <div class="f-body"><p><code>entry.Entity.ValidFlag = entry.Entity.ValidFlag;</code> 無作用。<span class="lbl">建議：</span>直接刪除（ValidFlag=true 已由 AuditableEntity 欄位初始化保證）。</p></div>
+    </div>
+  </section>
+
+  <hr class="div">
+
+  <!-- ============ QA ============ -->
+  <section id="qa">
+    <div class="role-head"><span class="role-badge">QA-Tech-Lead</span></div>
+    <div class="sec-head"><span class="sec-num">06</span><h2>測試與品質保證</h2></div>
+    <p class="assess">投資「深而窄」：多租戶隔離與非同步 AI 佇列兩塊真的下了功夫（Testcontainers 真 Postgres ＋掛正式攔截器驗 fail-closed），但整體策略有嚴重系統性缺陷——CI 不跑測試、一批「EndpointsTests」其實沒測到 endpoint、還有同義反覆測試。<b>「80% 覆蓋率」與事實嚴重不符</b>。</p>
+
+    <div class="finding crit">
+      <div class="f-top"><div class="f-title">CI 從不執行測試、無 PR 閘門、無覆蓋率量測——「80% 覆蓋」是無法兌現的口號</div><div class="badges"><span class="sev crit">Critical</span><span class="chip plausible">PLAUSIBLE</span><span class="chip cat">testing</span><span class="chip effort">S</span></div></div>
+      <div class="f-loc">.github/workflows/build.yml · deploy.yml · README.md:508/532/808</div>
+      <div class="f-body"><p>build.yml 只做 docker build-push（無 <code>dotnet test</code>），deploy.yml build 成功即 pull+重啟 VM，無任何 <code>pull_request</code> 觸發。壞 code 可直接 merge→自動部署到 prod 而測試從未跑過。<span class="lbl">建議：</span>加 <code>on: pull_request</code> 的 <code>dotnet test --collect</code> job，未過擋 merge、deploy 依賴其成功；80% 若做不到就改成誠實值。</p></div>
+      <div class="f-adjust"><b>驗證修正 → 建議降 HIGH：</b>屬品質/流程防線缺口而非安全漏洞/資料遺失，依 severity 表落 HIGH。不實承諾集中在 README 532/808 兩行。</div>
+    </div>
+
+    <div class="finding high">
+      <div class="f-top"><div class="f-title">「EndpointsTests」其實沒測到任何 endpoint——Api handler 層零 HTTP 覆蓋</div><div class="badges"><span class="sev high">High</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">testing</span><span class="chip effort">L</span></div></div>
+      <div class="f-loc">tests/ZonWiki.Api.Tests/Endpoints/*.cs（TaskEndpointsTests 965 · NoteWriteEndpointsTests 627…）</div>
+      <div class="f-body"><p>這批檔案沒有 <code>using ZonWiki.Api</code>、沒有 HttpClient、也不呼叫任何 handler——只在 InMemory DB 上 Add→SaveChanges→讀回，等於在測 EF Core。核心 handler 的驗證/授權/對映/業務規則<b>零自動化保護</b>，卻被算進「覆蓋率」，是最危險的假安全感。<span class="lbl">建議：</span>接 <code>WebApplicationFactory&lt;Program&gt;</code> 透過 HttpClient 打實際路由；既有 InMemory CRUD 測試更名為 *PersistenceTests 以免誤導。</p></div>
+      <div class="f-adjust"><b>驗證補充：</b>並非「Api 層全無覆蓋」——AskQueueServiceTests、CanvasSystemPromptResolverTests、NoteContentHelpersTests、UserDataIsolationTests 有直接測生產類別；缺口精確說是「Endpoints/*.cs 這批最大宗檔案沒測到 handler」。</div>
+    </div>
+
+    <div class="finding high">
+      <div class="f-top"><div class="f-title">存在同義反覆（tautological）測試：斷言測試自己剛設的值</div><div class="badges"><span class="sev high">High</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">testing</span><span class="chip effort">M</span></div></div>
+      <div class="f-loc">tests/ZonWiki.Api.Tests/Endpoints/TaskEndpointsTests.cs:109（UpdateTaskStatus_TransitionsCorrectly）</div>
+      <div class="f-body"><p>測試自己 <code>card.Status = toStatus</code> 存檔再 <code>Assert Be(toStatus)</code>——沒呼叫任何流轉邏輯，只驗「設 X 讀回還是 X」。命名宣稱 TransitionsCorrectly 卻無任何規則被檢查、無非法案例。永遠綠燈、零回歸價值。<span class="lbl">建議：</span>改呼叫真 handler，補非法轉換、未知狀態、跨使用者改他人卡片等負面案例，並斷言 done→非done 會清空 CompletedDateTime。</p></div>
+    </div>
+
+    <div class="finding high">
+      <div class="f-top"><div class="f-title">前端 38K 行 0 測試、0 測試工具——AI 同人寫同人審的最大回歸黑洞</div><div class="badges"><span class="sev high">High</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">testing</span><span class="chip effort">L</span></div></div>
+      <div class="f-loc">frontend/package.json（無 test script）· api.ts(2497) · useCanvas.ts(920) · NoteOverlay.tsx(925)</div>
+      <div class="f-body"><p>grep 不到 jest/vitest/testing-library/playwright 任何框架。依鐵則 #14/ai-regression 精神，同一顆模型寫又審有系統性盲點，缺測試時重構巨檔是高風險賭注（改 A 壞 B 而 CI 全綠）。<span class="lbl">建議：</span>最低限度為 api.ts 請求組裝/錯誤處理與純函式建 Vitest，關鍵互動元件用 RTL，<code>test</code> 納入 CI。</p></div>
+    </div>
+
+    <div class="finding med">
+      <div class="f-top"><div class="f-title">清一色 InMemory provider，隱藏 Postgres 專屬行為（時區/搜尋/約束都沒真的測）</div><div class="badges"><span class="sev med">Medium</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">correctness</span><span class="chip effort">M</span></div></div>
+      <div class="f-loc">CalendarAndHomeEndpointsTests.cs · SearchEndpoints（無測試檔）· 9 個用 UseInMemoryDatabase</div>
+      <div class="f-body"><p>InMemory 不執行真 SQL、不支援 ILIKE/全文檢索、timestamptz 時區語意也不同。搜尋（無測試打 /api/search）與 UTC 換算恰是最易錯的盲區。<span class="lbl">建議：</span>把日期區間、搜尋、軟刪除過濾的測試遷到 Testcontainers（ICollectionFixture 共用容器）。</p></div>
+    </div>
+
+    <div class="finding med">
+      <div class="f-top"><div class="f-title">關鍵路徑無覆蓋：SSE 串流、AskOrchestrator、PAT 認證、Search、Comment</div><div class="badges"><span class="sev med">Medium</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">feature-gap</span><span class="chip effort">L</span></div></div>
+      <div class="f-loc">32 個 endpoint 檔僅 ~9 個有對應測試檔且未打 handler</div>
+      <div class="f-body"><p>SSE 即時聊天零測試、AskOrchestrator(776) 無專屬測試、PAT（Bearer/SHA-256 供外部 AI）的 token 驗證/雜湊/撤銷完全無測。<span class="lbl">建議：</span>依風險排序補測——先 PAT 認證與 AskOrchestrator fallback 鏈，再 SSE 串流，最後 Canvas CRUD，皆走真 HTTP。</p></div>
+    </div>
+
+    <div class="finding med">
+      <div class="f-top"><div class="f-title">幾乎沒有負面/授權拒絕/並發案例——只測 happy path</div><div class="badges"><span class="sev med">Medium</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">testing</span><span class="chip effort">M</span></div></div>
+      <div class="f-loc">全 tests 樹 403/404/Unauthorized 斷言僅 6 處 · 並發 0</div>
+      <div class="f-body"><p>各 endpoint 的「改他人資源被拒/不存在回 404/驗證失敗回 400」幾乎沒測；AskQueue 背景佇列無競態測試。<span class="lbl">建議：</span>每個寫入端點補授權拒絕/404/400 三類負面案例，AskQueue 補並發入列與逾時回收測試。（多租戶隔離本身已由 UserDataIsolationTests 相當紮實覆蓋。）</p></div>
+    </div>
+
+    <div class="finding med">
+      <div class="f-top"><div class="f-title">README 記載了不存在的測試結構（幻影檔案）與跑不動的示範指令</div><div class="badges"><span class="sev med">Medium</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">dx</span><span class="chip effort">S</span></div></div>
+      <div class="f-loc">README.md:514-546（列出 Domain.Tests/Integration.Tests/NoteSlugGeneratorTests，皆 NOT FOUND）</div>
+      <div class="f-body"><p>實際只有 ZonWiki.Api.Tests 與 Infrastructure.Tests。公開 repo 貢獻者照 README 找不到檔案。<span class="lbl">建議：</span>更新為真實檔案樹，並把測試策略決策（InMemory vs Testcontainers、HTTP harness 延後理由）記進 DECISIONS.md。</p></div>
+    </div>
+
+    <div class="finding low">
+      <div class="f-top"><div class="f-title">E2E 徒有截圖、無自動化——UI 關鍵流程零回歸網</div><div class="badges"><span class="sev low">Low</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">testing</span><span class="chip effort">M</span></div></div>
+      <div class="f-loc">zonwiki-ui-tests/（約 90 個 .png 截圖，無 .spec）· package.json 無 playwright 相依</div>
+      <div class="f-body"><p>登入/筆記/看板/Canvas/搜尋這些跨前後端流程沒有可重播 E2E。<span class="lbl">建議：</span>把既有手動流程固化成少量 <code>@playwright/test</code> 腳本納入 CI，截圖改為測試產物。（驗證者建議此項可上調至 MEDIUM。）</p></div>
+    </div>
+  </section>
+
+  <hr class="div">
+
+  <!-- ============ UIUX ============ -->
+  <section id="uiux">
+    <div class="role-head"><span class="role-badge">UIUX-Lead</span></div>
+    <div class="sec-head"><span class="sec-num">07</span><h2>UI / UX 與無障礙</h2></div>
+    <p class="assess">底子相當好：完整的、以語意 token 驅動的四主題設計系統，FOUC 由 blocking script 妥善避免，並顧到 prefers-reduced-motion、focus-visible、hover:none 觸控降級、鍵盤可達與 aria。但實測（contrast-check + grep 交叉核對）暴露兩個「會實際壞掉」的問題——錯誤色票未定義、次要文字對比不足。</p>
+
+    <div class="finding high">
+      <div class="f-top"><div class="f-title">錯誤色票 --status-error-* 從未定義，錯誤回饋在四主題全失效</div><div class="badges"><span class="sev high">High</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">correctness</span><span class="chip effort">S</span></div></div>
+      <div class="f-loc">globals.css（僅定義 --status-danger-*）· ToastHost.tsx:30-32 · LoginForm.tsx:220-222 · AiProcessingMenu.tsx:225,298</div>
+      <div class="f-body"><p>globals.css 定義的是 <code>--status-danger-*</code>，但錯誤 toast、登入失敗框、AI 失敗文字都引用<b>未定義且無 fallback</b>的 <code>--status-error-*</code>——CSS 未定義變數又無 fallback 時整條宣告失效：背景不套、邊框不套、文字色退回繼承。使用者最重要的「出錯了」回饋在四主題下都<b>失去紅底紅框</b>，只剩一個 ⚠️ emoji。<span class="lbl">建議：</span>四個主題各補 <code>--status-error-bg/fg</code>（可指向既有 danger 值）或全域改引用 danger；修完用 Playwright 觸發錯誤 toast 與登入失敗實截四主題確認紅色回來。</p></div>
+    </div>
+
+    <div class="finding high">
+      <div class="f-top"><div class="f-title">次要文字色 text-tertiary 對比在四主題全數不達 WCAG AA</div><div class="badges"><span class="sev high">High</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">accessibility</span><span class="chip effort">S</span></div></div>
+      <div class="f-loc">globals.css:25/121/159/197 · 套用於 ::placeholder、.nt-count、.nt-muted、.nav-hint</div>
+      <div class="f-body"><p>實測：warmpaper 2.72 / light 2.89 / dark 3.77 / night 4.12（全 &lt;4.5，亮色兩主題連 3:1 都不到）。正是鐵則黑名單「灰配灰的次要文字/placeholder」。<span class="lbl">建議：</span>亮色調暗（warmpaper→約 #767676）、暗色調亮直到 ≥4.5，逐一 contrast-check 複驗；純裝飾圖示可保留但加 aria-hidden。<span class="lbl">（與我 §02 的實測完全一致。）</span></p></div>
+    </div>
+
+    <div class="finding med">
+      <div class="f-top"><div class="f-title">暗色主題多組次要 UI 色對比未達內文 AA</div><div class="badges"><span class="sev med">Medium</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">accessibility</span><span class="chip effort">S</span></div></div>
+      <div class="f-loc">globals.css dark：連結 #79c0ff/#0d47a1=4.44:1 · 警告 #d29922/#5a4a00=3.45:1</div>
+      <div class="f-body"><p>連結 4.44:1 屬臨界；<b>警告 3.45:1 才是較嚴重者</b>（弱化警告語意）。night 主題同組因底更深反而達標，顯示只有 dark 沒調到位。<span class="lbl">建議：</span>dark 把 warning-bg 加深/fg 提亮達 4.5，優先修 warning。（另 src/lib/theme.ts 有一組未引用的死碼 token 可順手清。）</p></div>
+    </div>
+
+    <div class="finding med">
+      <div class="f-top"><div class="f-title">密集操作按鈕觸控目標遠小於 44px</div><div class="badges"><span class="sev med">Medium</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">accessibility</span><span class="chip effort">M</span></div></div>
+      <div class="f-loc">globals.css：.icon-btn 36×36 · .nt-caret 18×18 · .nt-actions 24×24 · .nt-sortbtn 20×20</div>
+      <div class="f-body"><p>分類樹展開箭頭 18px、行內編輯/刪除 24px、手機排序鈕 20px，皆遠低於 44×44。手機上易誤觸鄰項或點不到。<span class="lbl">建議：</span>觸控斷點內把命中區 min-width/height 提到 44px（用透明 padding 擴大命中、視覺 icon 維持小），或改 kebab 選單集中操作。</p></div>
+    </div>
+
+    <div class="finding med">
+      <div class="f-top"><div class="f-title">破壞性操作大量用瀏覽器原生 window.confirm，與自訂 Modal 混用</div><div class="badges"><span class="sev med">Medium</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">ux</span><span class="chip effort">M</span></div></div>
+      <div class="f-loc">27 處 window.confirm 散布 20+ 檔 · 另有主題化 Modal.tsx/TrashModal.tsx</div>
+      <div class="f-body"><p>App 已有主題化 Modal 體系，但破壞性確認幾乎清一色繞過它退回原生 confirm（無法套主題、行動裝置醜、無法客製）。<span class="lbl">建議：</span>抽出 <code>useConfirm/ConfirmDialog</code> 統一元件（紅色主要鈕、Esc/Enter、focus trap）收斂全部 27 處。</p></div>
+    </div>
+
+    <div class="finding low">
+      <div class="f-top"><div class="f-title">畫布便利貼/文字框寫死顏色，未接主題</div><div class="badges"><span class="sev low">Low</span><span class="chip plausible">PLAUSIBLE</span><span class="chip cat">architecture</span><span class="chip effort">M</span></div></div>
+      <div class="f-loc">overlay/StickyBody.tsx · drawing/TextBox.tsx · NoteOverlay.tsx:740（#333/#999/#aaa/#2563eb）</div>
+      <div class="f-body"><p><span class="lbl">驗證修正 → 建議降 LOW/MEDIUM：</span>便利貼固定深字配淺紙底屬紙張隱喻的合理設計（業界常態，不必隨四主題翻轉）；TextBox 選取握把固定色也可接受。真正可行動的：便利貼背景<b>已可</b>用全色盤自訂任意色，配寫死 <code>#333</code> 內文在深底下對比不足；<code>#999</code> 提示在半透明白底約 2.8:1（&lt;3:1）。建議便利貼內文改依底色亮度自動決定深/淺前景。</p></div>
+    </div>
+
+    <div class="finding low">
+      <div class="f-top"><div class="f-title">--font-sans token 未定義，複製鈕字體 fallback 缺失</div><div class="badges"><span class="sev low">Low</span><span class="chip plausible">PLAUSIBLE</span><span class="chip cat">correctness</span><span class="chip effort">S</span></div></div>
+      <div class="f-loc">globals.css:865（.code-copy-btn font-family: var(--font-sans) 無 fallback）</div>
+      <div class="f-body"><p>Token 只有 --font-body 與 --font-mono，無 --font-sans。<span class="lbl">建議：</span>改 <code>var(--font-body)</code> 或補 fallback。（實際繼承到 body 無襯線字體，視覺影響幾近於零，但屬明確 token 誤用。）</p></div>
+    </div>
+
+    <div class="finding low">
+      <div class="f-top"><div class="f-title">btn-danger hover 寫死 #ae2a19，暗色主題下 hover 反而變暗變濁</div><div class="badges"><span class="sev low">Low</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">ux</span><span class="chip effort">S</span></div></div>
+      <div class="f-loc">globals.css:571-573 · components/Button.tsx:115</div>
+      <div class="f-body"><p>基底用 <code>var(--status-danger-fg)</code>（dark 為亮紅 #f85149）但 hover 一律寫死暗紅。<b>light 主題基底本身就是 #ae2a19，等於 hover 完全無視覺回饋。</b><span class="lbl">建議：</span>hover 改 <code>filter:brightness()</code> 或各主題定義 <code>--status-danger-hover</code>，同步修 Button.tsx:115 以免漂移。</p></div>
+    </div>
+  </section>
+
+  <hr class="div">
+
+  <!-- ============ SRE ============ -->
+  <section id="sre">
+    <div class="role-head"><span class="role-badge">SRE-Lead</span></div>
+    <div class="sec-head"><span class="sec-num">08</span><h2>部署・可觀測性・成本・韌性</h2></div>
+    <p class="assess">以「單人維護、低成本」的定位看，幾個關鍵點做得比多數個人專案好：DataProtection 金鑰環的容器持久化被正確解掉、日誌有硬性磁碟上限、Cloudflare Tunnel 不開公網埠、映像在 CI 建好推 GHCR。最致命的缺口是<b>交付品質與資料保全</b>：CI 無測試閘門即自動部署、部署 zone 疑似指向舊 VM、全站無 rate limit。</p>
+
+    <div class="finding crit">
+      <div class="f-top"><div class="f-title">正式環境無「碼化且可驗證」的自動 DB 備份</div><div class="badges"><span class="sev crit">Critical</span><span class="chip plausible">PLAUSIBLE</span><span class="chip cat">resilience</span><span class="chip effort">S</span></div></div>
+      <div class="f-loc">docker-compose.prod.yml:9-10（postgres bind-mount ./pgdata）· repo 無備份排程腳本</div>
+      <div class="f-body"><p>prod 資料只在單台 VM 的 bind-mount，repo 內無自動化 pg_dump 排程。<span class="lbl">建議：</span>每日 pg_dump→gzip→GCS（保留 7-30 份，&lt;NT$5/月）＋成功/失敗告警，實地演練一次還原；再加 GCE 磁碟快照作第二層。</p></div>
+      <div class="f-adjust"><b>驗證修正 → 建議降 MEDIUM：</b>查證後發現其實有一份「每日 pg_dump→GCS + PC 離線、保留 14 份、異地三份」的<b>文件化 runbook</b>——並非「完全無備份」。真問題是：未碼化進版控、無法從 repo 證實 prod 真的在跑、且無告警（「備份沒跑卻沒人知道」）。應實地 <code>crontab -l</code> 核對最近一份 dump 日期並加告警。</div>
+    </div>
+
+    <div class="finding high">
+      <div class="f-top"><div class="f-title">CI 無測試閘門，且 build 成功即自動部署到 prod</div><div class="badges"><span class="sev high">High</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">cicd</span><span class="chip effort">S</span></div></div>
+      <div class="f-loc">build.yml（無 dotnet test）· deploy.yml:14-26（workflow_run 成功即部署）</div>
+      <div class="f-body"><p>5.9K 行 xUnit（含 934 行資料隔離）從不在管線把關；能編譯就直上 prod。<span class="lbl">建議：</span>build 前加 dotnet test job（Testcontainers 於 ubuntu runner 可用）作必過閘門，deploy 的 if 改為要求測試通過；前端至少加 tsc+eslint job。</p></div>
+    </div>
+
+    <div class="finding high">
+      <div class="f-top"><div class="f-title">部署 workflow 的 zone 疑與已遷移的 VM 不符，自動部署可能已失效</div><div class="badges"><span class="sev high">High</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">cicd</span><span class="chip effort">S</span></div></div>
+      <div class="f-loc">deploy.yml:39-43（--zone=us-central1-a）· VM 已於 2026-07-01 遷 asia-east1-b</div>
+      <div class="f-body"><p>gcloud ssh 需正確 zone；不符會讓 Deploy job 紅燈失敗——「新映像已 build、VM 沒被重啟拉新版」。<span class="lbl">建議：</span>更新 zone 為 asia-east1-b，把 project/zone/instance 抽成 repo variable，並補「部署後 curl /healthz 或比對版本」的健康探測步驟，失敗即紅燈。</p></div>
+    </div>
+
+    <div class="finding high">
+      <div class="f-top"><div class="f-title">啟動即自動 migrate 但無回滾策略，且 :latest + image prune 讓回退困難</div><div class="badges"><span class="sev high">High</span><span class="chip plausible">PLAUSIBLE</span><span class="chip cat">resilience</span><span class="chip effort">M</span></div></div>
+      <div class="f-loc">Program.cs:80（MigrateAsync）· deploy.yml:45（pull latest → up -d → image prune -f）</div>
+      <div class="f-body"><p>migration 失敗=全站起不來。<span class="lbl">建議：</span>compose 改用不可變 sha tag（可 <code>pull ...:&lt;舊sha&gt;</code> 回退）；migration 與啟動解耦（CI 步驟先跑或包 try/catch + 告警）；破壞性 migration 前先自動 dump。</p></div>
+      <div class="f-adjust"><b>驗證修正 → 建議降 MEDIUM：</b>build.yml 其實同時推不可變 sha tag（永存 GHCR），prune 只清本機 dangling、不影響 registry，可用舊 sha 回退（只是需手動改 compose）；pgdata 為持久卷，migration 失敗是停機而非資料遺失。</div>
+    </div>
+
+    <div class="finding high">
+      <div class="f-top"><div class="f-title">全站無 rate limit，AI 與認證端點無節流</div><div class="badges"><span class="sev high">High</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">cost</span><span class="chip effort">M</span></div></div>
+      <div class="f-loc">Program.cs（無 RateLimiter）· MapAiEndpoints/MapRefineEndpoints/MapAuthPasswordEndpoints/PAT</div>
+      <div class="f-body"><p>PAT 與 AI 端點觸發付費 LLM（timeout 到 600 秒），密碼登入無嘗試次數限制。<span class="lbl">建議：</span>先對 /api/auth/login 加匿名 IP 節流＋失敗鎖定（安全面），再對 AI/Refine 加 per-user/per-token 節流或每日額度（成本面）。（與後端 #1 同一議題。）</p></div>
+    </div>
+
+    <div class="finding med">
+      <div class="f-top"><div class="f-title">prod compose 對 api/web 無健康探測，restart 策略抓不到「假死」</div><div class="badges"><span class="sev med">Medium</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">resilience</span><span class="chip effort">S</span></div></div>
+      <div class="f-loc">tmp/docker-compose.prod.yml:22-61（api/web 皆無 healthcheck）</div>
+      <div class="f-body"><p>只有 postgres 有 healthcheck；程式卡死但行程還在（執行緒耗盡/連線池枯竭/SSE 阻塞）不會被重啟。<span class="lbl">建議：</span>外加免費 uptime 監控（UptimeRobot/GCP uptime check）打公開網域失敗發告警；純 compose 因 restart 只認退出碼，需 autoheal sidecar 或外部探針觸發重啟。</p></div>
+    </div>
+
+    <div class="finding med">
+      <div class="f-top"><div class="f-title">SseHub 為記憶體單例且畫布頻道永不回收，阻礙水平擴充</div><div class="badges"><span class="sev med">Medium</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">architecture</span><span class="chip effort">M</span></div></div>
+      <div class="f-loc">Realtime/SseHub.cs:27-42（AddSingleton；_canvases 只 GetOrAdd 從不移除，每畫布 500 筆 backlog）</div>
+      <div class="f-body"><p>SSE 狀態全在單行程記憶體、CanvasChannel 只增不減。要多實例水平擴充/藍綠部署時 SSE 無法跨實例（需 backplane），把架構鎖死在單機；記憶體慢速有界膨脹。<span class="lbl">建議：</span>短期加閒置頻道回收（無訂閱者且逾時即移除）；要多實例時換 Redis pub/sub 或 Postgres LISTEN/NOTIFY。（訂閱者本身有正確回收。）</p></div>
+    </div>
+
+    <div class="finding med">
+      <div class="f-top"><div class="f-title">yt-dlp 於 build 期抓 releases/latest 無版本鎖與校驗，ffmpeg 撐大映像</div><div class="badges"><span class="sev med">Medium</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">cost</span><span class="chip effort">S</span></div></div>
+      <div class="f-loc">src/ZonWiki.Api/Dockerfile:23-27</div>
+      <div class="f-body"><p>wget latest yt-dlp 無釘版本、無 checksum＝不可重現建置＋供應鏈信任點；ffmpeg+python 撐大 API 映像。<span class="lbl">建議：</span>釘定 yt-dlp 版本＋SHA256 校驗；把 ffmpeg/yt-dlp 這類「精煉」重依賴拆成獨立 sidecar/worker 映像，核心 API 保持精瘦。</p></div>
+    </div>
+
+    <div class="finding med">
+      <div class="f-top"><div class="f-title">DataProtection 金鑰環持久化但未加密於磁碟（無 ProtectKeysWith）</div><div class="badges"><span class="sev med">Medium</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">security</span><span class="chip effort">M</span></div></div>
+      <div class="f-loc">Infrastructure/DependencyInjection.cs:77-79（僅 PersistKeysToFileSystem）</div>
+      <div class="f-body"><p>金鑰環以明文 XML 存在卷；它保護的正是登入 Cookie 與 DB 內 AI 金鑰密文。若 VM 被入侵/卷外洩，可解開所有金鑰、偽造 Cookie。<span class="lbl">建議：</span>此項對「完整 VM 淪陷」加分有限（主鑰仍在同檔案系統）；真正有效的是外接 <b>GCP KMS</b> 保管主鑰。至少限制 dpkeys 目錄權限、確認不被納入會外流的備份/映像。</p></div>
+    </div>
+
+    <div class="finding low">
+      <div class="f-top"><div class="f-title">prod CORS 未設定，靠預設回退到 localhost:3000</div><div class="badges"><span class="sev low">Low</span><span class="chip confirmed">CONFIRMED</span><span class="chip cat">resilience</span><span class="chip effort">S</span></div></div>
+      <div class="f-loc">Program.cs:38-52（回退 ["http://localhost:3000"]）· prod 未設 Cors__AllowedOrigins</div>
+      <div class="f-body"><p>目前能運作是因前後端同源（不觸發 CORS）；哪天拆不同子網域或加第三方前端，帶認證的跨域請求會突然全失敗。這是「過度限制」而非資安風險。<span class="lbl">建議：</span>prod 環境變數明設 <code>Cors__AllowedOrigins</code> 為正式網域讓設定顯性化。</p></div>
+    </div>
+  </section>
+
+  <footer>
+    <p><b>方法與界線。</b>本報告由 6 個角色審查代理平行實讀原始碼產出 55 則發現，每則再交由獨立「對抗式驗證」代理實讀該檔案查證（45 CONFIRMED / 10 PLAUSIBLE / 0 REFUTED）；UI/UX 部分另由我親自以 Playwright 在本機 3000/5009、四主題、桌機 1280px 與手機 375px 實測，對比度以 contrast-check 計算而非目測。所有「位置」為代理宣稱、多數經驗證，動手修前仍請以原始碼為準（鐵則 #26）。嚴重度為審查者原評，標「驗證修正」處為 skeptic 建議的調整。此為診斷報告，未改動任何程式碼。</p>
+  </footer>
+
+</div>
+
+</body>
+</html>

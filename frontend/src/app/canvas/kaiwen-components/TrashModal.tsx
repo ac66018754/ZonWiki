@@ -12,6 +12,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { kaiwenApi } from '../kaiwen-api'
 import { formatDateTime } from '../lib/datetime'
 import type { TrashListingDto } from '../kaiwen-types'
+import { useConfirm } from '@/components/ConfirmProvider'
 
 /**
  * TrashModal 對外 props 介面
@@ -49,6 +50,7 @@ export function TrashModal({
   onRestored,
   timezone = 'UTC',
 }: TrashModalProps) {
+  const confirm = useConfirm()
   // 垃圾桶清單資料
   const [listing, setListing] = useState<TrashListingDto | null>(null)
 
@@ -142,11 +144,13 @@ export function TrashModal({
             {/* 清空垃圾桶按鈕 */}
             <button
               className="rounded border border-[var(--kw-danger)] px-3 py-1 text-sm text-[var(--kw-danger)] hover:bg-[var(--kw-danger-soft-bg)] disabled:cursor-not-allowed disabled:opacity-40"
-              onClick={() => {
+              onClick={async () => {
                 if (
-                  window.confirm(
-                    '確定要清空垃圾桶嗎？所有項目將「永久刪除」，無法復原。'
-                  )
+                  await confirm({
+                    message: '確定要清空垃圾桶嗎？所有項目將「永久刪除」，無法復原。',
+                    danger: true,
+                    confirmLabel: '永久清空',
+                  })
                 ) {
                   run(() => kaiwenApi.emptyTrash())
                 }
@@ -251,13 +255,15 @@ export function TrashModal({
                           {/* 永久刪除按鈕 */}
                           <button
                             className="shrink-0 rounded border border-[var(--kw-danger)] px-2.5 py-1 text-xs text-[var(--kw-danger)] hover:bg-[var(--kw-danger-soft-bg)] disabled:opacity-40"
-                            onClick={() => {
+                            onClick={async () => {
                               if (
-                                window.confirm(
-                                  `確定要永久刪除畫布「${
+                                await confirm({
+                                  message: `確定要永久刪除畫布「${
                                     c.Canvas_Title || '未命名'
-                                  }」嗎？此動作無法復原。`
-                                )
+                                  }」嗎？此動作無法復原。`,
+                                  danger: true,
+                                  confirmLabel: '永久刪除',
+                                })
                               ) {
                                 run(() => kaiwenApi.purgeCanvas(c.Canvas_Id))
                               }
@@ -335,11 +341,13 @@ export function TrashModal({
                           {/* 永久刪除按鈕 */}
                           <button
                             className="shrink-0 rounded border border-[var(--kw-danger)] px-2.5 py-1 text-xs text-[var(--kw-danger)] hover:bg-[var(--kw-danger-soft-bg)] disabled:opacity-40"
-                            onClick={() => {
+                            onClick={async () => {
                               if (
-                                window.confirm(
-                                  '確定要永久刪除此節點嗎？此動作無法復原。'
-                                )
+                                await confirm({
+                                  message: '確定要永久刪除此節點嗎？此動作無法復原。',
+                                  danger: true,
+                                  confirmLabel: '永久刪除',
+                                })
                               ) {
                                 run(() => kaiwenApi.purgeNode(n.Node_Id))
                               }

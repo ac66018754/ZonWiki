@@ -4,10 +4,10 @@ import { useEffect, useState } from "react";
 import {
   getMyActivity,
   getActivityLog,
-  getCurrentUser,
   type MyActivityDay,
   type ActivityLogEntry,
 } from "@/lib/api";
+import { useCurrentUser } from "@/lib/swr";
 import { getDeviceTimeZone } from "@/lib/timezone";
 import { ProfileShell, ActivitySection, ActivityDetailSection } from "../profileShared";
 
@@ -18,7 +18,9 @@ import { ProfileShell, ActivitySection, ActivityDetailSection } from "../profile
 export default function ProfileActivityPage() {
   const [activity, setActivity] = useState<MyActivityDay[]>([]);
   const [activityLog, setActivityLog] = useState<ActivityLogEntry[]>([]);
-  const [tz, setTz] = useState<string>(getDeviceTimeZone());
+  // 時區顯示改由共用的 SWR 使用者快取取得，不再與活動資料一起手動抓。
+  const { data: currentUser } = useCurrentUser();
+  const tz = currentUser?.timeZone || getDeviceTimeZone();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -26,14 +28,12 @@ export default function ProfileActivityPage() {
     const load = async () => {
       try {
         setLoading(true);
-        const [a, log, currentUser] = await Promise.all([
+        const [a, log] = await Promise.all([
           getMyActivity(30),
           getActivityLog(30, 200),
-          getCurrentUser(),
         ]);
         setActivity(a);
         setActivityLog(log);
-        setTz(currentUser?.timeZone || getDeviceTimeZone());
         setError(null);
       } catch {
         setError("無法載入活動紀錄，請稍後重試。");

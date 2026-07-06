@@ -11,6 +11,7 @@ import {
   createNoteTag,
 } from "@/lib/api";
 import { SearchableMultiSelect } from "@/components/SearchableMultiSelect";
+import { useConfirm } from "@/components/ConfirmProvider";
 
 /**
  * 筆記清單「編輯模式」的批次操作工具列。
@@ -35,6 +36,7 @@ export function NotesBatchToolbar({
   /** 批次刪除後呼叫，讓上層清掉「本次批次標籤」狀態（避免殘留指向空標籤）。 */
   onResetBatch?: () => void;
 }) {
+  const confirm = useConfirm();
   const [busy, setBusy] = useState(false);
   // 目前展開的子操作面板：分類 / 標籤 / 無
   const [panel, setPanel] = useState<null | "category" | "tag">(null);
@@ -54,7 +56,7 @@ export function NotesBatchToolbar({
 
   /** 批次刪除（軟刪除）。刪完清掉本次批次標籤狀態（成員已不在，避免殘留空標籤指標）。 */
   const doDelete = async () => {
-    if (!window.confirm(`確定刪除選取的 ${count} 篇筆記？會移到垃圾桶，可日後復原。`)) return;
+    if (!(await confirm({ message: `確定刪除選取的 ${count} 篇筆記？會移到垃圾桶，可日後復原。`, danger: true }))) return;
     setBusy(true);
     try {
       await Promise.all(selected.map((n) => deleteNote(n.id)));
@@ -83,11 +85,13 @@ export function NotesBatchToolbar({
               .join("、")}）`
         )
         .join("\n");
-      const ok = window.confirm(
-        `以下 ${conflicts.length} 篇筆記已屬於其他分類：\n\n${lines}\n\n` +
+      const ok = await confirm({
+        title: "確認批次加入分類",
+        message:
+          `以下 ${conflicts.length} 篇筆記已屬於其他分類：\n\n${lines}\n\n` +
           `原因：分類可同時屬於多個，這些筆記目前的分類與「${targetName}」不同。\n` +
-          `仍要把它們「加入」「${targetName}」嗎？（只會附加、不會移除原分類）`
-      );
+          `仍要把它們「加入」「${targetName}」嗎？（只會附加、不會移除原分類）`,
+      });
       if (!ok) return;
     }
     setBusy(true);

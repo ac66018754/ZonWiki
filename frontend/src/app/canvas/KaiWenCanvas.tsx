@@ -14,18 +14,30 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import dynamic from 'next/dynamic'
 import { useCanvasToolbar } from '@/components/CanvasToolbarContext'
 import { kaiwenApi } from './kaiwen-api'
 import { useCanvas } from './hooks/useCanvas'
 import { useNotifications } from './hooks/useNotifications'
-import { CanvasView } from './kaiwen-components/CanvasView'
 import { ChatView } from './kaiwen-components/ChatView'
 import { SettingsModal } from './kaiwen-components/SettingsModal'
 import { NotificationCenter } from './kaiwen-components/NotificationCenter'
 import { CanvasMenu } from './kaiwen-components/CanvasMenu'
 import { logger } from '@/lib/logger'
+import { useConfirm } from '@/components/ConfirmProvider'
 import type { CanvasDto, AiModelDto } from './kaiwen-types'
 import './kaiwen.css'
+
+// 重量級 React Flow 畫布延遲載入（審查 #25）：CanvasView 內含 @xyflow/react（含其 CSS）與整套
+// 空間式畫布互動邏輯，僅在「畫布／閱覽」視圖、且元件掛載後才會渲染，對 SSR 首屏 HTML 無貢獻。
+// 以 next/dynamic + ssr:false 將其自初始 bundle 切出：
+//   1) React Flow 這類重依賴不再打進本路由的初始 JS，改為進入畫布視圖時才載；
+//   2) React Flow 需要瀏覽器環境（window/document、量測 DOM），本就不適合 SSR。
+// CanvasView 為具名匯出，故以 .then 取出對應成員。
+const CanvasView = dynamic(
+  () => import('./kaiwen-components/CanvasView').then((mod) => mod.CanvasView),
+  { ssr: false },
+)
 
 interface KaiWenCanvasProps {
   /**
@@ -51,6 +63,7 @@ export function KaiWenCanvas({
   timezone = 'Asia/Taipei',
   isAuthenticated = true,
 }: KaiWenCanvasProps) {
+  const confirm = useConfirm()
   // 畫布清單狀態
   const [canvases, setCanvases] = useState<CanvasDto[]>([])
   const [canvasId, setCanvasId] = useState<string | null>(
@@ -298,7 +311,7 @@ export function KaiWenCanvas({
   }
 
   const deleteCurrentCanvas = async () => {
-    if (!canvasId || !window.confirm('確定要刪除這張畫布嗎？')) return
+    if (!canvasId || !(await confirm({ message: '確定要刪除這張畫布嗎？', danger: true }))) return
     const deletingId = canvasId
     try {
       await kaiwenApi.deleteCanvas(deletingId)

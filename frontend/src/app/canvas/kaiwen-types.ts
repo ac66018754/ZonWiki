@@ -27,6 +27,8 @@ export interface NodeDto {
   Node_AiSessionUuid?: string | null
   Node_CreatedDateTime?: string
   Node_UpdatedDateTime?: string
+  /** 樂觀鎖版本（PostgreSQL xmin，#4/#34）；編輯內容保存時原封帶回為 baseVersion 供後端偵測併發衝突 */
+  Node_Version?: number
 }
 
 export interface AiModelDto {

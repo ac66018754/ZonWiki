@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ZonWiki.Api.Auth;
+using ZonWiki.Api.Common;
 using ZonWiki.Domain.Common;
 using ZonWiki.Domain.Dtos;
 using ZonWiki.Domain.Entities;
@@ -15,6 +16,14 @@ namespace ZonWiki.Api.Endpoints;
 /// </summary>
 public static class TaskEndpoints
 {
+    /// <summary>
+    /// 任務卡片允許的狀態值（allow-list）。
+    /// 前端看板／清單僅使用 todo／doing／done 這三種；任何其他值一律視為非法輸入並回 400（審查 #42）。
+    /// 採 Ordinal（大小寫敏感）比對，因前端固定使用小寫值。
+    /// </summary>
+    private static readonly IReadOnlySet<string> AllowedTaskStatuses =
+        new HashSet<string>(StringComparer.Ordinal) { "todo", "doing", "done" };
+
     public static void MapTaskEndpoints(this IEndpointRouteBuilder app)
     {
         /// <summary>
@@ -28,6 +37,10 @@ public static class TaskEndpoints
             string sort = "createdDate",
             DateTime? from = null,
             DateTime? to = null,
+            // 分頁（審查 #24）：僅 list 視圖套用；limit / offset 都不給時維持既有行為（回全部），
+            // 確保現有前端呼叫相容。board / calendar 視圖不分頁（其資料量本身有界）。
+            int? limit = null,
+            int? offset = null,
             CancellationToken ct = default) =>
         {
             var userId = httpContext.User.FindFirst(AuthExtensions.UserIdClaimType)?.Value;
@@ -48,7 +61,7 @@ public static class TaskEndpoints
             {
                 "board" => await GetBoardView(db, query, ct),
                 "calendar" => await GetCalendarView(db, query, from, to, ct),
-                _ => await GetListView(db, query, sort, ct) // 預設 list
+                _ => await GetListView(db, query, sort, limit, offset, ct) // 預設 list
             };
         });
 
@@ -67,6 +80,15 @@ public static class TaskEndpoints
             if (string.IsNullOrEmpty(userId) || !Guid.TryParse(userId, out var userGuid))
             {
                 return Results.Unauthorized();
+            }
+
+            // 狀態驗證（審查 #42）：建立時的 status 必須是允許值（todo／doing／done）之一，
+            // 避免任意字串（含空字串）被直接寫入卡片狀態。
+            if (!AllowedTaskStatuses.Contains(request.Status))
+            {
+                return Results.Json(
+                    ApiResponse<object>.Fail($"非法的任務狀態：{request.Status}", 400),
+                    statusCode: StatusCodes.Status400BadRequest);
             }
 
             // 如果 IsPinnedToHome==true 且未指定 HomeSortOrder，查該使用者目前釘選任務的最大 HomeSortOrder。
@@ -91,7 +113,10 @@ public static class TaskEndpoints
                 DueDateTime = request.DueDateTime,
                 GroupId = request.GroupId,
                 SortOrder = request.SortOrder,
-                RecurrenceRule = request.RecurrenceRule,
+                // 空白重複規則正規化為 null（＝一次性任務，不被具現化背景服務當母規則）。
+                RecurrenceRule = string.IsNullOrWhiteSpace(request.RecurrenceRule)
+                    ? null
+                    : request.RecurrenceRule,
                 ParentId = request.ParentId,
                 // 建立時即為 done → 記下完成時間。
                 CompletedDateTime = request.Status == "done" ? DateTime.UtcNow : null,
@@ -110,7 +135,7 @@ public static class TaskEndpoints
             db.TaskCard.Add(card);
             await db.SaveChangesAsync(ct);
 
-            var dto = MapToDetailDto(card);
+            var dto = MapToDetailDto(card, db.Entry(card).GetConcurrencyVersion());
             return Results.Created($"/api/tasks/{card.Id}", ApiResponse<TaskCardDetailDto>.Ok(dto));
         });
 
@@ -141,7 +166,7 @@ public static class TaskEndpoints
                 return Results.NotFound(ApiResponse<object>.Fail("卡片不存在或已刪除"));
             }
 
-            var dto = MapToDetailDto(card);
+            var dto = MapToDetailDto(card, db.Entry(card).GetConcurrencyVersion());
             return Results.Ok(ApiResponse<TaskCardDetailDto>.Ok(dto));
         });
 
@@ -161,6 +186,16 @@ public static class TaskEndpoints
             if (string.IsNullOrEmpty(userId) || !Guid.TryParse(userId, out var userGuid))
             {
                 return Results.Unauthorized();
+            }
+
+            // 狀態驗證（審查 #42）：更新採 PATCH 語意——未帶／空字串 status 代表「略過不改」（仍視為合法）；
+            // 但一旦帶了非空的 status，就必須是允許值（todo／doing／done）之一，否則回 400，
+            // 避免任意字串被直接寫入 card.Status（先驗證輸入再查資源，快速失敗）。
+            if (!string.IsNullOrEmpty(request.Status) && !AllowedTaskStatuses.Contains(request.Status))
+            {
+                return Results.Json(
+                    ApiResponse<object>.Fail($"非法的任務狀態：{request.Status}", 400),
+                    statusCode: StatusCodes.Status400BadRequest);
             }
 
             var card = await db.TaskCard
@@ -208,8 +243,11 @@ public static class TaskEndpoints
                 card.GroupId = null;
             if (request.SortOrder.HasValue)
                 card.SortOrder = request.SortOrder.Value;
+            // 重複規則：傳 null＝不更新；傳空白＝停止重複（清為 null，不再被具現化）；傳規則＝設定母規則。
             if (request.RecurrenceRule != null)
-                card.RecurrenceRule = request.RecurrenceRule;
+                card.RecurrenceRule = string.IsNullOrWhiteSpace(request.RecurrenceRule)
+                    ? null
+                    : request.RecurrenceRule;
             // 新增欄位更新邏輯
             if (request.IsLongTerm.HasValue)
                 card.IsLongTerm = request.IsLongTerm.Value;
@@ -241,9 +279,22 @@ public static class TaskEndpoints
             card.UpdatedDateTime = DateTime.UtcNow;
             card.UpdatedUser = userId;
 
-            await db.SaveChangesAsync(ct);
+            // 樂觀鎖（#4/#34）：若前端帶回 baseVersion，以其比對 xmin 偵測併發衝突。
+            db.Entry(card).ApplyBaseVersion(request.BaseVersion);
 
-            var dto = MapToDetailDto(card);
+            try
+            {
+                await db.SaveChangesAsync(ct);
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // 載入後被其他來源改過 → 回 409，讓前端提示覆蓋或重新載入。
+                return Results.Json(
+                    ApiResponse<TaskCardDetailDto>.Fail("此項已被其他來源修改", 409),
+                    statusCode: StatusCodes.Status409Conflict);
+            }
+
+            var dto = MapToDetailDto(card, db.Entry(card).GetConcurrencyVersion());
             return Results.Ok(ApiResponse<TaskCardDetailDto>.Ok(dto));
         });
 
@@ -379,19 +430,45 @@ public static class TaskEndpoints
     /// <summary>
     /// 清單視圖：傳回排序後的卡片清單。
     /// </summary>
+    /// <param name="db">資料庫內容。</param>
+    /// <param name="query">已套用使用者與有效性過濾的卡片查詢。</param>
+    /// <param name="sort">排序方式（planneddate／duedate／priority／createdDate）。</param>
+    /// <param name="limit">
+    /// 可選的單頁筆數上限；為 null 時回全部（維持相容），提供時夾在 1~2000 之間。
+    /// </param>
+    /// <param name="offset">可選的位移量；為 null 或非正值時不位移。</param>
+    /// <param name="ct">取消權杖。</param>
     private static async Task<IResult> GetListView(
         ZonWikiDbContext db,
         IQueryable<TaskCard> query,
         string sort,
+        int? limit,
+        int? offset,
         CancellationToken ct)
     {
-        var cards = sort.ToLower() switch
+        // 先依排序鍵建立穩定排序的查詢（分頁前提），再套用可選的 Skip/Take。
+        IQueryable<TaskCard> orderedQuery = sort.ToLower() switch
         {
-            "planneddate" => await query.OrderBy(t => t.PlannedDateTime).ThenBy(t => t.SortOrder).ToListAsync(ct),
-            "duedate" => await query.OrderBy(t => t.DueDateTime).ThenBy(t => t.SortOrder).ToListAsync(ct),
-            "priority" => await query.OrderByDescending(t => t.Priority).ThenBy(t => t.SortOrder).ToListAsync(ct),
-            _ => await query.OrderBy(t => t.CreatedDateTime).ThenBy(t => t.SortOrder).ToListAsync(ct) // createdDate
+            "planneddate" => query.OrderBy(t => t.PlannedDateTime).ThenBy(t => t.SortOrder),
+            "duedate" => query.OrderBy(t => t.DueDateTime).ThenBy(t => t.SortOrder),
+            "priority" => query.OrderByDescending(t => t.Priority).ThenBy(t => t.SortOrder),
+            _ => query.OrderBy(t => t.CreatedDateTime).ThenBy(t => t.SortOrder) // createdDate
         };
+
+        // 位移（offset）：負值視為不位移，避免非法查詢。
+        if (offset.HasValue && offset.Value > 0)
+        {
+            orderedQuery = orderedQuery.Skip(offset.Value);
+        }
+
+        // 筆數上限（limit）：夾在 1~2000 之間，避免單頁抓取過量。
+        if (limit.HasValue)
+        {
+            var cappedLimit = Math.Clamp(limit.Value, 1, 2000);
+            orderedQuery = orderedQuery.Take(cappedLimit);
+        }
+
+        var cards = await orderedQuery.ToListAsync(ct);
 
         var dtos = cards.Select(MapToSummaryDto).ToList();
         return Results.Ok(ApiResponse<List<TaskCardSummaryDto>>.Ok(dtos));
@@ -512,7 +589,13 @@ public static class TaskEndpoints
             card.HomeSortOrder);
     }
 
-    private static TaskCardDetailDto MapToDetailDto(TaskCard card)
+    /// <summary>
+    /// 將 TaskCard 實體映射為詳細 DTO。
+    /// </summary>
+    /// <param name="card">任務卡片實體。</param>
+    /// <param name="version">樂觀鎖版本（xmin，#4/#34）；由呼叫端以 <c>db.Entry(card).GetConcurrencyVersion()</c> 取得。</param>
+    /// <returns>任務卡片詳細 DTO。</returns>
+    private static TaskCardDetailDto MapToDetailDto(TaskCard card, long version)
     {
         var subTasks = MapSubTasks(card);
         return new(
@@ -535,6 +618,7 @@ public static class TaskEndpoints
             card.TargetDateTime,
             card.TargetGranularity,
             card.IsPinnedToHome,
-            card.HomeSortOrder);
+            card.HomeSortOrder,
+            version);
     }
 }

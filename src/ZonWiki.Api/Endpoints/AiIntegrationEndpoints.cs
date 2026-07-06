@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ZonWiki.Api.Auth;
 using ZonWiki.Api.Notes;
+using ZonWiki.Api.RateLimiting;
 using ZonWiki.Domain.Common;
 using ZonWiki.Domain.Entities;
 using ZonWiki.Infrastructure.Persistence;
@@ -75,7 +76,10 @@ public static class AiIntegrationEndpoints
     {
         app.MapPost("/api/ai/notes", CreateOrUpsertNoteHandler)
             .WithName("AiCreateNote")
-            .WithTags("AI Integration");
+            .WithTags("AI Integration")
+            // PAT 驗證的對外整合端點：以 UserId／權杖分區的 TokenBucket 限流，
+            // 防止被盜權杖或外部自動化迴圈灌爆寫入／付費資源。逾限回 429。
+            .RequireRateLimiting(RateLimitingExtensions.PatPolicy);
     }
 
     /// <summary>
@@ -406,7 +410,14 @@ public static class AiIntegrationEndpoints
 
     /// <summary>
     /// 解析內容中的 wiki 連結（[[X]]）並建立 NoteLink（與筆記寫入端點一致）。
+    /// 效能：先收集去重所有 anchorText，單一 WHERE...IN 一次撈回候選筆記（避免 N+1）。
     /// </summary>
+    /// <param name="db">資料庫內容。</param>
+    /// <param name="userId">擁有者使用者識別碼。</param>
+    /// <param name="userKey">稽核用的使用者鍵（寫入 CreatedUser / UpdatedUser）。</param>
+    /// <param name="sourceNoteId">來源筆記識別碼。</param>
+    /// <param name="contentRaw">筆記原始內容（Markdown）。</param>
+    /// <param name="ct">取消權杖。</param>
     private static async Task ParseAndCreateWikiLinksAsync(
         ZonWikiDbContext db,
         Guid userId,
@@ -415,26 +426,31 @@ public static class AiIntegrationEndpoints
         string contentRaw,
         CancellationToken ct)
     {
-        var matches = WikiLinkRegex.Matches(contentRaw);
-        foreach (Match match in matches)
+        // 逐個出現的 anchorText（保留原始出現順序；重複出現＝建多條連結，維持原有行為）。
+        var anchorTexts = new List<string>();
+        foreach (Match match in WikiLinkRegex.Matches(contentRaw))
         {
             var anchorText = match.Groups[1].Value.Trim();
-            if (string.IsNullOrEmpty(anchorText))
+            if (!string.IsNullOrEmpty(anchorText))
             {
-                continue;
+                anchorTexts.Add(anchorText);
             }
+        }
 
-            var targetSlug = NoteContentHelpers.GenerateSlug(anchorText);
-            var targetNote = await db.Note.FirstOrDefaultAsync(
-                n => n.UserId == userId && n.ValidFlag
-                    && (n.Slug == targetSlug || n.Title == anchorText),
-                ct);
+        if (anchorTexts.Count == 0)
+        {
+            return;
+        }
 
+        var resolver = await WikiLinkTargetResolver.BuildAsync(db, userId, anchorTexts, ct);
+
+        foreach (var anchorText in anchorTexts)
+        {
             db.NoteLink.Add(new NoteLink
             {
                 UserId = userId,
                 SourceNoteId = sourceNoteId,
-                TargetNoteId = targetNote?.Id,
+                TargetNoteId = resolver.Resolve(anchorText),
                 AnchorText = anchorText,
                 CreatedUser = userKey,
                 UpdatedUser = userKey,

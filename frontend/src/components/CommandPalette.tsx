@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { ArticleSummary, Category } from "@/lib/api";
 import { FileIcon, FolderIcon, StackIcon, EnterIcon } from "./Icons";
+import { confirmNavigation } from "@/lib/navigationGuard";
 
 interface CommandPaletteProps {
   onClose: () => void;
@@ -101,8 +102,12 @@ export function CommandPalette({
       ?.scrollIntoView({ block: "nearest" });
   }, [active, query]);
 
-  function go(item: Item | undefined) {
+  // 導頁前先過全站導頁守門 confirmNavigation()（如筆記編輯中有未儲存變更會先確認）——
+  // 修 W7 對抗式復審 finding #2：項目列是 <div onClick>（非 <a>）、Enter 更無 click，
+  // 舊的「只攔 <a>」防護攔不到。被取消就留在原地、不關閉面板、不導頁。
+  async function go(item: Item | undefined) {
     if (!item) return;
+    if (!(await confirmNavigation())) return;
     onClose();
     router.push(item.href);
   }
@@ -118,7 +123,7 @@ export function CommandPalette({
       );
     } else if (e.key === "Enter") {
       e.preventDefault();
-      go(results[active]);
+      void go(results[active]);
     } else if (e.key === "Escape") {
       e.preventDefault();
       onClose();

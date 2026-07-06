@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using ZonWiki.Api.Auth;
+using ZonWiki.Api.Common;
 using ZonWiki.Api.Notes;
 using ZonWiki.Api.Services;
 using ZonWiki.Domain.Common;
@@ -353,7 +354,8 @@ public static class NoteWriteEndpoints
                 note.IsDraft,
                 note.CreatedDateTime,
                 note.UpdatedDateTime,
-                0);
+                0,
+                Version: db.Entry(note).GetConcurrencyVersion());
 
             // Location 標頭只能是 ASCII；slug 可能含中文（GenerateSlug 保留 Unicode），故 URL 編碼，
             // 否則會丟 InvalidOperationException: Invalid non-ASCII character in header。
@@ -399,14 +401,23 @@ public static class NoteWriteEndpoints
         {
             var contentChanged = false;
 
-            // 更新標題（若傳入）
-            if (!string.IsNullOrWhiteSpace(request.Title))
+            // 更新標題：以 is not null 判斷「有無傳入該欄位」（PATCH 語意），與值本身分開。
+            // 有傳入才動；但標題不可清空——傳入純空白視為無效（筆記必須有標題）。
+            if (request.Title is not null)
             {
-                note.Title = request.Title.Trim();
+                var trimmedTitle = request.Title.Trim();
+                if (trimmedTitle.Length == 0)
+                {
+                    return Results.Json(
+                        ApiResponse<NoteDetailDto>.Fail("標題不可為空", 400),
+                        statusCode: StatusCodes.Status400BadRequest);
+                }
+                note.Title = trimmedTitle;
             }
 
-            // 更新內容（若傳入）
-            if (!string.IsNullOrWhiteSpace(request.ContentRaw))
+            // 更新內容：同樣以 is not null 判斷有無傳入。
+            // 允許傳入空字串＝「清空內容」（與「未傳入、不更動」明確區分——修正舊版無法清空的缺陷）。
+            if (request.ContentRaw is not null)
             {
                 note.ContentRaw = request.ContentRaw;
                 note.ContentHtml = NoteContentHelpers.RenderToHtml(request.ContentRaw);
@@ -471,6 +482,9 @@ public static class NoteWriteEndpoints
                 await ParseAndCreateWikiLinksAsync(db, userId, id, note.ContentRaw, ct);
             }
 
+            // 樂觀鎖（#4/#34）：若前端帶回 baseVersion，以其比對 xmin 偵測併發衝突。
+            db.Entry(note).ApplyBaseVersion(request.BaseVersion);
+
             await db.SaveChangesAsync(ct);
 
             var dto = new NoteDetailDto(
@@ -483,9 +497,17 @@ public static class NoteWriteEndpoints
                 note.IsDraft,
                 note.CreatedDateTime,
                 note.UpdatedDateTime,
-                await db.Comment.CountAsync(c => c.NoteId == id && c.ValidFlag, ct));
+                await db.Comment.CountAsync(c => c.NoteId == id && c.ValidFlag, ct),
+                Version: db.Entry(note).GetConcurrencyVersion());
 
             return Results.Ok(ApiResponse<NoteDetailDto>.Ok(dto));
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // 載入後被其他來源（另一裝置／外部 AI）改過 → 回 409，讓前端提示覆蓋或重新載入。
+            return Results.Json(
+                ApiResponse<NoteDetailDto>.Fail("此項已被其他來源修改", 409),
+                statusCode: StatusCodes.Status409Conflict);
         }
         catch (Exception ex)
         {
@@ -1292,7 +1314,13 @@ public static class NoteWriteEndpoints
     /// <summary>
     /// 解析 ContentRaw 的 wiki 連結（[[X]] 格式）並建立 NoteLink。
     /// 若同使用者內存在相符的 slug 或標題，填入 TargetNoteId；否則 TargetNoteId 為 null。
+    /// 效能：先收集去重所有 anchorText，單一 WHERE...IN 一次撈回候選筆記（避免每個連結各查一次的 N+1）。
     /// </summary>
+    /// <param name="db">資料庫內容。</param>
+    /// <param name="userId">擁有者使用者識別碼。</param>
+    /// <param name="sourceNoteId">來源筆記識別碼。</param>
+    /// <param name="contentRaw">筆記原始內容（Markdown）。</param>
+    /// <param name="ct">取消權杖。</param>
     private static async Task ParseAndCreateWikiLinksAsync(
         ZonWikiDbContext db,
         Guid userId,
@@ -1300,40 +1328,47 @@ public static class NoteWriteEndpoints
         string contentRaw,
         CancellationToken ct)
     {
-        var matches = WikiLinkRegex.Matches(contentRaw);
-
-        foreach (Match match in matches)
+        // 逐個出現的 anchorText（保留原始出現順序；重複出現＝建多條連結，維持原有行為）。
+        var anchorTexts = ExtractAnchorTexts(contentRaw);
+        if (anchorTexts.Count == 0)
         {
-            var anchorText = match.Groups[1].Value.Trim();
-            if (string.IsNullOrEmpty(anchorText))
-                continue;
+            return;
+        }
 
-            // 嘗試比對 slug 或標題
-            Guid? targetNoteId = null;
+        var resolver = await WikiLinkTargetResolver.BuildAsync(db, userId, anchorTexts, ct);
 
-            // 先比對 slug（更精確）
-            var targetNote = await db.Note
-                .FirstOrDefaultAsync(
-                    n => n.UserId == userId && n.ValidFlag &&
-                         (n.Slug == NoteContentHelpers.GenerateSlug(anchorText) || n.Title == anchorText),
-                    ct);
-
-            if (targetNote != null)
-            {
-                targetNoteId = targetNote.Id;
-            }
-
-            // 建立連結
-            var link = new NoteLink
+        foreach (var anchorText in anchorTexts)
+        {
+            db.NoteLink.Add(new NoteLink
             {
                 UserId = userId,
                 SourceNoteId = sourceNoteId,
-                TargetNoteId = targetNoteId,
+                TargetNoteId = resolver.Resolve(anchorText),
                 AnchorText = anchorText,
                 CreatedUser = userId.ToString(),
                 UpdatedUser = userId.ToString(),
-            };
-            db.NoteLink.Add(link);
+            });
         }
+    }
+
+    /// <summary>
+    /// 從內容擷取所有非空的 wiki 連結錨點文字（[[X]] 內的 X，已 Trim）。
+    /// 保留原始出現順序與重複（重複出現代表要建立多條連結）。
+    /// </summary>
+    /// <param name="contentRaw">筆記原始內容。</param>
+    /// <returns>錨點文字清單（可能含重複）。</returns>
+    private static List<string> ExtractAnchorTexts(string contentRaw)
+    {
+        var anchorTexts = new List<string>();
+        foreach (Match match in WikiLinkRegex.Matches(contentRaw))
+        {
+            var anchorText = match.Groups[1].Value.Trim();
+            if (!string.IsNullOrEmpty(anchorText))
+            {
+                anchorTexts.Add(anchorText);
+            }
+        }
+
+        return anchorTexts;
     }
 }

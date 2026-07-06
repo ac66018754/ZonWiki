@@ -10,6 +10,7 @@ import {
 } from "@/lib/api";
 import { formatDateTime } from "@/lib/formatters";
 import { getDeviceTimeZone } from "@/lib/timezone";
+import { useConfirm } from "@/components/ConfirmProvider";
 import {
   ProfileShell,
   cardStyle,
@@ -30,6 +31,7 @@ import {
  * 安全：明碼權杖只在「產生當下」顯示一次；之後資料庫只存雜湊、無法還原。
  */
 export default function ProfileTokensPage() {
+  const confirm = useConfirm();
   const tz = getDeviceTimeZone();
   const [tokens, setTokens] = useState<ApiTokenInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -106,7 +108,11 @@ export default function ProfileTokensPage() {
   };
 
   const handleRevoke = async (id: string, tokenName: string) => {
-    if (!window.confirm(`確定撤銷權杖「${tokenName}」？使用此權杖的 AI 將立即失去存取權，且無法復原。`)) {
+    if (!(await confirm({
+      message: `確定撤銷權杖「${tokenName}」？使用此權杖的 AI 將立即失去存取權，且無法復原。`,
+      danger: true,
+      confirmLabel: "撤銷",
+    }))) {
       return;
     }
     const ok = await revokeApiToken(id);

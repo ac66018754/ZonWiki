@@ -1,11 +1,14 @@
 "use client";
 
+"use client";
+
 /**
  * Modal 元件 — 模態對話框
  */
 
-import React, { ReactNode } from "react";
+import React, { ReactNode, useRef } from "react";
 import { Button } from "./Button";
+import { useFocusTrap } from "@/hooks/useFocusTrap";
 
 interface ModalProps {
   /** 是否開啟 */
@@ -55,6 +58,12 @@ export function Modal({
   isDangerous = false,
   isConfirmDisabled = false,
 }: ModalProps) {
+  // 模態容器 ref：作為焦點陷阱的循環範圍
+  const modalRef = useRef<HTMLDivElement>(null);
+
+  // 焦點陷阱：開啟時聚焦首個可聚焦元素、Tab 循環、Esc 關閉、關閉後還原焦點
+  useFocusTrap(modalRef, isOpen, { onEscape: onClose });
+
   if (!isOpen) return null;
 
   return (
@@ -68,11 +77,13 @@ export function Modal({
 
       {/* 模態內容 */}
       <div
+        ref={modalRef}
         className="modal"
         role="dialog"
         aria-modal="true"
         aria-labelledby="modal-title"
         onClick={(e) => e.stopPropagation()}
+        tabIndex={-1}
       >
         <div className="modal__header">
           <h2 id="modal-title" className="modal__title">

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { kaiwenApi } from '../kaiwen-api'
 import type { CanvasDto, CategoryWithLinksDto, SystemPromptDto } from '../kaiwen-types'
+import { useConfirm } from '@/components/ConfirmProvider'
 
 interface CategorySectionProps {
   /**
@@ -19,6 +20,7 @@ const inputCls =
  * 畫布↔分類、分類↔Prompt 皆為多對多；每次勾選即整組更新。
  */
 export function CategorySection({ version }: CategorySectionProps) {
+  const confirm = useConfirm()
   const [cats, setCats] = useState<CategoryWithLinksDto[]>([])
   const [canvases, setCanvases] = useState<CanvasDto[]>([])
   const [prompts, setPrompts] = useState<SystemPromptDto[]>([])
@@ -149,8 +151,8 @@ export function CategorySection({ version }: CategorySectionProps) {
                   </span>
                   <button
                     className="shrink-0 rounded px-1 text-[var(--kw-muted)] hover:text-[var(--kw-danger)]"
-                    onClick={() => {
-                      if (window.confirm(`刪除分類「${cat.Category_Name}」？（不會刪除其中的畫布或 Prompt）`)) run(() => kaiwenApi.deleteCategory(cat.Category_Id))
+                    onClick={async () => {
+                      if (await confirm({ message: `刪除分類「${cat.Category_Name}」？（不會刪除其中的畫布或 Prompt）`, danger: true })) run(() => kaiwenApi.deleteCategory(cat.Category_Id))
                     }}
                     title="刪除分類"
                   >
