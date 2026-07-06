@@ -111,12 +111,8 @@ export default function NotesPage() {
     mutateTags();
   }, [mutateNotes, mutateCats, mutateTags]);
 
-  // 監聽「筆記被拖入某分類」事件（由側欄發出）→ 重新載入，更新分類筆記數與目前篩選
-  useEffect(() => {
-    const onCategorized = () => reload();
-    window.addEventListener('zonwiki:note-categorized', onCategorized);
-    return () => window.removeEventListener('zonwiki:note-categorized', onCategorized);
-  }, [reload]);
+  // 筆記被拖入某分類時，側欄改以 SWR global mutate 撤銷所有「筆記清單」快取（finding #28），
+  // 本頁的 useNotes 會因此自動重抓，故不再需要監聽 window 事件。
 
   const formatNoteDateTime = (dateStr: string) =>
     formatDateTime(dateStr, user?.timeZone || DEFAULT_TIMEZONE);

@@ -36,6 +36,7 @@ import { buildToc } from '@/lib/toc';
 import { useUndoHotkeys, resetUndo } from '@/lib/undoManager';
 import { useConfirm } from '@/components/ConfirmProvider';
 import { registerNavigationGuard } from '@/lib/navigationGuard';
+import { emitNoteActiveCategory } from '@/lib/noteEvents';
 
 // ── 重量級用戶端元件延遲載入（修 #10：dev 模式 Turbopack render worker 崩潰 500）────────────
 // 這四個元件（Markdown 編輯器、文字標註層、浮動白板、任務編輯彈窗）合計約 2,900 行，全為
@@ -346,14 +347,8 @@ export default function NotesDetailPage() {
   const noteCatIdsKey = (note?.categories ?? []).map((c) => c.id).join(',');
   useEffect(() => {
     const ids = noteCatIdsKey ? noteCatIdsKey.split(',') : [];
-    window.dispatchEvent(
-      new CustomEvent('zonwiki:note-active-category', { detail: { categoryIds: ids } })
-    );
-    return () => {
-      window.dispatchEvent(
-        new CustomEvent('zonwiki:note-active-category', { detail: { categoryIds: [] } })
-      );
-    };
+    emitNoteActiveCategory(ids);
+    return () => emitNoteActiveCategory([]);
   }, [noteCatIdsKey]);
 
   // AI 操作回調：AI（排版/美化/撤銷）只更新編輯器內容，不寫 DB、也不重抓筆記
