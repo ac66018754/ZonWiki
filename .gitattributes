@@ -1,0 +1,5 @@
+# Shell 腳本一律保持 LF 換行。
+# 原因：本機 core.autocrlf=true 會把 .sh 的工作副本轉成 CRLF；若直接把該副本
+# scp 到 Linux VM，bash 會因 `#!/usr/bin/env bash\r` 之類的 \r 而解析失敗。
+# 強制 eol=lf 可確保工作副本也維持 LF，scp 到 VM 就能正常執行。
+*.sh text eol=lf
