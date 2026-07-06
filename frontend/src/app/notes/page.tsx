@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import {
   createNoteTag,
   addNoteTag,
@@ -20,6 +21,16 @@ import { NotesBatchToolbar } from './components/NotesBatchToolbar';
 const LS_EDIT_MODE = 'zonwiki:notesEditMode';
 /** localStorage 鍵：本次編輯模式的「批次標籤」ID（選取狀態的持久化來源＝該標籤成員）。 */
 const LS_BATCH_TAG = 'zonwiki:notesBatchTagId';
+
+/**
+ * 虛擬化清單的單列估計高度（px），供 react-virtual 初始估算捲動總高用。
+ * 實際高度會由 measureElement 於掛載後量測校正，此值只影響首幀估算。
+ * 內含卡片本體（約 76px）加上列與列之間的間距（--spacing-3）。
+ */
+const ESTIMATED_NOTE_ROW_HEIGHT = 88;
+
+/** 虛擬化清單額外預渲染的列數（上下各多渲染幾列，減少快速捲動時的空白閃現）。 */
+const NOTE_LIST_OVERSCAN = 8;
 
 /** 產生批次標籤名稱（含本機時戳，作為這群筆記的永久關聯）。 */
 function makeBatchTagName(): string {
@@ -127,6 +138,22 @@ export default function NotesPage() {
   );
   const selectedIdSet = useMemo(() => new Set(selectedNotes.map((n) => n.id)), [selectedNotes]);
 
+  // 虛擬化（審查 #24）：長清單只渲染可視範圍內的列，避免數百上千篇筆記時全量掛載 DOM 造成卡頓。
+  // 捲動容器＝整個 .notes-page（沿用原本「整頁捲動」的行為，不新增巢狀捲軸）；
+  // scrollRef 指向捲動容器、listRef 指向清單外框，scrollMargin 用清單外框相對捲動容器頂端的位移，
+  // 讓虛擬項目的定位把上方 sticky 標題列的高度算進去。
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const rowVirtualizer = useVirtualizer({
+    count: sortedNotes.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => ESTIMATED_NOTE_ROW_HEIGHT,
+    overscan: NOTE_LIST_OVERSCAN,
+    // 清單外框相對捲動容器的位移（sticky 標題列等上方內容的高度）。
+    scrollMargin: listRef.current?.offsetTop ?? 0,
+    getItemKey: (index) => sortedNotes[index]?.id ?? index,
+  });
+
   /** 切換編輯模式。關閉時清掉本次批次標籤（下次開啟重新建立一組）；標籤本身保留在 DB。 */
   const toggleEditMode = () => {
     setEditMode((prev) => {
@@ -223,7 +250,7 @@ export default function NotesPage() {
   }
 
   return (
-    <div className="notes-page">
+    <div className="notes-page" ref={scrollRef}>
       <div className="notes-page__container">
         {/* 置頂列（#6 sticky）：筆記數 + 目前篩選 + 編輯模式鈕 + 批次工具列 */}
         <div className="notes-stickyhead">
@@ -338,8 +365,14 @@ export default function NotesPage() {
             </p>
           </div>
         ) : (
-          <div style={{ display: 'grid', gap: 'var(--spacing-3)' }}>
-            {sortedNotes.map((note) => {
+          // 虛擬化清單容器：高度＝所有列的估計總高，內部以絕對定位擺放可視範圍內的列。
+          <div
+            ref={listRef}
+            style={{ position: 'relative', width: '100%', height: `${rowVirtualizer.getTotalSize()}px` }}
+          >
+            {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+              const note = sortedNotes[virtualRow.index];
+              if (!note) return null;
               const checked = selectedIdSet.has(note.id);
               // 顯示的時間跟著「排序方式」走：選什麼排序，就顯示那個時間。
               const sortTime =
@@ -351,79 +384,95 @@ export default function NotesPage() {
               const sortTimeLabel =
                 sortBy === 'opened' ? '最後打開' : sortBy === 'created' ? '建立' : '最後編輯';
               return (
-                <div key={note.id} className="note-row">
-                  {editMode && (
-                    <input
-                      type="checkbox"
-                      className="note-check"
-                      checked={checked}
-                      disabled={toggling}
-                      onChange={() => toggleSelect(note)}
-                      aria-label={`選取筆記：${note.title}`}
-                      title="勾選以加入批次操作"
-                    />
-                  )}
-                  <Link
-                    href={`/notes/${note.slug}`}
-                    prefetch
-                    draggable
-                    title="可拖曳到左側分類，把這篇筆記歸入該分類"
-                    onDragStart={(e) => {
-                      // 攜帶筆記 ID，供左側欄分類列接收（拖筆記入分類）
-                      e.dataTransfer.setData(NOTE_DND_MIME, note.id);
-                      e.dataTransfer.effectAllowed = 'copyMove';
-                    }}
-                    style={{
-                      flex: 1,
-                      minWidth: 0,
-                      display: 'block',
-                      padding: 'var(--spacing-4)',
-                      background: checked ? 'var(--action-secondary-bg)' : 'var(--bg-surface)',
-                      border: `1px solid ${checked ? 'var(--action-primary-bg)' : 'var(--border-default)'}`,
-                      borderRadius: 'var(--radius-lg)',
-                      textDecoration: 'none',
-                      color: 'inherit',
-                      transition: 'all 0.2s ease',
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.borderColor = 'var(--border-strong)';
-                      e.currentTarget.style.boxShadow = 'var(--shadow-sm)';
-                      e.currentTarget.style.transform = 'translateY(-1px)';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.borderColor = checked
-                        ? 'var(--action-primary-bg)'
-                        : 'var(--border-default)';
-                      e.currentTarget.style.boxShadow = 'none';
-                      e.currentTarget.style.transform = 'translateY(0)';
-                    }}
-                  >
-                    <h3
+                <div
+                  key={virtualRow.key}
+                  data-index={virtualRow.index}
+                  ref={rowVirtualizer.measureElement}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    // 扣掉 scrollMargin，把「清單外框上方內容（sticky 標題列）」的位移還原掉。
+                    transform: `translateY(${virtualRow.start - rowVirtualizer.options.scrollMargin}px)`,
+                    // 以 paddingBottom 承載列與列的間距（會被 measureElement 量進實際高度）。
+                    paddingBottom: 'var(--spacing-3)',
+                  }}
+                >
+                  <div className="note-row">
+                    {editMode && (
+                      <input
+                        type="checkbox"
+                        className="note-check"
+                        checked={checked}
+                        disabled={toggling}
+                        onChange={() => toggleSelect(note)}
+                        aria-label={`選取筆記：${note.title}`}
+                        title="勾選以加入批次操作"
+                      />
+                    )}
+                    <Link
+                      href={`/notes/${note.slug}`}
+                      prefetch
+                      draggable
+                      title="可拖曳到左側分類，把這篇筆記歸入該分類"
+                      onDragStart={(e) => {
+                        // 攜帶筆記 ID，供左側欄分類列接收（拖筆記入分類）
+                        e.dataTransfer.setData(NOTE_DND_MIME, note.id);
+                        e.dataTransfer.effectAllowed = 'copyMove';
+                      }}
                       style={{
-                        margin: 0,
-                        fontSize: 'var(--text-base)',
-                        fontWeight: 600,
-                        color: 'var(--text-primary)',
+                        flex: 1,
+                        minWidth: 0,
+                        display: 'block',
+                        padding: 'var(--spacing-4)',
+                        background: checked ? 'var(--action-secondary-bg)' : 'var(--bg-surface)',
+                        border: `1px solid ${checked ? 'var(--action-primary-bg)' : 'var(--border-default)'}`,
+                        borderRadius: 'var(--radius-lg)',
+                        textDecoration: 'none',
+                        color: 'inherit',
+                        transition: 'all 0.2s ease',
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.borderColor = 'var(--border-strong)';
+                        e.currentTarget.style.boxShadow = 'var(--shadow-sm)';
+                        e.currentTarget.style.transform = 'translateY(-1px)';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.borderColor = checked
+                          ? 'var(--action-primary-bg)'
+                          : 'var(--border-default)';
+                        e.currentTarget.style.boxShadow = 'none';
+                        e.currentTarget.style.transform = 'translateY(0)';
                       }}
                     >
-                      {note.title}
-                    </h3>
-                    <div
-                      style={{
-                        marginTop: 'var(--spacing-2)',
-                        display: 'flex',
-                        gap: 'var(--spacing-3)',
-                        fontSize: 'var(--text-xs)',
-                        color: 'var(--text-tertiary)',
-                        alignItems: 'center',
-                      }}
-                    >
-                      <span>
-                        ⏱️ {sortTimeLabel}：
-                        {sortTime ? formatNoteDateTime(sortTime) : '—（未打開）'}
-                      </span>
-                    </div>
-                  </Link>
+                      <h3
+                        style={{
+                          margin: 0,
+                          fontSize: 'var(--text-base)',
+                          fontWeight: 600,
+                          color: 'var(--text-primary)',
+                        }}
+                      >
+                        {note.title}
+                      </h3>
+                      <div
+                        style={{
+                          marginTop: 'var(--spacing-2)',
+                          display: 'flex',
+                          gap: 'var(--spacing-3)',
+                          fontSize: 'var(--text-xs)',
+                          color: 'var(--text-tertiary)',
+                          alignItems: 'center',
+                        }}
+                      >
+                        <span>
+                          ⏱️ {sortTimeLabel}：
+                          {sortTime ? formatNoteDateTime(sortTime) : '—（未打開）'}
+                        </span>
+                      </div>
+                    </Link>
+                  </div>
                 </div>
               );
             })}
@@ -493,6 +542,8 @@ export default function NotesPage() {
         .notes-page {
           width: 100%;
           overflow-y: auto;
+          /* 作為虛擬化清單的捲動容器＋定位參考：listRef.offsetTop 需相對此容器量測。 */
+          position: relative;
         }
         .notes-page__container {
           max-width: var(--max-content-width);

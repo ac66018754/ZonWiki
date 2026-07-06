@@ -18,10 +18,14 @@ public static class NoteEndpoints
     public static void MapNoteEndpoints(this IEndpointRouteBuilder app)
     {
         // 列出筆記；可用 categoryId / tagId 篩選（透過多對多 NoteCategory / NoteTag）。
+        // 分頁（審查 #24）：limit / offset 皆為可選。兩者都不給時維持既有行為（回全部），
+        // 確保現有前端呼叫完全相容；提供時才套用 Skip/Take 以支援長清單分頁載入。
         app.MapGet("/api/notes", async (
             ZonWikiDbContext db,
             Guid? categoryId,
             Guid? tagId,
+            int? limit,
+            int? offset,
             CancellationToken ct) =>
         {
             var query = db.Note.Where(n => n.ValidFlag);
@@ -38,8 +42,24 @@ public static class NoteEndpoints
                     nt.ValidFlag && nt.NoteId == n.Id && nt.TagId == tagId.Value));
             }
 
-            var items = await query
-                .OrderByDescending(n => n.UpdatedDateTime)
+            // 先固定排序（分頁的前提），再套用可選的位移與筆數上限。
+            var orderedQuery = query.OrderByDescending(n => n.UpdatedDateTime);
+
+            // 位移（offset）：負值視為 0，避免非法查詢。
+            IQueryable<ZonWiki.Domain.Entities.Note> pagedQuery = orderedQuery;
+            if (offset.HasValue && offset.Value > 0)
+            {
+                pagedQuery = pagedQuery.Skip(offset.Value);
+            }
+
+            // 筆數上限（limit）：夾在 1~2000 之間，避免單頁抓取過量拖垮伺服器。
+            if (limit.HasValue)
+            {
+                var cappedLimit = Math.Clamp(limit.Value, 1, 2000);
+                pagedQuery = pagedQuery.Take(cappedLimit);
+            }
+
+            var items = await pagedQuery
                 .Select(n => new NoteSummaryDto(
                     n.Id,
                     n.Title,

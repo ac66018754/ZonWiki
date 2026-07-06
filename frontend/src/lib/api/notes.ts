@@ -139,12 +139,18 @@ export async function listNotes(params?: {
   categoryId?: string;
   tagId?: string;
   isDraft?: boolean;
+  /** 單頁筆數上限（可選，審查 #24）；不給則回全部，後端會夾在 1~2000。 */
+  limit?: number;
+  /** 位移量（可選，審查 #24）；配合 limit 做分頁載入。 */
+  offset?: number;
 }): Promise<NoteSummary[]> {
   const query = new URLSearchParams();
   if (params?.categoryId) query.append("categoryId", params.categoryId);
   if (params?.tagId) query.append("tagId", params.tagId);
   if (params?.isDraft !== undefined)
     query.append("isDraft", String(params.isDraft));
+  if (params?.limit !== undefined) query.append("limit", String(params.limit));
+  if (params?.offset !== undefined) query.append("offset", String(params.offset));
 
   const path = `/api/notes${query.toString() ? `?${query.toString()}` : ""}`;
   const r = await fetchJson<NoteSummary[]>(path);

@@ -153,10 +153,16 @@ export async function deleteTaskGroup(id: string): Promise<boolean> {
 export async function listTaskCards(params?: {
   groupId?: string;
   status?: "todo" | "doing" | "done";
+  /** 單頁筆數上限（可選，審查 #24；僅 list 視圖套用）；不給則回全部，後端會夾在 1~2000。 */
+  limit?: number;
+  /** 位移量（可選，審查 #24）；配合 limit 做分頁載入。 */
+  offset?: number;
 }): Promise<TaskCard[]> {
   const query = new URLSearchParams();
   if (params?.groupId) query.append("groupId", params.groupId);
   if (params?.status) query.append("status", params.status);
+  if (params?.limit !== undefined) query.append("limit", String(params.limit));
+  if (params?.offset !== undefined) query.append("offset", String(params.offset));
 
   const path = `/api/tasks${query.toString() ? `?${query.toString()}` : ""}`;
   const r = await fetchJson<TaskCard[]>(path);

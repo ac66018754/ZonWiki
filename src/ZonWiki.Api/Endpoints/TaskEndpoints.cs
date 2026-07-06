@@ -37,6 +37,10 @@ public static class TaskEndpoints
             string sort = "createdDate",
             DateTime? from = null,
             DateTime? to = null,
+            // 分頁（審查 #24）：僅 list 視圖套用；limit / offset 都不給時維持既有行為（回全部），
+            // 確保現有前端呼叫相容。board / calendar 視圖不分頁（其資料量本身有界）。
+            int? limit = null,
+            int? offset = null,
             CancellationToken ct = default) =>
         {
             var userId = httpContext.User.FindFirst(AuthExtensions.UserIdClaimType)?.Value;
@@ -57,7 +61,7 @@ public static class TaskEndpoints
             {
                 "board" => await GetBoardView(db, query, ct),
                 "calendar" => await GetCalendarView(db, query, from, to, ct),
-                _ => await GetListView(db, query, sort, ct) // 預設 list
+                _ => await GetListView(db, query, sort, limit, offset, ct) // 預設 list
             };
         });
 
@@ -426,19 +430,45 @@ public static class TaskEndpoints
     /// <summary>
     /// 清單視圖：傳回排序後的卡片清單。
     /// </summary>
+    /// <param name="db">資料庫內容。</param>
+    /// <param name="query">已套用使用者與有效性過濾的卡片查詢。</param>
+    /// <param name="sort">排序方式（planneddate／duedate／priority／createdDate）。</param>
+    /// <param name="limit">
+    /// 可選的單頁筆數上限；為 null 時回全部（維持相容），提供時夾在 1~2000 之間。
+    /// </param>
+    /// <param name="offset">可選的位移量；為 null 或非正值時不位移。</param>
+    /// <param name="ct">取消權杖。</param>
     private static async Task<IResult> GetListView(
         ZonWikiDbContext db,
         IQueryable<TaskCard> query,
         string sort,
+        int? limit,
+        int? offset,
         CancellationToken ct)
     {
-        var cards = sort.ToLower() switch
+        // 先依排序鍵建立穩定排序的查詢（分頁前提），再套用可選的 Skip/Take。
+        IQueryable<TaskCard> orderedQuery = sort.ToLower() switch
         {
-            "planneddate" => await query.OrderBy(t => t.PlannedDateTime).ThenBy(t => t.SortOrder).ToListAsync(ct),
-            "duedate" => await query.OrderBy(t => t.DueDateTime).ThenBy(t => t.SortOrder).ToListAsync(ct),
-            "priority" => await query.OrderByDescending(t => t.Priority).ThenBy(t => t.SortOrder).ToListAsync(ct),
-            _ => await query.OrderBy(t => t.CreatedDateTime).ThenBy(t => t.SortOrder).ToListAsync(ct) // createdDate
+            "planneddate" => query.OrderBy(t => t.PlannedDateTime).ThenBy(t => t.SortOrder),
+            "duedate" => query.OrderBy(t => t.DueDateTime).ThenBy(t => t.SortOrder),
+            "priority" => query.OrderByDescending(t => t.Priority).ThenBy(t => t.SortOrder),
+            _ => query.OrderBy(t => t.CreatedDateTime).ThenBy(t => t.SortOrder) // createdDate
         };
+
+        // 位移（offset）：負值視為不位移，避免非法查詢。
+        if (offset.HasValue && offset.Value > 0)
+        {
+            orderedQuery = orderedQuery.Skip(offset.Value);
+        }
+
+        // 筆數上限（limit）：夾在 1~2000 之間，避免單頁抓取過量。
+        if (limit.HasValue)
+        {
+            var cappedLimit = Math.Clamp(limit.Value, 1, 2000);
+            orderedQuery = orderedQuery.Take(cappedLimit);
+        }
+
+        var cards = await orderedQuery.ToListAsync(ct);
 
         var dtos = cards.Select(MapToSummaryDto).ToList();
         return Results.Ok(ApiResponse<List<TaskCardSummaryDto>>.Ok(dtos));
