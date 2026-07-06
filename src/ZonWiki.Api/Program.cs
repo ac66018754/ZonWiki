@@ -70,6 +70,7 @@ builder.Services.AddZonWikiRateLimiting();
 builder.Services.AddSingleton<SseHub>();
 builder.Services.AddScoped<AskCancellationRegistry>();
 builder.Services.AddScoped<AncestryService>();
+builder.Services.AddScoped<CanvasService>(); // 畫布擁有權驗證＋CRUD 業務邏輯（#32）
 builder.Services.AddScoped<AskOrchestrator>();
 builder.Services.AddScoped<AskQueueService>();
 builder.Services.AddScoped<RefineService>(); // 精煉成筆記協調器
