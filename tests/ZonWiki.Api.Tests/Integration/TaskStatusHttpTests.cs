@@ -104,6 +104,45 @@ public sealed class TaskStatusHttpTests
     }
 
     /// <summary>
+    /// 負面（非法狀態值）：更新請求帶「未知／非法 status（例如 "bogus"）」時，端點必須回 400，
+    /// 且卡片實際狀態不被寫入該非法值（審查 #42 明確要求的必達負面案例）。
+    /// 此測試鎖住 allow-list 驗證：只有 todo／doing／done 可被寫入。
+    /// </summary>
+    [Fact]
+    public async Task UpdateTaskStatus_UnknownStatus_ReturnsBadRequest_AndDoesNotPersist()
+    {
+        // Arrange：一張 todo 卡片。
+        var (_, token) = await _factory.SeedUserWithTokenAsync($"task-bogus-{Guid.NewGuid():N}@example.com");
+        var client = _factory.CreateClientWithToken(token);
+        var taskId = await client.CreateTaskAsync("非法狀態應被拒絕", status: "todo");
+
+        // Act：PUT 帶未知狀態 "bogus"。
+        var response = await client.PutAsJsonAsync($"/api/tasks/{taskId}", new { status = "bogus" });
+
+        // Assert：回 400，且資料庫中的卡片狀態仍為原本的 todo（未被寫入非法值）。
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await _factory.GetTaskCardFromDbAsync(taskId))!.Status.Should().Be("todo");
+    }
+
+    /// <summary>
+    /// 負面（建立時非法狀態值）：POST 建立卡片帶非法 status 時，端點必須回 400，
+    /// 確保 allow-list 驗證同時涵蓋建立與更新兩條路徑（避免非法值從建立端偷渡進 DB）。
+    /// </summary>
+    [Fact]
+    public async Task CreateTask_UnknownStatus_ReturnsBadRequest()
+    {
+        // Arrange。
+        var (_, token) = await _factory.SeedUserWithTokenAsync($"task-create-bogus-{Guid.NewGuid():N}@example.com");
+        var client = _factory.CreateClientWithToken(token);
+
+        // Act：POST 建立時帶未知狀態 "bogus"。
+        var response = await client.PostAsJsonAsync("/api/tasks", new { title = "非法狀態建立", status = "bogus" });
+
+        // Assert：回 400。
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    /// <summary>
     /// 負面（跨使用者隔離）：使用者 B 不可更新使用者 A 的卡片——回 404（資源對 B 不可見）。
     /// 註：本系統以「查不到＝404」表達隔離（比 403「知道存在但無權」更保護隱私，不洩漏他人資源是否存在）。
     /// </summary>

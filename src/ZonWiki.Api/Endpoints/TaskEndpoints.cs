@@ -16,6 +16,14 @@ namespace ZonWiki.Api.Endpoints;
 /// </summary>
 public static class TaskEndpoints
 {
+    /// <summary>
+    /// 任務卡片允許的狀態值（allow-list）。
+    /// 前端看板／清單僅使用 todo／doing／done 這三種；任何其他值一律視為非法輸入並回 400（審查 #42）。
+    /// 採 Ordinal（大小寫敏感）比對，因前端固定使用小寫值。
+    /// </summary>
+    private static readonly IReadOnlySet<string> AllowedTaskStatuses =
+        new HashSet<string>(StringComparer.Ordinal) { "todo", "doing", "done" };
+
     public static void MapTaskEndpoints(this IEndpointRouteBuilder app)
     {
         /// <summary>
@@ -68,6 +76,15 @@ public static class TaskEndpoints
             if (string.IsNullOrEmpty(userId) || !Guid.TryParse(userId, out var userGuid))
             {
                 return Results.Unauthorized();
+            }
+
+            // 狀態驗證（審查 #42）：建立時的 status 必須是允許值（todo／doing／done）之一，
+            // 避免任意字串（含空字串）被直接寫入卡片狀態。
+            if (!AllowedTaskStatuses.Contains(request.Status))
+            {
+                return Results.Json(
+                    ApiResponse<object>.Fail($"非法的任務狀態：{request.Status}", 400),
+                    statusCode: StatusCodes.Status400BadRequest);
             }
 
             // 如果 IsPinnedToHome==true 且未指定 HomeSortOrder，查該使用者目前釘選任務的最大 HomeSortOrder。
@@ -165,6 +182,16 @@ public static class TaskEndpoints
             if (string.IsNullOrEmpty(userId) || !Guid.TryParse(userId, out var userGuid))
             {
                 return Results.Unauthorized();
+            }
+
+            // 狀態驗證（審查 #42）：更新採 PATCH 語意——未帶／空字串 status 代表「略過不改」（仍視為合法）；
+            // 但一旦帶了非空的 status，就必須是允許值（todo／doing／done）之一，否則回 400，
+            // 避免任意字串被直接寫入 card.Status（先驗證輸入再查資源，快速失敗）。
+            if (!string.IsNullOrEmpty(request.Status) && !AllowedTaskStatuses.Contains(request.Status))
+            {
+                return Results.Json(
+                    ApiResponse<object>.Fail($"非法的任務狀態：{request.Status}", 400),
+                    statusCode: StatusCodes.Status400BadRequest);
             }
 
             var card = await db.TaskCard
