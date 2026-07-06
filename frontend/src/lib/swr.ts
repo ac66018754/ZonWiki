@@ -9,6 +9,9 @@ import {
   listNoteTags,
   listTaskCards,
   listTaskGroups,
+  listExpenses,
+  listExpenseCategories,
+  getExpenseStats,
   type CurrentUser,
   type HomePageAggregate,
   type NoteSummary,
@@ -16,6 +19,9 @@ import {
   type NoteTag,
   type TaskCard,
   type TaskGroup,
+  type ExpenseListResult,
+  type ExpenseCategory,
+  type ExpenseStats,
 } from './api';
 
 /**
@@ -43,6 +49,25 @@ export const swrKeys = {
    */
   notes: (categoryId?: string | null, tagId?: string | null) =>
     ['notes', categoryId ?? '', tagId ?? ''] as const,
+  /** 消費分類清單。 */
+  expenseCategories: 'expense-categories',
+  /**
+   * 消費紀錄清單：依月份 / 分類 / 頁碼篩選，故 key 帶參數（不同篩選各自快取）。
+   * @param month 月份篩選（YYYY-MM，可空）。
+   * @param categoryId 分類篩選（可空）。
+   * @param page 頁碼（可空，預設第 1 頁）。
+   */
+  expenses: (
+    month?: string | null,
+    categoryId?: string | null,
+    page?: number | null,
+    pageSize?: number | null,
+  ) => ['expenses', month ?? '', categoryId ?? '', page ?? 1, pageSize ?? 0] as const,
+  /**
+   * 消費本月統計。
+   * @param month 月份（YYYY-MM）。
+   */
+  expenseStats: (month: string) => ['expense-stats', month] as const,
 } as const;
 
 /**
@@ -96,4 +121,38 @@ export function useTaskCards() {
  */
 export function useTaskGroups() {
   return useSWR<TaskGroup[]>(swrKeys.taskGroups, () => listTaskGroups());
+}
+
+/**
+ * 消費分類清單（客戶端快取版）。
+ */
+export function useExpenseCategories() {
+  return useSWR<ExpenseCategory[]>(swrKeys.expenseCategories, () => listExpenseCategories());
+}
+
+/**
+ * 消費紀錄清單（依月份 / 分類 / 頁碼篩選；客戶端快取版）。
+ * @param month 月份篩選（YYYY-MM，可空）。
+ * @param categoryId 分類篩選（可空）。
+ * @param page 頁碼（可空，預設第 1 頁）。
+ * @param pageSize 每頁筆數（可空；不傳則後端套預設上限 50——分頁要正確運作必須明確傳入）。
+ */
+export function useExpenses(
+  month?: string | null,
+  categoryId?: string | null,
+  page?: number | null,
+  pageSize?: number | null,
+) {
+  return useSWR<ExpenseListResult>(
+    swrKeys.expenses(month, categoryId, page, pageSize),
+    () => listExpenses({ month, categoryId, page, pageSize }),
+  );
+}
+
+/**
+ * 消費本月統計（客戶端快取版）。
+ * @param month 月份（YYYY-MM）。
+ */
+export function useExpenseStats(month: string) {
+  return useSWR<ExpenseStats | null>(swrKeys.expenseStats(month), () => getExpenseStats(month));
 }

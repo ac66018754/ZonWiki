@@ -35,6 +35,10 @@ public static class TrashTypeRegistry
         { "QuickLink", typeof(QuickLink) },
         { "CaptureItem", typeof(CaptureItem) },
 
+        // --- 記帳相關 ---
+        { "Expense", typeof(Expense) },
+        { "ExpenseCategory", typeof(ExpenseCategory) },
+
         // --- 開問啦相關（IUserOwned 的實體） ---
         { "Canvas", typeof(Canvas) },
         { "SystemPrompt", typeof(SystemPrompt) },
@@ -81,6 +85,10 @@ public static class TrashTypeRegistry
             QuickLink ql => ql.Title,
             CaptureItem ci => ci.RawContent.Length > 50 ? ci.RawContent[..50] + "..." : ci.RawContent,
 
+            // --- 記帳相關 ---
+            Expense e => ExpenseTitle(e),
+            ExpenseCategory ec => ec.Name,
+
             // --- 開問啦相關 ---
             Canvas canvas => canvas.Title,
             SystemPrompt sp => sp.Title,
@@ -90,6 +98,22 @@ public static class TrashTypeRegistry
 
             _ => "(無標題)"
         };
+    }
+
+    /// <summary>
+    /// 取得消費紀錄的標題摘要：優先用商家名稱，否則取原始文字前 50 字。
+    /// </summary>
+    /// <param name="expense">消費紀錄實體。</param>
+    /// <returns>供垃圾桶列表顯示的標題摘要。</returns>
+    private static string ExpenseTitle(Expense expense)
+    {
+        if (!string.IsNullOrWhiteSpace(expense.Merchant))
+        {
+            return expense.Merchant!;
+        }
+
+        var raw = expense.RawText ?? string.Empty;
+        return raw.Length > 50 ? raw[..50] + "..." : raw;
     }
 
     /// <summary>

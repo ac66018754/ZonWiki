@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
   createNoteTag,
@@ -14,7 +14,7 @@ import {
 import { useCurrentUser, useNotes, useNoteCategories, useNoteTags } from '@/lib/swr';
 import { formatDateTime } from '@/lib/formatters';
 import { DEFAULT_TIMEZONE, NOTE_DND_MIME } from '@/lib/constants';
-import { recordNoteNav } from '@/lib/noteNav';
+import { recordNoteNav, recordRecentCategory, markBackNavigation } from '@/lib/noteNav';
 import { SkeletonListItem } from '@/components/Skeleton';
 import { NotesBatchToolbar } from './components/NotesBatchToolbar';
 
@@ -52,6 +52,7 @@ function makeBatchTagName(): string {
  *   故即使意外重整，回到清單時仍能依標籤成員還原勾選，且這群筆記也獲得一個永久關聯。
  */
 export default function NotesPage() {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const selectedCategoryId = searchParams.get('categoryId');
   const selectedTagId = searchParams.get('tagId');
@@ -71,8 +72,13 @@ export default function NotesPage() {
   const categories = catData ?? [];
 
   // 記錄到「筆記情境返回堆疊」：清單/分類/標籤頁也算筆記情境頁，讓從筆記返回時能回到這裡。
+  // 另記錄「最近造訪分類」（獨立於堆疊，不受截斷影響）：供筆記詳情頁返回步驟 3a 判斷
+  // 「從哪個分類脈絡來就回哪」（設計書 §7.2 洞 1、§7.3）。
   useEffect(() => {
     recordNoteNav(window.location.pathname + window.location.search);
+    if (selectedCategoryId) {
+      recordRecentCategory(selectedCategoryId);
+    }
   }, [selectedCategoryId, selectedTagId]);
 
   // notes / tags 仍保留本地 state 承載「樂觀更新」（勾選即時加/移標籤），
@@ -230,6 +236,26 @@ export default function NotesPage() {
     ? categories.filter((c) => (c.parentId ?? null) === selectedCategoryId)
     : [];
 
+  // 返回鈕目標（設計書 §7.3「筆記清單/分類頁返回鈕」規則；父分類用 useNoteCategories() 純前端算）：
+  //   - 分類頁：查分類樹，有 parentId → 回父分類；無 parentId（根分類）→ 回全部 /notes。
+  //   - 標籤頁：標籤無父層 → 回全部 /notes（需求未定義，暫定，設計書 §12.21）。
+  //   - 無篩選（/notes 全部）：backTarget=null → 不顯示返回鈕（已是最終父層）。
+  const backTarget: string | null = (() => {
+    if (selectedCategoryId) {
+      // 分類樹尚未載入（catData === undefined）時，無法判斷此分類有無父分類 →
+      // 暫不顯示返回鈕，避免把「有父分類的子分類」誤判為根分類而錯導向 /notes（修 audit HIGH #2）。
+      // 樹載入後（含空陣列）才依 parentId 計算。
+      if (catData === undefined) return null;
+      const cat = categories.find((c) => c.id === selectedCategoryId);
+      const parentId = cat?.parentId ?? null;
+      return parentId ? `/notes?categoryId=${parentId}` : '/notes';
+    }
+    if (selectedTagId) {
+      return '/notes';
+    }
+    return null;
+  })();
+
   // 目前篩選的名稱（顯示在標題旁，讓使用者知道正在看哪個分類／標籤）
   const activeFilterLabel = (() => {
     if (selectedCategoryId) {
@@ -261,7 +287,31 @@ export default function NotesPage() {
         {/* 置頂列（#6 sticky）：筆記數 + 目前篩選 + 編輯模式鈕 + 批次工具列 */}
         <div className="notes-stickyhead">
           <div className="notes-headrow">
-            <div>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--spacing-3)', minWidth: 0 }}>
+              {/* 返回鈕（置頂列左端）：分類頁回父分類、標籤頁回全部；/notes 全部本身不顯示（§7.3）。 */}
+              {backTarget && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    // 標記為「返回」導覽：若父分類頁已在返回堆疊中，抵達時 recordNoteNav 會據此
+                    // 截斷（回到較早頁語意），而非把它當新前進頁 move-to-top（對齊詳情頁返回鈕）。
+                    markBackNavigation(backTarget);
+                    router.push(backTarget);
+                  }}
+                  className="btn-secondary"
+                  aria-label="返回上一層"
+                  title="返回上一層"
+                  style={{
+                    flexShrink: 0,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 'var(--spacing-1)',
+                  }}
+                >
+                  ← 返回
+                </button>
+              )}
+              <div>
               <h1 style={{ margin: 0, fontSize: 'var(--text-2xl)', fontWeight: 700 }}>筆記</h1>
               <p
                 style={{
@@ -288,6 +338,7 @@ export default function NotesPage() {
                   </span>
                 )}
               </p>
+              </div>
             </div>
             <div style={{ display: 'flex', gap: 'var(--spacing-2)', alignItems: 'center', flexWrap: 'wrap' }}>
               {/* 排序方式（建立 / 最後編輯 / 最後打開）+ 方向 */}

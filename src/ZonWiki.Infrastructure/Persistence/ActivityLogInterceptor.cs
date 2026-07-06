@@ -120,6 +120,8 @@ public sealed class ActivityLogInterceptor : SaveChangesInterceptor
         CaptureItem c => ("capture", FirstLine(c.RawContent)),
         QuickLink q => ("quicklink", q.Title),
         SystemPrompt p => ("prompt", p.Title),
+        Expense e => ("expense", string.IsNullOrWhiteSpace(e.Merchant) ? FirstLine(e.RawText) : e.Merchant!),
+        ExpenseCategory ec => ("expensecategory", ec.Name),
         _ => null,
     };
 

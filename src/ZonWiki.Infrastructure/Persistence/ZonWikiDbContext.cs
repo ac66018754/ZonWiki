@@ -109,6 +109,10 @@ public sealed class ZonWikiDbContext(
     public DbSet<AiMessage> AiMessage => Set<AiMessage>();
     public DbSet<CanvasAnnotation> CanvasAnnotation => Set<CanvasAnnotation>();
 
+    // --- 記帳（其他功能群；一句話記帳＋分類）-------------------------------------
+    public DbSet<ExpenseCategory> ExpenseCategory => Set<ExpenseCategory>();
+    public DbSet<Expense> Expense => Set<Expense>();
+
     // --- 通用實體關聯（任務/子任務/筆記/節點 互連）---------------------------------
     public DbSet<EntityLink> EntityLink => Set<EntityLink>();
 

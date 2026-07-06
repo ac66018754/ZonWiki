@@ -18,6 +18,7 @@ const SECTIONS: { href: string; label: string; icon: string }[] = [
   { href: "/tasks", label: "日程規劃", icon: "🗓️" },
   { href: "/canvas", label: "開問啦", icon: "🎨" },
   { href: "/notes", label: "筆記", icon: "📝" },
+  { href: "/others", label: "其他", icon: "🧰" },
   { href: "/trash", label: "垃圾桶", icon: "🗑️" },
 ];
 

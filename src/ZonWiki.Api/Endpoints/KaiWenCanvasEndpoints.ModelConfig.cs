@@ -139,6 +139,20 @@ public static partial class KaiWenCanvasEndpoints
                         StatusCodes.Status400BadRequest);
                 }
 
+                // 伺服器端 Provider 白名單（安全鐵則）：使用者只能設定 OpenAiCompatible／ClaudeCli。
+                // VertexAdc 會以真實 GCP ADC token 當 Bearer（見 AiProviderFactory 的 VertexAdc 分支），
+                // 若讓使用者自建即可把系統憑證導向自控端點竊取，故一律只由系統（ai-models.json 種子、
+                // 以共用身分）設定；收到 "VertexAdc" 或任何未知值一律 400，且此檢查在任何 SaveChanges 之前
+                // 就 return（DbContext 為請求範圍、未存檔的追蹤變更會隨之丟棄，不會有半套寫入）。
+                if (!IsUserSettableProvider(configDto.Provider))
+                {
+                    return CanvasJsonHelper.JsonError(
+                        ApiResponse<List<AiModelConfigDto>>.Fail(
+                            $"不支援的供應者類型：'{configDto.Provider}'。" +
+                            "此供應者類型僅能由系統設定（合法值：OpenAiCompatible／ClaudeCli）。"),
+                        StatusCodes.Status400BadRequest);
+                }
+
                 // 以 (UserId, Key) 查找既有記錄。用 IgnoreQueryFilters 才能找到「曾被軟刪除」的同 Key 列
                 // 以便復活——否則全域過濾(ValidFlag==true)看不到它 → 誤走新增 → 撞 (UserId,Key) 唯一索引(23505)。
                 var existingModel = await db.AiModel.IgnoreQueryFilters()
@@ -254,6 +268,17 @@ public static partial class KaiWenCanvasEndpoints
                 StatusCodes.Status500InternalServerError);
         }
     }
+
+    /// <summary>
+    /// 使用者可自行設定（PUT /models-config）的 AI 供應者白名單：僅 <c>OpenAiCompatible</c> 與 <c>ClaudeCli</c>。
+    /// 「以系統憑證認證」的供應者（如 VertexAdc 用 ADC token）不在此列，只能由系統以共用身分設定，
+    /// 避免使用者自建後把系統憑證導向自控端點（見 <see cref="ZonWiki.Infrastructure.Ai.AiProviderFactory"/> 的 VertexAdc 分支）。
+    /// </summary>
+    /// <param name="provider">請求傳入的供應者字串（可空）。</param>
+    /// <returns>屬於使用者可設定的白名單時為 true；空／未知／VertexAdc 皆為 false。</returns>
+    private static bool IsUserSettableProvider(string? provider)
+        => string.Equals(provider, "OpenAiCompatible", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(provider, "ClaudeCli", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// 取得 AI 模型健檢狀態。本版不執行真實連線檢查，回傳安全預設值以避免前端 404。

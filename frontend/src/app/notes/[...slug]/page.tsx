@@ -30,7 +30,7 @@ import { NoteAiActions } from '@/components/NoteAiActions';
 import { NoteEditHistory } from '@/components/NoteEditHistory';
 import { NoteBacklinks } from '@/components/NoteBacklinks';
 import { SearchableMultiSelect } from '@/components/SearchableMultiSelect';
-import { recordNoteNav, getNoteBackTarget } from '@/lib/noteNav';
+import { recordNoteNav, getNoteBackTarget, getRecentCategoryId, markBackNavigation } from '@/lib/noteNav';
 import { LinkedEntitiesBar } from '@/components/LinkedEntitiesBar';
 import { TocPanel } from '@/components/TocPanel';
 import { ToggleAwareMarkdown } from '@/components/MarkdownPreview';
@@ -769,16 +769,36 @@ export default function NotesDetailPage() {
                 return;
               }
               // 閱讀中：只在「筆記情境」內返回：從堆疊取上一個筆記情境頁（別篇筆記／分類頁）。
-              // 堆疊起點（從首頁/搜尋/直接開網址進來）→ 回該篇筆記的分類頁（無分類則回筆記清單），
-              // 刻意不回到 zonwiki 首頁等非筆記情境。
+              // 堆疊起點（從首頁/搜尋/直接開網址進來，或搜尋進入時已截斷成單筆）→ 回分類階層，
+              // 刻意不回到 zonwiki 首頁等非筆記情境。（設計書 §7.3 步驟 2 → 3a/3b/3c）
               const current = window.location.pathname + window.location.search;
               const target = getNoteBackTarget(current);
+              // 先算出返回目的地，最後統一「標記為返回 + 導頁」。
+              let dest: string;
               if (target) {
-                router.push(target);
+                // 步驟 2：堆疊有上一項（筆記情境內移動）→ 原路返回，保留穿梭體驗。
+                dest = target;
               } else {
-                const catId = note?.categories?.[0]?.id;
-                router.push(catId ? `/notes?categoryId=${catId}` : '/notes');
+                // 步驟 3：堆疊起點 → 回分類階層，多分類依序判斷。
+                const cats = note?.categories ?? [];
+                const recentCatId = getRecentCategoryId();
+                if (recentCatId && cats.some((c) => c.id === recentCatId)) {
+                  // 3a：「最近造訪分類」∈ 該筆記分類 → 從哪個分類脈絡來就回哪。
+                  dest = `/notes?categoryId=${recentCatId}`;
+                } else if (cats.length > 0) {
+                  // 3b：否則取第一個分類。
+                  // ⚠ 後端回傳的 categories 排序穩定性未確認（設計書 §7.3）；先取 [0]，
+                  //    若日後發現亂序，改以關聯建立時間取最早，讓行為可預期。
+                  dest = `/notes?categoryId=${cats[0].id}`;
+                } else {
+                  // 3c：無分類筆記 → 回筆記清單（全部）。
+                  dest = '/notes';
+                }
               }
+              // 標記本次為「返回」導覽：抵達 dest 時 recordNoteNav 會據此截斷堆疊（回到較早頁語意），
+              // 而非把 dest 當成新的前進頁 move-to-top（修 audit HIGH #1：重訪截斷吃掉分類脈絡）。
+              markBackNavigation(dest);
+              router.push(dest);
             }}
             className="btn-secondary"
             title={isEditing ? '返回本篇筆記（退出編輯）' : '返回上一個筆記情境頁（別篇筆記／分類頁）'}

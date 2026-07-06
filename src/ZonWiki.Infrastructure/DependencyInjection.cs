@@ -40,7 +40,14 @@ public static class DependencyInjection
                     sp.GetRequiredService<UserIsolationMaterializationInterceptor>())
                 // 使用者隔離過濾把 UserId 烤進模型，故模型快取需依使用者區分。
                 .ReplaceService<Microsoft.EntityFrameworkCore.Infrastructure.IModelCacheKeyFactory,
-                    Persistence.UserModelCacheKeyFactory>();
+                    Persistence.UserModelCacheKeyFactory>()
+                // 抑制 ManyServiceProvidersCreatedWarning：正式環境是「單一主機＝單一內部服務供應者」，
+                // 此警告永不觸發；但整合測試以 WebApplicationFactory／WithWebHostBuilder 啟動多個主機
+                // （每個主機各建一個 EF 內部服務供應者），會累計超過 EF 的 20 個上限而把警告升級為例外，
+                // 讓後續 DbContext 建立全數失敗。這是純測試情境的副作用，故一律忽略（不影響正式行為）。
+                .ConfigureWarnings(warnings =>
+                    warnings.Ignore(
+                        Microsoft.EntityFrameworkCore.Diagnostics.CoreEventId.ManyServiceProvidersCreatedWarning));
         }, ServiceLifetime.Scoped, ServiceLifetime.Scoped);
 
         services.AddScoped<UserProvisioningService>();
@@ -79,6 +86,9 @@ public static class DependencyInjection
             .SetApplicationName("ZonWiki")
             .PersistKeysToFileSystem(new System.IO.DirectoryInfo(dataProtectionKeysPath));
         services.AddScoped<AiModelResolver>();
+        // VertexAdc 的 ADC token 提供者：singleton 持有 GoogleCredential 以跨請求快取／自動刷新 token。
+        // 註冊在 AiProviderFactory 之前，讓工廠的選填建構參數能自動注入。
+        services.AddSingleton<IVertexAdcTokenProvider, VertexAdcTokenProvider>();
         services.AddScoped<AiProviderFactory>();
 
         // 「精煉成筆記」：yt-dlp 擷取 + 文章抓取 + OpenAI 相容轉錄（Groq）。

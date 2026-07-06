@@ -633,6 +633,56 @@ server.tool(
   },
 )
 
+// ============================================================================
+// 記帳工具（Expense）
+// ============================================================================
+
+/**
+ * 用一句話記一筆帳（打 /api/ai/expenses）。
+ * 後端以 VertexAdc 解析金額／商家／分類並入庫；名稱式分類找不到會自動建立（含復活軟刪列）。
+ * clientRequestId 冪等：重送同一鍵會回既有結果、不重複記帳。
+ */
+server.tool(
+  'create_expense',
+  '用一句話記一筆帳（例如「剛剛在7-11花300買書」）。後端會解析金額、商家、分類並入庫；名稱式分類找不到會自動建立。',
+  {
+    text: z.string().describe('一句話消費描述，如「剛剛在7-11花300買書」'),
+    clientRequestId: z
+      .string()
+      .optional()
+      .describe('冪等鍵（可選）：重送同一鍵會回既有結果、不重複記帳'),
+    deviceNowIso: z
+      .string()
+      .optional()
+      .describe('裝置目前時間 ISO8601（可選，供「剛剛／昨天」等相對時間換算）'),
+    timeZone: z.string().optional().describe('IANA 時區（可選），如 Asia/Taipei'),
+  },
+  async ({
+    text,
+    clientRequestId,
+    deviceNowIso,
+    timeZone,
+  }: {
+    text: string
+    clientRequestId?: string
+    deviceNowIso?: string
+    timeZone?: string
+  }) => {
+    try {
+      return ok(
+        await call('POST', '/api/ai/expenses', {
+          Text: text,
+          ClientRequestId: clientRequestId,
+          DeviceNowIso: deviceNowIso,
+          TimeZone: timeZone,
+        }),
+      )
+    } catch (e) {
+      return fail(e)
+    }
+  },
+)
+
 /**
  * 歸檔捕捉項目（轉換為筆記或任務）。
  */

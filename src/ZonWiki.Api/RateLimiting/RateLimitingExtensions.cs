@@ -41,6 +41,22 @@ public static class RateLimitingExtensions
     /// </summary>
     public const string PatPolicy = "zonwiki-pat";
 
+    // ── PAT×AI「組合限流」參數（TokenBucket＋SlidingWindow 串接）─────────────────
+    /// <summary>組合限流：TokenBucket 桶容量（可累積上限；允許短暫爆量）。</summary>
+    private const int PatAiTokenLimit = 15;
+    /// <summary>組合限流：TokenBucket 每週期補回令牌數。</summary>
+    private const int PatAiTokensPerPeriod = 8;
+    /// <summary>組合限流：TokenBucket 補充週期（1 分鐘）。</summary>
+    private static readonly TimeSpan PatAiReplenishmentPeriod = TimeSpan.FromMinutes(1);
+    /// <summary>組合限流：SlidingWindow 每視窗允許數（長期速率上限）。</summary>
+    private const int PatAiSlidingPermitLimit = 30;
+    /// <summary>組合限流：SlidingWindow 視窗長度（1 分鐘）。</summary>
+    private static readonly TimeSpan PatAiSlidingWindow = TimeSpan.FromMinutes(1);
+    /// <summary>組合限流：SlidingWindow 分段數（越多越平滑）。</summary>
+    private const int PatAiSlidingSegments = 6;
+    /// <summary>組合限流：非目標端點使用的空限流器分區鍵（永不拒絕）。</summary>
+    private const string NoLimiterPartitionKey = "pat-ai-none";
+
     // ── 登入限流參數（IP 分區）───────────────────────────────────────────────
     /// <summary>登入視窗長度（1 分鐘）。</summary>
     private static readonly TimeSpan LoginWindow = TimeSpan.FromMinutes(1);
@@ -118,6 +134,42 @@ public static class RateLimitingExtensions
                         QueueLimit = 0,
                     }));
 
+            // ── 「PAT 對外＋會打 LLM」端點的組合限流（設計 §5.7）───────────────────
+            // 具名 policy 一個 partition＝一個 limiter，RequireRateLimiting 疊掛只取最後一筆，
+            // 無法在單一具名 policy 內同時跑 TokenBucket＋SlidingWindow。故改用「GlobalLimiter＋端點 marker」：
+            // 以 PartitionedRateLimiter.CreateChained 串接兩個 limiter，只對帶 PatAiRateLimitMarker 的端點生效
+            //（如 /api/ai/expenses），其餘端點回 NoLimiter（永不拒絕）→ 既有端點完全不受影響。
+            // 逾限共用同一個 OnRejected（統一 429 JSON）。
+            var patAiTokenBucket = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
+                HasPatAiMarker(httpContext)
+                    ? RateLimitPartition.GetTokenBucketLimiter(
+                        ResolveUserPartitionKey(httpContext),
+                        _ => new TokenBucketRateLimiterOptions
+                        {
+                            TokenLimit = PatAiTokenLimit,
+                            TokensPerPeriod = PatAiTokensPerPeriod,
+                            ReplenishmentPeriod = PatAiReplenishmentPeriod,
+                            AutoReplenishment = true,
+                            QueueLimit = 0,
+                        })
+                    : RateLimitPartition.GetNoLimiter(NoLimiterPartitionKey));
+
+            var patAiSlidingWindow = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
+                HasPatAiMarker(httpContext)
+                    ? RateLimitPartition.GetSlidingWindowLimiter(
+                        ResolveUserPartitionKey(httpContext),
+                        _ => new SlidingWindowRateLimiterOptions
+                        {
+                            PermitLimit = PatAiSlidingPermitLimit,
+                            Window = PatAiSlidingWindow,
+                            SegmentsPerWindow = PatAiSlidingSegments,
+                            QueueLimit = 0,
+                        })
+                    : RateLimitPartition.GetNoLimiter(NoLimiterPartitionKey));
+
+            // 兩個 limiter 串接：任一拒絕即整體拒絕（TokenBucket 擋爆量、SlidingWindow 擋長期速率）。
+            options.GlobalLimiter = PartitionedRateLimiter.CreateChained(patAiTokenBucket, patAiSlidingWindow);
+
             // 統一逾限回應：429＋Retry-After（可得時）＋明確 JSON 訊息（UTF-8）。
             options.OnRejected = async (context, cancellationToken) =>
             {
@@ -144,6 +196,14 @@ public static class RateLimitingExtensions
 
         return services;
     }
+
+    /// <summary>
+    /// 判斷目前端點是否標記了 <see cref="PatAiRateLimitMarker"/>（決定組合限流是否對此端點生效）。
+    /// </summary>
+    /// <param name="httpContext">目前的 HTTP 內容。</param>
+    /// <returns>端點帶有 PatAi marker 時為 true。</returns>
+    private static bool HasPatAiMarker(HttpContext httpContext)
+        => httpContext.GetEndpoint()?.Metadata.GetMetadata<PatAiRateLimitMarker>() is not null;
 
     /// <summary>
     /// 解析「使用者分區鍵」：優先用已驗證的 <c>user_id</c> 宣告（Cookie 或 PAT 驗證後皆會帶），
@@ -192,4 +252,13 @@ public static class RateLimitingExtensions
         var remoteIp = httpContext.Connection.RemoteIpAddress?.ToString();
         return string.IsNullOrEmpty(remoteIp) ? "ip:unknown" : $"ip:{remoteIp}";
     }
+}
+
+/// <summary>
+/// 端點 metadata 標記：標了此 marker 的端點會套用「PAT×AI 組合限流」（TokenBucket＋SlidingWindow 串接，
+/// 見 <see cref="RateLimitingExtensions"/> 的 GlobalLimiter）。用於 <c>/api/ai/expenses</c> 這類
+/// 「PAT 對外＋會打 LLM／付費資源」的端點；以 <c>.WithMetadata(new PatAiRateLimitMarker())</c> 掛載。
+/// </summary>
+public sealed class PatAiRateLimitMarker
+{
 }

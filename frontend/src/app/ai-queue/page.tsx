@@ -14,6 +14,7 @@ import { useCurrentUser } from "@/lib/swr";
 import { formatDateTime } from "@/lib/formatters";
 import { DEFAULT_TIMEZONE } from "@/lib/constants";
 import { logger } from "@/lib/logger";
+import { markNoteContextSwitch } from "@/lib/noteNav";
 
 /**
  * AI 處理佇列頁面（/ai-queue）。
@@ -163,9 +164,11 @@ function AiQueueInner() {
     if (d.kind === "node") {
       router.push("/canvas");
     } else if (d.noteSlug) {
-      router.push(
-        `/notes/${encodeURIComponent(d.noteSlug)}${d.markId ? `?mark=${encodeURIComponent(d.markId)}` : ""}`,
-      );
+      const url = `/notes/${encodeURIComponent(d.noteSlug)}${d.markId ? `?mark=${encodeURIComponent(d.markId)}` : ""}`;
+      // 從「非筆記情境」（AI 佇列）進入筆記＝新脈絡：截斷返回堆疊至該筆記，
+      // 使返回走分類階層而非跳回無關舊筆記（對齊 GlobalSearch 的 markNoteContextSwitch）。
+      markNoteContextSwitch(url);
+      router.push(url);
     }
   };
 
@@ -374,9 +377,13 @@ function AiQueueInner() {
               detailLoading={detailLoading}
               onRefresh={() => selectedId && fetchDetail(selectedId)}
               onGoToSource={() => goToSource(detail)}
-              onGoToAnswer={() =>
-                detail.answerNoteSlug && router.push(`/notes/${encodeURIComponent(detail.answerNoteSlug)}`)
-              }
+              onGoToAnswer={() => {
+                if (!detail.answerNoteSlug) return;
+                const url = `/notes/${encodeURIComponent(detail.answerNoteSlug)}`;
+                // 從「非筆記情境」（AI 佇列）進入產生的筆記＝新脈絡：先截斷返回堆疊（對齊 GlobalSearch）。
+                markNoteContextSwitch(url);
+                router.push(url);
+              }}
             />
           ) : null}
         </div>

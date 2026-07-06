@@ -258,6 +258,11 @@ export function Header({ user }: { user: CurrentUser | null }) {
               <span className="nav-hint">({hintKeys.openNotes})</span>
             )}
           </Link>
+          {/* 「其他」功能群（記帳／單字庫／英文教練）——普通 Link 即可，
+              天然位於「筆記」右、AiProcessingMenu 左，不需搬動任何元件。 */}
+          <Link href="/others" className="nav-item">
+            其他
+          </Link>
         </nav>
       </div>
 

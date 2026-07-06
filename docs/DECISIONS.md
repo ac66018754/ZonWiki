@@ -5,6 +5,26 @@
 
 ---
 
+## 2026-07-07 ｜記帳核心（工作包 A・Phase 1）後端實作定案
+
+- **背景**：實作設計書 §5 記帳核心後端——實體＋migration、VertexAdc 供應者、文字解析服務、CRUD／解析／彙總端點、MCP 工具。以下為實作期間的關鍵取捨。
+- **VertexAdc 供應者＋未知類型一律拋錯**：`AiProviderFactory` 新增 `VertexAdc` 分支（重用 `OpenAiCompatibleStreamingProvider`，僅把「靜態金鑰」換成「ADC access token」——`IVertexAdcTokenProvider`/`VertexAdcTokenProvider` 以 `GoogleCredential.GetApplicationDefaultAsync().CreateScoped(cloud-platform)` 取 token，singleton 持有 credential 讓底層自動快取／刷新）。**同時把原本 `AiProviderFactory.cs:127-129` 對未知 Provider 字串的「靜默退回預設 Claude」改成拋 `InvalidOperationException`**（設計 §1.2 明訂：DB 設定打錯字不得整批靜默走 Claude、既不吃 credits 也無人察覺）。合法的 ClaudeCli／OpenAiCompatible 行為不變（回歸測試鎖死）。新增 NuGet：`Google.Apis.Auth` 1.75.0。
+- **記帳解析主路不加 response_format（§12.6 未決項的取捨）**：設計 §12.6「主路是否小改 provider 加 response_format 拿硬 schema」在設計書中**無「(推薦)」標記**，屬未決；「§12 全採推薦」對它沒有可套用的推薦。本實作選擇**不改動 provider（維持零改動）、改以「prompt 約定＋圍欄剝除（StripFence）＋保底解析」取得 JSON**，與 §5.3「零改動 provider 拿不到 response_format」及工作包「provider 本體零改動」一致。日後若要硬 schema，再走「provider 加 response_format」或「原生 generateContent＋responseSchema」。
+- **跨組件契約：Phase 0 種子的 `AiModel.Key` 必須等於設定鍵 `Expense:VertexModelKey`（預設 `vertex-gemini-lite`）**。`ExpenseParsingService` 以此設定鍵向 `AiProviderFactory.ResolveAsync` 要 VertexAdc 模型；若種子的 Key 與此不一致，`ResolveAsync` 會**靜默退回既有共用鏈（Claude／banana）**（此屬「找不到指定模型鍵→退共用預設」的既有行為，非未知 Provider 類型，故不會被新加的 throw 攔到）。**已知限制**：本地／CI 無 VertexAdc 列時，記帳解析走既有共用退路（非 Vertex），真實 Vertex 路徑屬 Phase 0＋Seq 手動驗收（§1.2「從 Seq 確認請求打到 aiplatform.googleapis.com」）。
+- **金額 decimal(18,2)、時間 UTC、月界 UTC**：金額以 `decimal` + `HasPrecision(18,2)`（Npgsql→numeric(18,2)）避免浮點誤差；`OccurredDateTime` 一律存 UTC（相對時間由 LLM 依裝置時區換算後輸出 UTC）；`GET /api/expenses/stats` 的月彙總 Phase 1 **以 UTC 月界 [firstDayUtc, nextMonthUtc) 計算**並在回應標明 `month`，跨時區精算（使用者時區月界）列後續。
+- **保底 CaptureItem 一律用未取消的權杖寫入（審查 HIGH）**：解析端點以 linked CTS（request ct ＋ 硬時間預算）施加取消；逾時／解析失敗／壞 JSON 的保底 CaptureItem 建立與存檔，一律用 **`CancellationToken.None`**（絕不重用已逾時的 linked token），否則 `SaveChanges` 會立即被取消、CaptureItem 永遠寫不進去——直接推翻設計 §5.3「一句話永不丟失」。整合測試 `PostParse_逾時_降級為CaptureItem且確實落庫` 斷言「逾時後 CaptureItem 確實從 DB 查得到」。
+- **所有「AI 失敗」皆走保底、不回 500（對抗式復審補強）**：端點對解析過程的 catch 一律涵蓋**任何例外**——逾時（OperationCanceledException）、供應者硬錯誤（ExpenseParseException），以及**解析供應者建構失敗（ADC 不可用／未知 Provider／不安全 BaseUrl 拋的 InvalidOperationException）**——全部降級建 CaptureItem。原本只攔前兩者，ADC 不可用會漏成 500，違反設計 §1.6「ADC 不可用時...讓解析走保底路」；逾時記 Information、其餘記 Warning（Seq 可追）。整合測試 `PostParse_供應者拋例外_降級為CaptureItem` 鎖死此行為。
+- **冪等在並發下攔 23505 改回既有（審查 MEDIUM）**：`/api/ai/expenses` 的 clientRequestId 冪等除了「先查既有」外，`INSERT` 時另攔 `(UserId, ClientRequestId)` 過濾式唯一索引違反（`DbUpdateException` 內層 `DbException.SqlState == "23505"`），攔到改查既有列回其 DTO（200），使並發重送不回 500。整合測試含「同 clientRequestId 並發送出仍只建一筆」。
+- **解析硬預算預設 12 秒、clamp 下限放寬到 0.2 秒（測試用）**：設定鍵 `Expense:ParseBudgetSeconds` 預設 12（落在設計 §5.3 的 10–15 秒 band 內）。clamp 上限 15、**下限刻意放寬到 0.2 秒**——純為讓「逾時降級」路徑能寫成快速的確定性整合測試（TDD 要求逾時後 CaptureItem 必落庫）；**生產設定應維持 10–15**。
+- **組合限流：GlobalLimiter＋端點 marker＋CreateChained（TokenBucket＋SlidingWindow）**：`RequireRateLimiting` 疊掛只取最後一筆、單一具名 policy 無法同時跑兩種 limiter。故 `/api/ai/expenses` 改用 `options.GlobalLimiter = PartitionedRateLimiter.CreateChained(tokenBucket, slidingWindow)`＋端點 `.WithMetadata(new PatAiRateLimitMarker())`：只對帶 marker 的端點生效（TokenBucket 15 容量／8 每分鐘＋SlidingWindow 30／分），其餘端點回 `GetNoLimiter`（永不拒絕）故既有端點零影響；逾限共用既有 `OnRejected`（統一 429 JSON）。另 `POST /api/captures` 補掛既有 `PatPolicy`（原本完全沒掛限流）。
+- **並發首建分類撞唯一索引具韌性（審查 LOW）**：`ExpenseCategoryService` 的種子／名稱式 find-or-create 除了復活軟刪列外，`INSERT` 撞 `(UserId, Name)` 唯一索引時也攔 23505 改查既有列使用，確保並發首建不回 500。
+- **測試策略（審查 MEDIUM：整合基座 Fake 回中文散文）**：整合基座 `Ai__Provider=Fake` 的預設 Fake 回中文散文（非 JSON）。成功入庫路徑改以 `WithWebHostBuilder`＋`ConfigureTestServices` 在 Testing 覆寫 `IAiProvider` 為「回定值 JSON 的 Fake」（**不改動基座對其它測試的預設 Fake 行為**）；降級／逾時路徑則用不依賴特定 JSON 的預設 Fake。
+- **對抗式復審後補修（同日）**：①CRITICAL——VertexAdc 供應者三道防線：只允許系統共用身分（SharedModelUserId）名下的列取 ADC token、BaseUrl 只放行 `aiplatform.googleapis.com`／`<region>-aiplatform.googleapis.com`＋https、`SaveModelsConfig` 伺服器端白名單拒收 VertexAdc（堵死「任何登入者自建假模型列把伺服器 GCP token 外流」的攻擊鏈）；②`/api/expenses/parse` 加掛 PatAiRateLimitMarker（堵 PAT 換路繞過組合限流）；③解析文字上限 1000 字＋CRUD 輸入驗證（應用層，無 schema 變更）；④分類 ensure-defaults 批次化（修 N+1；過程實測抓到並發死結 40P01，加攔 40P01/40001 走逐筆 fallback）；⑤清單缺省 limit 預設 50（前端 useExpenses 同步補傳 pageSize）；⑥ParseAndStoreAsync 例外攔截縮小到只包 AI 呼叫，儲存層非預期例外 log Error 後外拋。
+- **前端 PWA manifest 色票寫死之例外（鐵則 #11「禁止硬編碼色票」的記錄在案例外）**：`app/manifest.ts` 的 `background_color`/`theme_color` 直接寫 warmpaper token 實值（`#faf9f7`／`#2d5016`）——manifest 是靜態 JSON、拿不到 CSS 變數，且 OS 只在安裝/啟動畫面用到；值已與 `globals.css` 的 warmpaper token 核對一致，換主題色時需同步這兩處。
+- **noteNav「重訪截斷」修正（Playwright 活體實測抓到）**：原堆疊語意「重訪即截斷」會讓「從分類頁點進曾造訪過的筆記」按返回錯回舊位置（丟失分類脈絡）。改為：返回鈕導頁前 `markBackNavigation(target)` 一次性標記——`recordNoteNav` 遇已存在 URL 時，有標記＝back 移動→截斷（原語意），無標記＝前進→move-to-top（保留新脈絡）。瀏覽器硬體返回鍵無標記會走 move-to-top，屬已知取捨。
+
+---
+
 ## 2026-07-06 ｜「其他」功能群定案：GCP 純血選型＋分期實作（設計書 v3.1）
 
 - **背景**：新增「其他」頁功能群——單字庫／英文教練（Midoo 式即時語音對話）／記帳（語音一句話入帳）／筆記 TTS・Podcast 模式／筆記返回鈕重定義／iPhone 快速啟動。使用者裁示鐵則級約束：**新功能所有雲端服務一律用 GCP（讓花費吃既有 credits）、拒絕對其他家付費，接受體驗較差、開發較久的代價**。

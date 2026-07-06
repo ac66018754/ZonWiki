@@ -28,6 +28,7 @@ export * from "./notes";
 export * from "./comments";
 export * from "./tasks";
 export * from "./home";
+export * from "./expense";
 export * from "./search";
 export * from "./graph";
 export * from "./links";

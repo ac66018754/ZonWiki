@@ -38,6 +38,17 @@ export const metadata: Metadata = {
     initialScale: 1,
     maximumScale: 5,
   },
+  // PWA（設計書 §8.4）：`<link rel="manifest">` 由 app/manifest.ts 的檔案慣例自動注入
+  //（Next 於 resolve-metadata.js 把 staticFilesMetadata.manifest 設進 metadata.manifest，
+  //  再由 metadata.js 輸出恰好一條 link），故此處**刻意不再手寫 metadata.manifest** 以免重複（審查 MEDIUM #4）。
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "ZonWiki",
+  },
+  icons: {
+    apple: "/icons/apple-touch-icon-180.png",
+  },
 };
 
 // 設定頁面為動態渲染 (每次請求都取最新的使用者資訊)

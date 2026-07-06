@@ -1410,6 +1410,14 @@ th {
   }
 }
 
+/* 在 ≤768px 隱藏的工具類：獨立於 .hide-mobile（那是 ≤640px、Header 垃圾桶圖示在用，不可動）。
+   供「桌機才有意義」但斷點需 768px 的元件用（如記帳頁的實驗性語音輸入鈕，設計書 §5.5）。 */
+@media (max-width: 768px) {
+  .hide-below-768 {
+    display: none;
+  }
+}
+
 /* 保留舊的色彩相關 CSS (相容舊版 prose/article 頁面) */
 :root {
   --canvas: var(--bg-canvas);

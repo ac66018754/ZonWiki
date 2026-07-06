@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { searchAll, SearchResult } from "@/lib/api";
 import { logger } from "@/lib/logger";
 import { confirmNavigation } from "@/lib/navigationGuard";
+import { markNoteContextSwitch } from "@/lib/noteNav";
 
 /**
  * 搜尋結果項目（在後端內容結果之外，再加上前端的「功能/頁面」項目）。
@@ -130,6 +131,11 @@ export function GlobalSearch() {
    */
   const navigateToResult = async (result: SearchItem) => {
     if (!(await confirmNavigation())) return;
+    // 從「非筆記情境」（全域搜尋）進入某筆記＝新脈絡：截斷返回堆疊至該筆記，
+    // 使返回不會跳回稍早瀏覽的無關舊筆記，而直接走分類階層（設計書 §7.2 洞 2、§7.4）。
+    // markNoteContextSwitch 內部會把 result.url 正規化成瀏覽器 location 同形的編碼字串，
+    // 與詳情頁 recordNoteNav 記錄的字串完全相等（中文 slug 亦然）。
+    if (result.type === "note") markNoteContextSwitch(result.url);
     router.push(result.url);
     setIsOpen(false);
     setQuery("");

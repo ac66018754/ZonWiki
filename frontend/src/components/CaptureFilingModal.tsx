@@ -12,6 +12,7 @@ import {
 } from "@/lib/api";
 import { logger } from "@/lib/logger";
 import { useConfirm } from "@/components/ConfirmProvider";
+import { markNoteContextSwitch } from "@/lib/noteNav";
 
 /**
  * 捕捉分流彈窗：
@@ -172,9 +173,21 @@ export function CaptureFilingModal({
                     </div>
                   );
                 }
-                const href = l.targetType === "note" && l.slug ? `/notes/${l.slug}` : "/tasks";
+                const isNote = l.targetType === "note" && !!l.slug;
+                const href = isNote ? `/notes/${l.slug}` : "/tasks";
                 return (
-                  <Link key={l.id} href={href} className="cfm-link" onClick={onClose}>
+                  <Link
+                    key={l.id}
+                    href={href}
+                    className="cfm-link"
+                    onClick={() => {
+                      // 從「非筆記情境」（捕捉分流彈窗）進入筆記＝新脈絡：先截斷返回堆疊至該筆記，
+                      // 使返回走分類階層而非跳回無關舊筆記（對齊 GlobalSearch；中文 slug 由
+                      // markNoteContextSwitch 內部正規化）。不 preventDefault、保留 <Link> 導頁語意。
+                      if (isNote) markNoteContextSwitch(href);
+                      onClose();
+                    }}
+                  >
                     {inner}
                   </Link>
                 );

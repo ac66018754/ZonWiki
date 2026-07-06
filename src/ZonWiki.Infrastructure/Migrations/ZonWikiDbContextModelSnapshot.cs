@@ -1473,6 +1473,189 @@ namespace ZonWiki.Infrastructure.Migrations
                     b.ToTable("EntityLink");
                 });
 
+            modelBuilder.Entity("ZonWiki.Domain.Entities.Expense", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("Expense_Id");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("Expense_Amount");
+
+                    b.Property<Guid?>("CaptureItemId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("Expense_CaptureItemId");
+
+                    b.Property<Guid?>("CategoryId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("Expense_CategoryId");
+
+                    b.Property<string>("ClientRequestId")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("Expense_ClientRequestId");
+
+                    b.Property<DateTime>("CreatedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("Expense_CreatedDateTime");
+
+                    b.Property<string>("CreatedUser")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("Expense_CreatedUser");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)")
+                        .HasColumnName("Expense_Currency");
+
+                    b.Property<DateTime?>("DeletedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("Expense_DeletedDateTime");
+
+                    b.Property<string>("ItemsJson")
+                        .HasColumnType("text")
+                        .HasColumnName("Expense_ItemsJson");
+
+                    b.Property<string>("Merchant")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("Expense_Merchant");
+
+                    b.Property<bool>("NeedsConfirmation")
+                        .HasColumnType("boolean")
+                        .HasColumnName("Expense_NeedsConfirmation");
+
+                    b.Property<DateTime>("OccurredDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("Expense_OccurredDateTime");
+
+                    b.Property<DateTime?>("PurgedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("Expense_PurgedDateTime");
+
+                    b.Property<string>("RawText")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("Expense_RawText");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("Expense_Source");
+
+                    b.Property<DateTime>("UpdatedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("Expense_UpdatedDateTime");
+
+                    b.Property<string>("UpdatedUser")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("Expense_UpdatedUser");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("Expense_UserId");
+
+                    b.Property<bool>("ValidFlag")
+                        .HasColumnType("boolean")
+                        .HasColumnName("Expense_ValidFlag");
+
+                    b.HasKey("Id")
+                        .HasName("PK_Expense");
+
+                    b.HasIndex("CategoryId")
+                        .HasDatabaseName("IX_Expense_CategoryId");
+
+                    b.HasIndex("UserId", "ClientRequestId")
+                        .IsUnique()
+                        .HasDatabaseName("UX_Expense_UserId_ClientRequestId")
+                        .HasFilter("\"Expense_ClientRequestId\" IS NOT NULL");
+
+                    b.HasIndex("UserId", "CategoryId", "ValidFlag")
+                        .HasDatabaseName("IX_Expense_UserId_CategoryId_ValidFlag");
+
+                    b.HasIndex("UserId", "OccurredDateTime", "ValidFlag")
+                        .HasDatabaseName("IX_Expense_UserId_OccurredDateTime_ValidFlag");
+
+                    b.ToTable("Expense");
+                });
+
+            modelBuilder.Entity("ZonWiki.Domain.Entities.ExpenseCategory", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("ExpenseCategory_Id");
+
+                    b.Property<DateTime>("CreatedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("ExpenseCategory_CreatedDateTime");
+
+                    b.Property<string>("CreatedUser")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("ExpenseCategory_CreatedUser");
+
+                    b.Property<DateTime?>("DeletedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("ExpenseCategory_DeletedDateTime");
+
+                    b.Property<string>("Icon")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("ExpenseCategory_Icon");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("ExpenseCategory_Name");
+
+                    b.Property<DateTime?>("PurgedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("ExpenseCategory_PurgedDateTime");
+
+                    b.Property<int>("SortOrder")
+                        .HasColumnType("integer")
+                        .HasColumnName("ExpenseCategory_SortOrder");
+
+                    b.Property<DateTime>("UpdatedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("ExpenseCategory_UpdatedDateTime");
+
+                    b.Property<string>("UpdatedUser")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("ExpenseCategory_UpdatedUser");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("ExpenseCategory_UserId");
+
+                    b.Property<bool>("ValidFlag")
+                        .HasColumnType("boolean")
+                        .HasColumnName("ExpenseCategory_ValidFlag");
+
+                    b.HasKey("Id")
+                        .HasName("PK_ExpenseCategory");
+
+                    b.HasIndex("UserId", "Name")
+                        .IsUnique()
+                        .HasDatabaseName("UX_ExpenseCategory_UserId_Name");
+
+                    b.ToTable("ExpenseCategory");
+                });
+
             modelBuilder.Entity("ZonWiki.Domain.Entities.Highlight", b =>
                 {
                     b.Property<Guid>("Id")
@@ -3642,6 +3825,17 @@ namespace ZonWiki.Infrastructure.Migrations
                     b.Navigation("Canvas");
                 });
 
+            modelBuilder.Entity("ZonWiki.Domain.Entities.Expense", b =>
+                {
+                    b.HasOne("ZonWiki.Domain.Entities.ExpenseCategory", "Category")
+                        .WithMany("Expenses")
+                        .HasForeignKey("CategoryId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("FK_Expense_ExpenseCategory_CategoryId");
+
+                    b.Navigation("Category");
+                });
+
             modelBuilder.Entity("ZonWiki.Domain.Entities.Highlight", b =>
                 {
                     b.HasOne("ZonWiki.Domain.Entities.Node", "Node")
@@ -3958,6 +4152,11 @@ namespace ZonWiki.Infrastructure.Migrations
                     b.Navigation("Children");
 
                     b.Navigation("NoteCategories");
+                });
+
+            modelBuilder.Entity("ZonWiki.Domain.Entities.ExpenseCategory", b =>
+                {
+                    b.Navigation("Expenses");
                 });
 
             modelBuilder.Entity("ZonWiki.Domain.Entities.Node", b =>
