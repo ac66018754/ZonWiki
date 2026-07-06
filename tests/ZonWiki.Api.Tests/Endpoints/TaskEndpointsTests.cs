@@ -100,42 +100,13 @@ public sealed class TaskEndpointsTests : IAsyncLifetime
         saved.ValidFlag.Should().BeTrue();
     }
 
-    /// <summary>
-    /// 測試：任務狀態流轉（todo → doing → done）。
-    /// </summary>
-    [Theory]
-    [InlineData("todo", "doing")]
-    [InlineData("doing", "done")]
-    [InlineData("todo", "done")]
-    public async Task UpdateTaskStatus_TransitionsCorrectly(string fromStatus, string toStatus)
-    {
-        // Arrange
-        var card = new TaskCard
-        {
-            Id = Guid.NewGuid(),
-            UserId = _testUserId,
-            Title = "狀態流轉測試",
-            Status = fromStatus,
-            Priority = 0,
-            CreatedDateTime = DateTime.UtcNow,
-            UpdatedDateTime = DateTime.UtcNow,
-            CreatedUser = "system",
-            UpdatedUser = "system",
-            ValidFlag = true
-        };
-
-        _db.TaskCard.Add(card);
-        await _db.SaveChangesAsync();
-
-        // Act
-        card.Status = toStatus;
-        card.UpdatedDateTime = DateTime.UtcNow;
-        await _db.SaveChangesAsync();
-
-        // Assert
-        var updated = await _db.TaskCard.FirstOrDefaultAsync(t => t.Id == card.Id);
-        updated!.Status.Should().Be(toStatus);
-    }
+    // 註（審查 #42，同義反覆已移除）：
+    // 原本此處有一個 `UpdateTaskStatus_TransitionsCorrectly` 測試，但它只是
+    // 「直接把實體 Status 設成 X、SaveChanges、再讀出來斷言等於 X」——完全不觸及
+    // PUT /api/tasks/{id} 端點邏輯（就算把端點整段刪掉也照樣綠燈），屬同義反覆、無驗證價值。
+    // 真正的狀態流轉測試（含 CompletedDateTime 副作用、done→非done 清空、跨使用者拒絕、
+    // 不存在資源 404）已改以「真 HTTP」實作，見
+    // Integration/TaskStatusHttpTests.cs（透過 WebApplicationFactory + Testcontainers）。
 
     /// <summary>
     /// 測試：優先度等級（0-3）。

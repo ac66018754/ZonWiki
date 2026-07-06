@@ -77,6 +77,11 @@ public sealed class OptimisticConcurrencyTests : IAsyncLifetime
             .AddInterceptors(
                 new AuditingSaveChangesInterceptor(),
                 new UserIsolationMaterializationInterceptor())
+            // 測試專屬：每個測試方法各建一組帶「新攔截器實例」的 options，EF 會為每組建一個內部
+            // 服務供應者；整個測試組合超過 20 個時 EF 會把 ManyServiceProvidersCreatedWarning 升為例外。
+            // 這只是測試模式產生的雜訊（正式環境用 AddDbContext 只建一個供應者、永不觸發），故明確忽略此警告。
+            .ConfigureWarnings(w =>
+                w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.CoreEventId.ManyServiceProvidersCreatedWarning))
             .Options;
 
         // migrate 使用無使用者 context（匯入/遷移情境）。

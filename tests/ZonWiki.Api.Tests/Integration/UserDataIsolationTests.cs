@@ -47,6 +47,11 @@ public sealed class UserDataIsolationTests : IAsyncLifetime
                 ZonWiki.Infrastructure.Persistence.UserModelCacheKeyFactory>()
             // 同正式環境：掛上「使用者隔離最終防線」攔截器，讓測試也驗證 fail-closed 行為。
             .AddInterceptors(new ZonWiki.Infrastructure.Persistence.UserIsolationMaterializationInterceptor())
+            // 測試專屬：每個測試方法各建一組帶「新攔截器實例」的 options，EF 會為每組建一個內部
+            // 服務供應者；整個測試組合超過 20 個時 EF 會把 ManyServiceProvidersCreatedWarning 升為例外。
+            // 這只是測試模式產生的雜訊（正式環境用 AddDbContext 只建一個供應者、永不觸發），故明確忽略此警告。
+            .ConfigureWarnings(w =>
+                w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.CoreEventId.ManyServiceProvidersCreatedWarning))
             .Options;
 
         // 建立資料庫結構（apply migrations）

@@ -53,6 +53,7 @@ x86/
 *.lscache
 *.coverage
 *.coveragexml
+*.cobertura.xml
 TestResults/
 coverage/
 .dotnet/
