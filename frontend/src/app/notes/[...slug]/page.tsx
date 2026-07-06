@@ -110,8 +110,11 @@ export default function NotesDetailPage() {
   // 編輯時的分類/標籤：選項池與目前選取。
   // 選項池改由共用的 SWR 快取（useNoteCategories/useNoteTags）供給，並在取得資料時 seed 到
   // 本地 state；本地 state 仍保留，用於承載「就地新增分類/標籤」的樂觀更新（hybrid，與筆記清單頁一致）。
-  const { data: catData } = useNoteCategories();
-  const { data: tagData } = useNoteTags();
+  // 同時解構 mutate，供「就地新增分類/標籤」後主動重新驗證共用快取
+  //（SwrProvider 關閉了 revalidateIfStale/revalidateOnFocus，新鮮度須靠操作後主動 mutate 維持），
+  // 讓常駐的 Sidebar 與其他消費者立即反映新分類/標籤，避免雙軌狀態不同步。
+  const { data: catData, mutate: mutateCategories } = useNoteCategories();
+  const { data: tagData, mutate: mutateTags } = useNoteTags();
   const [allCategories, setAllCategories] = useState<NoteCategory[]>([]);
   const [allTags, setAllTags] = useState<NoteTag[]>([]);
   useEffect(() => {
@@ -773,6 +776,8 @@ export default function NotesDetailPage() {
                       const cat = await createNoteCategory({ name, parentId: null });
                       if (cat) {
                         setAllCategories((c) => [...c, cat]);
+                        // 重新驗證共用快取，讓 Sidebar 等消費者立即看到新分類
+                        mutateCategories();
                         return { id: cat.id, name: cat.name };
                       }
                     } catch (e) {
@@ -804,6 +809,8 @@ export default function NotesDetailPage() {
                       const tag = await createNoteTag(name);
                       if (tag) {
                         setAllTags((t) => [...t, tag]);
+                        // 重新驗證共用快取，讓 Sidebar 等消費者立即看到新標籤
+                        mutateTags();
                         return { id: tag.id, name: tag.name };
                       }
                     } catch (e) {
