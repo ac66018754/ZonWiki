@@ -12,8 +12,6 @@ import {
   deleteNote,
   listNoteComments,
   addNoteComment,
-  listNoteCategories,
-  listNoteTags,
   createNoteCategory,
   createNoteTag,
   listTaskGroups,
@@ -21,10 +19,9 @@ import {
   type NoteCategory,
   type NoteTag,
   type Comment,
-  type CurrentUser,
   type TaskGroup,
-  getCurrentUser,
 } from '@/lib/api';
+import { useCurrentUser, useNoteCategories, useNoteTags } from '@/lib/swr';
 import { ConflictError } from '@/lib/errors';
 import { formatFullDateTime, formatDateTime as formatDateTimeUtil } from '@/lib/formatters';
 import { DEFAULT_TIMEZONE } from '@/lib/constants';
@@ -91,7 +88,9 @@ export default function NotesDetailPage() {
     : decodeURIComponent(String(routeParams.slug ?? ''));
   const router = useRouter();
   const confirm = useConfirm();
-  const [user, setUser] = useState<CurrentUser | null>(null);
+  // 目前登入者（時區顯示）改由共用的 SWR 快取取得，不再與筆記一起手動抓。
+  const { data: userData } = useCurrentUser();
+  const user = userData ?? null;
   const [note, setNote] = useState<NoteDetail | null>(null);
   const [comments, setComments] = useState<Comment[]>([]);
   const [loading, setLoading] = useState(true);
@@ -107,9 +106,19 @@ export default function NotesDetailPage() {
   // 預覽內文容器參考（供 NoteMarksLayer 套用文字標註）。
   const previewRef = useRef<HTMLDivElement | null>(null);
 
-  // 編輯時的分類/標籤：選項池與目前選取
+  // 編輯時的分類/標籤：選項池與目前選取。
+  // 選項池改由共用的 SWR 快取（useNoteCategories/useNoteTags）供給，並在取得資料時 seed 到
+  // 本地 state；本地 state 仍保留，用於承載「就地新增分類/標籤」的樂觀更新（hybrid，與筆記清單頁一致）。
+  const { data: catData } = useNoteCategories();
+  const { data: tagData } = useNoteTags();
   const [allCategories, setAllCategories] = useState<NoteCategory[]>([]);
   const [allTags, setAllTags] = useState<NoteTag[]>([]);
+  useEffect(() => {
+    if (catData) setAllCategories(catData);
+  }, [catData]);
+  useEffect(() => {
+    if (tagData) setAllTags(tagData);
+  }, [tagData]);
   const [editCatIds, setEditCatIds] = useState<string[]>([]);
   const [editTagIds, setEditTagIds] = useState<string[]>([]);
 
@@ -389,21 +398,13 @@ export default function NotesDetailPage() {
     return () => clearTimeout(timer);
   }, [markId, previewHtml]);
 
-  // 載入筆記詳細
+  // 載入筆記詳細（分類/標籤選項池與使用者已改由 SWR 供給，故此處只抓筆記本身）
   useEffect(() => {
     const load = async () => {
       try {
         setLoading(true);
-        const [currentUser, noteData, cats, tgs] = await Promise.all([
-          getCurrentUser(),
-          getNote(slug),
-          listNoteCategories(),
-          listNoteTags(),
-        ]);
+        const noteData = await getNote(slug);
 
-        setUser(currentUser);
-        setAllCategories(cats);
-        setAllTags(tgs);
         if (noteData) {
           setNote(noteData);
           setEditTitle(noteData.title);

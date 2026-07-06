@@ -7,11 +7,10 @@ import {
   AskQueueDetailDto,
   AskQueueKind,
   AskQueueStatus,
-  CurrentUser,
-  getCurrentUser,
   getAskQueue,
   getAskQueueDetail,
 } from "@/lib/api";
+import { useCurrentUser } from "@/lib/swr";
 import { formatDateTime } from "@/lib/formatters";
 import { DEFAULT_TIMEZONE } from "@/lib/constants";
 import { logger } from "@/lib/logger";
@@ -72,7 +71,8 @@ function AiQueueInner() {
   const searchParams = useSearchParams();
   const sessionParam = searchParams.get("session");
 
-  const [user, setUser] = useState<CurrentUser | null>(null);
+  // 目前登入者（僅用於時區顯示）改由共用的 SWR 快取取得，避免重複打 /api/me。
+  const { data: user } = useCurrentUser();
   const [items, setItems] = useState<AskQueueItemDto[]>([]);
   const [listLoading, setListLoading] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
@@ -86,13 +86,6 @@ function AiQueueInner() {
   const [detailError, setDetailError] = useState<string | null>(null);
 
   const tz = user?.timeZone || DEFAULT_TIMEZONE;
-
-  // 取使用者（時區）。
-  useEffect(() => {
-    getCurrentUser()
-      .then(setUser)
-      .catch((err) => logger.error("Failed to load user:", err));
-  }, []);
 
   // 取清單（依類別 / 狀態篩選）。
   const fetchList = useCallback(async () => {

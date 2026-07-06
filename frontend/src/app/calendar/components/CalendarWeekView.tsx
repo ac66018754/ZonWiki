@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { getCalendarView, updateTaskCard, CalendarViewData, CurrentUser } from "@/lib/api";
-import { getCurrentUser } from "@/lib/api";
+import { getCalendarView, updateTaskCard, CalendarViewData } from "@/lib/api";
+import { useCurrentUser } from "@/lib/swr";
 import { logger } from "@/lib/logger";
 import { dateKeyInTz, FALLBACK_TZ } from "../../tasks/taskUtils";
 import { localKey, buildRowBars, barColors, isMultiDay } from "./calendarBars";
@@ -28,7 +28,8 @@ export function CalendarWeekView({
 }) {
   const [events, setEvents] = useState<CalendarViewData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [user, setUser] = useState<CurrentUser | null>(null);
+  // 目前登入者（僅用於時區顯示）改由共用的 SWR 快取取得，避免每個檢視各自重打 /api/me。
+  const { data: user } = useCurrentUser();
 
   const weekDays = useMemo(() => getWeekDays(selectedDate), [selectedDate]);
 
@@ -36,7 +37,6 @@ export function CalendarWeekView({
     const load = async () => {
       try {
         setLoading(true);
-        setUser(await getCurrentUser());
         const from = new Date(weekDays[0]);
         from.setHours(0, 0, 0, 0);
         const to = new Date(weekDays[6]);
