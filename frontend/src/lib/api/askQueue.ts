@@ -53,6 +53,8 @@ export interface AskQueueItemDto {
   createdDateTime: string;
   /** 失敗錯誤訊息（Failed 狀態時） */
   errorText?: string | null;
+  /** Running 時：後援鏈目前正在嘗試的供應者（如「Claude CLI」「Google AI Studio」「banana」）；其餘為 null。 */
+  currentProvider?: string | null;
 }
 
 /**
@@ -123,6 +125,8 @@ export interface AskQueueDetailDto {
   updatedDateTime: string;
   /** 逐則串流訊息（完整 log；依序號排序） */
   messages: AiQueueMessageDto[];
+  /** AI 文字結果（非同步排版/美化/便利貼完成時有值；前端輪詢後取回套用到編輯器） */
+  resultText?: string | null;
 }
 
 /**
@@ -133,4 +137,31 @@ export interface AskQueueDetailDto {
 export async function getAskQueueDetail(sessionId: string): Promise<AskQueueDetailDto | null> {
   const r = await fetchJson<AskQueueDetailDto>(`/api/ask-queue/${encodeURIComponent(sessionId)}`);
   return r.success ? r.data ?? null : null;
+}
+
+/**
+ * 共用：啟動一個「非同步 AI 工作」後，輪詢佇列直到 Completed（回傳明細）或 Failed（拋錯）。
+ *
+ * 為什麼非同步輪詢：claude -p 在小機器冷啟動可達數十秒，同步等待會超過反向代理(Cloudflare)的
+ * ~100 秒逾時 → 502。改成：端點 POST 立即回 sessionId（<1 秒）→ 之後用「每次 <1 秒的 GET」
+ * 輪詢佇列狀態，背景跑完才取回結果，全程不觸發逾時。
+ *
+ * @param sessionId 由非同步端點回傳的 AiSession id。
+ * @returns 完成時的佇列明細（含 resultText / answerNoteId 等）；Failed 或逾時拋例外。
+ */
+export async function pollAskQueueUntilDone(sessionId: string): Promise<AskQueueDetailDto> {
+  const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
+  // 前端輪詢上限需大於後端背景總預算(1800s)，否則前端會先喊逾時；給 31 分鐘。
+  const deadlineAt = Date.now() + 1860 * 1000;
+  while (Date.now() < deadlineAt) {
+    const detail = await getAskQueueDetail(sessionId);
+    if (detail) {
+      if (detail.status === 'Completed') return detail;
+      if (detail.status === 'Failed') {
+        throw new Error(detail.errorText || 'AI 處理失敗，請稍後重試。');
+      }
+    }
+    await sleep(2000); // Running / 尚未建立 → 稍候再查
+  }
+  throw new Error('AI 處理逾時，請稍後到「AI 處理佇列」查看。');
 }

@@ -1,14 +1,20 @@
+using Microsoft.Extensions.DependencyInjection;
 using ZonWiki.Api.Auth;
 using ZonWiki.Api.RateLimiting;
+using ZonWiki.Api.Services;
 using ZonWiki.Domain.Common;
+using ZonWiki.Domain.Dtos;
 using ZonWiki.Infrastructure.Notes;
+using ZonWiki.Infrastructure.Persistence;
 
 namespace ZonWiki.Api.Endpoints;
 
 /// <summary>
 /// 通用 AI 提問端點：給「沒有特定筆記/節點脈絡」的場景用（例如開問啦畫布便利貼的「繼續問」）。
-/// 以呼叫端自行組好的 <c>Context</c> ＋ <c>Question</c> 請 AI 回答，只回傳答案文字。
-/// 與筆記的 <c>/ask-selection-answer</c> 共用同一套 <see cref="INoteAiService.AskAboutAsync"/>（共用預設模型）。
+/// 以呼叫端自行組好的 <c>Context</c> ＋ <c>Question</c> 請 AI 回答。
+/// **非同步**：立即回 202 + sessionId，後援鏈在背景跑（避免 claude 冷啟動阻塞請求→反向代理逾時 502），
+/// 前端輪詢 <c>/api/ask-queue/{sessionId}</c> 取 <c>ResultText</c>。
+/// 與筆記的 <c>/ask-selection-answer</c> 共用同一套 <see cref="INoteAiService.AskAboutAsync"/> + 後援鏈。
 /// </summary>
 public static class AiEndpoints
 {
@@ -20,27 +26,22 @@ public static class AiEndpoints
     public sealed record AiAskRequest(string? Context, string Question);
 
     /// <summary>
-    /// 通用 AI 提問結果。
-    /// </summary>
-    /// <param name="Answer">AI 回答文字。</param>
-    public sealed record AiAskResult(string Answer);
-
-    /// <summary>
     /// 註冊通用 AI 提問端點。
     /// </summary>
     /// <param name="app">端點路由建構器。</param>
     public static void MapAiEndpoints(this IEndpointRouteBuilder app)
     {
-        // POST /api/ai/ask - 以 Context + Question 請 AI 回答（不綁定筆記/節點）
+        // POST /api/ai/ask - 以 Context + Question 請 AI 回答（不綁定筆記/節點）；非同步（202 + sessionId）
         app.MapPost("/api/ai/ask", async (
             HttpContext http,
-            INoteAiService aiService,
-            ILogger<object> logger,
+            AskQueueService queueService,
+            IServiceScopeFactory scopeFactory,
+            ILoggerFactory loggerFactory,
             AiAskRequest request,
             CancellationToken ct) =>
         {
             var userIdClaim = http.User.FindFirst(AuthExtensions.UserIdClaimType)?.Value;
-            if (string.IsNullOrEmpty(userIdClaim) || !Guid.TryParse(userIdClaim, out _))
+            if (string.IsNullOrEmpty(userIdClaim) || !Guid.TryParse(userIdClaim, out var userId))
             {
                 return Results.Unauthorized();
             }
@@ -48,21 +49,43 @@ public static class AiEndpoints
             var question = (request.Question ?? string.Empty).Trim();
             if (string.IsNullOrEmpty(question))
             {
-                return Results.BadRequest(ApiResponse<AiAskResult>.Fail("缺少問題", 400));
+                return Results.BadRequest(ApiResponse<AiAsyncStartedDto>.Fail("缺少問題", 400));
             }
 
-            try
+            var context = request.Context ?? string.Empty;
+
+            // 同步建 Running session、立即回 sessionId（前端據此輪詢）。
+            var session = await queueService.CreateRunningNoteAiSessionAsync(userId, null, "floatingnote", question, null, ct);
+            var sessionId = session.Id;
+
+            // 背景跑後援鏈（不阻塞請求）。
+            _ = Task.Run(async () =>
             {
-                var answer = await aiService.AskAboutAsync(request.Context ?? string.Empty, question, ct);
-                return Results.Ok(ApiResponse<AiAskResult>.Ok(new AiAskResult(answer)));
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "Failed /api/ai/ask");
-                return Results.StatusCode(500);
-            }
-        })
-        .RequireAuthorization()
-        .RequireRateLimiting(RateLimitingExtensions.AiPolicy); // 每使用者限流：防迴圈灌爆付費 LLM
+                using var scope = scopeFactory.CreateScope();
+                var bgDb = scope.ServiceProvider.GetRequiredService<ZonWikiDbContext>();
+                bgDb.SetCurrentUserId(userId);
+                var bgQueue = scope.ServiceProvider.GetRequiredService<AskQueueService>();
+                var bgAi = scope.ServiceProvider.GetRequiredService<INoteAiService>();
+                var bgLogger = loggerFactory.CreateLogger("NoteAiBackground");
+                // 背景總預算 1800 秒（30 分）：讓後援鏈能真的逐棒 fallback（claude 單次 300s、最多 2 次後仍有餘裕
+                // 跌到 Google AI Studio／banana）。非同步背景執行、不阻塞請求。
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(1800));
+                try
+                {
+                    await bgQueue.FinishNoteAiAsync(
+                        sessionId,
+                        userId,
+                        async (onStage, bgCt) => await bgAi.AskAboutAsync(context, question, bgCt, onStage),
+                        cts.Token);
+                }
+                catch (Exception ex)
+                {
+                    bgLogger.LogError(ex, "通用提問 /api/ai/ask 背景失敗（session={SessionId}）", sessionId);
+                }
+            });
+
+            return Results.Accepted(value: ApiResponse<AiAsyncStartedDto>.Ok(new AiAsyncStartedDto(sessionId)));
+        }).RequireAuthorization()
+        .RequireRateLimiting(RateLimitingExtensions.AiPolicy); // 每使用者限流（合併保留 W2）：防迴圈灌爆付費 LLM
     }
 }

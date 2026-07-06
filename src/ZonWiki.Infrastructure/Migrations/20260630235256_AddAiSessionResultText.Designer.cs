@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using ZonWiki.Infrastructure.Persistence;
@@ -11,9 +12,11 @@ using ZonWiki.Infrastructure.Persistence;
 namespace ZonWiki.Infrastructure.Migrations
 {
     [DbContext(typeof(ZonWikiDbContext))]
-    partial class ZonWikiDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260630235256_AddAiSessionResultText")]
+    partial class AddAiSessionResultText
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -937,12 +940,6 @@ namespace ZonWiki.Infrastructure.Migrations
                     b.HasKey("Id")
                         .HasName("PK_CaptureItem");
 
-                    b.HasIndex("RawContent")
-                        .HasDatabaseName("IX_CaptureItem_RawContent_Trgm");
-
-                    NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("RawContent"), "gin");
-                    NpgsqlIndexBuilderExtensions.HasOperators(b.HasIndex("RawContent"), new[] { "gin_trgm_ops" });
-
                     b.ToTable("CaptureItem");
                 });
 
@@ -1077,12 +1074,6 @@ namespace ZonWiki.Infrastructure.Migrations
 
                     b.HasKey("Id")
                         .HasName("PK_Category");
-
-                    b.HasIndex("Name")
-                        .HasDatabaseName("IX_Category_Name_Trgm");
-
-                    NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("Name"), "gin");
-                    NpgsqlIndexBuilderExtensions.HasOperators(b.HasIndex("Name"), new[] { "gin_trgm_ops" });
 
                     b.HasIndex("ParentId")
                         .HasDatabaseName("IX_Category_ParentId");
@@ -1771,12 +1762,6 @@ namespace ZonWiki.Infrastructure.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("Node_ZIndex");
 
-                    b.Property<uint>("xmin")
-                        .IsConcurrencyToken()
-                        .ValueGeneratedOnAddOrUpdate()
-                        .HasColumnType("xid")
-                        .HasColumnName("xmin");
-
                     b.HasKey("Id")
                         .HasName("PK_Node");
 
@@ -2047,12 +2032,6 @@ namespace ZonWiki.Infrastructure.Migrations
                     b.Property<bool>("ValidFlag")
                         .HasColumnType("boolean")
                         .HasColumnName("Note_ValidFlag");
-
-                    b.Property<uint>("xmin")
-                        .IsConcurrencyToken()
-                        .ValueGeneratedOnAddOrUpdate()
-                        .HasColumnType("xid")
-                        .HasColumnName("xmin");
 
                     b.HasKey("Id")
                         .HasName("PK_Note");
@@ -2969,12 +2948,6 @@ namespace ZonWiki.Infrastructure.Migrations
                     b.HasKey("Id")
                         .HasName("PK_Tag");
 
-                    b.HasIndex("Name")
-                        .HasDatabaseName("IX_Tag_Name_Trgm");
-
-                    NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("Name"), "gin");
-                    NpgsqlIndexBuilderExtensions.HasOperators(b.HasIndex("Name"), new[] { "gin_trgm_ops" });
-
                     b.HasIndex("UserId", "Name")
                         .IsUnique()
                         .HasDatabaseName("UX_Tag_UserId_Name");
@@ -3048,17 +3021,9 @@ namespace ZonWiki.Infrastructure.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("TaskCard_PurgedDateTime");
 
-                    b.Property<DateTime?>("RecurrenceOccurrenceDateTime")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("TaskCard_RecurrenceOccurrenceDateTime");
-
                     b.Property<string>("RecurrenceRule")
                         .HasColumnType("text")
                         .HasColumnName("TaskCard_RecurrenceRule");
-
-                    b.Property<Guid?>("RecurrenceSourceId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("TaskCard_RecurrenceSourceId");
 
                     b.Property<int>("SortOrder")
                         .HasColumnType("integer")
@@ -3102,12 +3067,6 @@ namespace ZonWiki.Infrastructure.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("TaskCard_ValidFlag");
 
-                    b.Property<uint>("xmin")
-                        .IsConcurrencyToken()
-                        .ValueGeneratedOnAddOrUpdate()
-                        .HasColumnType("xid")
-                        .HasColumnName("xmin");
-
                     b.HasKey("Id")
                         .HasName("PK_TaskCard");
 
@@ -3129,14 +3088,8 @@ namespace ZonWiki.Infrastructure.Migrations
                     NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("Title"), "gin");
                     NpgsqlIndexBuilderExtensions.HasOperators(b.HasIndex("Title"), new[] { "gin_trgm_ops" });
 
-                    b.HasIndex("RecurrenceSourceId", "RecurrenceOccurrenceDateTime")
-                        .HasDatabaseName("IX_TaskCard_RecurrenceSourceId_RecurrenceOccurrenceDateTime");
-
                     b.HasIndex("UserId", "DueDateTime")
                         .HasDatabaseName("IX_TaskCard_UserId_DueDateTime");
-
-                    b.HasIndex("UserId", "PlannedDateTime")
-                        .HasDatabaseName("IX_TaskCard_UserId_PlannedDateTime");
 
                     b.HasIndex("UserId", "Status")
                         .HasDatabaseName("IX_TaskCard_UserId_Status");

@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using ZonWiki.Api.Notes;
 using ZonWiki.Domain.Dtos;
 using ZonWiki.Domain.Entities;
+using ZonWiki.Infrastructure.Ai;
 using ZonWiki.Infrastructure.Notes;
 using ZonWiki.Infrastructure.Persistence;
 
@@ -192,7 +193,9 @@ public sealed class AskQueueService
                     CanvasId: r.Session.CanvasId,
                     AskNodeId: r.Session.AskNodeId,
                     CreatedDateTime: r.Session.CreatedDateTime,
-                    ErrorText: errorText);
+                    ErrorText: errorText,
+                    // Running 時帶「目前正在嘗試哪一家」（後援鏈），供小窗即時顯示；非 Running 為 null。
+                    CurrentProvider: status == "Running" ? r.Session.AiProvider : null);
             })
             .ToList()
             .AsReadOnly();
@@ -267,7 +270,8 @@ public sealed class AskQueueService
             AskNodeId: session.AskNodeId,
             CreatedDateTime: session.CreatedDateTime,
             UpdatedDateTime: session.UpdatedDateTime,
-            Messages: messages);
+            Messages: messages,
+            ResultText: session.ResultText);
     }
 
     /// <summary>
@@ -312,8 +316,9 @@ public sealed class AskQueueService
 
         try
         {
-            // 呼叫 AI。
-            var answer = await aiService.AskAboutAsync(selected, question, ct);
+            // 呼叫 AI（傳入階段回呼，把後援鏈每次嘗試/失敗寫進佇列）。
+            var onStage = BuildStageRecorder(_db, session, ct);
+            var answer = await aiService.AskAboutAsync(selected, question, ct, onStage);
 
             // 組答案筆記內容（含來源出處引言 + 問題 + 回答）。
             var titleBase = question.Length <= 40 ? question : question[..40] + "…";
@@ -338,7 +343,7 @@ public sealed class AskQueueService
                 Title = titleBase,
                 Slug = slug,
                 ContentRaw = answerContent,
-                ContentHtml = Markdown.ToHtml(answerContent, NoteContentHelpers.MarkdownPipeline),
+                ContentHtml = NoteContentHelpers.RenderToHtml(answerContent),
                 ContentHash = NoteContentHelpers.ComputeContentHash(answerContent),
                 Kind = "note",
                 IsDraft = false,
@@ -428,7 +433,7 @@ public sealed class AskQueueService
         string kind,
         string? label,
         string? anchorText,
-        Func<CancellationToken, Task<T>> aiCall,
+        Func<Func<AiStreamEvent, Task>, CancellationToken, Task<T>> aiCall,
         CancellationToken ct)
     {
         static string? Trunc(string? s) => s is null ? null : (s.Length > 2000 ? s[..2000] : s);
@@ -450,7 +455,9 @@ public sealed class AskQueueService
 
         try
         {
-            var result = await aiCall(ct);
+            // 傳入階段回呼：後援鏈每次嘗試/失敗即時寫進佇列（更新 AiProvider + 新增 stage AiMessage）。
+            var onStage = BuildStageRecorder(_db, session, ct);
+            var result = await aiCall(onStage, ct);
             ApplyCompleted(session);
             await _db.SaveChangesAsync(ct);
             return result;
@@ -473,6 +480,240 @@ public sealed class AskQueueService
                 _logger.LogError(logEx, "Failed to log AiSession failure state");
             }
             throw;
+        }
+    }
+
+    /// <summary>
+    /// 建立一個「後援鏈階段回呼」：在鏈每次「開始嘗試 / 嘗試失敗」時，
+    /// 更新 <see cref="AiSession.AiProvider"/>（供佇列小窗即時顯示目前哪家）並新增一筆 <c>Role="stage"</c> 的
+    /// <see cref="AiMessage"/>（供完整頁顯示嘗試歷程）。錯誤訊息一律經 <see cref="AiErrorSanitizer"/> 去敏。
+    ///
+    /// <para>
+    /// EF 安全：消費端事件迴圈是「循序」處理事件、且此時供應者解析（會用到 DbContext）早已完成、
+    /// 串流本身來自外部行程/HTTP（非 EF 查詢、無開啟中的 DataReader），故在迴圈內循序 SaveChanges 不會與其他 EF 操作衝突。
+    /// </para>
+    /// </summary>
+    /// <param name="db">與工作同範圍的 DbContext（寫 AiMessage / 更新 AiSession）。</param>
+    /// <param name="session">已建立並存檔的 Running AiSession。</param>
+    /// <param name="ct">取消權杖。</param>
+    /// <returns>可傳給 <see cref="INoteAiService"/> 的 onStage 回呼。</returns>
+    public static Func<AiStreamEvent, Task> BuildStageRecorder(ZonWikiDbContext db, AiSession session, CancellationToken ct)
+    {
+        var seqNo = 0;
+        return async (AiStreamEvent evt) =>
+        {
+            if (evt.Type != AiStreamEventType.Stage)
+            {
+                return;
+            }
+
+            string content;
+            if (evt.StageKind == AiStageKind.AttemptStart)
+            {
+                // 更新「目前供應者」供小窗顯示「目前：Claude CLI」。（不動 AiModelId，避免污染其語意；
+                // 第幾次嘗試的細節保存在下方 stage AiMessage 內容，完整頁可看到歷程。）
+                session.AiProvider = evt.ProviderLabel;
+                content = $"▶ 嘗試 {evt.ProviderLabel}（該家第 {evt.AttemptInProvider} 次；全鏈第 {evt.AttemptInChain}/6 次）";
+            }
+            else if (evt.StageKind == AiStageKind.AttemptFailed)
+            {
+                content = $"✗ {evt.ProviderLabel} 失敗：{AiErrorSanitizer.Sanitize(evt.Text)}";
+            }
+            else
+            {
+                return;
+            }
+
+            db.AiMessage.Add(new AiMessage
+            {
+                UserId = session.UserId,
+                SessionId = session.Id,
+                Role = "stage",
+                Content = content,
+                RawJsonLine = string.Empty,
+                SeqNo = ++seqNo,
+                CreatedUser = session.UserId.ToString(),
+                UpdatedUser = session.UserId.ToString(),
+            });
+            await db.SaveChangesAsync(ct);
+        };
+    }
+
+    /// <summary>
+    /// 建立一筆 Running 的 note-AI AiSession 並存檔（同步部分）：端點先呼叫它取得 sessionId 立即回前端，
+    /// 再把實際 AI 工作丟背景跑（見 <see cref="FinishNoteAiAsync"/>）。
+    /// 讓請求不被 claude 的長耗時阻塞（claude -p 在小機器冷啟動可達數十秒，同步會超過 Cloudflare 100s 逾時 → 502）。
+    /// </summary>
+    public async Task<AiSession> CreateRunningNoteAiSessionAsync(
+        Guid userId, Guid? noteId, string kind, string? label, string? anchorText, CancellationToken ct)
+    {
+        static string? Trunc(string? s) => s is null ? null : (s.Length > 2000 ? s[..2000] : s);
+        var session = new AiSession
+        {
+            UserId = userId,
+            NoteId = noteId,
+            Kind = kind,
+            QuestionText = Trunc(label),
+            AnchorText = Trunc(anchorText),
+            PromptText = label ?? kind,
+            Status = "Running",
+            CreatedUser = userId.ToString(),
+            UpdatedUser = userId.ToString(),
+        };
+        _db.AiSession.Add(session);
+        await _db.SaveChangesAsync(ct);
+        return session;
+    }
+
+    /// <summary>
+    /// 背景完成 note-AI 工作：在背景 scope 內呼叫（先 <c>SetCurrentUserId</c> 設使用者隔離，因背景無 HttpContext）。
+    /// 載入指定 session → 跑 aiCall（後援鏈，onStage 即時寫階段）→ 文字結果存 <see cref="AiSession.ResultText"/> → 標記 Completed/Failed。
+    /// 前端以輪詢 <c>/api/ask-queue/{sessionId}</c> 取得狀態與結果。
+    /// </summary>
+    /// <param name="sessionId">先前 <see cref="CreateRunningNoteAiSessionAsync"/> 建立的 session。</param>
+    /// <param name="userId">擁有者（背景無 HttpContext，需明確帶入設給 DbContext）。</param>
+    /// <param name="aiCall">實際 AI 呼叫：收 onStage 回呼與取消權杖，回傳文字結果。</param>
+    /// <param name="ct">取消權杖。</param>
+    public async Task FinishNoteAiAsync(
+        Guid sessionId,
+        Guid userId,
+        Func<Func<AiStreamEvent, Task>, CancellationToken, Task<string>> aiCall,
+        CancellationToken ct)
+    {
+        _db.SetCurrentUserId(userId);
+        var session = await _db.AiSession.FirstOrDefaultAsync(s => s.Id == sessionId && s.UserId == userId, ct);
+        if (session is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var onStage = BuildStageRecorder(_db, session, ct);
+            var result = await aiCall(onStage, ct);
+            session.ResultText = result;
+            ApplyCompleted(session);
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "背景 note-AI 失敗（session={SessionId}, kind={Kind}）", sessionId, session.Kind);
+            try
+            {
+                ApplyFailed(session, ex.Message);
+                await _db.SaveChangesAsync(CancellationToken.None);
+            }
+            catch (Exception logEx)
+            {
+                _logger.LogError(logEx, "標記 note-AI 失敗狀態時又出錯");
+            }
+        }
+    }
+
+    /// <summary>
+    /// 背景完成「框選提問」：載入指定 session → 跑後援鏈回答 → 建立答案筆記 + create 版本 + 來源錨點(NoteMark)
+    /// → 設 session 的 AnswerNoteId/MarkId/ResultText 並標記 Completed（皆於單次 SaveChanges 原子寫入）。
+    /// 與同步版 <see cref="ExecuteAskSelectionAsync"/> 邏輯一致，但改為背景執行（不阻塞請求，避免 claude 冷啟動→502）。
+    /// </summary>
+    public async Task FinishAskSelectionAsync(
+        Guid sessionId,
+        Guid userId,
+        INoteAiService aiService,
+        AskSelectionRequest request,
+        CancellationToken ct)
+    {
+        _db.SetCurrentUserId(userId);
+        var session = await _db.AiSession.FirstOrDefaultAsync(s => s.Id == sessionId && s.UserId == userId, ct);
+        if (session is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var sourceNote = await _db.Note
+                .FirstOrDefaultAsync(n => n.Id == session.NoteId && n.ValidFlag && n.UserId == userId, ct)
+                ?? throw new KeyNotFoundException("來源筆記不存在");
+
+            var question = (request.Question ?? "").Trim();
+            var selected = (request.AnchorText ?? "").Trim();
+
+            var onStage = BuildStageRecorder(_db, session, ct);
+            var answer = await aiService.AskAboutAsync(selected, question, ct, onStage);
+
+            var titleBase = question.Length <= 40 ? question : question[..40] + "…";
+            var answerContent =
+                $"> 來源：[[{sourceNote.Title}]]\n> 選取：「{selected}」\n\n" +
+                $"**問題**：{question}\n\n**回答**：\n\n{answer}";
+
+            var baseSlug = NoteContentHelpers.GenerateSlug(titleBase);
+            if (string.IsNullOrEmpty(baseSlug)) baseSlug = "note";
+            var slug = baseSlug;
+            for (var i = 2;
+                 await _db.Note.AnyAsync(n => n.UserId == userId && n.Slug == slug && n.ValidFlag, ct);
+                 i++)
+            {
+                slug = $"{baseSlug}-{i}";
+            }
+
+            var answerNote = new Note
+            {
+                UserId = userId,
+                Title = titleBase,
+                Slug = slug,
+                ContentRaw = answerContent,
+                ContentHtml = NoteContentHelpers.RenderToHtml(answerContent),
+                ContentHash = NoteContentHelpers.ComputeContentHash(answerContent),
+                Kind = "note",
+                IsDraft = false,
+                CreatedUser = userId.ToString(),
+                UpdatedUser = userId.ToString(),
+            };
+            var mark = new NoteMark
+            {
+                UserId = userId,
+                NoteId = sourceNote.Id,
+                Kind = "link",
+                AnchorText = request.AnchorText ?? "",
+                AnchorStart = request.AnchorStart,
+                AnchorEnd = request.AnchorEnd,
+                AnchorPrefix = request.AnchorPrefix ?? "",
+                AnchorSuffix = request.AnchorSuffix ?? "",
+                TargetType = "note",
+                TargetId = answerNote.Id,
+                CreatedUser = userId.ToString(),
+                UpdatedUser = userId.ToString(),
+            };
+
+            _db.Note.Add(answerNote);
+            _db.NoteRevision.Add(new NoteRevision
+            {
+                UserId = userId,
+                NoteId = answerNote.Id,
+                RevisionNo = 1,
+                ChangeKind = "create",
+                Title = answerNote.Title,
+                ContentRaw = answerNote.ContentRaw,
+                CreatedUser = userId.ToString(),
+                UpdatedUser = userId.ToString(),
+            });
+            _db.NoteMark.Add(mark);
+            session.ResultText = answer;
+            ApplyCompleted(session, answerNote.Id, mark.Id);
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "背景框選提問失敗（session={SessionId}）", sessionId);
+            try
+            {
+                ApplyFailed(session, ex.Message);
+                await _db.SaveChangesAsync(CancellationToken.None);
+            }
+            catch (Exception logEx)
+            {
+                _logger.LogError(logEx, "標記框選提問失敗狀態時又出錯");
+            }
         }
     }
 }

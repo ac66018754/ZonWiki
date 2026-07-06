@@ -876,7 +876,7 @@ public sealed class AskQueueServiceTests : IAsyncLifetime
             "beautify",
             "美化筆記",
             null,
-            _ => Task.FromResult("beautified content"),
+            (_, _) => Task.FromResult("beautified content"),
             CancellationToken.None);
 
         // Assert
@@ -904,7 +904,7 @@ public sealed class AskQueueServiceTests : IAsyncLifetime
                 "floatingnote",
                 "這段是什麼意思?",
                 "框選文字",
-                _ => Task.FromException<string>(new InvalidOperationException("AI down")),
+                (_, _) => Task.FromException<string>(new InvalidOperationException("AI down")),
                 CancellationToken.None));
         exception.Message.Should().Be("AI down");
 
@@ -997,20 +997,20 @@ public sealed class AskQueueServiceTests : IAsyncLifetime
         }
 
         /// <summary>重新格式化（測試用，原樣回傳）。</summary>
-        public Task<string> ReformatAsync(string contentRaw, CancellationToken cancellationToken)
+        public Task<string> ReformatAsync(string contentRaw, CancellationToken cancellationToken, Func<ZonWiki.Infrastructure.Ai.AiStreamEvent, Task>? onStage = null)
             => Task.FromResult(contentRaw);
 
         /// <summary>美化（測試用，原樣回傳）。</summary>
-        public Task<string> BeautifyAsync(string contentRaw, CancellationToken cancellationToken)
+        public Task<string> BeautifyAsync(string contentRaw, CancellationToken cancellationToken, Func<ZonWiki.Infrastructure.Ai.AiStreamEvent, Task>? onStage = null)
             => Task.FromResult(contentRaw);
 
         /// <summary>框選提問（測試用，回傳固定答案或丟出指定例外）。</summary>
-        public Task<string> AskAboutAsync(string selectedText, string question, CancellationToken cancellationToken)
+        public Task<string> AskAboutAsync(string selectedText, string question, CancellationToken cancellationToken, Func<ZonWiki.Infrastructure.Ai.AiStreamEvent, Task>? onStage = null)
             => _throwOnAsk is not null
                 ? Task.FromException<string>(_throwOnAsk)
                 : Task.FromResult(_answer);
 
-        public Task<string> GenerateAsync(string systemPrompt, string userContent, CancellationToken cancellationToken)
+        public Task<string> GenerateAsync(string systemPrompt, string userContent, CancellationToken cancellationToken, Func<ZonWiki.Infrastructure.Ai.AiStreamEvent, Task>? onStage = null)
             => Task.FromResult(_answer);
     }
 }

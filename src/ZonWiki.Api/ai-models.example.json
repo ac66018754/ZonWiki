@@ -39,7 +39,22 @@
       "apiKey": "${GEMINI_API_KEY}",
       "isDefault": true,
       "enabled": true,
-      "notes": "免費取得金鑰：https://aistudio.google.com/apikey 。設好環境變數 GEMINI_API_KEY 後啟動即可。"
+      "notes": "免費取得金鑰：https://aistudio.google.com/apikey 。設好環境變數 GEMINI_API_KEY 後啟動即可。後援鏈第 3 棒（最後退路）。"
+    },
+    {
+      // 後援鏈第 2 棒：Google AI Studio（Gemini 直連，最便宜 lite）。
+      // 與 banana 同為 Gemini，但走「直連」而非中轉站，互為備援。
+      // 金鑰另設環境變數 GOOGLE_AISTUDIO_API_KEY（與 banana 的 GEMINI_API_KEY 可不同把）。
+      "key": "google-aistudio-lite",
+      "label": "Google AI Studio Flash Lite（後援鏈第2棒）",
+      "provider": "OpenAiCompatible",
+      "kind": "chat",
+      "modelId": "gemini-2.0-flash-lite",
+      "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "apiKey": "${GOOGLE_AISTUDIO_API_KEY}",
+      "isDefault": true,
+      "enabled": true,
+      "notes": "Google AI Studio 直連金鑰：https://aistudio.google.com/apikey 。設好環境變數 GOOGLE_AISTUDIO_API_KEY 後啟動即可。注意：免費額度有地區限制，若該專案 free-tier limit=0 會回 429，後援鏈會自動換 banana。"
     }
 
     // 範例：你也可以再加自己的 OpenAI / 任何相容端點（非共用、掛在第一位使用者名下）

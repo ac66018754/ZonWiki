@@ -14,6 +14,7 @@ import {
 import { useCurrentUser, useNotes, useNoteCategories, useNoteTags } from '@/lib/swr';
 import { formatDateTime } from '@/lib/formatters';
 import { DEFAULT_TIMEZONE, NOTE_DND_MIME } from '@/lib/constants';
+import { recordNoteNav } from '@/lib/noteNav';
 import { SkeletonListItem } from '@/components/Skeleton';
 import { NotesBatchToolbar } from './components/NotesBatchToolbar';
 
@@ -68,6 +69,11 @@ export default function NotesPage() {
 
   const user = userData ?? null;
   const categories = catData ?? [];
+
+  // 記錄到「筆記情境返回堆疊」：清單/分類/標籤頁也算筆記情境頁，讓從筆記返回時能回到這裡。
+  useEffect(() => {
+    recordNoteNav(window.location.pathname + window.location.search);
+  }, [selectedCategoryId, selectedTagId]);
 
   // notes / tags 仍保留本地 state 承載「樂觀更新」（勾選即時加/移標籤），
   // 並在 SWR 取得新資料時同步 seed（hybrid：SWR 管快取＋重抓，本地 state 管樂觀 UI）。

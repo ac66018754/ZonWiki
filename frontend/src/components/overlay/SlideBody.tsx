@@ -1,24 +1,39 @@
 'use client';
 
-import { useRef, useState } from 'react';
-import { safeParse } from '@/lib/drawing/shapes';
-import { navBtn, type OverlayItemView } from './overlayShared';
+import { useEffect, useRef, useState } from 'react';
+import { navBtn, parseSlideData, STICKY_COLORS, type OverlayItemView } from './overlayShared';
+import { ColorPickerInline } from '@/components/ColorPicker';
 
 /**
  * 圖片板內容：固定大小（可手動拖曳調整）、可放多張圖片、手動切換（不自動輪播）。
- * 框不會自適應圖片——由使用者決定框的大小，圖片以 contain 顯示。
+ * 框不會自適應圖片——由使用者決定框的大小，圖片以 contain 顯示。可調整整塊底色（背景顏色）。
  * 由 NoteOverlay 抽出，筆記頁浮層與開問啦畫布標註共用。
  */
 export function SlideBody({
-  item, onImagesChange,
+  item, onImagesChange, onColor,
 }: {
   item: OverlayItemView;
   onImagesChange: (imgs: string[]) => void;
+  /** 變更圖片板底色。未提供＝不顯示「背景顏色」鈕（如開問啦畫布標註）。 */
+  onColor?: (c: string) => void;
 }) {
-  const images: string[] = item.dataJson ? safeParse<string[]>(item.dataJson, []) : [];
+  const images: string[] = parseSlideData(item.dataJson).images;
   const [idx, setIdx] = useState(0);
   const [url, setUrl] = useState('');
+  const [showBgPalette, setShowBgPalette] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // 色盤「選色不關閉、點空白才關閉」（與便利貼一致）：點到色盤本身或其開關鈕以外才收起。
+  useEffect(() => {
+    if (!showBgPalette) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t?.closest('[data-slide-pop]') || t?.closest('[data-slide-popbtn]')) return;
+      setShowBgPalette(false);
+    };
+    document.addEventListener('mousedown', onDown, true);
+    return () => document.removeEventListener('mousedown', onDown, true);
+  }, [showBgPalette]);
 
   /** 直接上傳/貼上圖片：讀成 data URL 後加入圖片板（不需網址）。 */
   const addImageFile = (file: File) => {
@@ -37,7 +52,7 @@ export function SlideBody({
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-      <div style={{ flex: 1, position: 'relative', minHeight: 0, background: 'var(--bg-surface-secondary, #1118)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ flex: 1, position: 'relative', minHeight: 0, background: item.color || 'var(--bg-surface-secondary, #1118)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         {images.length === 0 ? (
           <span
             style={{ color: '#aaa', fontSize: 'var(--text-xs)', textAlign: 'center', cursor: 'pointer', padding: '0 8px' }}
@@ -119,7 +134,33 @@ export function SlideBody({
             移除
           </button>
         )}
+        {onColor && (
+          <button
+            className="tk-btn"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => setShowBgPalette((v) => !v)}
+            title="圖片板背景顏色（點開換色）"
+            data-testid="slide-bg-toggle"
+            data-slide-popbtn
+            style={{ cursor: 'pointer', fontSize: 'var(--text-xs)', padding: '2px 6px', flexShrink: 0, background: showBgPalette ? 'rgba(0,0,0,0.12)' : undefined }}
+          >
+            🎨
+          </button>
+        )}
       </div>
+      {/* 背景色盤（點 🎨 展開）：完整色盤；選色不關閉，點空白才關閉。 */}
+      {showBgPalette && onColor && (
+        <div
+          data-testid="slide-bg-palette"
+          data-slide-pop
+          style={{ padding: '6px', borderTop: '1px solid rgba(0,0,0,0.1)', background: 'rgba(255,255,255,0.85)', flexShrink: 0, maxHeight: '60%', overflowY: 'auto' }}
+        >
+          <ColorPickerInline
+            initial={item.color ?? STICKY_COLORS[0]}
+            onPick={(hex) => onColor(hex)}
+          />
+        </div>
+      )}
     </div>
   );
 }

@@ -8,6 +8,7 @@
 import { withAiQueueNotify } from "../aiQueue";
 import { ConflictError } from "../errors";
 import { fetchJson } from "./client";
+import { pollAskQueueUntilDone } from "./askQueue";
 import type { NoteCategory } from "./categories";
 import type { NoteTag } from "./tags";
 
@@ -359,11 +360,20 @@ export async function askNoteSelection(
   }
 ): Promise<AskSelectionResult | null> {
   return withAiQueueNotify(async () => {
-    const r = await fetchJson<AskSelectionResult>(
+    const start = await fetchJson<{ sessionId: string }>(
       `/api/notes/${encodeURIComponent(noteId)}/ask-selection`,
       { method: 'POST', body: JSON.stringify(input) }
     );
-    return r.data ?? null;
+    const sessionId = start.data?.sessionId;
+    if (!sessionId) return null;
+    // 答案筆記在背景建立；輪詢到 Completed 後從佇列明細取 answerNoteId/slug/markId。
+    const detail = await pollAskQueueUntilDone(sessionId);
+    if (!detail.answerNoteId) return null;
+    return {
+      answerNoteId: detail.answerNoteId,
+      answerSlug: detail.answerNoteSlug ?? '',
+      markId: detail.markId ?? '',
+    };
   });
 }
 
@@ -383,11 +393,14 @@ export async function askNoteSelectionAnswer(
   }
 ): Promise<string | null> {
   return withAiQueueNotify(async () => {
-    const r = await fetchJson<{ answer: string }>(
+    const start = await fetchJson<{ sessionId: string }>(
       `/api/notes/${encodeURIComponent(noteId)}/ask-selection-answer`,
       { method: 'POST', body: JSON.stringify(input) }
     );
-    return r.data?.answer ?? null;
+    const sessionId = start.data?.sessionId;
+    if (!sessionId) return null;
+    const detail = await pollAskQueueUntilDone(sessionId);
+    return detail.resultText ?? null;
   });
 }
 
@@ -397,11 +410,14 @@ export async function askNoteSelectionAnswer(
  */
 export async function askAi(context: string, question: string): Promise<string | null> {
   return withAiQueueNotify(async () => {
-    const r = await fetchJson<{ answer: string }>('/api/ai/ask', {
+    const start = await fetchJson<{ sessionId: string }>('/api/ai/ask', {
       method: 'POST',
       body: JSON.stringify({ context, question }),
     });
-    return r.data?.answer ?? null;
+    const sessionId = start.data?.sessionId;
+    if (!sessionId) return null;
+    const detail = await pollAskQueueUntilDone(sessionId);
+    return detail.resultText ?? null;
   });
 }
 
@@ -536,20 +552,36 @@ export async function getNoteBacklinks(noteId: string): Promise<Backlink[]> {
  * @param noteId 筆記 ID
  * @param contentRaw 目前編輯器內容
  */
+/**
+ * 啟動「非同步 AI 轉換」（排版/美化）：POST 立即回 sessionId → 輪詢取結果套用到編輯器。
+ * 改非同步是為了解 prod 502（claude 冷啟動 59s 超過 Cloudflare ~100s 逾時）。
+ * @param noteId 筆記 ID
+ * @param contentRaw 目前編輯器內容
+ * @param op 'reformat'（排版）或 'beautify'（美化）
+ * @returns 轉換結果（contentHtml 留空，由上層重新渲染）；失敗/逾時拋例外。
+ */
+async function startNoteAiTransform(
+  noteId: string,
+  contentRaw: string,
+  op: 'reformat' | 'beautify',
+): Promise<AiTransformResult | null> {
+  return withAiQueueNotify(async () => {
+    const start = await fetchJson<{ sessionId: string }>(
+      `/api/notes/${encodeURIComponent(noteId)}/${op}`,
+      { method: 'POST', body: JSON.stringify({ contentRaw }) },
+    );
+    const sessionId = start.data?.sessionId;
+    if (!sessionId) return null;
+    const detail = await pollAskQueueUntilDone(sessionId);
+    return { contentRaw: detail.resultText ?? '', contentHtml: '' };
+  });
+}
+
 export async function reformatNote(
   noteId: string,
   contentRaw: string
 ): Promise<AiTransformResult | null> {
-  return withAiQueueNotify(async () => {
-    const r = await fetchJson<AiTransformResult>(
-      `/api/notes/${encodeURIComponent(noteId)}/reformat`,
-      {
-        method: 'POST',
-        body: JSON.stringify({ contentRaw }),
-      }
-    );
-    return r.data ?? null;
-  });
+  return startNoteAiTransform(noteId, contentRaw, 'reformat');
 }
 
 /**
@@ -561,14 +593,5 @@ export async function beautifyNote(
   noteId: string,
   contentRaw: string
 ): Promise<AiTransformResult | null> {
-  return withAiQueueNotify(async () => {
-    const r = await fetchJson<AiTransformResult>(
-      `/api/notes/${encodeURIComponent(noteId)}/beautify`,
-      {
-        method: 'POST',
-        body: JSON.stringify({ contentRaw }),
-      }
-    );
-    return r.data ?? null;
-  });
+  return startNoteAiTransform(noteId, contentRaw, 'beautify');
 }

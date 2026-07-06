@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using ZonWiki.Domain.Entities;
 using ZonWiki.Infrastructure.Persistence;
 
 namespace ZonWiki.Infrastructure.Ai;
@@ -34,6 +35,21 @@ public sealed class AiProviderFactory
     /// 固定值（非隨機真實使用者 GUID，碰撞機率為零）。
     /// </summary>
     public static readonly Guid SharedModelUserId = new("00000000-0000-0000-0000-0000000000a1");
+
+    /// <summary>
+    /// 全站共用「banana」Gemini relay 模型的穩定鍵。作為後援鏈第 3 棒，也是「單一共用預設」（非鏈路徑的退路）。
+    /// </summary>
+    public const string SharedDefaultModelKey = "banana-gemini-lite";
+
+    /// <summary>
+    /// 全站共用「Google AI Studio（Gemini 直連，lite）」模型的穩定鍵。作為後援鏈第 2 棒。
+    /// </summary>
+    public const string SharedAiStudioModelKey = "google-aistudio-lite";
+
+    /// <summary>
+    /// 後援鏈第 1 棒：本機 claude CLI 的顯示名稱。
+    /// </summary>
+    public const string ClaudeLinkLabel = "Claude CLI";
 
     private readonly IAiProvider _default;
     private readonly ZonWikiDbContext _db;
@@ -75,9 +91,13 @@ public sealed class AiProviderFactory
 
         // 未指定模型（「預設」），或指定的鍵找不到/已停用 → 改用「全站共用預設模型」
         // （系統擁有、設定頁隱藏、金鑰只存一份）。讓所有人免設定即可使用預設。
+        // 明確優先 banana 鍵：自從加入 Google AI Studio 共用列後，SharedModelUserId 底下可能有多筆，
+        // 不能用非決定性的「取第一筆」，否則此單一退路會在 banana / AI Studio 間漂移。
         if (entry is null)
         {
             entry = await _db.AiModel.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(m => m.UserId == SharedModelUserId && m.Enabled && m.Key == SharedDefaultModelKey, cancellationToken)
+                ?? await _db.AiModel.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(m => m.UserId == SharedModelUserId && m.Enabled, cancellationToken);
         }
 
@@ -107,6 +127,96 @@ public sealed class AiProviderFactory
         // ClaudeCli（或未知類型）→ 用預設 claude 供應者，帶該項 ModelId 作為 --model。
         var claudeModel = string.IsNullOrWhiteSpace(entry.ModelId) ? null : entry.ModelId;
         return new ResolvedProvider(_default, claudeModel, SupportsResume: true);
+    }
+
+    /// <summary>
+    /// 解析「全站共用」的後援鏈（所有使用者一致）：①Claude CLI ②Google AI Studio lite ③banana。
+    /// 用於「會走共用預設」的所有路徑（筆記問答/美化/排版、精煉 note-gen、開問啦未選模型）；
+    /// 「明確選定特定模型」的路徑仍用 <see cref="ResolveAsync"/>（單一供應者、不走鏈）。
+    /// 任一家缺設定/金鑰/不安全 → 自動略過該家（鏈自動縮短，不報錯）；至少會有 Claude 一棒。
+    /// </summary>
+    /// <param name="claudeModel">
+    /// 指定 claude CLI（第 1 棒）要用的模型（如 "sonnet"／"haiku"，對應 --model）。
+    /// null 表示用 settings.json 的預設（目前 sonnet）。保留「不同功能可傳不同值」的彈性
+    /// （目前排版/美化/問答皆傳 sonnet）。只影響 claude 這一棒；後面 Google AI Studio／banana 仍用各自 DB 設定的模型。
+    /// </param>
+    /// <param name="cancellationToken">取消權杖。</param>
+    /// <returns>以 <see cref="FallbackChainProvider"/> 包裝的有序鏈；測試模式回單一 Fake。</returns>
+    public async Task<ResolvedProvider> ResolveChainAsync(
+        string? claudeModel = null,
+        CancellationToken cancellationToken = default)
+    {
+        // 測試模式：固定用 Fake，忽略鏈，確保 E2E 穩定。
+        if (_default is FakeAiProvider)
+        {
+            return new ResolvedProvider(_default, null, SupportsResume: true);
+        }
+
+        var links = new List<ChainLink>
+        {
+            // 第 1 棒：本機 claude CLI。claudeModel=null → 用 settings.json 預設（sonnet）；
+            // 傳入 "haiku"/"sonnet" 則以 --model 覆寫（依功能分派，見參數說明）。
+            new(ClaudeLinkLabel, _default, string.IsNullOrWhiteSpace(claudeModel) ? null : claudeModel),
+        };
+
+        // 第 2 棒：Google AI Studio（Gemini 直連，lite）共用列。
+        var aiStudio = await _db.AiModel.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(
+                m => m.UserId == SharedModelUserId && m.Enabled && m.Key == SharedAiStudioModelKey,
+                cancellationToken);
+        if (aiStudio is not null
+            && string.Equals(aiStudio.Provider, "OpenAiCompatible", StringComparison.OrdinalIgnoreCase))
+        {
+            var provider = TryBuildOpenAiCompatible(aiStudio);
+            if (provider is not null)
+            {
+                links.Add(new ChainLink("Google AI Studio", provider, aiStudio.ModelId));
+            }
+        }
+
+        // 第 3 棒：banana（既有共用預設 Gemini relay）。
+        var banana = await _db.AiModel.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(
+                m => m.UserId == SharedModelUserId && m.Enabled && m.Key == SharedDefaultModelKey,
+                cancellationToken);
+        if (banana is not null
+            && string.Equals(banana.Provider, "OpenAiCompatible", StringComparison.OrdinalIgnoreCase))
+        {
+            var provider = TryBuildOpenAiCompatible(banana);
+            if (provider is not null)
+            {
+                links.Add(new ChainLink("banana", provider, banana.ModelId));
+            }
+        }
+
+        var chain = new FallbackChainProvider(links);
+        return new ResolvedProvider(chain, null, SupportsResume: false);
+    }
+
+    /// <summary>
+    /// 嘗試以一筆 OpenAiCompatible 的 <see cref="AiModel"/> 設定建立串流供應者。
+    /// 與 <see cref="ResolveAsync"/> 不同：不安全 / 缺金鑰時「回 null」（讓後援鏈略過該家）而非拋例外。
+    /// </summary>
+    /// <param name="entry">OpenAiCompatible 模型設定。</param>
+    /// <returns>建好的供應者；BaseUrl 不安全或金鑰無法解析時為 null。</returns>
+    private OpenAiCompatibleStreamingProvider? TryBuildOpenAiCompatible(AiModel entry)
+    {
+        var baseUrl = entry.BaseUrl?.Trim() ?? "";
+        if (string.IsNullOrEmpty(baseUrl) || !IsBaseUrlSafe(baseUrl))
+        {
+            return null;
+        }
+
+        var apiKey = _resolver.ResolveApiKey(entry.ApiKeyEncrypted);
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            // 金鑰無法解析（未設環境變數 / 解密失敗）→ 略過該家，由後援鏈換下一棒。
+            return null;
+        }
+
+        var http = _httpClientFactory.CreateClient("ai");
+        return new OpenAiCompatibleStreamingProvider(
+            http, baseUrl, apiKey, entry.ModelId ?? "", entry.TimeoutSeconds);
     }
 
     /// <summary>

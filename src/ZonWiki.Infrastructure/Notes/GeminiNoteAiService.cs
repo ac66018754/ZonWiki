@@ -21,34 +21,28 @@ public sealed class GeminiNoteAiService : INoteAiService
     private readonly ILogger<GeminiNoteAiService> _logger;
 
     /// <summary>
-    /// 排版調整的系統提示（只改格式、不改語意）。規則對齊 scripts/format-md.ps1 的排版專家提示。
+    /// 排版調整的系統提示（只改格式、不改語意）。排版規則集中於 <see cref="NoteFormatConventions"/>，多功能共用。
     /// </summary>
     private const string ReformatSystemPrompt =
-        "你是一個 Markdown 排版專家。使用者會提供一段 Markdown，請在「完全不改變語意與內容」的前提下，只調整排版格式後輸出。\n" +
-        "排版規則：\n" +
-        "1. 標題階層正確使用 #、##、###。\n" +
-        "2. 無序列表用「- 」，有序列表用「1. 2. 3.」，巢狀用適當縮排。\n" +
-        "3. 行內程式碼用反引號，程式碼區塊標註語言。\n" +
-        "4. 強調：粗體 **text**、斜體 *text*。\n" +
-        "5. 表格使用標準 Markdown 表格格式。\n" +
-        "6. 連結與圖片用 [text](url) 與 ![alt](url)。\n" +
-        "7. 分隔線用 ---，引用用 >。\n" +
-        "8. 移除多餘空行（最多連續兩行），中英文／數字之間加空格，檔尾保留單一換行。\n" +
-        "9. 摺疊區塊（可選，純排版收納，不得改動或刪減任何內容）：遇到明顯適合收起來的長區塊" +
-        "（完整程式碼/指令/log、冗長補充），可用一行 :::toggle 摘要標題、內容、再一行 ::: 包住" +
-        "（預設收合；想預設展開用 :::toggle-open），讓主線更好掃描；但不得把重點或結論藏起來、巢狀勿超過兩層。\n" +
-        "只輸出排版後的 Markdown 全文；不要加任何說明文字，也不要用 ``` 圍欄把整篇包起來。";
+        "你是一個 Markdown 排版專家。使用者會提供一段 Markdown，請在「完全不改變語意與內容、不新增也不刪減任何資訊」的前提下，只調整排版格式後輸出。\n" +
+        NoteFormatConventions.Rules + "\n" +
+        NoteFormatConventions.OutputOnly;
 
     /// <summary>
-    /// 內容美化的系統提示（保留原意，潤飾措辭、結構與可讀性）。
+    /// 內容美化的系統提示（保留原意，潤飾措辭、結構與可讀性）。同樣套用共用排版慣例。
     /// </summary>
     private const string BeautifySystemPrompt =
         "你是一位專業中文寫作編輯。使用者會提供一段 Markdown，請在「保留原意與所有重要資訊」的前提下，" +
-        "潤飾措辭、改善段落結構與邏輯銜接、提升可讀性，並順手修正明顯錯字與排版。\n" +
-        "可善用「摺疊區塊」提升可讀性：把較長的補充、完整程式碼/指令、延伸細節或 FAQ 答案" +
-        "收進一行 :::toggle 摘要標題、內容、再一行 ::: 之間（預設收合；想預設展開用 :::toggle-open）；" +
-        "但須保留原意與所有重要資訊、重點與結論仍留在外面、巢狀勿超過兩層、摺疊標題要能一眼看出內容。\n" +
-        "只輸出美化後的 Markdown 全文；不要加任何說明文字，也不要用 ``` 圍欄把整篇包起來。";
+        "潤飾措辭、改善段落結構與邏輯銜接、提升可讀性，並順手修正明顯錯字。潤飾完成後，再依下列排版慣例整理格式。\n" +
+        NoteFormatConventions.Rules + "\n" +
+        NoteFormatConventions.OutputOnly;
+
+    /// <summary>
+    /// 筆記 AI（排版／美化／問答）統一走 sonnet：品質優先。對應 claude CLI 的 --model sonnet。
+    /// 註：保留「依功能可分派不同模型」的能力（ResolveChainAsync 的 claudeModel 參數），
+    /// 目前三者皆指向此常數；日後若要讓某功能改用其他模型，改此處對應呼叫即可。
+    /// </summary>
+    private const string NoteAiClaudeModel = "sonnet";
 
     /// <summary>
     /// 建立筆記 AI 服務。
@@ -67,8 +61,11 @@ public sealed class GeminiNoteAiService : INoteAiService
     /// <param name="contentRaw">原始 Markdown 內容。</param>
     /// <param name="cancellationToken">取消權杖。</param>
     /// <returns>排版後的 Markdown 全文。</returns>
-    public Task<string> ReformatAsync(string contentRaw, CancellationToken cancellationToken) =>
-        TransformAsync(ReformatSystemPrompt, contentRaw, cancellationToken);
+    public Task<string> ReformatAsync(
+        string contentRaw,
+        CancellationToken cancellationToken,
+        Func<AiStreamEvent, Task>? onStage = null) =>
+        TransformAsync(ReformatSystemPrompt, contentRaw, cancellationToken, onStage, NoteAiClaudeModel);
 
     /// <summary>
     /// 內容美化：保留原意下潤飾措辭、結構與可讀性。
@@ -76,27 +73,41 @@ public sealed class GeminiNoteAiService : INoteAiService
     /// <param name="contentRaw">原始 Markdown 內容。</param>
     /// <param name="cancellationToken">取消權杖。</param>
     /// <returns>美化後的 Markdown 全文。</returns>
-    public Task<string> BeautifyAsync(string contentRaw, CancellationToken cancellationToken) =>
-        TransformAsync(BeautifySystemPrompt, contentRaw, cancellationToken);
+    public Task<string> BeautifyAsync(
+        string contentRaw,
+        CancellationToken cancellationToken,
+        Func<AiStreamEvent, Task>? onStage = null) =>
+        TransformAsync(BeautifySystemPrompt, contentRaw, cancellationToken, onStage, NoteAiClaudeModel);
 
     /// <summary>
     /// 框選提問：以選取文字為脈絡回答問題（Markdown）。
     /// </summary>
-    public Task<string> AskAboutAsync(string selectedText, string question, CancellationToken cancellationToken)
+    public Task<string> AskAboutAsync(
+        string selectedText,
+        string question,
+        CancellationToken cancellationToken,
+        Func<AiStreamEvent, Task>? onStage = null)
     {
         const string askSystem =
             "你是一位知識助理。使用者會提供一段「選取的文字」與一個「問題」，" +
             "請主要依據該段文字、必要時輔以你的知識，用繁體中文、清楚的 Markdown 回答問題。" +
-            "可用標題、清單、表格、程式碼區塊；只輸出回答內容本身，不要重述問題、不要用 ``` 把整篇包起來。";
+            "可用標題、清單、表格、程式碼區塊。" +
+            "每句話結束（句號「。」、問號「？」、驚嘆號「！」之後）就換行、且行尾補「兩個半形空格」再換行，避免單行橫向過長；" +
+            "較長的補充或完整程式碼／指令可用「一行 :::toggle 摘要標題、內容、再一行 :::」摺疊收納（預設收合）。" +
+            "只輸出回答內容本身，不要重述問題、不要加任何開場白或說明、也不要用 ``` 把整篇包起來。";
         var prompt = $"選取的文字：\n「{selectedText}」\n\n問題：{question}";
-        return TransformAsync(askSystem, prompt, cancellationToken);
+        return TransformAsync(askSystem, prompt, cancellationToken, onStage, NoteAiClaudeModel);
     }
 
     /// <summary>
     /// 通用文字生成：直接以自訂系統提示 + 內容呼叫供應者（重用 TransformAsync 流程）。
     /// </summary>
-    public Task<string> GenerateAsync(string systemPrompt, string userContent, CancellationToken cancellationToken) =>
-        TransformAsync(systemPrompt, userContent, cancellationToken);
+    public Task<string> GenerateAsync(
+        string systemPrompt,
+        string userContent,
+        CancellationToken cancellationToken,
+        Func<AiStreamEvent, Task>? onStage = null) =>
+        TransformAsync(systemPrompt, userContent, cancellationToken, onStage);
 
     /// <summary>
     /// 共用流程：解析供應者 → 以系統提示 + 內容串流呼叫 → 累積完整結果 → 去除外層 ``` 圍欄。
@@ -108,7 +119,9 @@ public sealed class GeminiNoteAiService : INoteAiService
     private async Task<string> TransformAsync(
         string systemPrompt,
         string contentRaw,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<AiStreamEvent, Task>? onStage = null,
+        string? claudeModel = null)
     {
         // 空內容直接回傳，省一次 API 呼叫。
         if (string.IsNullOrWhiteSpace(contentRaw))
@@ -116,8 +129,9 @@ public sealed class GeminiNoteAiService : INoteAiService
             return contentRaw;
         }
 
-        // modelKey = null → 取全站共用預設模型（banana-gemini-lite）。userId 在此情境不影響解析。
-        var resolved = await _factory.ResolveAsync(Guid.Empty, modelKey: null, cancellationToken);
+        // 走「後援鏈」：Claude → Google AI Studio → banana（取代原本單一共用預設）。
+        // claudeModel 目前排版/美化/問答皆為 sonnet；只影響 claude 這一棒（保留日後可分派不同模型的彈性）。
+        var resolved = await _factory.ResolveChainAsync(claudeModel, cancellationToken);
 
         var accumulated = new StringBuilder();
         string? completedText = null;
@@ -132,6 +146,18 @@ public sealed class GeminiNoteAiService : INoteAiService
         {
             switch (evt.Type)
             {
+                case AiStreamEventType.Stage:
+                    // 通知呼叫端（寫佇列）；AttemptStart 代表「換新一次嘗試」→ 丟棄前一次失敗殘留的累積。
+                    if (onStage is not null)
+                    {
+                        await onStage(evt);
+                    }
+                    if (evt.StageKind == AiStageKind.AttemptStart)
+                    {
+                        accumulated.Clear();
+                        completedText = null;
+                    }
+                    break;
                 case AiStreamEventType.Delta:
                     accumulated.Append(evt.Text);
                     break;

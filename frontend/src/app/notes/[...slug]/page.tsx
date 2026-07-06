@@ -30,13 +30,16 @@ import { NoteAiActions } from '@/components/NoteAiActions';
 import { NoteEditHistory } from '@/components/NoteEditHistory';
 import { NoteBacklinks } from '@/components/NoteBacklinks';
 import { SearchableMultiSelect } from '@/components/SearchableMultiSelect';
+import { recordNoteNav, getNoteBackTarget } from '@/lib/noteNav';
 import { LinkedEntitiesBar } from '@/components/LinkedEntitiesBar';
 import { TocPanel } from '@/components/TocPanel';
+import { ToggleAwareMarkdown } from '@/components/MarkdownPreview';
 import { buildToc } from '@/lib/toc';
 import { useUndoHotkeys, resetUndo } from '@/lib/undoManager';
 import { useConfirm } from '@/components/ConfirmProvider';
 import { registerNavigationGuard } from '@/lib/navigationGuard';
 import { emitNoteActiveCategory } from '@/lib/noteEvents';
+import { noteEditChannelName, NOTE_EDIT_MAX_CONTENT, type NoteEditMessage } from '@/lib/noteEditChannel';
 
 // ── 重量級用戶端元件延遲載入（修 #10：dev 模式 Turbopack render worker 崩潰 500）────────────
 // 這四個元件（Markdown 編輯器、文字標註層、浮動白板、任務編輯彈窗）合計約 2,900 行，全為
@@ -106,6 +109,14 @@ export default function NotesDetailPage() {
   const [aiBusy, setAiBusy] = useState(false);
   // 預覽內文容器參考（供 NoteMarksLayer 套用文字標註）。
   const previewRef = useRef<HTMLDivElement | null>(null);
+  // 編輯器 textarea 參考：供「局部排版（重排選取範圍）」讀取目前選取位置。
+  const editorTaRef = useRef<HTMLTextAreaElement | null>(null);
+  // 編輯彈窗：開啟時筆記頁改顯示「即時預覽（彈窗目前內容）」；null＝彈窗未開、顯示存檔版閱讀畫面。
+  const [editPopoutContent, setEditPopoutContent] = useState<string | null>(null);
+  const editChannelRef = useRef<BroadcastChannel | null>(null);
+  const editPopupRef = useRef<Window | null>(null);
+  // 「編輯」按鈕點下展開的小選單：可選「編輯頁（頁內）」或「編輯彈窗（獨立視窗）」。
+  const [showEditMenu, setShowEditMenu] = useState(false);
 
   // 編輯時的分類/標籤：選項池與目前選取。
   // 選項池改由共用的 SWR 快取（useNoteCategories/useNoteTags）供給，並在取得資料時 seed 到
@@ -253,6 +264,8 @@ export default function NotesDetailPage() {
 
   // 標籤頁
   const [activeTab, setActiveTab] = useState<'preview' | 'comments' | 'history' | 'backlinks' | 'links'>('preview');
+  // 「全部收合／展開」單鈕的狀態：false=目前視為全收合（後端 toggle 預設收合），點擊會展開全部並翻轉。
+  const [allTogglesExpanded, setAllTogglesExpanded] = useState(false);
 
   // 章節目錄表（浮動、可拖曳、可關閉）：每次載入頁面「預設打開」，位置固定在左側（不記憶、不壓內文）。
   const [tocOpen, setTocOpen] = useState(true);
@@ -314,6 +327,8 @@ export default function NotesDetailPage() {
   useEffect(() => {
     if (note?.id && slug) {
       try { localStorage.setItem('zonwiki:last-note-slug', slug); } catch { /* ignore */ }
+      // 記錄到「筆記情境返回堆疊」：抵達此筆記頁時 push（供返回鈕只在筆記情境內移動）。
+      recordNoteNav(window.location.pathname + window.location.search);
     }
   }, [note?.id, slug]);
   // 由內文 HTML 萃取章節（h1/h2/h3）並為各標題補上錨點 id（供目錄點擊捲動）。
@@ -321,6 +336,16 @@ export default function NotesDetailPage() {
     () => (note ? buildToc(note.contentHtml) : { html: '', toc: [] }),
     [note],
   );
+
+  // 「全部展開／收合」：改用 effect 套用到目前 DOM 的所有 details——
+  // 先前直接在點擊時 setOpen，但內文渲染層（NoteMarksLayer 等）在同次重繪會把 .markdown-prose 重新注入、
+  // 把 details 重建成預設收合，導致「全部展開」按了沒反應（全部收合看似 OK 只因預設就收合）。
+  // 放進 effect（父層 effect 於子層之後執行）→ 在重注入之後才套用，故一定生效；也隨 previewHtml 變動重套。
+  useEffect(() => {
+    previewRef.current
+      ?.querySelectorAll<HTMLDetailsElement>('details.md-toggle')
+      .forEach((d) => { d.open = allTogglesExpanded; });
+  }, [allTogglesExpanded, previewHtml]);
 
   // 共用「復原 / 重做」：手繪塗鴉與畫重點共用同一條 Ctrl+Z 堆疊，僅在預覽分頁掛上單一鍵盤監聽。
   useUndoHotkeys(activeTab === 'preview');
@@ -507,6 +532,116 @@ export default function NotesDetailPage() {
     }
   };
 
+  // ── 編輯彈窗（獨立視窗）＋筆記頁即時預覽 ──
+  /** 關閉編輯彈窗：關掉獨立視窗、釋放頻道、筆記頁回到「存檔版」閱讀畫面（丟棄未存的預覽）。冪等。 */
+  const closeEditPopout = useCallback(() => {
+    editChannelRef.current?.close();
+    editChannelRef.current = null;
+    try { editPopupRef.current?.close(); } catch { /* 跨視窗關閉可能受限 */ }
+    editPopupRef.current = null;
+    setEditPopoutContent(null);
+  }, []);
+
+  /**
+   * 開啟「編輯彈窗」獨立視窗：以目前 DB 內容為起點；筆記頁改顯示即時預覽（渲染彈窗當前內容）。
+   * 彈窗編輯 → 即時回推預覽；彈窗保存 → 存 DB 並重抓筆記（關窗後即是存檔版）；關窗 → 回存檔版閱讀。
+   *
+   * 隔離設計：每次開啟都產生一次性 token，用來（a）組出專屬 BroadcastChannel 名稱、
+   * （b）當作獨立視窗名稱，避免「同源多個筆記分頁 / 多個彈窗」互相串頻道或搶同一視窗。
+   * useCallback 綁定當前 note/slug；切換筆記時外層 effect 會先關掉舊彈窗（見下方 [slug] 清理）。
+   */
+  const openEditPopout = useCallback(() => {
+    if (!note) return;
+    if (editPopoutContent !== null) { editPopupRef.current?.focus(); return; }
+    if (typeof window === 'undefined' || typeof BroadcastChannel === 'undefined') return;
+
+    // 一次性 session token：隔離本次「筆記頁 ↔ 彈窗」的頻道與視窗。
+    const token =
+      (typeof crypto !== 'undefined' && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : `${note.id}-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
+
+    const ch = new BroadcastChannel(noteEditChannelName(token));
+    ch.onmessage = (e: MessageEvent) => {
+      const d = e.data as NoteEditMessage | null;
+      if (d?.type === 'edit-ready') {
+        ch.postMessage({
+          type: 'edit-init',
+          init: {
+            noteId: note.id,
+            slug,
+            title: note.title,
+            content: note.contentRaw,
+            categoryIds: (note.categories ?? []).map((c) => c.id),
+            tagIds: (note.tags ?? []).map((t) => t.id),
+          },
+        });
+      } else if (d?.type === 'edit-content') {
+        // 防呆：只接受字串、且長度在上限內（避免異常/惡意訊息灌爆渲染）。
+        if (typeof d.content === 'string' && d.content.length <= NOTE_EDIT_MAX_CONTENT) {
+          setEditPopoutContent(d.content);
+        }
+      } else if (d?.type === 'edit-saved') {
+        getNote(slug).then((updated) => { if (updated) setNote(updated); }).catch(() => {});
+      } else if (d?.type === 'edit-closing') {
+        closeEditPopout();
+      }
+    };
+
+    // 先開視窗，成功才進入即時預覽；被瀏覽器擋掉（回傳 null）就還原、提示，不留下「有預覽卻無彈窗」的死狀態。
+    const popup = window.open(
+      `/notes/edit-popout?ch=${encodeURIComponent(token)}`,
+      `zonwiki-note-edit-${token}`,
+      'width=1000,height=980,menubar=no,toolbar=no,location=no,status=no',
+    );
+    if (!popup) {
+      ch.close();
+      setError('編輯彈窗被瀏覽器阻擋，請允許此站開啟彈出視窗後再試，或改用「編輯頁」。');
+      return;
+    }
+    editChannelRef.current = ch;
+    editPopupRef.current = popup;
+    setEditContent(note.contentRaw);
+    setEditPopoutContent(note.contentRaw); // 起始即時預覽＝目前存檔內容
+  }, [note, slug, editPopoutContent, closeEditPopout]);
+
+  // 偵測編輯彈窗被關閉（使用者直接關視窗）→ 筆記頁回存檔版。
+  // 注意：彈窗初次載入（尤其 dev 首次編譯 /notes/edit-popout 路由）可能數秒後才 attach，
+  // 這段期間 window.open 回傳的參考其 `.closed` 可能短暫為 true。因此加上：
+  //   1. 啟動寬限（前 GRACE 毫秒不判定），等彈窗真正 attach；
+  //   2. 連續兩次讀到 closed 才視為關閉，避免單次瞬時誤判把即時預覽關掉。
+  // 真正的關閉另有 pagehide/beforeunload → 'edit-closing' 訊息即時處理（見 edit-popout 頁）。
+  useEffect(() => {
+    if (editPopoutContent === null) return;
+    const GRACE_MS = 3000;
+    const startedAt = Date.now();
+    let closedStreak = 0;
+    const timer = window.setInterval(() => {
+      if (Date.now() - startedAt < GRACE_MS) return;
+      if (editPopupRef.current?.closed) {
+        closedStreak += 1;
+        if (closedStreak >= 2) closeEditPopout();
+      } else {
+        closedStreak = 0;
+      }
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [editPopoutContent, closeEditPopout]);
+
+  // 切換到不同筆記（App Router 重用本元件、只有 slug 變）或卸載時，關掉舊筆記的編輯彈窗與即時預覽，
+  // 避免舊筆記的預覽/頻道/視窗殘留到新筆記頁（cleanup 在 slug 改變前與卸載時各跑一次）。
+  useEffect(() => {
+    return () => { closeEditPopout(); };
+  }, [slug, closeEditPopout]);
+
+  // 編輯選單開啟時，按 Esc 關閉（鍵盤可用性）。
+  useEffect(() => {
+    if (!showEditMenu) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setShowEditMenu(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showEditMenu]);
+
   // 匯出 PDF：用瀏覽器原生列印（另存為 PDF）。
   // 列印的是「實際預覽區」（含手繪塗鴉/便利貼/畫重點），@media print 會隱藏全站外殼、
   // 右下角工具列與章節目錄表，只留標題＋內容＋浮層（手繪等）。
@@ -626,11 +761,27 @@ export default function NotesDetailPage() {
         >
           <button
             onClick={async () => {
-              // 返回上一頁前，若編輯中有未儲存變更先詢問是否放棄（#16）。
-              if (await confirmDiscardIfDirty()) router.back();
+              // 編輯中：先確認未儲存變更（#16），放棄才退出編輯、切回閱讀（不走返回堆疊、不離開本頁）。
+              if (isEditing) {
+                if (await confirmDiscardIfDirty()) {
+                  setIsEditing(false);
+                }
+                return;
+              }
+              // 閱讀中：只在「筆記情境」內返回：從堆疊取上一個筆記情境頁（別篇筆記／分類頁）。
+              // 堆疊起點（從首頁/搜尋/直接開網址進來）→ 回該篇筆記的分類頁（無分類則回筆記清單），
+              // 刻意不回到 zonwiki 首頁等非筆記情境。
+              const current = window.location.pathname + window.location.search;
+              const target = getNoteBackTarget(current);
+              if (target) {
+                router.push(target);
+              } else {
+                const catId = note?.categories?.[0]?.id;
+                router.push(catId ? `/notes?categoryId=${catId}` : '/notes');
+              }
             }}
             className="btn-secondary"
-            title="返回上一個瀏覽的地方"
+            title={isEditing ? '返回本篇筆記（退出編輯）' : '返回上一個筆記情境頁（別篇筆記／分類頁）'}
             style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 'var(--spacing-1)' }}
           >
             ← 返回
@@ -653,18 +804,86 @@ export default function NotesDetailPage() {
           {/* 編輯中時隱藏「編輯 / 匯出 / 刪除」（避免與下方編輯區的取消/保存混淆）；編輯區自有取消/保存。 */}
           {!isEditing && (
             <div style={{ display: 'flex', gap: 'var(--spacing-2)', flexShrink: 0 }}>
-              <button
-                onClick={() => {
-                  setEditTitle(note.title);
-                  setEditContent(note.contentRaw);
-                  setEditCatIds((note.categories ?? []).map((c) => c.id));
-                  setEditTagIds((note.tags ?? []).map((t) => t.id));
-                  setIsEditing(true);
-                }}
-                className="btn-primary"
-              >
-                ✏️ 編輯
-              </button>
+              {/* 一鍵收合／展開整頁摺疊區塊（單鈕切換；只在預覽分頁、且內容真的有 toggle 時才出現）。
+                  toggle 是後端渲染的原生 <details>，直接設 .open 即可。 */}
+              {activeTab === 'preview' && previewHtml.includes('md-toggle') && (
+                <button
+                  onClick={() => setAllTogglesExpanded((v) => !v)}
+                  className="btn-secondary"
+                  title={allTogglesExpanded ? '收合整頁所有摺疊區塊' : '展開整頁所有摺疊區塊'}
+                >
+                  {allTogglesExpanded ? '⊟ 全部收合' : '⊞ 全部展開'}
+                </button>
+              )}
+              {/* 「編輯」→ 展開兩種編輯方式：頁內編輯頁 或 獨立編輯彈窗。 */}
+              <div style={{ position: 'relative', flexShrink: 0 }}>
+                <button
+                  onClick={() => setShowEditMenu((v) => !v)}
+                  className="btn-primary"
+                  style={{ minHeight: 44 }}
+                  title="編輯此筆記（可選編輯頁或編輯彈窗）"
+                  aria-haspopup="menu"
+                  aria-expanded={showEditMenu}
+                >
+                  ✏️ 編輯 ▾
+                </button>
+                {showEditMenu && (
+                  <>
+                    {/* 點空白處關閉選單 */}
+                    <div onClick={() => setShowEditMenu(false)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
+                    <div
+                      role="menu"
+                      style={{
+                        position: 'absolute',
+                        top: 'calc(100% + 4px)',
+                        right: 0,
+                        zIndex: 41,
+                        minWidth: 220,
+                        background: 'var(--bg-surface)',
+                        border: '1px solid var(--border-default)',
+                        borderRadius: 'var(--radius-md)',
+                        boxShadow: 'var(--shadow-lg, 0 8px 24px rgba(0,0,0,0.18))',
+                        overflow: 'hidden',
+                        display: 'flex',
+                        flexDirection: 'column',
+                      }}
+                    >
+                      <button
+                        role="menuitem"
+                        onClick={() => {
+                          setEditTitle(note.title);
+                          setEditContent(note.contentRaw);
+                          setEditCatIds((note.categories ?? []).map((c) => c.id));
+                          setEditTagIds((note.tags ?? []).map((t) => t.id));
+                          setIsEditing(true);
+                          setShowEditMenu(false);
+                        }}
+                        style={{
+                          display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2,
+                          padding: '10px 14px', background: 'transparent', border: 'none',
+                          borderBottom: '1px solid var(--border-default)', cursor: 'pointer',
+                          textAlign: 'left', fontSize: 'var(--text-sm)', color: 'var(--text-primary)',
+                        }}
+                      >
+                        📄 編輯頁
+                        <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>在本頁內直接編輯</span>
+                      </button>
+                      <button
+                        role="menuitem"
+                        onClick={() => { setShowEditMenu(false); openEditPopout(); }}
+                        style={{
+                          display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2,
+                          padding: '10px 14px', background: 'transparent', border: 'none',
+                          cursor: 'pointer', textAlign: 'left', fontSize: 'var(--text-sm)', color: 'var(--text-primary)',
+                        }}
+                      >
+                        🪟 編輯彈窗
+                        <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>獨立視窗；本頁即時預覽</span>
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
               <button onClick={handleExportPdf} className="btn-secondary" title="以瀏覽器列印（可另存為 PDF）">
                 📄 匯出 PDF
               </button>
@@ -693,8 +912,20 @@ export default function NotesDetailPage() {
 
         {/* 關聯內容已移到下方「關聯」分頁（見標籤頁） */}
 
-        {/* 編輯模式 */}
-        {isEditing ? (
+        {/* 編輯彈窗開啟中：筆記頁顯示「即時預覽」（渲染彈窗當前內容，非永久；關窗回存檔版）。 */}
+        {editPopoutContent !== null ? (
+          <div style={{ marginBottom: 'var(--spacing-6)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '8px 12px', marginBottom: 'var(--spacing-4)', background: 'var(--bg-surface-secondary)', border: '1px dashed var(--border-default)', borderRadius: 'var(--radius-sm)', fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>
+              <span>✏️ 編輯視窗開啟中 — 以下為<b>即時預覽</b>（非永久）。在編輯視窗按「💾 保存」才會存檔；關閉編輯視窗即回到存檔版。</span>
+              <span style={{ flex: 1 }} />
+              <button className="btn-secondary" style={{ fontSize: 'var(--text-xs)' }} onClick={() => editPopupRef.current?.focus()}>切到編輯視窗</button>
+              <button className="btn-secondary" style={{ fontSize: 'var(--text-xs)' }} onClick={closeEditPopout}>結束編輯</button>
+            </div>
+            <div className="markdown-prose" style={{ background: 'var(--bg-surface)', padding: 'var(--spacing-6)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-default)' }}>
+              {editPopoutContent.trim() ? <ToggleAwareMarkdown value={editPopoutContent} /> : <span style={{ color: 'var(--text-tertiary)' }}>（空白）</span>}
+            </div>
+          </div>
+        ) : isEditing ? (
           <div style={{ marginBottom: 'var(--spacing-6)' }}>
             {/* 標題列：標題輸入框與「取消／保存」同行 */}
             <div
@@ -833,6 +1064,7 @@ export default function NotesDetailPage() {
                 onError={(message) => setError(message)}
                 disabled={isSaving}
                 onBusyChange={setAiBusy}
+                taRef={editorTaRef}
               />
             </div>
 
@@ -841,7 +1073,8 @@ export default function NotesDetailPage() {
               onChange={setEditContent}
               withPreview
               minHeight={400}
-              placeholder="用 Markdown 撰寫內容…（可用工具列套用格式）"
+              placeholder="用 Markdown 撰寫內容…（可用工具列套用格式；🔒 可框住不想被 AI 重排的內容）"
+              taRef={editorTaRef}
             />
           </div>
         ) : (
