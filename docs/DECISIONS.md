@@ -5,6 +5,22 @@
 
 ---
 
+## 2026-07-06 ｜「其他」功能群定案：GCP 純血選型＋分期實作（設計書 v3.1）
+
+- **背景**：新增「其他」頁功能群——單字庫／英文教練（Midoo 式即時語音對話）／記帳（語音一句話入帳）／筆記 TTS・Podcast 模式／筆記返回鈕重定義／iPhone 快速啟動。使用者裁示鐵則級約束：**新功能所有雲端服務一律用 GCP（讓花費吃既有 credits）、拒絕對其他家付費，接受體驗較差、開發較久的代價**。
+- **考慮過的選項**：AI 供應端 Gemini Developer API（AI Studio key）vs Vertex AI；教練通道「瀏覽器直連＋ephemeral token」vs「.NET 後端 WebSocket 代理」vs「STT→LLM→TTS 管線」；TTS 走 Gemini-TTS vs Chirp 3 HD vs Web Speech；記帳音檔轉錄 Groq Whisper vs Cloud STT vs Vertex 直接吃音訊。
+- **最終決定**：**全面走 Vertex AI**——Gemini Developer API 自 2026-03 起官方明文吃不到 GCP credits，Vertex 是唯一能吃額度的路。教練＝Vertex Live API（gemini-live-2.5-flash-native-audio，GA，退役日 2026-12-13）＋**.NET 後端 WS 代理**（Vertex 無 ephemeral token，瀏覽器直連被堵死）＋接受美區 +120–160ms 延遲；文字解析＝AiProviderFactory 新增 **VertexAdc** 供應者（OpenAI 相容端點＋ADC token）；記帳音檔路＝Vertex generateContent 直吃音訊（棄 Groq）；TTS＝Gemini-TTS via Cloud TTS API（cmn-TW 為 Preview 需 PoC）＋英文內容走 Chirp 3 HD 月 1M 字元免費層。設計書 §12 其餘推薦全數採納：`/others` 路由、CoachSession/CoachMessage 新表、SRS 用 SM-2 起步（DB 欄位照 FSRS）、音檔 Opus 格式、iPhone 實體鍵分工（Action Button=記帳／鎖屏鈕=隨手記／主畫面圖示=教練）、返回鈕乙案（堆疊優先＋階層 fallback 修正版）、不裝核彈級計費斷路器（改應用層三上限＋include-credits budget 告警）、教練每日 60 分鐘上限、記帳音檔直傳路暫不做。分期：Phase 0（GCP 前置）→ 1（骨架＋記帳＋PWA＋捷徑＋返回鈕）→ 2（單字庫＋TTS＋分析頁）→ 3（教練＋Podcast）。
+- **理由與取捨**：完整比較、成本估算（教練 30 分/天約 $17–36/月，吃 credits）、風險與兩輪對抗式評審採納紀錄，見 [docs/design/其他功能群設計書.md](./design/其他功能群設計書.md)（v3.1）。主要取捨：延遲與開發工時，換「花費 100% 吃 GCP 額度」；暫時鎖在 Gemini 2.5 世代（3.1 Live 不在 Vertex）；2026-12-13 模型退役前需換後繼模型（模型代號已設定值化）。
+
+## 2026-07-06 ｜ 本機 DB 每日兩次「用 prod 覆蓋」（本機＝prod 可拋棄副本）
+
+- **背景**：使用者要「本機開發環境直接用 prod 的真實資料」，每日兩次自動把 prod 內容**覆蓋**掉本機 dev DB（`zonwiki`＠5533）。（初版曾做成「另存獨立鏡像 DB、不碰 dev DB」，經使用者澄清後改為「直接覆蓋 dev DB」。）
+- **最終決定**：`scripts/local/pull-backup.ps1` 拉回 prod 備份後，`DROP DATABASE zonwiki WITH (FORCE)` + `CREATE` + 灌入，用 prod **整個覆蓋本機 `zonwiki`**。加雙保險旗標 `$OverwriteLocalDb`（要明確 opt-in 才會執行此破壞性覆蓋）。
+- **schema 落差處理（重要）**：prod 跑的 code 比本機分支舊（少了 xmin／重複規則／搜尋索引等 migration）。覆蓋後本機 DB＝prod 舊 schema；**本機後端下次啟動時 EF `MigrateAsync` 會自動把它補到分支新 schema、prod 資料保留**（實測：覆蓋後 188 notes、後端啟動套用 4 個分支 migration、TaskCard 補上 Recurrence 欄位、資料無損）。因此**每次同步後需重啟本機後端**（腳本會 log 提醒）；若後端在同步當下正運行，`DROP … FORCE` 會斷其連線、需重啟才恢復。
+- **理由與取捨**：使用者明確要「本機用 prod 資料」；本機 dev DB 視為可拋棄副本（prod 為權威來源、只讀）。取捨：本機該 DB 原有的 dev/測試資料每 12 小時被清掉（使用者接受）；此覆蓋屬「刻意用權威來源重建可拋棄的本機副本」，非誤刪正式資料，符合資料安全鐵則的意圖。同步後本機登入帳號＝prod 帳號（本機原 dev 帳號會一起被覆蓋掉）。
+- **實作坑（記給後人）**：① `pull-backup.ps1` 的 gcloud 必須帶 `a0987461866@zonwiki`（不指定 user 會連到空家目錄、抓不到備份）。② PowerShell 5.1 會把傳給原生指令的 `"識別碼"` 雙引號吃掉→psql 收到未加引號 `Note`→摺成 `note`→報「relation 不存在」；SQL 驗證查詢改用純單引號（`information_schema`）或 stdin 管線避開。
+- **備註**：此則原由另一 session 寫入但未提交，期間曾被外部寫入者（疑似編輯器舊緩衝存檔）從工作區抹除；2026-07-06 由本 session 依當時實讀內容原文還原並提交保全。
+
 ## 2026-07-06 ｜ 重複任務用「到期具現化」＋自寫 RRULE 子集展開器（#17）
 
 - **背景**：TaskCard 早有 `RecurrenceRule`（iCal RRULE）欄位，但完全無 UI、無產生引擎——存了規則也不會有任何重複發生產生。使用者要求做成完整可用功能（不重複／每天／每週選星期／每月選日／自訂 RRULE），且必須「不重複、不無限、可打勾、可停止重複」。
