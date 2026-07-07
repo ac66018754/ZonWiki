@@ -28,6 +28,10 @@ public sealed class ZonWikiApiFactory : WebApplicationFactory<Program>, IAsyncLi
     /// </summary>
     private readonly PostgreSqlContainer _postgresContainer = new PostgreSqlBuilder()
         .WithImage("postgres:16-alpine")
+        // 對齊 prod／本機 docker-compose 的 `TZ: Asia/Taipei`（審查 LOW：修「假綠」）：
+        // 若不設，容器 session 預設 UTC，日/月分組測試會「剛好」通過而抓不到「grouping 未帶 UTC 轉換」的回歸；
+        // 設成非 UTC 時區後，現有 UTC 日界／月界整合測試才真正鎖住「日/月分組必須 AT TIME ZONE 'UTC'」。
+        .WithEnvironment("TZ", "Asia/Taipei")
         .Build();
 
     /// <summary>TTS 快取檔的暫存目錄（測試專用，避免把合成音檔寫進 repo 的 App_Data；Dispose 時清除）。</summary>

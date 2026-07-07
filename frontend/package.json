@@ -20,6 +20,7 @@
     "react-colorful": "^5.7.0",
     "react-dom": "19.1.8",
     "react-markdown": "^9.0.1",
+    "recharts": "3",
     "remark-gfm": "^4.0.0",
     "swr": "^2.4.2"
   },

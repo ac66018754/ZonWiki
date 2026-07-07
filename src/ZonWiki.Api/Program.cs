@@ -82,6 +82,9 @@ builder.Services.AddScoped<RefineService>(); // 精煉成筆記協調器
 builder.Services.AddScoped<ExpenseCategoryService>();
 builder.Services.AddScoped<ExpenseParsingService>();
 
+// 記帳分析頁（其他功能群 Phase 2）：一次回五大區塊彙總（SQL GROUP BY／SUM、UTC 月界、多租戶＋軟刪除鎖）。
+builder.Services.AddScoped<ExpenseAnalyticsService>();
+
 // 單字庫（其他功能群 Phase 2）：共用資料存取（正規化＋復活 upsert）與 AI 補釋義服務（VertexAdc＋保底 JSON）。
 builder.Services.AddScoped<VocabularyService>();
 builder.Services.AddScoped<VocabularyEnrichmentService>();

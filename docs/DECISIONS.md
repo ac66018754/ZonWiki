@@ -5,6 +5,34 @@
 
 ---
 
+## 2026-07-08 ｜記帳分析頁後端（Phase 2・工作包 A）實作定案
+
+- **背景**：實作設計書 §5.5／§5.6 的記帳分析頁後端——一次回五大區塊彙總（本月總額＋與上月比、近 N 月趨勢、分類佔比、日彙總、商家 Top N），供前端 Recharts 圖表＋Tailwind 日曆熱圖。以下為關鍵取捨與六條審查修正（HIGH×1／MEDIUM×3／LOW×2）的落實。
+- **新增 `GET /api/expenses/analytics`、`/stats` 零改動**：分析回應是重量級彙總，塞進 Phase 1 已被前端消費的輕量 `/stats`（`ExpenseStatsDto(total,count,month)`）會跨波破壞既有消費者、且讓「本月一個數字」被迫收大 payload。故新增獨立端點，`/stats` 維持原狀。取捨：`monthTotal` 在兩端點各算一次 SUM（成本可忽略）。無限流（read-only、不打 LLM，比照 `/stats`）。
+- **月界數學抽 `ExpenseMonthRange` 共用（同時重構 `StatsHandler`）**：把 Phase 1 `StatsHandler` 私有的 `TryResolveMonthRange`／`TryParseMonth` 原封搬到共用靜態類別 `ExpenseMonthRange`，並新增 `TryResolveAnalyticsRange(month, trendMonths)` 產三段 UTC 半開區間（選定月 `[Start,End)`、上月 `[PrevStart,Start)`、趨勢窗 `[TrendStart,End)`）。`StatsHandler` 改呼叫共用版（行為保持的純搬移；既有 `GetStats_*` 測試為回歸鎖，實跑續綠）。沿用 DECISIONS「月界 UTC」慣例。
+- **SQL GROUP BY／SUM（DB 端彙總）＋日/月分組經實證為 UTC 安全**：金額 decimal 在 DB 加總、不拉原始列。日/月分組用 `e.OccurredDateTime.Year/Month/Day`——**經 `ToQueryString()` 實證** Npgsql 譯為 `date_part('day', col AT TIME ZONE 'UTC')`（顯式帶 `AT TIME ZONE 'UTC'`），故不依賴連線 session 時區、恆為 UTC 日/月界（整合測試 I6 以 `2026-07-01T23:30Z`＋`2026-07-02T00:30Z` 鎖死 UTC 分日）。每句彙總皆 `IgnoreQueryFilters()`＋明確 `UserId`＋`ValidFlag`（多租戶＋軟刪除鎖，與 `StatsHandler` 一致）。
+- **分類佔比取 metadata 走「保底方案」（GroupBy 純量 CategoryId＋記憶體 join 名稱/圖示）**：主方案（GroupBy 含導覽欄 `e.Category!.Name/Icon`）有 EF 翻譯風險，故直接採保底——Q1 只按純量 `CategoryId`（含 null 未分類桶）分組彙總，再一句 `ExpenseCategory`（`IgnoreQueryFilters`＋UserId，不濾 ValidFlag 讓「已軟刪分類但仍有歷史消費」的名稱也能顯示）撈 metadata 記憶體 join。多 1 句查詢、確定可翻譯。**另**：商家 Top N 的 `GroupBy→Select(具名 record)→OrderBy/Take` 實測 EF 無法翻譯（`could not be translated`），改用**匿名型別**中繼投影後材質化再映射 DTO（實測修正）。
+- **與上月比 `prevMonthTotal` 用獨立區間、不由趨勢窗推導（審查 MEDIUM：N=1 邊界）**：原計畫從趨勢窗聚合 map 取上月，當 `AnalyticsTrendMonths=1` 時趨勢窗只含選定月→上月恆 0→deltaPct 恆 null（即使上月有消費）。**改為上月專屬區間 `[PrevStart, Start)` 單獨一句 SUM**，與 N 解耦。單元＋服務層 N=1 整合向量鎖死（上月 200、本月 300 → prevMonthTotal=200、deltaPct=50.0，trend 僅 1 筆）。
+- **`deltaPct` 單一擁有者＝後端（審查 LOW：重複計算/死欄位）**：後端計算並回傳 `deltaPct`（`(monthTotal-prevMonthTotal)/prevMonthTotal*100`，`MidpointRounding.AwayFromZero` 1 位；`prevMonthTotal==0`→`null`）。前端應**消費此值、移除自算路徑**；後端不回計畫中的 `previousMonth` 字串（前端如需自 `month` 推導）。避免兩邊各做一份白工。
+- **前後端契約欄名鎖定（審查 HIGH：欄名不一致靜默壞掉）**：後端權威欄名＝`month／monthTotal／monthCount／prevMonthTotal／deltaPct／monthlyTrend／categoryBreakdown／dailyTotals／merchantTopN`；子物件 `monthlyTrend[].{month,total,count}`、`categoryBreakdown[].{categoryId,name,icon,total,count}`、`dailyTotals[].{date,total,count}`、`merchantTopN[].{merchant,total,count}`。以 `ExpenseAnalyticsContractSerializationTests`（`JsonSerializerDefaults.Web` camelCase）逐欄斷言鎖死。**前端 WP-B 的 normalizeAnalytics 別名表必須把這些後端真名全列入 fallback**（`monthTotal→currentTotal`、`monthCount→currentCount`、`prevMonthTotal→previousTotal`、`merchantTopN→merchants` 等），勿只列臆測的 total/count/topMerchants/lastMonthTotal。
+- **`monthlyTrend`／`dailyTotals` 補上 `count`（審查 MEDIUM：宣告卻永遠 undefined）**：前端 TrendPoint/DailyPoint/DayCell 帶 `count`，故後端 Q2/Q3 一併回 `Count()`（缺月/缺日補 0）；避免前端拿到 undefined。
+- **空狀態語意（審查 MEDIUM，前端 WP-B 需落實）**：空月時後端仍回**完整 N 筆趨勢**（含前幾月真實數字，讓趨勢圖有完整軸），`categoryBreakdown/dailyTotals/merchantTopN` 為 `[]`、不報錯。**前端不可用 `monthTotal===0 && monthCount===0` 藏掉整頁**——本月零消費但有跨月歷史時，仍要渲染趨勢圖與 delta（各子圖自帶 mini 空狀態）。整合測試 I1 鎖「空月回零＋6 筆全零趨勢＋末筆＝選定月」。
+- **下鑽區間邊界（審查 LOW，前端 WP-B 注意）**：分析頁分類/日彙總用半開 `< endUtc`；下鑽重用的 `GET /api/expenses` 其 `to` 是 `<=` 閉區間。前端下鑽 `to` 應傳「次月月首前最後一個可表示瞬間」以逼近半開（**不可直接傳次月月首**，否則會多收午夜那筆）。此為已知微秒級容差（個人記帳極低機率），後端不改 list 端點（範圍紀律）。
+- **設定值化**：`Expense:AnalyticsTrendMonths`（預設 6，clamp 1..24）、`Expense:AnalyticsMerchantTopN`（預設 10，clamp 1..50），具名常數、無魔術數字。**無 schema 變更**（分析全走既有欄位與既有索引 `(UserId,OccurredDateTime,ValidFlag)`，不新增 migration）。
+- **自測**：`dotnet build -c Release` 0 error；`dotnet test ZonWiki.slnx -c Release` 全綠（Api 460＋Infra 66＝526）**連跑兩次穩定**（本機後端佔 5009／Debug DLL，全程 Release）。新增 43 筆分析測試（單元 math／month-range／契約序列化＋整合 I1–I15＋N=1）。活體（真實資料打一次端點＋Seq）由監工驗收。
+
+## 2026-07-08 ｜記帳分析頁：對抗復審後修正落實（Fable5 監工）
+
+- **背景**：分析頁前後端實作完成後，三路對抗復審（csharp／frontend／security）回報前端 3 MEDIUM＋3 LOW、後端 3 LOW。以下為 Fable5 監工的修正裁定與落實（全數已修並活體驗收）。
+- **分析載入錯誤語意：真正失敗改 `throw`、只有 not-ready 回 `null`（前端 MEDIUM）**：原 `getExpenseAnalytics` 用 try/catch 把所有失敗吞成 null，導致 5xx／斷線與「真的零消費」無法區分、AnalyticsView 的錯誤四態成死碼。改為 **404（端點未就緒）／401（未登入，另有全站彈窗）回 null；5xx／網路／JSON 損毀／其餘 4xx 一律 throw**，讓 SWR 的 error 被填、進錯誤框並可自動重試。取捨：not-ready 仍走友善空狀態以保前後端平行開發體驗。
+- **趨勢柱過去月 opacity 0.55→0.75（前端 MEDIUM／§11 WCAG 1.4.11）**：過去月柱本身即資料載體且無逐柱數值標籤，0.55 在兩淺色主題對卡面僅 2.30–2.54:1（<3:1）。實算四主題後取 0.75（最低 light 3.21、warmpaper 3.78），四主題過去月柱皆 ≥3:1。
+- **日曆熱圖：階梯下限 0.18→0.4＋所有日格統一邊框（前端 MEDIUM／§11）**：原最低桶對卡面僅 1.2–1.35 幾乎不可見；且「無消費日有實框、最低消費日無框」造成顯著性反轉（消費日看起來比沒消費還空）。修法：opacity 階梯改 `[0.4,0.55,0.7,0.85,1.0]`（桶1 升到 1.6–2.1、五級仍可辨），**所有日格一律 `border-default` 邊框**、綠色填充當唯一差異載體 → 任何消費日一律 ≥ 無消費日。熱圖最低桶在保留 5 級下無法各自達 3:1（sequential 天性），但色非唯一載體（aria-label＋title＋離散 legend）符合準則。
+- **環圈扇形 onClick 索引防護（前端 LOW）**：`onClick={(_, index)=>handleDrill(folded[index])}` 若 recharts@3 傳入非數字/越界 index，`slice.categoryId` 會拋 TypeError 讓整頁崩。改為 `typeof index==='number'?folded[index]:undefined` ＋ handleDrill 對 undefined 早退。
+- **商家 Top N 排除純空白商家（後端 LOW）**：`.Where(e=>e.Merchant!=null && e.Merchant!="")` 漏放 `"   "`，與「排除 null／空白」契約不符。改 `e.Merchant!.Trim()!=""`（EF 譯 btrim，仍 DB 端過濾）。
+- **整合測試容器設 `TZ=Asia/Taipei`（後端 LOW：修「假綠」）**：測試容器原無 TZ（session 預設 UTC），日/月分組測試「剛好」通過而抓不到「分組未帶 UTC 轉換」的回歸。對齊 prod／docker-compose 的 `TZ: Asia/Taipei` 後，既有 I6（`23:30Z`＋`00:30Z` 在台北時區皆落 7/2 本地日、但斷言分成 7/1 與 7/2 UTC 日）成為真正的回歸鎖——實跑 526 測試在 Asia/Taipei 下仍全綠，證實分組確走 `AT TIME ZONE 'UTC'`。
+- **另有 2 LOW 依裁定處理**：下鑽 pageSize=200 截斷 → 面板加「共 N 筆，僅顯示前 200 筆」提示（不加分頁，範圍紀律）；環圈淺主題多色 <3:1 → 維持現況（已文件化取捨：身分靠 legend＋icon＋文字承載，色非唯一載體）。
+- **Fable5 活體驗收**：backend 526 綠（新 TZ）；前端 tsc/eslint/build/純函式向量 73 全綠；本機種 39 筆真實消費（3 月/8 分類/12+ 商家）後 Playwright 實測——四主題（warmpaper/light/dark/night）桌機＋375px 手機截圖（收 `tmp/playwright/phase2-analytics/`）、環圈 legend／扇形／熱圖日三條下鑽皆開正確明細、console 零錯誤、375px 無爆版。
+
 ## 2026-07-07 ｜TTS 後端（Phase 2・工作包 A）實作定案
 
 - **背景**：實作設計書 §6.1/§6.3/§6.4 的筆記朗讀 TTS 後端 v1——`TtsAudio` 表＋Gemini-TTS 供應者＋口語稿服務＋背景合成管線＋六端點（synthesize/status/serve/voices/tts-settings GET·PUT）。v1 採監工裁定的「穩健路線」：背景合成全部段落→ffmpeg 併成單一檔→授權供檔＋HTTP Range（分段串流首播留 v2）。以下為關鍵取捨與八條審查修正的落實。

@@ -13,6 +13,16 @@
  */
 
 import { fetchJson } from "./client";
+import { normalizeAnalytics, type ExpenseAnalytics } from "@/lib/expenseAnalytics";
+
+// 對外轉出分析型別（維持 `@/lib/api` barrel 相容——呼叫端沿用 `import { ExpenseAnalytics } from "@/lib/api"`）。
+export type {
+  ExpenseAnalytics,
+  TrendPoint,
+  CategorySlice,
+  DailyPoint,
+  MerchantSlice,
+} from "@/lib/expenseAnalytics";
 
 // ============================================================================
 // 資料型別 — 記帳
@@ -261,6 +271,47 @@ export async function getExpenseStats(month: string): Promise<ExpenseStats | nul
     `/api/expenses/stats?month=${encodeURIComponent(month)}`
   );
   return r.data ?? null;
+}
+
+/**
+ * 取得某月「記帳分析」彙總（一次回全部圖表所需資料）。對應後端 WP-A `ExpenseAnalyticsDto`。
+ *
+ * 契約權威＝後端 §0（欄名見 `lib/expenseAnalytics.ts`）。
+ * **錯誤語意分流（審查 MEDIUM #1，修「失敗偽裝成本月無資料」）**——
+ * 過去一律吞成 null，導致 500／斷線與「真的零消費」無法區分、AnalyticsView 的錯誤四態成死碼。現在：
+ *   - **not-ready／未登入（404／401）→ 回 null**：顯示友善空狀態，不誤報錯誤
+ *     （前後端平行開發時後端未好即 404；401 另有全站登入彈窗處理）。
+ *   - **真正失敗（5xx／網路例外／回應 JSON 損毀／其餘 4xx）→ throw**：讓 SWR 的 `error` 被填、
+ *     AnalyticsView 進錯誤框並可自動重試，而非把失敗畫成「本月無資料」。
+ * @param month 月份（YYYY-MM）。
+ * @param options 近 N 月（months）與商家 Top N（topN）；不傳則由後端套預設。
+ * @returns 正規化後的分析模型（成功）或 null（not-ready／未登入）；真正失敗則 throw。
+ */
+export async function getExpenseAnalytics(
+  month: string,
+  options?: {
+    months?: number | null;
+    topN?: number | null;
+  }
+): Promise<ExpenseAnalytics | null> {
+  const params = new URLSearchParams();
+  if (month) params.append("month", month);
+  if (options?.months != null) params.append("months", String(options.months));
+  if (options?.topN != null) params.append("topN", String(options.topN));
+  const query = params.toString();
+
+  // fetchJson 對 5xx／網路例外會 throw（此處**不吞**，直接冒泡給 SWR）；對 401/404/400/409 與
+  // JSON 損毀回 { success:false, statusCode }。據此分流 not-ready（回 null）vs 真正失敗（throw）。
+  const r = await fetchJson<unknown>(
+    `/api/expenses/analytics${query ? `?${query}` : ""}`
+  );
+  if (r.success === false) {
+    if (r.statusCode === 404 || r.statusCode === 401) {
+      return null; // 端點未就緒／未登入：友善空狀態，不當錯誤處理
+    }
+    throw new Error(r.error ?? `分析載入失敗（HTTP ${r.statusCode ?? "unknown"}）`);
+  }
+  return normalizeAnalytics(r.data);
 }
 
 // ============================================================================

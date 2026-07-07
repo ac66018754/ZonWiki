@@ -1,5 +1,4 @@
 using System.Data.Common;
-using System.Globalization;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using ZonWiki.Api.Auth;
@@ -77,6 +76,9 @@ public static class ExpenseEndpoints
         app.MapPost("/api/expenses/categories", CreateCategoryHandler);
 
         app.MapGet("/api/expenses/stats", StatsHandler);
+
+        // 記帳分析頁彙總（Phase 2）：一次回五大區塊（read-only、不打 LLM，無限流，比照 /stats）。
+        app.MapGet("/api/expenses/analytics", AnalyticsHandler);
 
         // 網頁文字解析（Cookie）：AiPolicy（端點 SlidingWindow 20/分）＋組合限流 marker 雙層並存。
         // 補掛 marker 的原因：解析端點同樣會觸發付費 LLM，持 PAT 者若改打此端點即可繞過 /api/ai/expenses 的
@@ -407,7 +409,8 @@ public static class ExpenseEndpoints
             return Unauthorized();
         }
 
-        if (!TryResolveMonthRange(month, out var monthLabel, out var startUtc, out var endUtc))
+        // 月界數學抽到共用的 ExpenseMonthRange（與分析頁共用；既有 GetStats_* 測試為回歸鎖）。
+        if (!ExpenseMonthRange.TryResolveMonthRange(month, out var monthLabel, out var startUtc, out var endUtc))
         {
             return Results.Json(ApiResponse<ExpenseStatsDto>.Fail("month 格式須為 YYYY-MM", 400), statusCode: 400);
         }
@@ -422,6 +425,36 @@ public static class ExpenseEndpoints
         var total = count == 0 ? 0m : await query.SumAsync(e => e.Amount, ct);
 
         return Results.Ok(ApiResponse<ExpenseStatsDto>.Ok(new ExpenseStatsDto(total, count, monthLabel)));
+    }
+
+    /// <summary>
+    /// 記帳分析頁彙總（Phase 2）：一次回本月總額＋與上月比、近 N 月趨勢、分類佔比、日彙總、商家 Top N。
+    /// 月份格式錯誤回 400；未驗證回 401；空月回零與空陣列不報錯。彙總邏輯全在 <see cref="ExpenseAnalyticsService"/>。
+    /// </summary>
+    /// <param name="http">HTTP 內容（取使用者身分）。</param>
+    /// <param name="analyticsService">分析彙總服務。</param>
+    /// <param name="month">月份字串（YYYY-MM；空＝本月，UTC 月界）。</param>
+    /// <param name="ct">取消權杖。</param>
+    /// <returns>統一 <see cref="ApiResponse{T}"/> 信封的分析彙總。</returns>
+    private static async Task<IResult> AnalyticsHandler(
+        HttpContext http,
+        ExpenseAnalyticsService analyticsService,
+        string? month,
+        CancellationToken ct)
+    {
+        var userId = ExtractUserId(http);
+        if (userId == Guid.Empty)
+        {
+            return Unauthorized();
+        }
+
+        var result = await analyticsService.GetAnalyticsAsync(userId, month, ct);
+        if (!result.MonthValid)
+        {
+            return Results.Json(ApiResponse<ExpenseAnalyticsDto>.Fail("month 格式須為 YYYY-MM", 400), statusCode: 400);
+        }
+
+        return Results.Ok(ApiResponse<ExpenseAnalyticsDto>.Ok(result.Analytics!));
     }
 
     // ── 解析入庫（Cookie）─────────────────────────────────────────────────────
@@ -876,55 +909,6 @@ public static class ExpenseEndpoints
             DateTimeKind.Local => value.ToUniversalTime(),
             _ => DateTime.SpecifyKind(value, DateTimeKind.Utc),
         };
-
-    /// <summary>解析 month（YYYY-MM；空＝本月），輸出 UTC 月界 [start, end) 與標籤。</summary>
-    private static bool TryResolveMonthRange(
-        string? month,
-        out string monthLabel,
-        out DateTime startUtc,
-        out DateTime endUtc)
-    {
-        int year;
-        int monthNumber;
-        if (string.IsNullOrWhiteSpace(month))
-        {
-            var now = DateTime.UtcNow;
-            year = now.Year;
-            monthNumber = now.Month;
-        }
-        else if (!TryParseMonth(month, out year, out monthNumber))
-        {
-            monthLabel = string.Empty;
-            startUtc = default;
-            endUtc = default;
-            return false;
-        }
-
-        startUtc = new DateTime(year, monthNumber, 1, 0, 0, 0, DateTimeKind.Utc);
-        endUtc = startUtc.AddMonths(1);
-        monthLabel = $"{year:D4}-{monthNumber:D2}";
-        return true;
-    }
-
-    /// <summary>解析 "YYYY-MM" 字串。</summary>
-    private static bool TryParseMonth(string month, out int year, out int monthNumber)
-    {
-        year = 0;
-        monthNumber = 0;
-        var parts = month.Split('-');
-        if (parts.Length != 2)
-        {
-            return false;
-        }
-
-        if (!int.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out year)
-            || !int.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out monthNumber))
-        {
-            return false;
-        }
-
-        return year is >= 1 and <= 9999 && monthNumber is >= 1 and <= 12;
-    }
 
     /// <summary>判斷 <see cref="DbUpdateException"/> 是否為 PostgreSQL 唯一約束違反（SQLSTATE 23505）。</summary>
     private static bool IsUniqueViolation(DbUpdateException exception)

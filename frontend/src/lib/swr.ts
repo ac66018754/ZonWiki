@@ -12,6 +12,7 @@ import {
   listExpenses,
   listExpenseCategories,
   getExpenseStats,
+  getExpenseAnalytics,
   listVocabulary,
   fetchDueVocabulary,
   listTtsVoices,
@@ -28,6 +29,7 @@ import {
   type ExpenseListResult,
   type ExpenseCategory,
   type ExpenseStats,
+  type ExpenseAnalytics,
   type VocabularyListResult,
   type VocabularyWord,
 } from './api';
@@ -76,6 +78,23 @@ export const swrKeys = {
    * @param month 月份（YYYY-MM）。
    */
   expenseStats: (month: string) => ['expense-stats', month] as const,
+  /**
+   * 記帳分析彙總：依月份 / 近 N 月 / 商家 Top N 各自快取。
+   * 第一個元素固定為 'expense-analytics'，供 global mutate 以 matcher 一次撤銷。
+   * @param month 月份（YYYY-MM）。
+   * @param months 近 N 月。
+   * @param topN 商家 Top N。
+   */
+  expenseAnalytics: (month: string, months: number, topN: number) =>
+    ['expense-analytics', month, months, topN] as const,
+  /**
+   * 分析頁「下鑽明細」：重用清單端點，依 UTC 區間 / 分類各自快取。
+   * @param from 起（含）ISO。
+   * @param to 迄（含）ISO。
+   * @param categoryId 分類篩選（可空）。
+   */
+  expenseDrilldown: (from: string, to: string, categoryId?: string | null) =>
+    ['expense-drilldown', from, to, categoryId ?? ''] as const,
   /**
    * 單字清單：依狀態 / 搜尋 / 頁碼篩選，故 key 帶參數（不同篩選各自快取）。
    * 第一個元素固定為 'vocabulary'，供 global mutate 以 matcher 一次撤銷所有清單快取。
@@ -195,6 +214,37 @@ export function useExpenses(
  */
 export function useExpenseStats(month: string) {
   return useSWR<ExpenseStats | null>(swrKeys.expenseStats(month), () => getExpenseStats(month));
+}
+
+/**
+ * 記帳分析彙總（客戶端快取版）。
+ * @param month 月份（YYYY-MM）；為空時不發請求。
+ * @param months 近 N 月趨勢窗。
+ * @param topN 商家 Top N。
+ */
+export function useExpenseAnalytics(month: string, months: number, topN: number) {
+  return useSWR<ExpenseAnalytics | null>(
+    month ? swrKeys.expenseAnalytics(month, months, topN) : null,
+    () => getExpenseAnalytics(month, { months, topN }),
+  );
+}
+
+/**
+ * 分析頁「下鑽明細」（重用清單端點；客戶端快取版）。
+ * `from` 為空時不發請求（尚未選取任何切片/日）。
+ * @param from 起（含）ISO。
+ * @param to 迄（含）ISO。
+ * @param categoryId 分類篩選（可空）。
+ */
+export function useExpenseDrilldown(
+  from: string | null,
+  to: string | null,
+  categoryId?: string | null,
+) {
+  return useSWR<ExpenseListResult>(
+    from && to ? swrKeys.expenseDrilldown(from, to, categoryId) : null,
+    () => listExpenses({ from, to, categoryId, pageSize: 200 }),
+  );
 }
 
 /**
