@@ -66,6 +66,13 @@ public class User : AuditableEntity
     public string? GroqApiKeyEncrypted { get; set; }
 
     /// <summary>
+    /// 筆記朗讀（TTS）的偏好設定（JSON 字串，形狀 <c>{ "voice", "language", "format" }</c>）。
+    /// 比照 <see cref="ShortcutsJson"/> 慣例：DB 為真實來源，故朗讀聲音等偏好可跨裝置同步。
+    /// null 代表尚未設定（讀取時回系統預設）。
+    /// </summary>
+    public string? TtsSettingsJson { get; set; }
+
+    /// <summary>
     /// 導覽屬性：此使用者發表的留言清單。
     /// </summary>
     public ICollection<Comment> Comments { get; set; } = new List<Comment>();

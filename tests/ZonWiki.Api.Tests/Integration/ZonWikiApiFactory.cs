@@ -30,6 +30,10 @@ public sealed class ZonWikiApiFactory : WebApplicationFactory<Program>, IAsyncLi
         .WithImage("postgres:16-alpine")
         .Build();
 
+    /// <summary>TTS 快取檔的暫存目錄（測試專用，避免把合成音檔寫進 repo 的 App_Data；Dispose 時清除）。</summary>
+    private readonly string _ttsCacheDirectory =
+        Path.Combine(Path.GetTempPath(), "zonwiki-tts-tests-" + Guid.NewGuid().ToString("N"));
+
     /// <summary>
     /// 啟動 PostgreSQL 容器，並以「環境變數」注入連線字串與測試設定。
     ///
@@ -49,6 +53,11 @@ public sealed class ZonWikiApiFactory : WebApplicationFactory<Program>, IAsyncLi
             _postgresContainer.GetConnectionString());
         // 用 Fake AI 提供者，測試不相依本機才有的 claude CLI。
         Environment.SetEnvironmentVariable("Ai__Provider", "Fake");
+        // 用 Fake TTS 供應者與音檔合成器，測試不相依 Cloud TTS／ADC 與本機 ffmpeg／ffprobe。
+        Environment.SetEnvironmentVariable("Tts__Provider", "Fake");
+        // TTS 快取檔寫到暫存目錄（絕對路徑；避免污染 repo 的 App_Data）。
+        Directory.CreateDirectory(_ttsCacheDirectory);
+        Environment.SetEnvironmentVariable("Tts__CacheDirectory", _ttsCacheDirectory);
         // 環境設為 Testing：避開 Program.cs 內 IsDevelopment()／IsProduction() 專屬啟動分支。
         Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", "Testing");
     }
@@ -60,10 +69,25 @@ public sealed class ZonWikiApiFactory : WebApplicationFactory<Program>, IAsyncLi
     {
         Environment.SetEnvironmentVariable("ConnectionStrings__Postgres", null);
         Environment.SetEnvironmentVariable("Ai__Provider", null);
+        Environment.SetEnvironmentVariable("Tts__Provider", null);
+        Environment.SetEnvironmentVariable("Tts__CacheDirectory", null);
         Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", null);
         await _postgresContainer.StopAsync();
         await _postgresContainer.DisposeAsync();
         await base.DisposeAsync();
+
+        // 清除 TTS 暫存快取目錄（測試產物，可完全再生；C# runtime 刪除，不經 shell）。
+        try
+        {
+            if (Directory.Exists(_ttsCacheDirectory))
+            {
+                Directory.Delete(_ttsCacheDirectory, recursive: true);
+            }
+        }
+        catch
+        {
+            // 清理失敗不影響測試結果（暫存目錄）。
+        }
     }
 }
 

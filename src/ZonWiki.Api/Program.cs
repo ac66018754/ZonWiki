@@ -56,7 +56,10 @@ builder.Services.AddCors(options =>
         policy.WithOrigins(allowedOrigins)
               .AllowAnyHeader()
               .AllowAnyMethod()
-              .AllowCredentials());
+              .AllowCredentials()
+              // 跨源 <audio> 拖曳/206 需讀得到範圍資訊：暴露 Range 相關回應標頭（TTS 供檔端點，
+              // dev 3000→5009 跨源才觸發；prod 同源無此問題）。審查修正 #8（對齊點 D）。
+              .WithExposedHeaders("Content-Range", "Accept-Ranges", "Content-Length"));
 });
 
 builder.Services.AddZonWikiInfrastructure(builder.Configuration);
@@ -82,6 +85,10 @@ builder.Services.AddScoped<ExpenseParsingService>();
 // 單字庫（其他功能群 Phase 2）：共用資料存取（正規化＋復活 upsert）與 AI 補釋義服務（VertexAdc＋保底 JSON）。
 builder.Services.AddScoped<VocabularyService>();
 builder.Services.AddScoped<VocabularyEnrichmentService>();
+
+// TTS 子系統（其他功能群 Phase 2）：口語稿生成（VertexAdc flash-lite）與合成管線協調（快取＋背景合成）。
+builder.Services.AddScoped<TtsScriptService>();
+builder.Services.AddScoped<TtsSynthesisService>();
 
 // 重複規則「到期具現化」背景服務（#17）：每日把母規則的到期發生具現化成可打勾的實體任務卡。
 builder.Services.AddHostedService<RecurringTaskMaterializationService>();
@@ -228,6 +235,10 @@ app.MapExpenseEndpoints();
 
 // 單字庫（其他功能群 Phase 2）：CRUD、到期佇列、四鍵複習（後端 SM-2）、AI 補釋義（PAT）。
 app.MapVocabularyEndpoints();
+
+// TTS 子系統（其他功能群 Phase 2）：觸發合成、狀態輪詢、授權供檔（Range）、聲音清單、TTS 偏好設定。
+app.MapTtsEndpoints();
+
 app.MapCalendarEndpoints();
 app.MapHomePageEndpoints();
 

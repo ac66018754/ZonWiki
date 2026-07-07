@@ -14,6 +14,10 @@ import {
   getExpenseStats,
   listVocabulary,
   fetchDueVocabulary,
+  listTtsVoices,
+  getTtsSettings,
+  type TtsVoice,
+  type TtsSettings,
   type CurrentUser,
   type HomePageAggregate,
   type NoteSummary,
@@ -88,6 +92,10 @@ export const swrKeys = {
   ) => ['vocabulary', state ?? '', search ?? '', page ?? 1, pageSize ?? 0] as const,
   /** 單字到期複習佇列（/api/vocabulary/due）。 */
   vocabularyDue: 'vocabulary-due',
+  /** TTS 30 聲清單（/api/tts/voices，幾乎不變，長快取）。 */
+  ttsVoices: 'tts-voices',
+  /** 使用者朗讀偏好（/api/me/tts-settings）。 */
+  ttsSettings: 'tts-settings',
 } as const;
 
 /**
@@ -213,4 +221,23 @@ export function useVocabulary(
  */
 export function useDueVocabulary() {
   return useSWR<VocabularyWord[]>(swrKeys.vocabularyDue, () => fetchDueVocabulary());
+}
+
+/**
+ * TTS 30 聲清單（客戶端快取版）。
+ * 聲音清單幾乎不變 → 關掉焦點/重連自動重抓，依賴 SWR 預設快取即可。
+ */
+export function useTtsVoices() {
+  return useSWR<TtsVoice[]>(swrKeys.ttsVoices, () => listTtsVoices(), {
+    revalidateOnFocus: false,
+    revalidateOnReconnect: false,
+  });
+}
+
+/**
+ * 使用者朗讀偏好（客戶端快取版）。
+ * 端點未就緒（404）時 getTtsSettings 回 null，元件降級用系統預設。
+ */
+export function useTtsSettings() {
+  return useSWR<TtsSettings | null>(swrKeys.ttsSettings, () => getTtsSettings());
 }

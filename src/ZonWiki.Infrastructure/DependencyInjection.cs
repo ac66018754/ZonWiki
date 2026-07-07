@@ -126,6 +126,31 @@ public static class DependencyInjection
             client.Timeout = TimeSpan.FromSeconds(600);
         });
 
+        // ── TTS 子系統（其他功能群 Phase 2）：文字轉語音供應者＋音檔併檔／量時長合成器 ──────
+        // 條件註冊（照 Ai:Provider 範式）：Tts:Provider=Fake（整合測試）→ Fake 短路真外呼；否則真實實作。
+        // 真實 TTS 走 Cloud TTS API＋ADC token（GeminiCloudTtsService）；併檔重用既有 ffmpeg 路徑設定鍵 Refine:FfmpegPath。
+        var ttsProviderType = configuration["Tts:Provider"] ?? "Default";
+        if (string.Equals(ttsProviderType, "Fake", StringComparison.OrdinalIgnoreCase))
+        {
+            services.AddScoped<Tts.ITextToSpeechService, Tts.FakeTextToSpeechService>();
+            services.AddScoped<Tts.ITtsAudioComposer, Tts.FakeAudioComposer>();
+        }
+        else
+        {
+            services.AddScoped<Tts.ITextToSpeechService, Tts.GeminiCloudTtsService>();
+            var ffprobePath = configuration["Tts:FfprobePath"];
+            services.AddScoped<Tts.ITtsAudioComposer>(sp => new Tts.TtsAudioComposer(
+                sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<Tts.TtsAudioComposer>>(),
+                ffmpegPath, // 重用「精煉」已解析的 ffmpeg 路徑（Refine:FfmpegPath，預設 "ffmpeg"）
+                ffprobePath));
+        }
+
+        // Cloud TTS 命名 client：合成單段（≤4000 bytes）通常數秒內回，給 120 秒上限即足夠。
+        services.AddHttpClient(Tts.GeminiCloudTtsService.HttpClientName, client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(120);
+        });
+
         // 文章抓取專用 client：關閉自動轉址（AllowAutoRedirect=false）。
         // SSRF 防護要求「每個轉址目標都要重跑守門」，若讓 HttpClient 自動跟隨轉址，
         // 中途轉去內網 IP 的那一跳就繞過了 RefineUrlGuard；故改由 ArticleFetchService 逐跳手動驗證後再跟隨。

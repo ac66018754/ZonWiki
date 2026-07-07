@@ -30,6 +30,7 @@ export * from "./tasks";
 export * from "./home";
 export * from "./expense";
 export * from "./vocabulary";
+export * from "./tts";
 export * from "./search";
 export * from "./graph";
 export * from "./links";

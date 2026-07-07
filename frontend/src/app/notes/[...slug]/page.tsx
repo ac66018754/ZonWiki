@@ -40,6 +40,7 @@ import { useConfirm } from '@/components/ConfirmProvider';
 import { registerNavigationGuard } from '@/lib/navigationGuard';
 import { emitNoteActiveCategory } from '@/lib/noteEvents';
 import { noteEditChannelName, NOTE_EDIT_MAX_CONTENT, type NoteEditMessage } from '@/lib/noteEditChannel';
+import { ListenButton } from './components/ListenButton';
 
 // ── 重量級用戶端元件延遲載入（修 #10：dev 模式 Turbopack render worker 崩潰 500）────────────
 // 這四個元件（Markdown 編輯器、文字標註層、浮動白板、任務編輯彈窗）合計約 2,900 行，全為
@@ -904,6 +905,8 @@ export default function NotesDetailPage() {
                   </>
                 )}
               </div>
+              {/* 🎧 聆聽：AI 語音朗讀本篇筆記（底部迷你播放器由此按鈕以 portal 掛載）。 */}
+              <ListenButton noteId={note.id} noteTitle={note.title} />
               <button onClick={handleExportPdf} className="btn-secondary" title="以瀏覽器列印（可另存為 PDF）">
                 📄 匯出 PDF
               </button>

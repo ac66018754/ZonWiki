@@ -140,3 +140,6 @@ docs/deployment/
 # AI 模型設定（含真實金鑰）：只在本機，絕不進版控
 src/ZonWiki.Api/ai-models.json
 ai-models.json
+
+# TTS 音檔快取、DataProtection 金鑰等 runtime 資料（不進版控）
+src/ZonWiki.Api/App_Data/
