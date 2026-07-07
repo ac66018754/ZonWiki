@@ -5,6 +5,13 @@
 
 ---
 
+## 2026-07-07 ｜Phase 2 開工前技術偵察定案（Recharts 3、Gemini-TTS 端點）
+
+- **背景**：設計書 Phase 2 有兩個標「未確認」的技術未知會 gate 實作——Recharts 對 React 19 的相容性、Gemini-TTS 的端點形狀。監工（Fable5）用 ADC 實打確認，供 Opus 直接照用。
+- **Recharts**：`recharts@3.9.2` 的 peerDependencies 明列 `react/react-dom/react-is: ^19.0.0`，前端是 React 19.1.8 → **直接用 recharts@3**（設計書 §5.6「v3 證據不足」已推翻，不必退 v2 或 override react-is）。
+- **Gemini-TTS**：`POST https://texttospeech.googleapis.com/v1/text:synthesize`，body `voice.modelName=gemini-2.5-flash-tts`＋`voice.name`（30 聲選 1）＋`voice.languageCode=cmn-TW`＋`audioConfig.audioEncoding`；認證 ADC Bearer＋**`x-goog-user-project: zonwiki-prod` header（Cloud TTS URL 無 project，user ADC 缺此 header 會 403；prod SA 帶了無害，一律帶）**。實打 cmn-TW 中英夾雜 HTTP 200、MP3 43KB/~15s。細節與 30 聲清單見 scratchpad/phase2-recon.md。
+- **取捨**：cmn-TW 是 Preview 語言，PoC 音檔已存待使用者實聽定案；不過關退 Wavenet cmn-TW／Chirp3 cmn-CN。
+
 ## 2026-07-07 ｜記帳 AI 供應者維持 Vertex（claude -p 優先實測撞 cold start，改回 Vertex）
 
 - **背景**：使用者原鐵則「新功能一律用 GCP 服務吃額度」→ 記帳用 Vertex。後實證 **prod api container 內有可用的 claude CLI（2.1.197，`/home/User/.local/bin/claude`，`claude -p --model sonnet` 實跑回 OK）**——先前以為「prod 沒 claude」是照 `Program.cs:104-115` 過時注釋臆測（那段停用的是 DB 的 ClaudeCli **資料列**、不影響注入的 `_default` provider 實例）。claude -p 走 Max 訂閱免費、不吃 GCP 額度，使用者遂要求記帳改「claude -p 優先＋Vertex 備援」。
