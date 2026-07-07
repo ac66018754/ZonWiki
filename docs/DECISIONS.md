@@ -5,6 +5,19 @@
 
 ---
 
+## 2026-07-07 ｜單字庫後端（Phase 2・工作包 A）實作定案
+
+- **背景**：實作設計書 §3 單字庫後端——`VocabularyWord` 表＋SM-2 排程純函式＋七端點（CRUD/due/review/ai）＋白名單登記。以下為實作期間的關鍵取捨（審查修正一併記錄）。
+- **SM-2 → FSRS 欄位映射（DB 照 FSRS 形狀、值由 SM-2 填，設計 §3.1「換 FSRS 不動表」）**：`_Difficulty`＝EF（1.3~2.5+，方向與 FSRS 相反，僅為容器）、`_Stability`＝目前排程間隔（天，並作為成熟卡下次間隔的乘算基底）、`_Reps`＝連續成功次數 n（Again 歸零，與 FSRS 單調不同）、`_Lapses`＝遺忘次數（僅已畢業卡）、`_State`＝New/Learning/Review/Relearning。四鍵→quality：Again=2/Hard=3/Good=4/Easy=5；EF 每次複習更新（含 Again）並 clamp≥1.3。間隔階梯：n0→1（Easy 4）、n1→6（Easy 8）、n≥2→Hard=round(I×1.2)/Good=round(I×EF)/Easy=round(I×EF×1.3)，保底 max(前一間隔+1, 乘算值)。測試向量鎖死 [1,6,15,38] 等。
+- **排程一律後端計算（DB-as-truth，審查 HIGH）＋預覽=實際**：`Sm2Scheduler.PreviewIntervals` 與 `Review` 共用單一私有 `Compute` 路徑，保證「四鍵下次間隔預覽＝按下去的實際排程」。**每個 `VocabularyWordDto` 都攜帶 `schedulePreview`（again/hard/good/easy → {intervalDays, due=now+interval}）**，前端複習卡按鍵前直接消費（權威值，不再自行降級估算）。複習回應 `ReviewVocabularyResponseDto` 只回 `Card`（其 schedulePreview 即「下一次複習」的預覽），**移除原計畫的獨立 `Preview` 欄（無人消費、會成死碼）**。前端降級估算若保留，其寫死常數須改為與後端一致（Again≈1 天而非 <10 分、早期 Good/Hard 反映 1/6 階梯），或改用純定性詞。
+- **間隔取整鎖 `MidpointRounding.AwayFromZero`（審查 LOW）**：`Math.Round(x, AwayFromZero)` 後套下限 1；.5 邊界一律遠離零進位（例 12.5→13），並補一個 .5 邊界向量鎖死行為，避免日後新增邊界向量時非決定性。
+- **複習高頻更新不灌活動流（審查 MEDIUM）**：`ActivityLogInterceptor` 對 `VocabularyWord` 判斷「本次 Modified 是否只動到 SRS 欄（Due/Stability/Difficulty/State/Reps/Lapses/LastReviewDateTime）」，若是則不記活動流（一場複習數十張卡＝數十筆會洗版）；只有 word／釋義等 CRUD 編輯才記 'updated'；新增/軟刪/復活仍正常進活動流。同理由於設計 §9 把 CoachMessage 排除。
+- **來源筆記連結（審查 LOW，採選項 a）**：`VocabularyWordDto` 補 `SourceNoteSlug`＋`SourceNoteTitle`（投影時 join Note 取用），前端據此做 `/notes/{slug}` 正確連結；**切勿用 SourceNoteId 硬組 /notes/{id}**（notes 路由為 slug 制）。
+- **AI 補釋義（reuse VertexAdc、記帳已定案 Vertex）＋失敗一律降級不 500**：`POST /api/ai/vocabulary` 先 `UpsertAsync`（word 永不丟失、復活軟刪列），再以硬時間預算（`Vocabulary:EnrichBudgetSeconds` 預設 15、clamp 0.2~30）跑 `EnrichAsync`；成功只填「原本為空」的釋義欄（不覆蓋使用者既有內容）、`Enriched=true`；逾時／壞 JSON／供應者建構失敗（ADC 不可用等 InvalidOperationException）／Error 事件 → 一律 catch 吞成降級（word 已存、`Enriched=false`），保底存檔用 `CancellationToken.None`。VertexAdc 三道安全防線零改動沿用 `AiProviderFactory.ResolveAsync`。掛 `PatAiRateLimitMarker` 組合限流（比照記帳）。
+- **唯一索引 (UserId, Word) 不含 ValidFlag＋復活 upsert（含並發）**：`VocabularyService.UpsertAsync` 依 (UserId, Word) find→有軟刪列復活→無則建 SM-2 新卡；並發首建撞 23505 攔截改查既有列（比照 ExpenseCategoryService）。新增並發整合測試（同字並發 POST 只建一列、皆非 500，手動與 AI 兩路徑）＋ `/due` 跨租戶隔離測試（審查 MEDIUM）。
+- **測試隔離修正（實測抓到）**：`VocabularyEnrichmentServiceTests`／`VocabularyAiHttpTests` 的「非-Fake 預設供應者」測試，原依賴 `ResolveAsync` 因「無匹配/共用模型列」回退到注入的測試替身；但 `AiProviderFactoryVertexAdcTests` 會在共用 Testcontainers DB 種 `SharedModelUserId` 名下的 Enabled VertexAdc 列，經「共用預設」退路洩漏進來，使測試依類別執行順序偶發解析到真 provider（實跑第一次全套即抓到 1 例失敗）。**修法：為測試使用者種一筆本人的 ClaudeCli 列（own 勝 shared 排序＋ClaudeCli 分支回退到注入的預設供應者），讓解析確定命中測試替身**，不動其它測試。（此為既有 Expense scripted 測試同款潛在脆弱性，但只在本工作包範圍內修自己的測試。）
+- **自測**：`dotnet build -c Release` 0 error；`dotnet test ZonWiki.slnx -c Release` 全綠（Api 339＋Infra 66＝405）連跑兩次穩定（本機後端佔用 5009／Debug DLL，全程用 Release）。migration `AddVocabularyWord` 人工核對：唯一索引 UX_VocabularyWord_UserId_Word（無 ValidFlag、無 filter）、IX_VocabularyWord_UserId_Due_ValidFlag、State integer、Difficulty/Stability double precision、Due timestamptz、FK→Note Restrict、6 稽核欄齊全。
+
 ## 2026-07-07 ｜Phase 2 開工前技術偵察定案（Recharts 3、Gemini-TTS 端點）
 
 - **背景**：設計書 Phase 2 有兩個標「未確認」的技術未知會 gate 實作——Recharts 對 React 19 的相容性、Gemini-TTS 的端點形狀。監工（Fable5）用 ADC 實打確認，供 Opus 直接照用。

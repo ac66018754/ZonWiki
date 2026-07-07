@@ -184,7 +184,7 @@
   --status-warning-bg:      #3f3400;  /* 由 #5a4a00 加深，使 fg #d29922 達 WCAG AA ≥4.5:1（原 3.45） */
   --status-warning-fg:      #d29922;
 
-  --status-danger-bg:       #67060c;
+  --status-danger-bg:       #4a0407;  /* 由 #67060c 加深，使 fg #f85149 達 WCAG AA ≥4.5:1（原 3.90 → 4.78） */
   --status-danger-fg:       #f85149;
 
   --focus-ring:         #79c0ff;
@@ -222,7 +222,7 @@
   --status-warning-bg:      #3f3400;  /* 由 #5a4a00 加深，使 fg #d29922 達 WCAG AA ≥4.5:1（原 3.45） */
   --status-warning-fg:      #d29922;
 
-  --status-danger-bg:       #4d1810;
+  --status-danger-bg:       #41130c;  /* 由 #4d1810 加深，使 fg #f85149 達 WCAG AA ≥4.5:1（原 4.31 → 4.73） */
   --status-danger-fg:       #f85149;
 
   --focus-ring:         #79c0ff;

@@ -25,7 +25,7 @@ const PROFILE_NAV: { href: string; label: string; icon: string; desc: string }[]
  */
 const OTHERS_NAV: { href: string; label: string; icon: string; desc: string }[] = [
   { href: "/others/expense", label: "記帳", icon: "💰", desc: "一句話記帳＋清單分析" },
-  { href: "/others/vocabulary", label: "單字庫", icon: "📚", desc: "單字 SRS 複習（Phase 2）" },
+  { href: "/others/vocabulary", label: "單字庫", icon: "📚", desc: "單字 SRS 間隔複習" },
   { href: "/others/coach", label: "英文教練", icon: "🎙️", desc: "即時語音對話（Phase 3）" },
 ];
 

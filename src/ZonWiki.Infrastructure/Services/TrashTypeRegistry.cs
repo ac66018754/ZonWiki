@@ -39,6 +39,9 @@ public static class TrashTypeRegistry
         { "Expense", typeof(Expense) },
         { "ExpenseCategory", typeof(ExpenseCategory) },
 
+        // --- 單字庫相關 ---
+        { "VocabularyWord", typeof(VocabularyWord) },
+
         // --- 開問啦相關（IUserOwned 的實體） ---
         { "Canvas", typeof(Canvas) },
         { "SystemPrompt", typeof(SystemPrompt) },
@@ -88,6 +91,9 @@ public static class TrashTypeRegistry
             // --- 記帳相關 ---
             Expense e => ExpenseTitle(e),
             ExpenseCategory ec => ec.Name,
+
+            // --- 單字庫相關 ---
+            VocabularyWord v => v.Word,
 
             // --- 開問啦相關 ---
             Canvas canvas => canvas.Title,

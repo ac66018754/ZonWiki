@@ -122,7 +122,24 @@ public sealed class ActivityLogInterceptor : SaveChangesInterceptor
         SystemPrompt p => ("prompt", p.Title),
         Expense e => ("expense", string.IsNullOrWhiteSpace(e.Merchant) ? FirstLine(e.RawText) : e.Merchant!),
         ExpenseCategory ec => ("expensecategory", ec.Name),
+        VocabularyWord v => ("vocabulary", v.Word),
         _ => null,
+    };
+
+    /// <summary>
+    /// VocabularyWord 的「SRS 排程欄」集合。複習評分是本功能的高頻迴圈（一場複習數十張卡），
+    /// 若每次只更新這些欄位就灌一筆 'updated' 活動流，會把活動流洗版（審查 MEDIUM／設計書 §9）。
+    /// 故「本次 Modified 只動到這些欄位」時不記活動流；只有 word／釋義等 CRUD 編輯才記 'updated'。
+    /// </summary>
+    private static readonly HashSet<string> VocabularyReviewOnlyProperties = new(StringComparer.Ordinal)
+    {
+        nameof(VocabularyWord.Due),
+        nameof(VocabularyWord.Stability),
+        nameof(VocabularyWord.Difficulty),
+        nameof(VocabularyWord.State),
+        nameof(VocabularyWord.Reps),
+        nameof(VocabularyWord.Lapses),
+        nameof(VocabularyWord.LastReviewDateTime),
     };
 
     /// <summary>
@@ -148,11 +165,15 @@ public sealed class ActivityLogInterceptor : SaveChangesInterceptor
                     if (!wasValid && isValid) return "restored"; // 還原
                 }
 
-                // 只有「除了 UpdatedDateTime/UpdatedUser 以外」確有欄位變更，才算一次編輯
+                // 只有「除了 UpdatedDateTime/UpdatedUser 以外」確有欄位變更，才算一次編輯。
+                // 對 VocabularyWord 另排除 SRS 排程欄：純複習更新（Due/Stability/…）不記活動流，
+                // 避免高頻複習迴圈灌爆活動流（審查 MEDIUM）；只有 word／釋義等 CRUD 編輯才記 'updated'。
+                var isVocabulary = entry.Entity is VocabularyWord;
                 var hasRealChange = entry.Properties.Any(p =>
                     p.IsModified &&
                     p.Metadata.Name != nameof(AuditableEntity.UpdatedDateTime) &&
-                    p.Metadata.Name != nameof(AuditableEntity.UpdatedUser));
+                    p.Metadata.Name != nameof(AuditableEntity.UpdatedUser) &&
+                    !(isVocabulary && VocabularyReviewOnlyProperties.Contains(p.Metadata.Name)));
                 return hasRealChange ? "updated" : null;
             }
             default:

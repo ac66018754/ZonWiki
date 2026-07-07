@@ -113,6 +113,9 @@ public sealed class ZonWikiDbContext(
     public DbSet<ExpenseCategory> ExpenseCategory => Set<ExpenseCategory>();
     public DbSet<Expense> Expense => Set<Expense>();
 
+    // --- 單字庫（其他功能群 Phase 2；SM-2 複習排程）--------------------------------
+    public DbSet<VocabularyWord> VocabularyWord => Set<VocabularyWord>();
+
     // --- 通用實體關聯（任務/子任務/筆記/節點 互連）---------------------------------
     public DbSet<EntityLink> EntityLink => Set<EntityLink>();
 

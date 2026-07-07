@@ -79,6 +79,10 @@ builder.Services.AddScoped<RefineService>(); // 精煉成筆記協調器
 builder.Services.AddScoped<ExpenseCategoryService>();
 builder.Services.AddScoped<ExpenseParsingService>();
 
+// 單字庫（其他功能群 Phase 2）：共用資料存取（正規化＋復活 upsert）與 AI 補釋義服務（VertexAdc＋保底 JSON）。
+builder.Services.AddScoped<VocabularyService>();
+builder.Services.AddScoped<VocabularyEnrichmentService>();
+
 // 重複規則「到期具現化」背景服務（#17）：每日把母規則的到期發生具現化成可打勾的實體任務卡。
 builder.Services.AddHostedService<RecurringTaskMaterializationService>();
 
@@ -221,6 +225,9 @@ app.MapCaptureItemEndpoints();
 
 // 記帳（其他功能群 Phase 1）：手動 CRUD、分類、本月彙總、文字解析入庫、外部 AI 一句話記帳。
 app.MapExpenseEndpoints();
+
+// 單字庫（其他功能群 Phase 2）：CRUD、到期佇列、四鍵複習（後端 SM-2）、AI 補釋義（PAT）。
+app.MapVocabularyEndpoints();
 app.MapCalendarEndpoints();
 app.MapHomePageEndpoints();
 
