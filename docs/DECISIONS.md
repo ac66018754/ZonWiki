@@ -5,6 +5,14 @@
 
 ---
 
+## 2026-07-07 ｜記帳 AI 供應者維持 Vertex（claude -p 優先實測撞 cold start，改回 Vertex）
+
+- **背景**：使用者原鐵則「新功能一律用 GCP 服務吃額度」→ 記帳用 Vertex。後實證 **prod api container 內有可用的 claude CLI（2.1.197，`/home/User/.local/bin/claude`，`claude -p --model sonnet` 實跑回 OK）**——先前以為「prod 沒 claude」是照 `Program.cs:104-115` 過時注釋臆測（那段停用的是 DB 的 ClaudeCli **資料列**、不影響注入的 `_default` provider 實例）。claude -p 走 Max 訂閱免費、不吃 GCP 額度，使用者遂要求記帳改「claude -p 優先＋Vertex 備援」。
+- **各功能選型評估（判準：claude -p 是文字 CLI，碰語音的任務做不到）**：記帳／單字庫補釋義＝純文字，claude 能做；**英文教練（即時語音）與 TTS（語音合成）claude 根本做不到，只能 Vertex Live／Gemini・Cloud TTS**。
+- **實作與實測（推翻 claude 優先於記帳的可行性）**：Opus 已實作 `AiProviderFactory.ResolveExpenseChainAsync`（claude 第一棒＋Vertex try-build 備援棒，含 csharp-reviewer 對抗式復審修一個 HIGH，測試 66+279 綠）。但**本機 Playwright 實測**：claude 是 one-shot 子進程、每次記帳都 cold start，`backend.log` 實證 **12,356ms 撞滿 12 秒硬預算 → 降級 CaptureItem**；且 **Vertex 備援因與 claude 共享同一條 12 秒預算的 CancellationToken，claude 吃光後 ct 取消、Vertex 備援沒機會發請求**（Seq 零 aiplatform outbound）。對照 Vertex 直打實測 2,291ms 成功。
+- **最終決定**：**記帳維持 Vertex**（即 commit `0a05b92` 原狀，快 2.3 秒、一筆 gemini-2.5-flash-lite 約 $0.0001／上百筆一個月才幾分錢，成本可忽略）。claude 優先的「真備援」方案（給 claude 較短子預算、超時換 Vertex 接手）評估後**未採用**、改動已 `git stash`（訊息 `expense-claude-priority`）暫存備查。claude -p 留給「不急且 token 量大」的功能再評估。
+- **理由與取捨**：記帳的本質是「手機一句話快速記」，claude cold start（每次都發生）與「快」直接矛盾，且共享預算讓備援形同虛設；而記帳用 claude 想省的錢（$0.0001／筆）在此場景幾近於零，代價卻是 12 秒＋降級要重試。「省額度」的價值在長對話／大量 token 的功能才成立，記帳不適用。真正會固定吃 GCP 額度的是 Phase 3 的教練與 TTS（語音，claude 做不到）——那也是額度最該花的地方。
+
 ## 2026-07-07 ｜記帳核心（工作包 A・Phase 1）後端實作定案
 
 - **背景**：實作設計書 §5 記帳核心後端——實體＋migration、VertexAdc 供應者、文字解析服務、CRUD／解析／彙總端點、MCP 工具。以下為實作期間的關鍵取捨。
