@@ -54,7 +54,7 @@ interface TextItem {
  */
 export function DrawingTextBox({
   item, zoomRef, toFlow, selected, editing, interactive = true,
-  onSelect, onStartEdit, onStopEdit, onChange, onCommit,
+  onSelect, onStartEdit, onStopEdit, onChange, onCommit, onAdjustWheel,
 }: {
   item: TextItem;
   /** 目前縮放（用 ref 取最新值，供拖曳換算）。筆記頁固定為 1。 */
@@ -72,10 +72,29 @@ export function DrawingTextBox({
   onChange: (patch: Partial<TextItem>) => void;
   /** 持久化（拖曳/縮放/旋轉結束、文字失焦時）。 */
   onCommit: (patch: Partial<TextItem>) => void;
+  /**
+   * 選取/編輯中滾輪滾動時呼叫（deltaY：向上負、向下正），供「滾輪調整大小」（可選；
+   * 未提供＝該端不支援，滾輪維持頁面捲動）。
+   */
+  onAdjustWheel?: (deltaY: number) => void;
 }) {
   const extra = parseTextExtra(item.dataJson);
   const fontColor = item.color || '#ef4444';
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  // 選取/編輯中 → 攔截滾輪做「調整大小」（原生監聽器＋passive:false 才能 preventDefault 擋頁面捲動）。
+  useEffect(() => {
+    if (!onAdjustWheel || (!selected && !editing)) return;
+    const el = rootRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      onAdjustWheel(e.deltaY);
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [onAdjustWheel, selected, editing]);
 
   // 進入編輯模式 → 聚焦文字框並把游標移到末端。
   useEffect(() => {
@@ -173,13 +192,15 @@ export function DrawingTextBox({
 
   return (
     <div
+      ref={rootRef}
       style={{
         position: 'absolute', left: item.x, top: item.y, width: item.width, height: item.height,
         zIndex: item.zIndex, transform: `rotate(${deg}deg)`, transformOrigin: 'center center',
         pointerEvents: interactive ? 'auto' : 'none',
       }}
       data-testid="anno-text"
-      onPointerDown={(e) => { if (!editing) { onSelect(); startMove(e); } }}
+      // 只有左鍵選取/拖曳（右鍵留給「取消模式」）。
+      onPointerDown={(e) => { if (e.button !== 0) return; if (!editing) { onSelect(); startMove(e); } }}
       onDoubleClick={(e) => { e.stopPropagation(); onStartEdit(); }}
     >
       <textarea
