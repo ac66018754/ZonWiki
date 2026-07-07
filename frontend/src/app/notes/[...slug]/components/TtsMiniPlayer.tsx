@@ -9,6 +9,7 @@ import {
   updateTtsSettings,
   DEFAULT_TTS_VOICE,
   type TtsChapter,
+  type TtsMode,
 } from '@/lib/api';
 import { useTtsSettings, useTtsVoices, swrKeys } from '@/lib/swr';
 import { showToast } from '@/lib/toast';
@@ -43,6 +44,8 @@ interface TtsMiniPlayerProps {
   noteId: string;
   /** 筆記標題（播放器抬頭顯示）。 */
   noteTitle: string;
+  /** 朗讀模式（Phase 3）："read"＝單人朗讀（預設）／"dialogue"＝雙主持人 Podcast。 */
+  mode?: TtsMode;
   /** 關閉播放器（父層收掉本元件）。 */
   onClose: () => void;
 }
@@ -59,7 +62,9 @@ interface TtsMiniPlayerProps {
  * 合成／輪詢的整段生命週期收在單一 `useEffect`（keyed on noteId/voice/retry），
  * cleanup 以 `cancelled` 旗標＋`clearInterval` 保證換筆記/換聲音/卸載時不殘留計時器（鐵則 #21）。
  */
-export function TtsMiniPlayer({ noteId, noteTitle, onClose }: TtsMiniPlayerProps) {
+export function TtsMiniPlayer({ noteId, noteTitle, mode = 'read', onClose }: TtsMiniPlayerProps) {
+  // 是否為雙人 Podcast 模式（供抬頭與狀態文案；不影響控制項）。
+  const isDialogue = mode === 'dialogue';
   const { mutate } = useSWRConfig();
   const settingsQuery = useTtsSettings();
   const voicesQuery = useTtsVoices();
@@ -228,7 +233,7 @@ export function TtsMiniPlayer({ noteId, noteTitle, onClose }: TtsMiniPlayerProps
       setSegmentsDone(null);
       setSegmentsTotal(null);
 
-      const res = await synthesizeNote(noteId, { voice: effectiveVoice });
+      const res = await synthesizeNote(noteId, { voice: effectiveVoice, mode });
       if (cancelled) return;
       if (!res.ok || !res.result) {
         dispatchPhase('synthFailed');
@@ -254,7 +259,7 @@ export function TtsMiniPlayer({ noteId, noteTitle, onClose }: TtsMiniPlayerProps
       cancelled = true;
       clearPoll();
     };
-  }, [noteId, effectiveVoice, settingsLoading, retryNonce]);
+  }, [noteId, effectiveVoice, mode, settingsLoading, retryNonce]);
 
   // ── 卸載時保存續聽位置＋暫停（單一 audio 生命週期收尾）────────────────────────────────
   useEffect(() => {
@@ -513,7 +518,7 @@ export function TtsMiniPlayer({ noteId, noteTitle, onClose }: TtsMiniPlayerProps
       <div className="tts-player__inner">
         <div className="tts-player__top">
           <span className="tts-player__title" title={noteTitle}>
-            🎧 {noteTitle}
+            {isDialogue ? '🎙️' : '🎧'} {isDialogue ? '雙人 Podcast・' : ''}{noteTitle}
           </span>
           <button
             ref={closeBtnRef}
@@ -534,7 +539,9 @@ export function TtsMiniPlayer({ noteId, noteTitle, onClose }: TtsMiniPlayerProps
             <span>
               {segmentsTotal
                 ? `AI 合成中… ${segmentsDone ?? 0}/${segmentsTotal} 段`
-                : 'AI 正在準備語音…'}
+                : isDialogue
+                  ? 'AI 正在生成雙人對談…'
+                  : 'AI 正在準備語音…'}
             </span>
           </div>
         )}

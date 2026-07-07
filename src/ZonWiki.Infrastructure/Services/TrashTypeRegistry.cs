@@ -42,6 +42,9 @@ public static class TrashTypeRegistry
         // --- 單字庫相關 ---
         { "VocabularyWord", typeof(VocabularyWord) },
 
+        // --- 英文教練相關（Phase 3；只登記 CoachSession，CoachMessage 不登記避免逐字稿灌爆）---
+        { "CoachSession", typeof(CoachSession) },
+
         // --- 開問啦相關（IUserOwned 的實體） ---
         { "Canvas", typeof(Canvas) },
         { "SystemPrompt", typeof(SystemPrompt) },
@@ -94,6 +97,9 @@ public static class TrashTypeRegistry
 
             // --- 單字庫相關 ---
             VocabularyWord v => v.Word,
+
+            // --- 英文教練相關 ---
+            CoachSession cs => cs.Title,
 
             // --- 開問啦相關 ---
             Canvas canvas => canvas.Title,

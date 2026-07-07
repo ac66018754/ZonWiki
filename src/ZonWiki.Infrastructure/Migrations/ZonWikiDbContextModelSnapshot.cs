@@ -1217,6 +1217,255 @@ namespace ZonWiki.Infrastructure.Migrations
                     b.ToTable("CategoryTag");
                 });
 
+            modelBuilder.Entity("ZonWiki.Domain.Entities.CoachBudgetLedger", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("CoachBudgetLedger_Id");
+
+                    b.Property<DateTime>("CreatedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("CoachBudgetLedger_CreatedDateTime");
+
+                    b.Property<string>("CreatedUser")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("CoachBudgetLedger_CreatedUser");
+
+                    b.Property<DateTime?>("DeletedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("CoachBudgetLedger_DeletedDateTime");
+
+                    b.Property<decimal>("EstimatedCostUsd")
+                        .HasPrecision(18, 6)
+                        .HasColumnType("numeric(18,6)")
+                        .HasColumnName("CoachBudgetLedger_EstimatedCostUsd");
+
+                    b.Property<string>("PeriodKey")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("CoachBudgetLedger_PeriodKey");
+
+                    b.Property<DateTime?>("PurgedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("CoachBudgetLedger_PurgedDateTime");
+
+                    b.Property<string>("Scope")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("CoachBudgetLedger_Scope");
+
+                    b.Property<long>("TokenCount")
+                        .HasColumnType("bigint")
+                        .HasColumnName("CoachBudgetLedger_TokenCount");
+
+                    b.Property<DateTime>("UpdatedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("CoachBudgetLedger_UpdatedDateTime");
+
+                    b.Property<string>("UpdatedUser")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("CoachBudgetLedger_UpdatedUser");
+
+                    b.Property<bool>("ValidFlag")
+                        .HasColumnType("boolean")
+                        .HasColumnName("CoachBudgetLedger_ValidFlag");
+
+                    b.HasKey("Id")
+                        .HasName("PK_CoachBudgetLedger");
+
+                    b.HasIndex("Scope", "PeriodKey")
+                        .IsUnique()
+                        .HasDatabaseName("UX_CoachBudgetLedger_Scope_PeriodKey");
+
+                    b.ToTable("CoachBudgetLedger");
+                });
+
+            modelBuilder.Entity("ZonWiki.Domain.Entities.CoachMessage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("CoachMessage_Id");
+
+                    b.Property<int?>("ApproxCutChars")
+                        .HasColumnType("integer")
+                        .HasColumnName("CoachMessage_ApproxCutChars");
+
+                    b.Property<Guid>("CoachSessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("CoachMessage_CoachSessionId");
+
+                    b.Property<string>("Content")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("CoachMessage_Content");
+
+                    b.Property<string>("CorrectionJson")
+                        .HasColumnType("text")
+                        .HasColumnName("CoachMessage_CorrectionJson");
+
+                    b.Property<DateTime>("CreatedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("CoachMessage_CreatedDateTime");
+
+                    b.Property<string>("CreatedUser")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("CoachMessage_CreatedUser");
+
+                    b.Property<DateTime?>("DeletedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("CoachMessage_DeletedDateTime");
+
+                    b.Property<bool>("InterruptedFlag")
+                        .HasColumnType("boolean")
+                        .HasColumnName("CoachMessage_InterruptedFlag");
+
+                    b.Property<DateTime?>("PurgedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("CoachMessage_PurgedDateTime");
+
+                    b.Property<string>("Role")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("CoachMessage_Role");
+
+                    b.Property<int>("SeqNo")
+                        .HasColumnType("integer")
+                        .HasColumnName("CoachMessage_SeqNo");
+
+                    b.Property<DateTime>("UpdatedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("CoachMessage_UpdatedDateTime");
+
+                    b.Property<string>("UpdatedUser")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("CoachMessage_UpdatedUser");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("CoachMessage_UserId");
+
+                    b.Property<bool>("ValidFlag")
+                        .HasColumnType("boolean")
+                        .HasColumnName("CoachMessage_ValidFlag");
+
+                    b.HasKey("Id")
+                        .HasName("PK_CoachMessage");
+
+                    b.HasIndex("CoachSessionId", "SeqNo")
+                        .IsUnique()
+                        .HasDatabaseName("UX_CoachMessage_CoachSessionId_SeqNo");
+
+                    b.ToTable("CoachMessage");
+                });
+
+            modelBuilder.Entity("ZonWiki.Domain.Entities.CoachSession", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("CoachSession_Id");
+
+                    b.Property<int>("AccumulatedSeconds")
+                        .HasColumnType("integer")
+                        .HasColumnName("CoachSession_AccumulatedSeconds");
+
+                    b.Property<DateTime>("CreatedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("CoachSession_CreatedDateTime");
+
+                    b.Property<string>("CreatedUser")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("CoachSession_CreatedUser");
+
+                    b.Property<DateTime?>("DeletedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("CoachSession_DeletedDateTime");
+
+                    b.Property<DateTime?>("EndedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("CoachSession_EndedDateTime");
+
+                    b.Property<string>("Model")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("CoachSession_Model");
+
+                    b.Property<DateTime?>("PurgedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("CoachSession_PurgedDateTime");
+
+                    b.Property<string>("ResumptionHandle")
+                        .HasColumnType("text")
+                        .HasColumnName("CoachSession_ResumptionHandle");
+
+                    b.Property<DateTime>("StartedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("CoachSession_StartedDateTime");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("CoachSession_Status");
+
+                    b.Property<string>("SummaryText")
+                        .HasColumnType("text")
+                        .HasColumnName("CoachSession_SummaryText");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("CoachSession_Title");
+
+                    b.Property<string>("Topic")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("CoachSession_Topic");
+
+                    b.Property<DateTime>("UpdatedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("CoachSession_UpdatedDateTime");
+
+                    b.Property<string>("UpdatedUser")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("CoachSession_UpdatedUser");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("CoachSession_UserId");
+
+                    b.Property<bool>("ValidFlag")
+                        .HasColumnType("boolean")
+                        .HasColumnName("CoachSession_ValidFlag");
+
+                    b.HasKey("Id")
+                        .HasName("PK_CoachSession");
+
+                    b.HasIndex("UserId", "Status", "UpdatedDateTime")
+                        .HasDatabaseName("IX_CoachSession_UserId_Status_UpdatedDateTime");
+
+                    b.ToTable("CoachSession");
+                });
+
             modelBuilder.Entity("ZonWiki.Domain.Entities.Comment", b =>
                 {
                     b.Property<Guid>("Id")
@@ -3578,6 +3827,12 @@ namespace ZonWiki.Infrastructure.Migrations
                         .HasColumnType("character varying(512)")
                         .HasColumnName("TtsAudio_FilePath");
 
+                    b.Property<string>("Mode")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("TtsAudio_Mode");
+
                     b.Property<string>("ModelKey")
                         .IsRequired()
                         .HasMaxLength(64)
@@ -3827,6 +4082,10 @@ namespace ZonWiki.Infrastructure.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("VocabularyWord_Reps");
 
+                    b.Property<Guid?>("SourceCoachSessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("VocabularyWord_SourceCoachSessionId");
+
                     b.Property<Guid?>("SourceNoteId")
                         .HasColumnType("uuid")
                         .HasColumnName("VocabularyWord_SourceNoteId");
@@ -3865,6 +4124,9 @@ namespace ZonWiki.Infrastructure.Migrations
 
                     b.HasKey("Id")
                         .HasName("PK_VocabularyWord");
+
+                    b.HasIndex("SourceCoachSessionId")
+                        .HasDatabaseName("IX_VocabularyWord_SourceCoachSessionId");
 
                     b.HasIndex("SourceNoteId")
                         .HasDatabaseName("IX_VocabularyWord_SourceNoteId");
@@ -4035,6 +4297,18 @@ namespace ZonWiki.Infrastructure.Migrations
                     b.Navigation("Category");
 
                     b.Navigation("Tag");
+                });
+
+            modelBuilder.Entity("ZonWiki.Domain.Entities.CoachMessage", b =>
+                {
+                    b.HasOne("ZonWiki.Domain.Entities.CoachSession", "CoachSession")
+                        .WithMany("Messages")
+                        .HasForeignKey("CoachSessionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("FK_CoachMessage_CoachSession_CoachSessionId");
+
+                    b.Navigation("CoachSession");
                 });
 
             modelBuilder.Entity("ZonWiki.Domain.Entities.Comment", b =>
@@ -4378,11 +4652,19 @@ namespace ZonWiki.Infrastructure.Migrations
 
             modelBuilder.Entity("ZonWiki.Domain.Entities.VocabularyWord", b =>
                 {
+                    b.HasOne("ZonWiki.Domain.Entities.CoachSession", "SourceCoachSession")
+                        .WithMany()
+                        .HasForeignKey("SourceCoachSessionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("FK_VocabularyWord_CoachSession_SourceCoachSessionId");
+
                     b.HasOne("ZonWiki.Domain.Entities.Note", "SourceNote")
                         .WithMany()
                         .HasForeignKey("SourceNoteId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .HasConstraintName("FK_VocabularyWord_Note_SourceNoteId");
+
+                    b.Navigation("SourceCoachSession");
 
                     b.Navigation("SourceNote");
                 });
@@ -4419,6 +4701,11 @@ namespace ZonWiki.Infrastructure.Migrations
                     b.Navigation("Children");
 
                     b.Navigation("NoteCategories");
+                });
+
+            modelBuilder.Entity("ZonWiki.Domain.Entities.CoachSession", b =>
+                {
+                    b.Navigation("Messages");
                 });
 
             modelBuilder.Entity("ZonWiki.Domain.Entities.ExpenseCategory", b =>

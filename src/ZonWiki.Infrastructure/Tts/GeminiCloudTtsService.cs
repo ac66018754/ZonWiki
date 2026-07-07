@@ -63,11 +63,86 @@ public sealed class GeminiCloudTtsService : ITextToSpeechService
     }
 
     /// <inheritdoc />
-    public async Task<byte[]> SynthesizeAsync(
+    public Task<byte[]> SynthesizeAsync(
         string text,
         string voiceName,
         string languageCode,
         string modelName,
+        string audioEncoding,
+        CancellationToken cancellationToken)
+    {
+        // 單人 body 形狀：input.text ＋ voice.{languageCode,name,modelName} ＋ audioConfig.audioEncoding。
+        var payload = new
+        {
+            input = new { text },
+            voice = new { languageCode, name = voiceName, modelName },
+            audioConfig = new { audioEncoding },
+        };
+        return SendSynthesizeAsync(payload, voiceName, audioEncoding, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task<byte[]> SynthesizeMultiSpeakerAsync(
+        IReadOnlyList<(string Speaker, string Text)> turns,
+        string voiceA,
+        string voiceB,
+        string languageCode,
+        string modelName,
+        string audioEncoding,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(turns);
+        if (turns.Count == 0)
+        {
+            throw new TtsSynthesisException("多講者合成至少需要一個對談回合。");
+        }
+
+        // 多講者 body 形狀（spec §8）：input.multiSpeakerMarkup.turns[]（speaker/text）
+        // ＋ voice.{languageCode,modelName,multiSpeakerVoiceConfig.speakerVoiceConfigs[]}（恰 2 講者：
+        //   speakerAlias "A"/"B" 對應 turns[].speaker，speakerId 為裸聲音名 voiceA/voiceB）。
+        // voice.modelName 放 voice 物件內（非頂層，Gemini-TTS 關鍵）。
+        var markupTurns = turns
+            .Select(turn => new
+            {
+                speaker = string.Equals(turn.Speaker, "B", StringComparison.OrdinalIgnoreCase) ? "B" : "A",
+                text = turn.Text,
+            })
+            .ToArray();
+
+        var payload = new
+        {
+            input = new { multiSpeakerMarkup = new { turns = markupTurns } },
+            voice = new
+            {
+                languageCode,
+                modelName,
+                multiSpeakerVoiceConfig = new
+                {
+                    speakerVoiceConfigs = new[]
+                    {
+                        new { speakerAlias = "A", speakerId = voiceA },
+                        new { speakerAlias = "B", speakerId = voiceB },
+                    },
+                },
+            },
+            // 多講者原生 24kHz（spec §8）；audioEncoding 由呼叫端決定（MP3／OGG_OPUS／LINEAR16）。
+            audioConfig = new { audioEncoding, sampleRateHertz = 24000 },
+        };
+        return SendSynthesizeAsync(payload, $"{voiceA}+{voiceB}", audioEncoding, cancellationToken);
+    }
+
+    /// <summary>
+    /// 共用送出流程：解析端點／quota project／ADC token → 送官方 Cloud TTS synthesize → 取 audioContent。
+    /// 認證與安全同單人（ADC Bearer＋x-goog-user-project；目標 URL 為固定官方端點，非使用者可控）。
+    /// </summary>
+    /// <param name="payload">請求主體物件（單人／多講者形狀）。</param>
+    /// <param name="voiceLabel">記錄用的聲音標籤（不含敏感資訊）。</param>
+    /// <param name="audioEncoding">音檔編碼（僅供記錄）。</param>
+    /// <param name="cancellationToken">取消權杖。</param>
+    /// <returns>解碼後的音檔位元組。</returns>
+    private async Task<byte[]> SendSynthesizeAsync(
+        object payload,
+        string voiceLabel,
         string audioEncoding,
         CancellationToken cancellationToken)
     {
@@ -95,12 +170,6 @@ public sealed class GeminiCloudTtsService : ITextToSpeechService
         }
 
         // 組請求主體（含中文 → 明示 UTF-8 序列化）。
-        var payload = new
-        {
-            input = new { text },
-            voice = new { languageCode, name = voiceName, modelName },
-            audioConfig = new { audioEncoding },
-        };
         var json = JsonSerializer.Serialize(payload);
 
         using var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
@@ -120,7 +189,7 @@ public sealed class GeminiCloudTtsService : ITextToSpeechService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Cloud TTS 請求傳輸失敗（voice={Voice}）", voiceName);
+            _logger.LogWarning(ex, "Cloud TTS 請求傳輸失敗（voice={Voice}）", voiceLabel);
             throw new TtsSynthesisException("Cloud TTS 請求傳輸失敗。", ex);
         }
 
@@ -130,7 +199,8 @@ public sealed class GeminiCloudTtsService : ITextToSpeechService
             {
                 // 記錄狀態碼供除錯（不記完整主體，可能含敏感資訊）；對外只給安全摘要。
                 _logger.LogWarning(
-                    "Cloud TTS 回非 2xx（status={Status}，voice={Voice}）", (int)response.StatusCode, voiceName);
+                    "Cloud TTS 回非 2xx（status={Status}，voice={Voice}，encoding={Encoding}）",
+                    (int)response.StatusCode, voiceLabel, audioEncoding);
                 throw new TtsSynthesisException($"Cloud TTS 回應狀態碼 {(int)response.StatusCode}。");
             }
 

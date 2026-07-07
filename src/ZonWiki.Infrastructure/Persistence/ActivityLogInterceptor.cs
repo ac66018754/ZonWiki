@@ -123,6 +123,8 @@ public sealed class ActivityLogInterceptor : SaveChangesInterceptor
         Expense e => ("expense", string.IsNullOrWhiteSpace(e.Merchant) ? FirstLine(e.RawText) : e.Merchant!),
         ExpenseCategory ec => ("expensecategory", ec.Name),
         VocabularyWord v => ("vocabulary", v.Word),
+        // 英文教練場次（Phase 3）：只登記 CoachSession；CoachMessage 逐字稿刻意不登記（每場數十則會灌爆活動流）。
+        CoachSession s => ("coach", s.Title),
         _ => null,
     };
 

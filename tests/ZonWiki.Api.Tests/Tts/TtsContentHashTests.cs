@@ -51,6 +51,20 @@ public sealed class TtsContentHashTests
     }
 
     [Fact]
+    public void U13b_模式改變_hash變且預設為read()
+    {
+        // Phase 3：mode 入快取鍵——read≠dialogue 不撞快取；未帶 mode 的呼叫預設等同 mode="read"。
+        var read = TtsSynthesisService.ComputeContentHash(Content, Voice, Language, Format, PromptVersion, Model);
+        var readExplicit = TtsSynthesisService.ComputeContentHash(
+            Content, Voice, Language, Format, PromptVersion, Model, TtsSynthesisService.ModeRead);
+        var dialogue = TtsSynthesisService.ComputeContentHash(
+            Content, Voice, Language, Format, PromptVersion, Model, TtsSynthesisService.ModeDialogue);
+
+        readExplicit.Should().Be(read, "省略 mode 應等同 read");
+        dialogue.Should().NotBe(read, "dialogue 與 read 不得撞快取");
+    }
+
+    [Fact]
     public void U14_內容正規化_換行與空白差異不影響hash()
     {
         var baseline = Hash(content: "第一行\n第二行");

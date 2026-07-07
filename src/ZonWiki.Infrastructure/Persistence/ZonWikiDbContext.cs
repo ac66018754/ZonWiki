@@ -119,6 +119,11 @@ public sealed class ZonWikiDbContext(
     // --- 筆記朗讀語音快取（其他功能群 Phase 2；TTS 子系統）--------------------------
     public DbSet<TtsAudio> TtsAudio => Set<TtsAudio>();
 
+    // --- 英文教練（其他功能群 Phase 3；Vertex Live 對話＋逐字稿＋全站花費計量）------------
+    public DbSet<CoachSession> CoachSession => Set<CoachSession>();
+    public DbSet<CoachMessage> CoachMessage => Set<CoachMessage>();
+    public DbSet<CoachBudgetLedger> CoachBudgetLedger => Set<CoachBudgetLedger>();
+
     // --- 通用實體關聯（任務/子任務/筆記/節點 互連）---------------------------------
     public DbSet<EntityLink> EntityLink => Set<EntityLink>();
 

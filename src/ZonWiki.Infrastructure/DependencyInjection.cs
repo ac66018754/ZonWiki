@@ -50,6 +50,23 @@ public static class DependencyInjection
                         Microsoft.EntityFrameworkCore.Diagnostics.CoreEventId.ManyServiceProvidersCreatedWarning));
         }, ServiceLifetime.Scoped, ServiceLifetime.Scoped);
 
+        // 教練子系統（其他功能群 Phase 3）短命 DbContext 工廠（【審修-A2】）：與上面既有 scoped AddDbContext
+        // 並存但隔離——捕捉一份獨立選項（同一 Npgsql 連線），供 CoachBudgetService（singleton）跨請求累計
+        // 全站花費。刻意不掛使用者隔離／稽核攔截器（只碰非 IUserOwned 的全站計量表；稽核欄由服務層手動補齊）。
+        var coachFactoryOptions = new DbContextOptionsBuilder<ZonWikiDbContext>()
+            .UseNpgsql(connectionString, npgsql =>
+                npgsql.MigrationsAssembly(typeof(ZonWikiDbContext).Assembly.FullName))
+            // 整合測試以多個 WebApplicationFactory 主機啟動，各建一個 EF 內部服務供應者；忽略「建立過多供應者」
+            // 警告，避免累計超過上限而升級為例外（純測試副作用，不影響正式行為，比照上方 scoped 設定）。
+            .ConfigureWarnings(warnings =>
+                warnings.Ignore(
+                    Microsoft.EntityFrameworkCore.Diagnostics.CoreEventId.ManyServiceProvidersCreatedWarning))
+            .Options;
+        // 刻意註冊「具體型別」而非泛型 IDbContextFactory<ZonWikiDbContext>：此工廠建出的 context 無使用者隔離
+        // 過濾／稽核攔截器，只該供 CoachBudgetService 讀寫全站計量表；不對外暴露泛型介面，避免未來有人天真注入
+        // 泛型工廠而拿到「不套隔離」的 context 去查 IUserOwned 實體造成跨租戶外洩。
+        services.AddSingleton(new CoachDbContextFactory(coachFactoryOptions));
+
         services.AddScoped<UserProvisioningService>();
 
         /// <summary>

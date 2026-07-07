@@ -66,8 +66,25 @@ public sealed class TtsSynthesisService
     /// <summary>失敗回給客戶端的固定泛用訊息（不洩漏伺服器檔案系統路徑／堆疊；審查修正 #2）。</summary>
     public const string GenericFailureMessage = "音檔合成失敗，請稍後再試";
 
+    /// <summary>朗讀模式：單人朗讀（預設）。</summary>
+    public const string ModeRead = "read";
+
+    /// <summary>朗讀模式：雙主持人 Podcast 對談（Phase 3）。</summary>
+    public const string ModeDialogue = "dialogue";
+
+    /// <summary>合法朗讀模式集合（端點驗證用）。</summary>
+    public static readonly IReadOnlySet<string> ValidModes =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ModeRead, ModeDialogue };
+
+    /// <summary>雙主持人對談中「講者 B」的預設聲音（講者 A＝使用者選定聲音；A 若同為此聲音則 B 改用備援）。</summary>
+    public const string DefaultDialogueVoiceB = "Charon";
+
+    /// <summary>當講者 A 剛好選到 <see cref="DefaultDialogueVoiceB"/> 時，講者 B 改用的備援聲音（避免兩人同聲）。</summary>
+    public const string DialogueVoiceBFallback = "Kore";
+
     private readonly ZonWikiDbContext _db;
     private readonly TtsScriptService _scriptService;
+    private readonly TtsDialogueScriptService _dialogueScriptService;
     private readonly ITextToSpeechService _ttsService;
     private readonly ITtsAudioComposer _composer;
     private readonly IConfiguration _configuration;
@@ -80,6 +97,7 @@ public sealed class TtsSynthesisService
     public TtsSynthesisService(
         ZonWikiDbContext db,
         TtsScriptService scriptService,
+        TtsDialogueScriptService dialogueScriptService,
         ITextToSpeechService ttsService,
         ITtsAudioComposer composer,
         IConfiguration configuration,
@@ -88,6 +106,7 @@ public sealed class TtsSynthesisService
     {
         _db = db;
         _scriptService = scriptService;
+        _dialogueScriptService = dialogueScriptService;
         _ttsService = ttsService;
         _composer = composer;
         _configuration = configuration;
@@ -107,6 +126,7 @@ public sealed class TtsSynthesisService
     /// <param name="audioEncoding">音檔格式（正規化後，如 MP3／OGG_OPUS）。</param>
     /// <param name="promptVersion">口語化 prompt 版本（<see cref="TtsScriptService.PromptVersion"/>）。</param>
     /// <param name="ttsModelName">TTS 模型代號。</param>
+    /// <param name="mode">朗讀模式（"read"／"dialogue"；預設 "read" 以相容既有呼叫。Phase 3：read≠dialogue 不撞快取）。</param>
     /// <returns>SHA-256 十六進位小寫字串（64 字）。</returns>
     public static string ComputeContentHash(
         string noteContentRaw,
@@ -114,7 +134,8 @@ public sealed class TtsSynthesisService
         string languageCode,
         string audioEncoding,
         string promptVersion,
-        string ttsModelName)
+        string ttsModelName,
+        string mode = ModeRead)
     {
         var normalizedContent = NormalizeContent(noteContentRaw);
         // 用 ASCII 單元分隔字元（0x1F）分隔各段，避免不同欄位值拼接產生歧義碰撞。
@@ -126,11 +147,20 @@ public sealed class TtsSynthesisService
             languageCode ?? string.Empty,
             audioEncoding ?? string.Empty,
             promptVersion ?? string.Empty,
-            ttsModelName ?? string.Empty);
+            ttsModelName ?? string.Empty,
+            NormalizeMode(mode));
 
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(material));
         return Convert.ToHexStringLower(bytes);
     }
+
+    /// <summary>正規化朗讀模式（未知一律回 "read"，避免非法模式製造相異快取鍵）。</summary>
+    /// <param name="mode">原始模式字串。</param>
+    /// <returns>正規化後的模式（"read" 或 "dialogue"）。</returns>
+    public static string NormalizeMode(string? mode)
+        => string.Equals(mode?.Trim(), ModeDialogue, StringComparison.OrdinalIgnoreCase)
+            ? ModeDialogue
+            : ModeRead;
 
     /// <summary>內容正規化：Trim＋換行正規化(\r\n→\n)＋摺疊連續空白（含全形空白）為單一空白。</summary>
     private static string NormalizeContent(string? raw)
@@ -214,26 +244,31 @@ public sealed class TtsSynthesisService
     // ── 清理：同筆記＋聲音重合成即失效舊列與舊檔 ────────────────────────────────
 
     /// <summary>
-    /// 失效同一使用者＋筆記＋聲音、但 ContentHash 不同的既有列（軟刪除 DB 列＋刪除其實體快取檔）。
+    /// 失效同一使用者＋筆記＋聲音＋<b>同模式</b>、但 ContentHash 不同的既有列（軟刪除 DB 列＋刪除其實體快取檔）。
     /// 快取檔是可完全再生的快取產物，故刪實體檔符合「TtsAudio 是快取品」定位；DB 列走軟刪保留 metadata。
     /// 由 <c>POST /synthesize</c> 在「未命中要建新列」前呼叫（設計 §6.3「同 NoteId＋聲音重合成即失效舊列」）。
+    /// <b>Phase 3</b>：加入 <paramref name="mode"/> 過濾，讓 read 與 dialogue 兩份快取各自獨立、互不失效。
     /// </summary>
     /// <param name="userId">使用者識別碼。</param>
     /// <param name="noteId">筆記識別碼。</param>
     /// <param name="voiceName">聲音代號。</param>
+    /// <param name="mode">朗讀模式（"read"／"dialogue"）；只失效同模式的舊列。</param>
     /// <param name="keepContentHash">要保留（不失效）的 ContentHash（即本次要建的新列）。</param>
     /// <param name="cancellationToken">取消權杖。</param>
     public async Task InvalidateOtherVersionsAsync(
         Guid userId,
         Guid noteId,
         string voiceName,
+        string mode,
         string keepContentHash,
         CancellationToken cancellationToken)
     {
+        var normalizedMode = NormalizeMode(mode);
         var stale = await _db.TtsAudio.IgnoreQueryFilters()
             .Where(t => t.UserId == userId
                 && t.NoteId == noteId
                 && t.VoiceName == voiceName
+                && t.Mode == normalizedMode
                 && t.ValidFlag
                 && t.ContentHash != keepContentHash)
             .ToListAsync(cancellationToken);
@@ -258,15 +293,18 @@ public sealed class TtsSynthesisService
     // ── 背景合成管線 ────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// 背景合成管線（於 child scope 內呼叫）：載入 processing 列 → 口語稿 → 切段 → 逐塊 TTS →
+    /// 背景合成管線（於 child scope 內呼叫）：載入 processing 列 → 腳本 → 切段 → 逐段 TTS →
     /// 併單檔 → 量時長算章節 → 存檔＋Status=ready。任何例外一律 catch 標 failed（絕不冒成未攔截）。
+    /// <b>Phase 3</b>：依 <paramref name="mode"/> 分兩支——"read"＝單人朗讀（口語稿＋章節）、
+    /// "dialogue"＝雙主持人 Podcast（對談 turns＋多講者合成，無章節）。
     /// </summary>
     /// <param name="ttsAudioId">要合成的 TtsAudio 列 Id。</param>
     /// <param name="userId">擁有者（背景無 HttpContext，先 SetCurrentUserId）。</param>
     /// <param name="noteId">來源筆記 Id。</param>
-    /// <param name="voiceName">聲音代號。</param>
+    /// <param name="voiceName">聲音代號（dialogue 模式：講者 A 用此聲音，講者 B 用備援聲音）。</param>
     /// <param name="languageCode">語言（BCP-47）。</param>
     /// <param name="format">音檔格式（MP3／OGG_OPUS）。</param>
+    /// <param name="mode">朗讀模式（"read"／"dialogue"）。</param>
     /// <param name="cancellationToken">取消權杖（由合成預算 CTS 控制）。</param>
     public async Task RunPipelineAsync(
         Guid ttsAudioId,
@@ -275,6 +313,7 @@ public sealed class TtsSynthesisService
         string voiceName,
         string languageCode,
         string format,
+        string mode,
         CancellationToken cancellationToken)
     {
         // 背景無 HttpContext → 先設目前使用者，否則全域過濾以 Guid.Empty 濾掉一切（見 AskQueueService 範式）。
@@ -287,6 +326,7 @@ public sealed class TtsSynthesisService
             return; // 列已不存在（理論上不會發生）。
         }
 
+        var normalizedMode = NormalizeMode(mode);
         var tempDirectory = string.Empty;
         try
         {
@@ -300,50 +340,85 @@ public sealed class TtsSynthesisService
             var (canonicalFormat, extension, mime) = ResolveFormat(format);
             var modelName = ResolveModelName();
             var maxInputBytes = ResolveMaxInputBytes();
+            var maxChunks = ResolveMaxChunksPerSynthesis();
 
-            // 1) 口語稿（VertexAdc；失敗降級為純文字，不 throw）。
-            var segments = await _scriptService.GenerateAsync(userId, note.Title, note.ContentRaw, cancellationToken);
-            row.ScriptJson = JsonSerializer.Serialize(segments);
+            // 1) 產腳本 → 切段 →「每段的合成委派」（read＝單人、dialogue＝多講者），並記錄 ScriptJson 與章節形狀。
+            //    章節僅 read 模式有（chapterShapes 非 null）；dialogue 無章節（chapterShapes 為 null）。
+            List<Func<CancellationToken, Task<byte[]>>> segmentSynths;
+            List<(string Title, int ChunkCount)>? chapterShapes;
 
-            // 2) 章節切段（≤maxInputBytes，切塊絕不跨章節）。
-            var chapters = TtsScriptChunker.ChunkByChapter(segments, maxInputBytes);
-            var flatChunks = new List<string>();
-            var chapterShapes = new List<(string Title, int ChunkCount)>();
-            foreach (var chapter in chapters)
+            if (normalizedMode == ModeDialogue)
             {
-                chapterShapes.Add((chapter.Title, chapter.Chunks.Count));
-                flatChunks.AddRange(chapter.Chunks);
+                // 對談腳本（VertexAdc；失敗降級為單一講者純文字，不 throw）。
+                var turns = await _dialogueScriptService.GenerateAsync(
+                    userId, note.Title, note.ContentRaw, cancellationToken);
+                row.ScriptJson = JsonSerializer.Serialize(turns);
+
+                // 講者 A＝使用者選定聲音，講者 B＝備援聲音（避免兩人同聲）。
+                var voiceA = voiceName;
+                var voiceB = string.Equals(voiceName, DefaultDialogueVoiceB, StringComparison.OrdinalIgnoreCase)
+                    ? DialogueVoiceBFallback
+                    : DefaultDialogueVoiceB;
+
+                var turnChunks = TtsDialogueChunker.ChunkTurns(turns, maxInputBytes);
+                segmentSynths = turnChunks
+                    .Select(chunk => (Func<CancellationToken, Task<byte[]>>)(token =>
+                        _ttsService.SynthesizeMultiSpeakerAsync(
+                            chunk.Select(t => (t.Speaker, t.Text)).ToList(),
+                            voiceA, voiceB, languageCode, modelName, canonicalFormat, token)))
+                    .ToList();
+                chapterShapes = null;
+            }
+            else
+            {
+                // 口語稿（VertexAdc；失敗降級為純文字，不 throw）。
+                var segments = await _scriptService.GenerateAsync(
+                    userId, note.Title, note.ContentRaw, cancellationToken);
+                row.ScriptJson = JsonSerializer.Serialize(segments);
+
+                // 章節切段（≤maxInputBytes，切塊絕不跨章節）。
+                var chapters = TtsScriptChunker.ChunkByChapter(segments, maxInputBytes);
+                chapterShapes = new List<(string Title, int ChunkCount)>();
+                var flatChunks = new List<string>();
+                foreach (var chapter in chapters)
+                {
+                    chapterShapes.Add((chapter.Title, chapter.Chunks.Count));
+                    flatChunks.AddRange(chapter.Chunks);
+                }
+
+                segmentSynths = flatChunks
+                    .Select(text => (Func<CancellationToken, Task<byte[]>>)(token =>
+                        _ttsService.SynthesizeAsync(text, voiceName, languageCode, modelName, canonicalFormat, token)))
+                    .ToList();
             }
 
-            if (flatChunks.Count == 0)
+            if (segmentSynths.Count == 0)
             {
                 throw new TtsSynthesisException("筆記內容為空，無可朗讀的文字。");
             }
 
-            // 成本保底閘（審查修正 #3-②）：塊數超上限即標 failed，不逐塊付費展開（端點的內容位元組門檻是第一道；
-            // 這是章節邊界切塊可能放大塊數時的第二道防線）。安全訊息（不含路徑）。
-            var maxChunks = ResolveMaxChunksPerSynthesis();
-            if (flatChunks.Count > maxChunks)
+            // 成本保底閘（審查修正 #3-②）：段數超上限即標 failed，不逐段付費展開（端點的內容位元組門檻是第一道；
+            // 這是章節／回合邊界切段可能放大段數時的第二道防線）。安全訊息（不含路徑）。
+            if (segmentSynths.Count > maxChunks)
             {
                 throw new TtsSynthesisException(
                     $"筆記過長，切段後超過單次朗讀上限（{maxChunks} 段），請縮短內容後再試。");
             }
 
-            // 3) 逐塊合成 → 暫存塊檔 → 逐塊量時長。
+            // 2) 逐段合成 → 暫存塊檔 → 逐段量時長。
             var cacheDirectoryRelative = ResolveCacheDirectoryRelative();
             var cacheDirectoryAbsolute = Path.Combine(_environment.ContentRootPath, cacheDirectoryRelative);
             Directory.CreateDirectory(cacheDirectoryAbsolute);
             tempDirectory = Path.Combine(cacheDirectoryAbsolute, $"tmp-{ttsAudioId:N}");
             Directory.CreateDirectory(tempDirectory);
 
-            var segmentFiles = new List<string>(flatChunks.Count);
-            var chunkDurations = new List<double>(flatChunks.Count);
+            var segmentFiles = new List<string>(segmentSynths.Count);
+            var chunkDurations = new List<double>(segmentSynths.Count);
             var allDurationsAvailable = true;
 
-            for (var i = 0; i < flatChunks.Count; i++)
+            for (var i = 0; i < segmentSynths.Count; i++)
             {
-                var audioBytes = await _ttsService.SynthesizeAsync(
-                    flatChunks[i], voiceName, languageCode, modelName, canonicalFormat, cancellationToken);
+                var audioBytes = await segmentSynths[i](cancellationToken);
 
                 var segmentPath = Path.Combine(tempDirectory, $"seg-{i}.{extension}");
                 await File.WriteAllBytesAsync(segmentPath, audioBytes, cancellationToken);
@@ -361,24 +436,24 @@ public sealed class TtsSynthesisService
                 }
             }
 
-            // 4) 併成單檔。
+            // 3) 併成單檔。
             var relativeFilePath = $"{cacheDirectoryRelative}/{ttsAudioId:N}.{extension}";
             var finalAbsolutePath = Path.Combine(_environment.ContentRootPath, relativeFilePath);
             await _composer.ConcatAsync(segmentFiles, finalAbsolutePath, cancellationToken);
 
-            // 5) 總時長（優先量最終檔；缺則以逐塊時長加總，皆缺則 null 由前端 <audio>.duration 補）。
+            // 4) 總時長（優先量最終檔；缺則以逐塊時長加總，皆缺則 null 由前端 <audio>.duration 補）。
             var totalDuration = await _composer.ProbeDurationAsync(finalAbsolutePath, cancellationToken);
             if (!totalDuration.HasValue && allDurationsAvailable)
             {
                 totalDuration = chunkDurations.Sum();
             }
 
-            // 6) 章節時間位移（逐塊時長皆可得才算；否則退化為 null＝best-effort）。
-            IReadOnlyList<ChapterDto>? chapterMarks = allDurationsAvailable
+            // 5) 章節時間位移（僅 read 模式有章節形狀，且逐塊時長皆可得才算；dialogue 或缺時長 → null＝best-effort）。
+            IReadOnlyList<ChapterDto>? chapterMarks = chapterShapes is not null && allDurationsAvailable
                 ? TtsChapterCalculator.ComputeChapterStarts(chapterShapes, chunkDurations)
                 : null;
 
-            // 7) 寫回 metadata＋Status=ready（保底存檔用 CancellationToken.None，避免逾時 CTS 讓 SaveChanges 立即取消）。
+            // 6) 寫回 metadata＋Status=ready（保底存檔用 CancellationToken.None，避免逾時 CTS 讓 SaveChanges 立即取消）。
             row.ChaptersJson = chapterMarks is null ? null : JsonSerializer.Serialize(chapterMarks);
             row.DurationSeconds = totalDuration;
             row.SizeBytes = new FileInfo(finalAbsolutePath).Length;

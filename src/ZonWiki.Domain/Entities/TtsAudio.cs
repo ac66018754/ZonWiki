@@ -49,6 +49,13 @@ public class TtsAudio : AuditableEntity, IUserOwned
     public string Status { get; set; } = "processing";
 
     /// <summary>
+    /// 朗讀模式（Phase 3）："read"（單人朗讀，預設）／"dialogue"（雙主持人 Podcast 對談）。
+    /// 入快取鍵（read≠dialogue 不撞快取），並讓「同筆記＋聲音重合成即失效舊列」的清理<b>只在同模式內</b>作用
+    /// （read 與 dialogue 兩份快取各自獨立、可並存）。
+    /// </summary>
+    public string Mode { get; set; } = "read";
+
+    /// <summary>
     /// 聲音代號（Gemini-TTS voice.name，如 "Kore"）。入快取鍵。
     /// </summary>
     public string VoiceName { get; set; } = string.Empty;

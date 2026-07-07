@@ -5,6 +5,46 @@
 
 ---
 
+## 2026-07-08 ｜Phase 3 交付：整合驗證＋兩輪對抗復審（Fable5 監工）
+
+- **背景**：Phase 3（英文教練 Vertex Live WS 代理＋雙主持人 Podcast）由三個並行批次實作（批次1 資料層/護欄/Podcast、批次2 教練 WS 後端、批次3 教練前端），各自對抗復審過。監工做整合驗證與最終跨批復審，記關鍵發現與取捨。
+- **整合驗證（實證，非只 tsc/測試）**：①後端 `dotnet test` **613 綠**（Api 547＋Infra 66）；②**真 Live smoke 經 .NET CoachLiveClient→真 Vertex(us-central1)**：文字回合取回 91KB PCM16 24kHz 音訊＋逐字稿全句，DB 驗 CoachMessage 逐字稿落地＋CoachSession 收尾 ended＋課末摘要生成（vertex-gemini-lite）＋resumption handle 持久化；③**真 Podcast E2E**：筆記→對談腳本(vertex-gemini-lite)→多講者合成(Cloud TTS cmn-TW Kore/Charon)→ffmpeg concat→ready，產 226 秒雙聲 MP3；④多講者 TTS 格式先以獨立探針去風險（975KB cmn-TW 真音檔）；⑤前端 Playwright 四主題（糾錯卡紅綠 diff 對比 4.83–6.81 全 ≥4.5）＋狀態機＋fatal 終態＋375px＋所有事件行為。
+- **跨批契約漂移（監工整合時抓到、各批自審抓不到）**：三個並行批次照同一計畫各自具體化，前端 parseServerMessage 未完全對齊後端實際的 `{type:...}` 信封——①audio 後端送 `data` 欄／前端只讀 `audio`；②interrupted 後端送 `{type:"interrupted"}`／前端讀布林欄；③vocab_added 後端 `type` 值／前端找同名鍵。全修為容忍雙形狀並實測。**教訓：並行開發必須在整合點做真訊息往返驗證，單批自審與單回合 smoke 都抓不到跨批接縫。**
+- **兩輪最終對抗復審（三路：資安/DoS、跨批契約、並發/三不變式）**：
+  - **R1（9 findings）**：最關鍵 HIGH＝**重連狀態機死鎖**——後端 GoAway 訊號式重連送 `{type:"reconnecting"}`，前端 `isActiveState` 不含 reconnecting→重連後的 `state:listening`＋音訊全被守門吞→**每場超過單條連線壽命(~10分)的對話第一次 GoAway 就永久卡死**（會毀掉每場真實 30 分鐘課）。另修 REST 巢狀信封契約、強制終止逐字稿落地遺失、糾錯卡陣列落地、字幕定案（文字模式多回合串接）等。
+  - **R2（在 R1 修正碼上又抽，1 CRITICAL＋2 HIGH）**：CRITICAL＝accept 競態自我終止路徑繞過 SignalDisplaced→幻影分鐘吃日額度＋SessionBudgets 靜態字典洩漏（修：保守當跨場收尾，因 finalize 冪等）；HIGH＝入站 text>2000 靜默丟棄前端卡 thinking（修：回 `{type:"rejected"}`＋前端 notice 條撥回 listening，實測「訊息過長，請縮短後再試」）；HIGH＝背景補釋義 fire-and-forget 未 join 污染跨測試共享計量表 flaky（修：FinishAsync join 加逾時）。
+- **理由與取捨**：兩輪對抗復審各抓到真問題（尤其會毀掉每場長對話的重連死鎖、與窄競態的幻影分鐘 CRITICAL），驗證「並行批次＋各自自審」不足以保證整合正確，跨批整合復審＋真訊息往返驗證是必要關卡。全部修正後 613 測試綠、Live/Podcast/前端行為實測通過。
+- **交付邊界（使用者職責，已於計畫標註）**：prod 需跑 migration `AddCoachTablesAndVocabSourceFk`＋種 `vertex-gemini-lite` 共用列；CF Tunnel×WebSocket 長連逾時、iPhone 實機（Wake Lock/standalone 麥克風權限/MediaSession 鎖屏/送出取樣率確為 16k）、prod CSP 放行 `blob:`（worklet）需實機驗；多講者 cmn-TW（Preview）計費 SKU 待第一張帳單核對。
+
+## 2026-07-08 ｜Phase 3 教練「批次 1」資料層／護欄／Podcast 的三個實作偏離（相對定案計畫）
+
+- **背景**：實作 Phase 3 批次 1（教練資料層＋護欄/預算服務＋雙主持人 Podcast，不含 WS/CoachProxy＝批次 2）時，為滿足計畫要求做了三處計畫未明列的結構決定。
+- **決定 1——新增全站計量表 `CoachBudgetLedger`**：計畫 §1 只列 CoachSession/CoachMessage，但 §3/§4 要求 `CoachBudgetService`「DB 持久化累計」全站每日/每月花費。故新增一張**非 IUserOwned**（全站、無使用者隔離過濾）的 AuditableEntity 計量表（唯一鍵 (Scope, PeriodKey)，每日一列、每月一列），不登記垃圾桶/活動流（比照 TtsAudio 排除）。考慮過「把 token 累加在 CoachSession 上再跨用戶 SUM」——否決（需跨租戶掃全表、CoachSession 無 token 欄、與「全站」語意不符）。
+- **決定 2——自建 `CoachDbContextFactory` 而非 EF `AddDbContextFactory`，且落點在 Infrastructure DI（非 Program.cs）**：既有 `AddDbContext`（scoped）已註冊 `DbContextOptions<ZonWikiDbContext>`，再呼叫 EF 的 `AddDbContextFactory` 會重複註冊該選項並造成生命週期衝突，可能連累整個 App 的 DbContext 解析。故自建極簡工廠捕捉一份**獨立選項**（同一 Npgsql 連線、忽略 ManyServiceProviders 警告），與既有 scoped 註冊完全隔離。放 Infrastructure 是為了與既有 AddDbContext 共用連線字串來源、避免在 Program.cs 重複組態。供 `CoachBudgetService`（singleton）建短命 context 用（【審修-A2】）。
+- **決定 3——`TtsAudio` 新增 `Mode` 欄（read/dialogue）**：計畫 §10「快取鍵含 mode（read≠dialogue 不撞快取）」。除把 mode 併入 ComputeContentHash 外，另加持久欄 `Mode`，讓「同筆記＋聲音重合成即失效舊列」的清理**只在同模式內**作用（read 與 dialogue 兩份快取各自獨立並存，不互相失效）。既有列一次性回填為 "read"。
+- **理由與取捨**：三者皆為「計畫要求的行為」在資料層的最小落地；偏離處都往「不破壞既有 scoped DbContext／既有 TTS 快取語意」的保守方向走。**未做**批次 2（CoachLiveClient/CoachProxyService/CoachPromptAssembler/`/ws/coach`/UseWebSockets/前端音訊層）與批次 3。
+- **對抗式復審後的修正（3 項）**：①日分鐘計量讀路徑（`GetDailyUsedSecondsAsync`）現在<b>先做懶惰殭屍修正</b>並改用「今日交集裁切」演算法——否則死掉的 active 場會以 now 一路累加把使用者整天鎖死（計畫明列要避免的失敗）；②`CoachBudgetService` 花費累計改為<b>伺服器端原子遞增</b>（`SET x = x + n`），正確性不再依賴 in-process 鎖，多實例下也不會 lost-update（低估花費＝熔斷最危險失效）；③短命工廠只註冊<b>具體型別</b> `CoachDbContextFactory`（非泛型 `IDbContextFactory<>`），封住「未來誤注入無隔離 context 查 IUserOwned 實體」的跨租戶地雷。
+- **已知取捨（復審確認、刻意保留）**：(a) mode 併入 ContentHash 後，<b>部署後對既有筆記首次朗讀會 cache-miss 重合成一次</b>（重付一次 TTS 費用）——必要之惡（唯一索引 (UserId, ContentHash) 不含 Mode，若 read/dialogue 不分會撞唯一約束），且會經 mode-scoped 失效自我修復，不留孤兒；(b) 懶惰殭屍修正走 `ExecuteUpdate` 繞過活動流攔截器，故「殭屍收尾」不進活動流（系統清理非使用者動作，避免噪音；正常收尾仍會記）。
+- **驗證**：`dotnet build` 0 error、`dotnet test` 全綠（Api 500+ 綠、Infrastructure 66 綠，新增約 43 筆）、migration `AddCoachTablesAndVocabSourceFk` 生成且 has-pending-model-changes=none、前端 `tsc --noEmit` 0 error。
+
+---
+
+## 2026-07-08 ｜Phase 3 英文教練：Vertex Live region 改 us-central1（實測推翻設計書的 us-west1）＋協定去風險
+
+- **背景**：Phase 3 教練用 Vertex AI Live API（`gemini-live-2.5-flash-native-audio`，GA），架構＝瀏覽器→自家 .NET WS 代理→Vertex Live WS。開工前依準則 4.1「前置實測未過別往下做」先驗協定。
+- **關鍵修正——region 從 `us-west1` 改 `us-central1`**：設計書 §4.1 定 `us-west1`，但研究查官方支援清單發現 **native-audio GA 不含 us-west1**（支援 us-central1／us-east1/4/5／us-south1／europe-west1/4/8）。**本機實跑 Python 探針證實**：`us-central1` 完整打通（WS 握手 200＋ADC Bearer 認證＋setupComplete＋文字回合回 226KB PCM16 24kHz 音訊＋逐字稿全句 "Hello! I'm here to help you practice your English…"＋generationComplete→turnComplete→usageMetadata，exit 0）。故 region 一律 `us-central1`、且**模型 region 設定值化**（退役日 2026-12-13 前換後繼模型）。彰化 VM→us-central1 RTT 比 us-west1 略高但同屬美中西，可接受。
+- **協定去風險定案（實證，非臆測；供實作照抄）**：
+  - WS URL＝`wss://us-central1-aiplatform.googleapis.com/ws/google.cloud.aiplatform.v1.LlmBidiService/BidiGenerateContent`（**Vertex 版 LlmBidiService，非 Developer API 的 generativelanguage**）。
+  - 認證＝WS header `Authorization: Bearer <ADC token>`（重用 `IVertexAdcTokenProvider`）；**不需 x-goog-user-project**（project 已在 model 路徑內）。
+  - `setup.model` ＝完整資源路徑 `projects/zonwiki-prod/locations/us-central1/publishers/google/models/gemini-live-2.5-flash-native-audio`（Vertex 專有格式，非 `models/{m}`）。
+  - setup 帶 `generationConfig.responseModalities:["AUDIO"]`（native-audio 一次只一種 modality）＋`speechConfig`＋`systemInstruction.parts[].text`（物件非字串）＋`inputAudioTranscription:{}`＋`outputAudioTranscription:{}`（空物件即開逐字稿）＋`realtimeInputConfig.automaticActivityDetection`（VAD）＋`contextWindowCompression`＋`sessionResumption:{}`＋`tools.functionDeclarations`（`behavior:"NON_BLOCKING"`）。
+  - 音訊：上行 PCM16 16kHz（`realtimeInput.audio{mimeType:"audio/pcm;rate=16000",data}`）、下行 PCM16 24kHz（`serverContent.modelTurn.parts[].inlineData`）——**代理不可搞混上下行取樣率**。
+  - server→client 一律 camelCase；**一個 frame 可同時含多個頂層 key**（實測見 `{serverContent, usageMetadata}` 同幀）→ .NET parser 不可假設單一頂層 key。三旗標 `interrupted`／`generationComplete`／`turnComplete` 分別出現。
+- **考慮過的選項**：(a) 照設計書用 us-west1——被官方清單＋實測否決；(b) 用 global 端點——native-audio 不支援 global；(c) us-central1——**採用**（官方支援＋實測通）。
+- **理由與取捨**：先花小額（探針幾秒音訊 ≈$0.001）實證換掉一個會讓「setup 後拿不到音訊」的隱藏地雷，遠比實作到一半才發現便宜。此為準則 4.1／鐵則 #21（先實證再動手）的正面案例。探針腳本存 scratchpad/live_probe.py，協定全譜規格存 scratchpad/phase3-live-spec.md。
+
+---
+
 ## 2026-07-08 ｜記帳分析頁後端（Phase 2・工作包 A）實作定案
 
 - **背景**：實作設計書 §5.5／§5.6 的記帳分析頁後端——一次回五大區塊彙總（本月總額＋與上月比、近 N 月趨勢、分類佔比、日彙總、商家 Top N），供前端 Recharts 圖表＋Tailwind 日曆熱圖。以下為關鍵取捨與六條審查修正（HIGH×1／MEDIUM×3／LOW×2）的落實。

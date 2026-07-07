@@ -24,6 +24,7 @@ public sealed class TtsAudioConfiguration : IEntityTypeConfiguration<TtsAudio>
         builder.Property(t => t.ScriptJson).IsRequired(); // text（口語稿，不設長度）
         builder.Property(t => t.ChaptersJson); // text，nullable
         builder.Property(t => t.Status).IsRequired().HasMaxLength(16);
+        builder.Property(t => t.Mode).IsRequired().HasMaxLength(16); // Phase 3：read／dialogue
         builder.Property(t => t.VoiceName).IsRequired().HasMaxLength(64);
         builder.Property(t => t.ModelKey).IsRequired().HasMaxLength(64);
         builder.Property(t => t.FilePath).IsRequired().HasMaxLength(512);

@@ -6,10 +6,14 @@ namespace ZonWiki.Domain.Dtos;
 /// <param name="Voice">聲音代號（Gemini-TTS voice.name，如 "Kore"）；須為 30 聲之一。</param>
 /// <param name="Language">語言（BCP-47，如 "cmn-TW"）。</param>
 /// <param name="Format">音檔格式："MP3" 或 "OGG_OPUS"。</param>
+/// <param name="Mode">
+/// 朗讀模式（Phase 3；可空，預設 "read"）："read"＝單人朗讀、"dialogue"＝雙主持人 Podcast 對談。
+/// </param>
 public sealed record TtsSynthesizeRequest(
     string? Voice = null,
     string? Language = null,
-    string? Format = null);
+    string? Format = null,
+    string? Mode = null);
 
 /// <summary>
 /// 合成端點（POST /api/tts/notes/{noteId}/synthesize）的回應。

@@ -143,3 +143,7 @@ ai-models.json
 
 # TTS 音檔快取、DataProtection 金鑰等 runtime 資料（不進版控）
 src/ZonWiki.Api/App_Data/
+
+# dotnet test 輸出重導目錄（避 exe 鎖時用）與前端測試產物截圖：皆建置/測試產物，不進版控
+artifacts/
+frontend/test-artifacts/

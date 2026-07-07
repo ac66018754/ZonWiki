@@ -65,6 +65,13 @@ export const DEFAULT_TTS_FORMAT = "MP3";
 export type TtsStatus = "processing" | "ready" | "failed";
 
 /**
+ * 朗讀模式（Phase 3）。
+ * - `read`：單人朗讀（預設）。
+ * - `dialogue`：雙主持人 Podcast 對談（成本較高，手動觸發、非預設）。
+ */
+export type TtsMode = "read" | "dialogue";
+
+/**
  * 一個可選聲音。對應後端 VoiceDto（欄名 camelCase）。
  */
 export interface TtsVoice {
@@ -281,13 +288,20 @@ function isRateLimitError(err: unknown): boolean {
  */
 export async function synthesizeNote(
   noteId: string,
-  opts?: { voice?: string | null; language?: string | null; format?: string | null },
+  opts?: {
+    voice?: string | null;
+    language?: string | null;
+    format?: string | null;
+    /** 朗讀模式（Phase 3）："read"＝單人朗讀（預設）／"dialogue"＝雙主持人 Podcast 對談。 */
+    mode?: TtsMode | null;
+  },
 ): Promise<SynthesizeCallResult> {
   try {
     const body: Record<string, string> = {};
     if (opts?.voice) body.voice = opts.voice;
     if (opts?.language) body.language = opts.language;
     if (opts?.format) body.format = opts.format;
+    if (opts?.mode) body.mode = opts.mode;
     const r = await fetchJson<unknown>(
       `/api/tts/notes/${encodeURIComponent(noteId)}/synthesize`,
       { method: "POST", body: JSON.stringify(body) },

@@ -44,5 +44,11 @@ public sealed class VocabularyWordConfiguration : IEntityTypeConfiguration<Vocab
             .WithMany()
             .HasForeignKey(v => v.SourceNoteId)
             .OnDelete(DeleteBehavior.Restrict);
+
+        // 來源教練場次（Phase 3）：單向可空 FK；禁止硬刪連鎖（本系統一律軟刪除）。
+        builder.HasOne(v => v.SourceCoachSession)
+            .WithMany()
+            .HasForeignKey(v => v.SourceCoachSessionId)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }

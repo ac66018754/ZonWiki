@@ -54,6 +54,13 @@ public class VocabularyWord : AuditableEntity, IUserOwned
     /// </summary>
     public Guid? SourceNoteId { get; set; }
 
+    /// <summary>
+    /// 來源教練場次識別碼（可空；單向關聯 FK→CoachSession，Restrict＝不連鎖硬刪）。
+    /// 由英文教練的 add_vocabulary Function Calling 建卡時填入，供「來源場次可點連結」。
+    /// nullable 後補（Phase 2 延後項）：既有單字卡此欄為 null，零成本補 FK。
+    /// </summary>
+    public Guid? SourceCoachSessionId { get; set; }
+
     // ── SRS（DB 欄位照 FSRS 形狀，值由 SM-2 填；未來換 FSRS 不動表，設計書 §3.1）───────────
 
     /// <summary>
@@ -99,4 +106,9 @@ public class VocabularyWord : AuditableEntity, IUserOwned
     /// 導覽屬性：來源筆記（單向；可空）。
     /// </summary>
     public Note? SourceNote { get; set; }
+
+    /// <summary>
+    /// 導覽屬性：來源教練場次（單向；可空）。
+    /// </summary>
+    public CoachSession? SourceCoachSession { get; set; }
 }

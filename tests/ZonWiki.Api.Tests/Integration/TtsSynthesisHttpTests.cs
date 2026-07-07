@@ -576,5 +576,15 @@ public sealed class TtsSynthesisHttpTests
             string audioEncoding,
             CancellationToken cancellationToken)
             => throw new IOException(@"存取被拒：C:\Repos\ZonWiki\App_Data\tts-cache\seg-0.mp3");
+
+        public Task<byte[]> SynthesizeMultiSpeakerAsync(
+            IReadOnlyList<(string Speaker, string Text)> turns,
+            string voiceA,
+            string voiceB,
+            string languageCode,
+            string modelName,
+            string audioEncoding,
+            CancellationToken cancellationToken)
+            => throw new IOException(@"存取被拒：C:\Repos\ZonWiki\App_Data\tts-cache\seg-0.mp3");
     }
 }

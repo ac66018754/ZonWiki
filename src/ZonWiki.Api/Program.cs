@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Serilog;
 using Serilog.Events;
 using ZonWiki.Api.Auth;
+using ZonWiki.Api.Coach;
 using ZonWiki.Api.Endpoints;
 using ZonWiki.Api.RateLimiting;
 using ZonWiki.Api.Realtime;
@@ -92,6 +93,36 @@ builder.Services.AddScoped<VocabularyEnrichmentService>();
 // TTS 子系統（其他功能群 Phase 2）：口語稿生成（VertexAdc flash-lite）與合成管線協調（快取＋背景合成）。
 builder.Services.AddScoped<TtsScriptService>();
 builder.Services.AddScoped<TtsSynthesisService>();
+
+// 雙主持人 Podcast（其他功能群 Phase 3）：筆記→2 人對談腳本生成（VertexAdc；仿 TtsScriptService）。
+builder.Services.AddScoped<TtsDialogueScriptService>();
+
+// 英文教練（其他功能群 Phase 3・批次 1）：護欄／日分鐘計量／懶惰殭屍／擁有權／併發 claim 與全站花費熔斷。
+// 短命 DbContext 工廠（供花費熔斷）已於 AddZonWikiInfrastructure 內註冊（與既有 scoped AddDbContext 並存，【審修-A2】）。
+builder.Services.Configure<ZonWiki.Api.Coach.CoachOptions>(
+    builder.Configuration.GetSection(ZonWiki.Api.Coach.CoachOptions.SectionName));
+builder.Services.AddScoped<CoachSessionService>();
+builder.Services.AddSingleton<CoachBudgetService>();
+
+// 英文教練（其他功能群 Phase 3・批次 2）：WS 代理後端核心（CoachLiveClient／CoachProxyService／CoachPromptAssembler）。
+// Live client 工廠為 singleton，連線設定（region／project／model／voice）從 CoachOptions 取快照注入
+// （避免 Infrastructure 反向相依 Api）；proxy 為 transient（連線層不吊 DbContext，內部走短命 scope）。
+var coachOptionsSnapshot = builder.Configuration
+    .GetSection(ZonWiki.Api.Coach.CoachOptions.SectionName)
+    .Get<ZonWiki.Api.Coach.CoachOptions>() ?? new ZonWiki.Api.Coach.CoachOptions();
+builder.Services.AddSingleton<ZonWiki.Infrastructure.Coach.ICoachLiveClientFactory>(sp =>
+    new ZonWiki.Infrastructure.Coach.CoachLiveClientFactory(
+        sp.GetRequiredService<ZonWiki.Infrastructure.Ai.IVertexAdcTokenProvider>(),
+        new ZonWiki.Infrastructure.Coach.CoachLiveConnectionConfig(
+            Region: coachOptionsSnapshot.Region,
+            Project: coachOptionsSnapshot.Project,
+            Model: coachOptionsSnapshot.Model,
+            Voice: coachOptionsSnapshot.Voice,
+            LanguageCode: coachOptionsSnapshot.LanguageCode,
+            TriggerTokens: coachOptionsSnapshot.TriggerTokens),
+        sp.GetRequiredService<ILoggerFactory>()));
+builder.Services.AddScoped<CoachPromptAssembler>();
+builder.Services.AddTransient<CoachProxyService>();
 
 // 重複規則「到期具現化」背景服務（#17）：每日把母規則的到期發生具現化成可打勾的實體任務卡。
 builder.Services.AddHostedService<RecurringTaskMaterializationService>();
@@ -192,6 +223,10 @@ app.UseAuthorization();
 // 具名 policy 於各端點以 RequireRateLimiting 掛載；逾限回 429＋Retry-After（見 RateLimitingExtensions）。
 app.UseRateLimiter();
 
+// WebSocket 支援（英文教練 /ws/coach）：置於 UseAuthentication/UseAuthorization 之後、MapCoachEndpoints 之前，
+// 讓 WS 握手也帶已驗證的 Cookie principal（端點據此拒 PAT、驗擁有權）。
+app.UseWebSockets();
+
 app.MapHealthChecks("/healthz").AllowAnonymous();
 app.MapGet("/", () => Results.Ok(new { name = "ZonWiki API", status = "alive", authConfigured })).AllowAnonymous();
 
@@ -241,6 +276,9 @@ app.MapVocabularyEndpoints();
 
 // TTS 子系統（其他功能群 Phase 2）：觸發合成、狀態輪詢、授權供檔（Range）、聲音清單、TTS 偏好設定。
 app.MapTtsEndpoints();
+
+// 英文教練（其他功能群 Phase 3・批次 2）：/ws/coach Live 代理（四護欄）＋場次 REST（開課／清單／取單場）。
+app.MapCoachEndpoints();
 
 app.MapCalendarEndpoints();
 app.MapHomePageEndpoints();

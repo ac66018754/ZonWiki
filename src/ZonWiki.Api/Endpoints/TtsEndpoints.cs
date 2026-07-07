@@ -115,9 +115,21 @@ public static class TtsEndpoints
             return Results.Json(ApiResponse<TtsSynthesizeResponseDto>.Fail(validationError, 400), statusCode: 400);
         }
 
+        // 朗讀模式（Phase 3）：request.Mode → 預設 "read"；非白名單值回 400（防非法 mode 製造相異快取鍵）。
+        var mode = TtsSynthesisService.NormalizeMode(request?.Mode);
+        if (!string.IsNullOrWhiteSpace(request?.Mode) && !TtsSynthesisService.ValidModes.Contains(request.Mode.Trim()))
+        {
+            return Results.Json(
+                ApiResponse<TtsSynthesizeResponseDto>.Fail("無效的朗讀模式（只接受 read 或 dialogue）", 400), statusCode: 400);
+        }
+
         var modelName = synthesisService.ResolveModelName();
+        // 快取鍵：mode 入鍵（read≠dialogue 不撞快取），且 prompt 版本依模式取用對應腳本服務的版本。
+        var promptVersion = mode == TtsSynthesisService.ModeDialogue
+            ? TtsDialogueScriptService.PromptVersion
+            : TtsScriptService.PromptVersion;
         var contentHash = TtsSynthesisService.ComputeContentHash(
-            note.ContentRaw, voice, language, format, TtsScriptService.PromptVersion, modelName);
+            note.ContentRaw, voice, language, format, promptVersion, modelName, mode);
 
         var existing = await db.TtsAudio.IgnoreQueryFilters()
             .FirstOrDefaultAsync(t => t.UserId == userId && t.ContentHash == contentHash, ct);
@@ -141,7 +153,7 @@ public static class TtsEndpoints
                 if (await TryClaimReadyMissingFileAsync(db, existing.Id, userId, voice, modelName, ct))
                 {
                     LaunchBackgroundSynthesis(
-                        scopeFactory, loggerFactory, synthesisService, existing.Id, userId, noteId, voice, language, format);
+                        scopeFactory, loggerFactory, synthesisService, existing.Id, userId, noteId, voice, language, format, mode);
                 }
 
                 // 搶到→已啟動；沒搶到→另一近同時請求已搶先重跑 → in-flight 合流。皆回 202。
@@ -166,7 +178,7 @@ public static class TtsEndpoints
             if (await TryClaimForRerunAsync(db, existing.Id, userId, voice, modelName, staleThreshold, ct))
             {
                 LaunchBackgroundSynthesis(
-                    scopeFactory, loggerFactory, synthesisService, existing.Id, userId, noteId, voice, language, format);
+                    scopeFactory, loggerFactory, synthesisService, existing.Id, userId, noteId, voice, language, format, mode);
             }
 
             return Accepted(existing.Id);
@@ -178,7 +190,7 @@ public static class TtsEndpoints
             return TooManyProcessing();
         }
 
-        await synthesisService.InvalidateOtherVersionsAsync(userId, noteId, voice, contentHash, ct);
+        await synthesisService.InvalidateOtherVersionsAsync(userId, noteId, voice, mode, contentHash, ct);
 
         var row = new TtsAudio
         {
@@ -187,6 +199,7 @@ public static class TtsEndpoints
             ContentHash = contentHash,
             ScriptJson = string.Empty,
             Status = "processing",
+            Mode = mode,
             VoiceName = voice,
             ModelKey = modelName,
             FilePath = string.Empty,
@@ -217,7 +230,7 @@ public static class TtsEndpoints
         }
 
         LaunchBackgroundSynthesis(
-            scopeFactory, loggerFactory, synthesisService, row.Id, userId, noteId, voice, language, format);
+            scopeFactory, loggerFactory, synthesisService, row.Id, userId, noteId, voice, language, format, mode);
         return Accepted(row.Id);
     }
 
@@ -598,7 +611,8 @@ public static class TtsEndpoints
         Guid noteId,
         string voice,
         string language,
-        string format)
+        string format,
+        string mode)
     {
         var budgetSeconds = synthesisServiceForBudget.ResolveSynthesisBudgetSeconds();
 
@@ -610,7 +624,7 @@ public static class TtsEndpoints
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(budgetSeconds));
             try
             {
-                await svc.RunPipelineAsync(ttsAudioId, userId, noteId, voice, language, format, cts.Token);
+                await svc.RunPipelineAsync(ttsAudioId, userId, noteId, voice, language, format, mode, cts.Token);
             }
             catch (Exception ex)
             {

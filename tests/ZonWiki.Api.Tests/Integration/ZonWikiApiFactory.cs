@@ -62,6 +62,9 @@ public sealed class ZonWikiApiFactory : WebApplicationFactory<Program>, IAsyncLi
         // TTS 快取檔寫到暫存目錄（絕對路徑；避免污染 repo 的 App_Data）。
         Directory.CreateDirectory(_ttsCacheDirectory);
         Environment.SetEnvironmentVariable("Tts__CacheDirectory", _ttsCacheDirectory);
+        // 英文教練（Phase 3 批次 2）：WS 端點 Origin fail-closed 白名單——測試放行 localhost:3000，
+        // 讓 /ws/coach 護欄測試能驗「允許來源時通過 Origin 這關」（缺省空陣列＝拒所有）。
+        Environment.SetEnvironmentVariable("Coach__AllowedOrigins__0", "http://localhost:3000");
         // 環境設為 Testing：避開 Program.cs 內 IsDevelopment()／IsProduction() 專屬啟動分支。
         Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", "Testing");
     }
@@ -75,6 +78,7 @@ public sealed class ZonWikiApiFactory : WebApplicationFactory<Program>, IAsyncLi
         Environment.SetEnvironmentVariable("Ai__Provider", null);
         Environment.SetEnvironmentVariable("Tts__Provider", null);
         Environment.SetEnvironmentVariable("Tts__CacheDirectory", null);
+        Environment.SetEnvironmentVariable("Coach__AllowedOrigins__0", null);
         Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", null);
         await _postgresContainer.StopAsync();
         await _postgresContainer.DisposeAsync();
