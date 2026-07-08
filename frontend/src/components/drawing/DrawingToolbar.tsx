@@ -66,6 +66,9 @@ export function DrawingToolbar({
   onToggleDash,
   highlightOpacity,
   onHighlightOpacityChange,
+  highlightStraight,
+  onToggleHighlightStraight,
+  adjustHint,
   eraseRadius,
   selectedShapeIdx,
   hasShapes,
@@ -97,6 +100,12 @@ export function DrawingToolbar({
   /** 螢光筆透明度（0~1）。 */
   highlightOpacity: number;
   onHighlightOpacityChange: (o: number) => void;
+  /** 螢光筆「直線模式」是否開啟（可選；與 onToggleHighlightStraight 一起提供才顯示開關）。 */
+  highlightStraight?: boolean;
+  /** 切換螢光筆直線模式（可選；未提供＝該端不支援此功能，不顯示開關）。 */
+  onToggleHighlightStraight?: () => void;
+  /** 「調整中」的提示文字（可選；提供時取代預設的「調整剛畫的圖形」提示）。 */
+  adjustHint?: string;
   /** 局部橡皮擦目前半徑（顯示用）。 */
   eraseRadius: number;
   /** 「剛畫完、可即時微調」的形狀索引（null＝無）。 */
@@ -265,6 +274,18 @@ export function DrawingToolbar({
                 />
               </label>
             )}
+            {/* 螢光筆「直線模式」開關（僅在該端有提供切換回呼時顯示）。 */}
+            {isHighlight && onToggleHighlightStraight && (
+              <button
+                className={`tk-btn ${highlightStraight ? 'tk-btn--primary' : ''}`}
+                style={{ cursor: 'pointer', whiteSpace: 'nowrap' }}
+                title={highlightStraight ? '直線模式：開（拖曳畫出筆直的螢光線）' : '直線模式：關（自由手繪螢光筆）'}
+                onClick={onToggleHighlightStraight}
+                data-testid={`${testIdPrefix}-hl-straight`}
+              >
+                📏 直線
+              </button>
+            )}
             {isDashTool(tool) && (
               <button
                 className={`tk-btn ${penDash ? 'tk-btn--primary' : ''}`}
@@ -279,8 +300,9 @@ export function DrawingToolbar({
               <span
                 style={{ fontSize: 'var(--text-xs)', color: 'var(--action-secondary-fg)', whiteSpace: 'nowrap' }}
                 title="可直接調整工具列的顏色 / 線寬 / 虛線，會即時套用到剛畫的圖形"
+                data-testid={`${testIdPrefix}-adjust-hint`}
               >
-                ✎ 調整剛畫的圖形
+                ✎ {adjustHint ?? '調整剛畫的圖形'}
               </span>
             )}
             {extraControls}
