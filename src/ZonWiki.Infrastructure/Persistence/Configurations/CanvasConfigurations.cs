@@ -67,6 +67,11 @@ public sealed class NodeConfiguration : IEntityTypeConfiguration<Node>
     {
         builder.HasKey(n => n.Id);
 
+        // 樂觀鎖（#4/#34）：以 PostgreSQL 系統欄 xmin 當併發權杖（免新增欄位）。
+        // 節點內容更新時比對載入當下的 xmin；期間被其他來源改過則 SaveChanges 丟
+        // DbUpdateConcurrencyException，端點回 409。
+        builder.UseXminConcurrencyToken();
+
         builder.Property(n => n.Title).HasMaxLength(500);
         builder.Property(n => n.Content).IsRequired();
         builder.Property(n => n.Origin).IsRequired().HasMaxLength(32);

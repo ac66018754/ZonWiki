@@ -11,6 +11,7 @@ import {
   type NoteOverlayItem,
 } from '@/lib/api';
 import { logger } from '@/lib/logger';
+import { useConfirm } from '@/components/ConfirmProvider';
 import { pushUndo } from '@/lib/undoManager';
 import {
   type DrawTool,
@@ -81,6 +82,7 @@ interface Props {
  * 故不影響底下文字選取（#5 標註）。
  */
 export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Props) {
+  const confirm = useConfirm();
   const [items, setItems] = useState<NoteOverlayItem[]>([]);
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [mounted, setMounted] = useState(false);
@@ -407,9 +409,9 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
     persist(item.id, { dataJson: json });
   };
   /** 刪除浮層項目（先確認；軟刪除 → 進垃圾桶可還原）。 */
-  const confirmRemove = (item: NoteOverlayItem) => {
+  const confirmRemove = async (item: NoteOverlayItem) => {
     const label = item.kind === 'sticky' ? '便利貼' : '圖片板';
-    if (window.confirm(`刪除這張${label}？（之後可在「垃圾桶 → 便利貼」還原）`)) remove(item.id);
+    if (await confirm({ message: `刪除這張${label}？（之後可在「垃圾桶 → 便利貼」還原）`, danger: true })) remove(item.id);
   };
 
   // ── 圖片板 dataJson 結構 { title?, images, pinned? }：各欄共存，改一欄不動其他欄 ──
@@ -872,9 +874,9 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
     setSelectedShapeIdx(null);
     commitShapes(shapesForUi.filter((_, i) => i !== idx));
   };
-  const clearDrawing = () => {
+  const clearDrawing = async () => {
     if (!shapesForUi.length) return;
-    if (!window.confirm('清除這張筆記上的所有手繪？（可用 Ctrl+Z 復原）')) return;
+    if (!(await confirm({ message: '清除這張筆記上的所有手繪？（可用 Ctrl+Z 復原）', danger: true }))) return;
     setSelectedShapeIdx(null);
     commitShapes([]);
   };

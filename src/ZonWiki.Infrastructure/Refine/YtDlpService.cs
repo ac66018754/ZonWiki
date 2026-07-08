@@ -36,9 +36,15 @@ public sealed record RefineExtractResult(
 /// 以 yt-dlp 子行程從一個 URL 擷取「字幕（純文字）」或「音訊檔」。
 ///
 /// 安全：
-/// - URL 嚴格驗證（只允許 http/https；阻擋 localhost / 私有 IP / 雲端中繼資料端點，防 SSRF）。
+/// - URL 嚴格驗證（<see cref="RefineUrlGuard"/>：只允許 http/https；阻擋 localhost / 私有 IP /
+///   IPv4-mapped IPv6 / 雲端中繼資料端點；DNS 解析失敗一律 fail-closed，防 SSRF）。
 /// - 子行程以 ArgumentList 傳參（不經過 shell），URL 與參數不會被當指令解析（防注入）。
 /// - stdout/stderr 明示 UTF-8（跨行程文字一律 UTF-8）。
+///
+/// 轉址備註：yt-dlp（本機 2026.06.09）並無 --max-redirs 或任何「HTTP 轉址跳數上限」選項，
+/// 硬加不存在的旗標會讓 yt-dlp 以「unrecognized arguments」直接失敗、使所有擷取中斷；
+/// 故 yt-dlp 這端的 SSRF 防護以 <see cref="RefineUrlGuard"/> 的來源 URL 驗證為主
+/// （文章抓取端另有逐跳轉址重驗，見 ArticleFetchService）。
 /// </summary>
 public sealed class YtDlpService
 {

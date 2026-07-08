@@ -22,7 +22,7 @@
   /* — 文字 — */
   --text-primary:       #3d3d3d;  /* 主要文本，高對比 */
   --text-secondary:     #6b6b6b;  /* 次要文本、後設資料 */
-  --text-tertiary:      #9b9b9b;  /* 提示、禁用、淡色 */
+  --text-tertiary:      #6d6d6d;  /* 提示、禁用、淡色（由 #9b9b9b 調暗至 WCAG AA ≥4.5:1） */
 
   /* — 邊框 / 分割線 — */
   --border-default:     #e8e5e2;
@@ -50,6 +50,12 @@
   --status-danger-bg:       #ffebea;
   --status-danger-fg:       #b81f1a;
 
+  /* — 錯誤：別名指向「危險」色票。CSS var() 於「使用時」才解析，故只需在基底 :root
+     定義一次，四主題各自覆寫的 --status-danger-* 會被自動跟隨（修正 --status-error-* 從未定義、
+     導致錯誤 toast／登入失敗框在四主題失去紅色警示的缺陷）。 */
+  --status-error-bg:        var(--status-danger-bg);
+  --status-error-fg:        var(--status-danger-fg);
+
   /* — 特殊 — */
   --focus-ring:         #0c5ac0;
   --code-bg:            #f5f3f0;
@@ -67,6 +73,9 @@
 
   /* — 排版 — */
   --font-body:          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  /* --font-sans：無襯線內文字體的別名（等同 --font-body）。補上此前未定義的 token，
+     修正 .code-copy-btn 與 codeBlocks.ts 引用 var(--font-sans) 卻無定義的疏漏。 */
+  --font-sans:          var(--font-body);
   --font-mono:          "Menlo", "Monaco", "Courier New", monospace;
 
   --text-xs:            12px;
@@ -118,7 +127,7 @@
 
   --text-primary:       #24292f;
   --text-secondary:     #57606a;
-  --text-tertiary:      #8b949e;
+  --text-tertiary:      #666f78;  /* 由 #8b949e 調暗至 WCAG AA ≥4.5:1 */
 
   --border-default:     #d0d7de;
   --border-strong:      #b1bac4;
@@ -156,7 +165,7 @@
 
   --text-primary:       #e6edf3;
   --text-secondary:     #8b949e;
-  --text-tertiary:      #6e7681;
+  --text-tertiary:      #838d99;  /* 由 #6e7681 調亮至 WCAG AA ≥4.5:1 */
 
   --border-default:     #30363d;
   --border-strong:      #444c56;
@@ -165,14 +174,14 @@
   --action-primary-fg:    #ffffff;
   --action-primary-hover: #2ea043;
 
-  --action-secondary-bg:    #0d47a1;
+  --action-secondary-bg:    #0a3578;  /* 由 #0d47a1 加深，使 fg #79c0ff 達 WCAG AA ≥4.5:1（原 4.44） */
   --action-secondary-fg:    #79c0ff;
   --action-secondary-hover: #1f6feb;
 
   --status-success-bg:      #033a16;
   --status-success-fg:      #3fb950;
 
-  --status-warning-bg:      #5a4a00;
+  --status-warning-bg:      #3f3400;  /* 由 #5a4a00 加深，使 fg #d29922 達 WCAG AA ≥4.5:1（原 3.45） */
   --status-warning-fg:      #d29922;
 
   --status-danger-bg:       #67060c;
@@ -194,7 +203,7 @@
 
   --text-primary:       #f0f6fc;
   --text-secondary:     #8b949e;
-  --text-tertiary:      #6e7681;
+  --text-tertiary:      #808a96;  /* 由 #6e7681 調亮至 WCAG AA ≥4.5:1 */
 
   --border-default:     #21262d;
   --border-strong:      #30363d;
@@ -210,7 +219,7 @@
   --status-success-bg:      #033a16;
   --status-success-fg:      #3fb950;
 
-  --status-warning-bg:      #5a4a00;
+  --status-warning-bg:      #3f3400;  /* 由 #5a4a00 加深，使 fg #d29922 達 WCAG AA ≥4.5:1（原 3.45） */
   --status-warning-fg:      #d29922;
 
   --status-danger-bg:       #4d1810;
@@ -565,11 +574,13 @@ html[data-route="login"] .main-content {
   font-size: var(--text-sm);
   font-weight: 500;
   cursor: pointer;
-  transition: background 0.2s ease;
+  transition: filter 0.2s ease;
 }
 
+/* hover 用 filter 變暗（而非寫死暗紅），四主題一致：亮色由 #b81f1a 變暗、暗色由亮紅 #f85149 變暗，
+   皆為「變暗」的正確回饋方向（修正原寫死 #ae2a19 在暗色反而變濁、在 light 主題無回饋的缺陷）。 */
 .btn-danger:hover {
-  background: #ae2a19;
+  filter: brightness(0.9);
 }
 
 .btn-danger:disabled {
@@ -1761,6 +1772,35 @@ button:disabled,
   .qls-card-actions,
   .tfp-del {
     opacity: 1;
+  }
+}
+/* #52 觸控命中區：觸控裝置（無 hover 能力）上，把幾個「視覺刻意很小」的圖示鈕
+   命中區擴大到至少 44×44px（WCAG 2.5.5 Target Size 與行動裝置基本盤），
+   但視覺尺寸維持不變——用一層透明、置中、撐到 ≥44px 的 ::after 疊在按鈕上，
+   點到透明區等同點到按鈕本身（比直接放大 padding 更不影響既有版面）。
+   涵蓋：標題圖示鈕(.icon-btn 36)、樹狀展開箭頭(.nt-caret 18)、
+   分類/標籤列操作鈕(.nt-actions button 24)、排序鈕(.nt-sortbtn 20)。 */
+@media (hover: none) {
+  .icon-btn,
+  .nt-caret,
+  .nt-actions button,
+  .nt-sortbtn {
+    position: relative;
+  }
+  .icon-btn::after,
+  .nt-caret::after,
+  .nt-actions button::after,
+  .nt-sortbtn::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    /* 命中區至少 44px；仍不小於按鈕本身視覺大小 */
+    min-width: 44px;
+    min-height: 44px;
+    width: 100%;
+    height: 100%;
   }
 }
 /* 排序模式的「↑ 上移 / ↓ 下移 / ⤴ 移到頂層」小按鈕：手機無法做樹狀拖放，改用按鈕重排。 */

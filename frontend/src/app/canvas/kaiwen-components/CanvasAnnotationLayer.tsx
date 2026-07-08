@@ -7,6 +7,7 @@ import { kaiwenApi } from '../kaiwen-api';
 import type { CanvasAnnotationDto } from '../kaiwen-types';
 import { askAi } from '@/lib/api';
 import { logger } from '@/lib/logger';
+import { useConfirm } from '@/components/ConfirmProvider';
 import { pushUndo, useUndoHotkeys } from '@/lib/undoManager';
 import {
   type DrawTool,
@@ -86,6 +87,7 @@ interface Props {
  * - 繪圖時用一層覆蓋全畫布的「擷取面」接所有筆畫/擦除；三種橡皮擦皆以純函式在畫布座標命中。
  */
 export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props) {
+  const confirm = useConfirm();
   const { screenToFlowPosition, setViewport, getViewport } = useReactFlow();
   const { x: vx, y: vy, zoom } = useViewport();
   const zoomRef = useRef(zoom);
@@ -274,9 +276,9 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
     persist(item.id, { dataJson: json });
   };
   /** 刪除畫布便利貼（先確認；軟刪除 → 進「垃圾桶 → 便利貼」可還原，與筆記一致）。 */
-  const confirmRemove = (item: AnnoItem) => {
+  const confirmRemove = async (item: AnnoItem) => {
     const label = item.kind === 'sticky' ? '便利貼' : '圖片板';
-    if (window.confirm(`刪除這張${label}？（之後可在「垃圾桶 → 便利貼」還原）`)) remove(item.id);
+    if (await confirm({ message: `刪除這張${label}？（之後可在「垃圾桶 → 便利貼」還原）`, danger: true })) remove(item.id);
   };
 
   // ── 便利貼「繼續問」：脈絡＝前一張便利貼＋本便利貼（畫布無單一筆記，故用通用 /api/ai/ask）──
@@ -589,9 +591,9 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
     }
   };
 
-  const clearDrawing = () => {
+  const clearDrawing = async () => {
     if (!shapes.length) return;
-    if (!window.confirm('清除這張畫布上的所有手繪？（可用 Ctrl+Z 復原）')) return;
+    if (!(await confirm({ message: '清除這張畫布上的所有手繪？（可用 Ctrl+Z 復原）', danger: true }))) return;
     setSelectedShapeIdx(null);
     commitShapes([]);
   };

@@ -45,6 +45,7 @@ public sealed record RenameCanvasRequest(string Title);
 /// <param name="Node_AiSessionUuid">AI session 識別碼（可空）。</param>
 /// <param name="Node_CreatedDateTime">建立時間（UTC）。</param>
 /// <param name="Node_UpdatedDateTime">最後更新時間（UTC）。</param>
+/// <param name="Node_Version">樂觀鎖併發權杖（PostgreSQL xmin，#4/#34）；前端編輯內容保存時原封帶回為 baseVersion。0＝未知。</param>
 public sealed record NodeDto(
     string Node_Id,
     string Node_CanvasId,
@@ -61,7 +62,8 @@ public sealed record NodeDto(
     string Node_Origin,
     string? Node_AiSessionUuid,
     string? Node_CreatedDateTime,
-    string? Node_UpdatedDateTime);
+    string? Node_UpdatedDateTime,
+    long Node_Version = 0);
 
 /// <summary>
 /// 建立節點的請求。
@@ -84,7 +86,29 @@ public sealed record CreateNodeRequest(
 /// 更新節點內容的請求。
 /// </summary>
 /// <param name="Content">新內容。</param>
-public sealed record UpdateNodeContentRequest(string Content);
+public sealed record UpdateNodeContentRequest(string Content, long? BaseVersion = null);
+
+/// <summary>
+/// 更新節點佈局的請求（PATCH，部分更新）。
+/// 每個欄位皆為可空：null 代表「本次不更新該欄位」，只更新有帶值的欄位。
+/// </summary>
+/// <param name="X">X 座標；null 表不更新。</param>
+/// <param name="Y">Y 座標；null 表不更新。</param>
+/// <param name="Width">寬度；null 表不更新。</param>
+/// <param name="Height">高度；null 表不更新。</param>
+/// <param name="ZIndex">堆疊層級；null 表不更新。</param>
+/// <param name="Color">顏色；null 表不更新。</param>
+/// <param name="Title">標題；null 表不更新。</param>
+/// <param name="BaseVersion">樂觀鎖 baseVersion（#4/#34）；帶值時後端比對 xmin，衝突回 409；null＝不檢查（拖曳佈局預設不帶）。</param>
+public sealed record UpdateNodeLayoutRequest(
+    double? X = null,
+    double? Y = null,
+    double? Width = null,
+    double? Height = null,
+    int? ZIndex = null,
+    string? Color = null,
+    string? Title = null,
+    long? BaseVersion = null);
 
 /// <summary>
 /// 設定節點 AI 模型的請求。

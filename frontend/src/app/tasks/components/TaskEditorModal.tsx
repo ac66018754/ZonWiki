@@ -26,6 +26,17 @@ import {
   STATUS_META,
   PRIORITY_META,
 } from "../taskUtils";
+import {
+  type RecurrenceState,
+  type RecurrenceMode,
+  type WeekdayCode,
+  emptyRecurrence,
+  parseRrule,
+  buildRrule,
+  clampMonthDay,
+  WEEKDAY_ORDER,
+  WEEKDAY_LABELS,
+} from "../recurrence";
 import { SubtaskChecklist, isTempSubtaskId } from "./SubtaskChecklist";
 import { SearchableMultiSelect } from "@/components/SearchableMultiSelect";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
@@ -33,7 +44,9 @@ import { DateTimePicker } from "@/components/DateTimePicker";
 import { EntityLinkPopover } from "@/components/EntityLinkPopover";
 import { LinkedEntitiesBar } from "@/components/LinkedEntitiesBar";
 import { logger } from "@/lib/logger";
+import { useConfirm } from "@/components/ConfirmProvider";
 import { showToast } from "@/lib/toast";
+import { ConflictError } from "@/lib/errors";
 import type { LinkEntityType } from "@/lib/api";
 
 /** 連結浮動視窗的開啟狀態（針對某個子任務）。 */
@@ -84,6 +97,7 @@ export function TaskEditorModal({
   onNavigateToSubtask: (subtaskId: string) => void;
 }) {
   const tz = user?.timeZone || FALLBACK_TZ;
+  const confirm = useConfirm();
 
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -102,6 +116,8 @@ export function TaskEditorModal({
   const [groupId, setGroupId] = useState<string>("");
   const [plannedIso, setPlannedIso] = useState<string | null>(null);
   const [dueIso, setDueIso] = useState<string | null>(null);
+  // 重複規則（#17）：結構化狀態，儲存時組成 RRULE 存入 recurrenceRule。
+  const [recurrence, setRecurrence] = useState<RecurrenceState>(emptyRecurrence());
   // 長期任務（#1）：標記 + 粗粒度目標期（"" / "month" / "quarter" / "year" 與其代表日 UTC）。
   const [isLongTerm, setIsLongTerm] = useState(false);
   const [targetGranularity, setTargetGranularity] = useState<string>("");
@@ -125,6 +141,8 @@ export function TaskEditorModal({
 
   // 是否有未存變更（用於關閉 / 切換子任務前自動存檔）。載入 / 存檔後清為 false。
   const dirtyRef = useRef(false);
+  // 樂觀鎖（#4/#34）覆蓋旗標：使用者於衝突時選擇「覆蓋」時設為 true，讓本次保存略過 baseVersion。
+  const overwriteRef = useRef(false);
   const markDirty = useCallback(() => {
     dirtyRef.current = true;
     setSavedFlash(false);
@@ -146,6 +164,7 @@ export function TaskEditorModal({
     setGroupId(c.groupId || "");
     setPlannedIso(c.plannedDateTime ?? null);
     setDueIso(c.dueDateTime ?? null);
+    setRecurrence(parseRrule(c.recurrenceRule));
     setIsLongTerm(!!c.isLongTerm);
     setTargetGranularity(c.targetGranularity || "");
     setTargetIso(c.targetDateTime ?? null);
@@ -215,6 +234,8 @@ export function TaskEditorModal({
     else payload.clearGroupId = true;
     if (parentId) payload.parentId = parentId;
     else payload.clearParentId = true;
+    // 重複規則（#17）：組成 RRULE；不重複時送空字串＝清為 null（停止重複）。
+    payload.recurrenceRule = buildRrule(recurrence) ?? "";
     // 長期任務 + 釘選到首頁（皆送目前值；後端 null＝不更新，故一律明送布林）。
     payload.isLongTerm = isLongTerm;
     payload.isPinnedToHome = isPinnedToHome;
@@ -230,7 +251,7 @@ export function TaskEditorModal({
     return payload;
   }, [
     title, content, status, priority, plannedIso, dueIso, groupId, parentId,
-    isLongTerm, isPinnedToHome, targetGranularity, targetIso,
+    isLongTerm, isPinnedToHome, targetGranularity, targetIso, recurrence,
   ]);
 
   /**
@@ -284,7 +305,11 @@ export function TaskEditorModal({
   /** 實際寫入（卡片欄位 + 標籤 + 子任務暫存變更）。 */
   const doSave = useCallback(async () => {
     if (!taskId || !title.trim()) return;
-    await updateTaskCard(taskId, buildPayload());
+    // 樂觀鎖（#4/#34）：帶目前卡片版本；overwriteRef=true 時略過（覆蓋、last-write-wins）。
+    await updateTaskCard(taskId, {
+      ...buildPayload(),
+      baseVersion: overwriteRef.current ? undefined : card?.version,
+    });
     await assignTaskTags(taskId, selectedTagIds);
     await flushSubtasks(card?.subTasks ?? [], subTasks, taskId);
     dirtyRef.current = false;
@@ -312,6 +337,40 @@ export function TaskEditorModal({
       // 醒目的小彈窗提示（自動淡出消失，無關閉鈕）
       showToast("任務已儲存", { type: "success" });
     } catch (e) {
+      if (e instanceof ConflictError) {
+        // 併發衝突（#4/#34）：讓使用者選「重新載入最新版」或「以自己的版本覆蓋」。
+        const reload = await confirm({
+          title: "任務已被修改",
+          message:
+            "此任務已被其他來源修改。\n\n" +
+            "按「確定」重新載入最新版本（放棄本次修改）；\n" +
+            "按「取消」以您目前的內容覆蓋。",
+        });
+        if (reload) {
+          const latest = await getTaskCard(taskId);
+          if (latest) {
+            setCard(latest);
+            populateFields(latest);
+          }
+          showToast("此任務已被其他來源修改，已載入最新版本", { type: "info" });
+        } else {
+          // 覆蓋：略過 baseVersion 再存一次。
+          overwriteRef.current = true;
+          try {
+            await doSave();
+            const fresh = await getTaskCard(taskId);
+            if (fresh) {
+              setCard(fresh);
+              populateFields(fresh);
+            }
+            setSavedFlash(true);
+            showToast("任務已儲存（已覆蓋）", { type: "success" });
+          } finally {
+            overwriteRef.current = false;
+          }
+        }
+        return;
+      }
       logger.error("儲存任務失敗：", e);
       setSaveError(true);
     } finally {
@@ -319,23 +378,27 @@ export function TaskEditorModal({
     }
   }, [taskId, title, doSave, populateFields]);
 
-  /** 有未存變更時詢問是否放棄；回傳 true＝可離開。 */
-  const confirmDiscardIfDirty = useCallback(() => {
+  /** 有未存變更時詢問是否放棄；回傳 Promise<true>＝可離開。 */
+  const confirmDiscardIfDirty = useCallback(async () => {
     if (!dirtyRef.current) return true;
-    return window.confirm(
-      "此任務有未儲存的變更，要放棄並離開嗎？\n（包含子任務的新增 / 解除 / 改名 / 排序，未按「儲存」都不會生效。）"
-    );
-  }, []);
+    return confirm({
+      title: "放棄未儲存的變更？",
+      message:
+        "此任務有未儲存的變更，要放棄並離開嗎？\n（包含子任務的新增 / 解除 / 改名 / 排序，未按「儲存」都不會生效。）",
+      danger: true,
+      confirmLabel: "放棄並離開",
+    });
+  }, [confirm]);
 
   /** 關閉（或返回父任務）：未儲存變更一律不寫入；若有變更先確認。 */
-  const requestClose = useCallback(() => {
-    if (confirmDiscardIfDirty()) onClose();
+  const requestClose = useCallback(async () => {
+    if (await confirmDiscardIfDirty()) onClose();
   }, [confirmDiscardIfDirty, onClose]);
 
   /** 進入子任務：未儲存變更一律不寫入；若有變更先確認，再推入導覽堆疊。 */
   const navigateToSubtask = useCallback(
-    (subtaskId: string) => {
-      if (confirmDiscardIfDirty()) onNavigateToSubtask(subtaskId);
+    async (subtaskId: string) => {
+      if (await confirmDiscardIfDirty()) onNavigateToSubtask(subtaskId);
     },
     [confirmDiscardIfDirty, onNavigateToSubtask]
   );
@@ -644,6 +707,114 @@ export function TaskEditorModal({
                     tz={tz}
                     ariaLabel="截止日期"
                   />
+                </div>
+
+                {/* 重複規則（#17）：不重複／每天／每週選星期／每月選日／自訂 RRULE。
+                    儲存後由後端背景服務把到期發生具現化成一張張可打勾的實體任務卡。 */}
+                <div className="tk-field">
+                  <label className="tk-field-label">重複</label>
+                  <div className="tk-seg" style={{ flexWrap: "wrap" }}>
+                    {([
+                      ["none", "不重複"],
+                      ["daily", "每天"],
+                      ["weekly", "每週"],
+                      ["monthly", "每月"],
+                      ["custom", "自訂"],
+                    ] as [RecurrenceMode, string][]).map(([mode, label]) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        className={`tk-seg-btn ${recurrence.mode === mode ? "tk-seg-btn--on" : ""}`}
+                        onClick={() => {
+                          setRecurrence((prev) => ({ ...prev, mode }));
+                          markDirty();
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* 每週：選星期（週一起） */}
+                  {recurrence.mode === "weekly" && (
+                    <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      {WEEKDAY_ORDER.map((code: WeekdayCode) => {
+                        const on = recurrence.weekdays.includes(code);
+                        return (
+                          <button
+                            key={code}
+                            type="button"
+                            className={`tk-seg-btn ${on ? "tk-seg-btn--on" : ""}`}
+                            style={{ minWidth: 40 }}
+                            aria-pressed={on}
+                            onClick={() => {
+                              setRecurrence((prev) => ({
+                                ...prev,
+                                weekdays: on
+                                  ? prev.weekdays.filter((w) => w !== code)
+                                  : [...prev.weekdays, code],
+                              }));
+                              markDirty();
+                            }}
+                          >
+                            {WEEKDAY_LABELS[code]}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {recurrence.mode === "weekly" && recurrence.weekdays.length === 0 && (
+                    <div style={{ marginTop: 4, fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>
+                      未選任何星期＝視同不重複
+                    </div>
+                  )}
+
+                  {/* 每月：選日（1-31） */}
+                  {recurrence.mode === "monthly" && (
+                    <div style={{ marginTop: 8, display: "flex", gap: 6, alignItems: "center" }}>
+                      <span style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>每月</span>
+                      <select
+                        style={ctlStyle}
+                        value={recurrence.monthDay}
+                        onChange={(e) => {
+                          setRecurrence((prev) => ({ ...prev, monthDay: clampMonthDay(Number(e.target.value)) }));
+                          markDirty();
+                        }}
+                        aria-label="每月第幾日"
+                      >
+                        {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
+                          <option key={d} value={d}>{d}</option>
+                        ))}
+                      </select>
+                      <span style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>日</span>
+                    </div>
+                  )}
+
+                  {/* 自訂 RRULE */}
+                  {recurrence.mode === "custom" && (
+                    <div style={{ marginTop: 8 }}>
+                      <input
+                        type="text"
+                        style={{ ...ctlStyle, width: "100%", fontFamily: "var(--font-mono, monospace)" }}
+                        value={recurrence.custom}
+                        onChange={(e) => {
+                          setRecurrence((prev) => ({ ...prev, custom: e.target.value }));
+                          markDirty();
+                        }}
+                        placeholder="FREQ=WEEKLY;INTERVAL=2;BYDAY=MO"
+                        aria-label="自訂 RRULE"
+                      />
+                      <div style={{ marginTop: 4, fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>
+                        iCal RRULE 格式；支援 FREQ／INTERVAL／BYDAY／BYMONTHDAY／COUNT／UNTIL
+                      </div>
+                    </div>
+                  )}
+
+                  {recurrence.mode !== "none" && (
+                    <div style={{ marginTop: 6, fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>
+                      需設定「開始日期」作為重複的起算時間；到期發生會自動產生為可打勾的任務。
+                    </div>
+                  )}
                 </div>
 
                 {/* 父任務 */}

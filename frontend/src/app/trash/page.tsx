@@ -3,15 +3,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   TrashItem,
-  CurrentUser,
-  getCurrentUser,
   listTrash,
   restoreTrashItem,
   purgeTrashItem,
 } from "@/lib/api";
+import { useCurrentUser } from "@/lib/swr";
 import { formatDateTime } from "@/lib/formatters";
 import { DEFAULT_TIMEZONE } from "@/lib/constants";
 import { logger } from "@/lib/logger";
+import { useConfirm } from "@/components/ConfirmProvider";
 
 /**
  * 統一垃圾桶頁面（/trash）。
@@ -35,8 +35,10 @@ const GROUP_ORDER: { name: string; icon: string }[] = [
 ];
 
 export default function TrashPage() {
+  const confirm = useConfirm();
   const [items, setItems] = useState<TrashItem[]>([]);
-  const [user, setUser] = useState<CurrentUser | null>(null);
+  // 目前登入者（時區顯示）改由共用的 SWR 快取取得，不再與垃圾桶清單一起手動抓。
+  const { data: user } = useCurrentUser();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -48,8 +50,7 @@ export default function TrashPage() {
   const load = useCallback(async () => {
     try {
       setLoading(true);
-      const [u, list] = await Promise.all([getCurrentUser(), listTrash()]);
-      setUser(u);
+      const list = await listTrash();
       setItems(list);
       setError(null);
     } catch (err) {
@@ -106,7 +107,7 @@ export default function TrashPage() {
 
   const handlePurge = async (item: TrashItem) => {
     if (busyId) return;
-    if (!window.confirm(`永久刪除「${item.title}」？此操作無法復原。`)) return;
+    if (!(await confirm({ message: `永久刪除「${item.title}」？此操作無法復原。`, danger: true, confirmLabel: "永久刪除" }))) return;
     setBusyId(item.id);
     try {
       const ok = await purgeTrashItem(item.type, item.id);

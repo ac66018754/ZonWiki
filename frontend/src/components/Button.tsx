@@ -108,11 +108,12 @@ const dangerButtonStyles = `
   font-size: var(--text-sm);
   font-weight: 500;
   cursor: pointer;
-  transition: background 0.2s ease;
+  transition: filter 0.2s ease;
 }
 
+/* hover 用 filter 變暗（四主題一致的變暗回饋），取代原寫死暗紅 #ae2a19。 */
 .btn-danger:hover {
-  background: #ae2a19;
+  filter: brightness(0.9);
 }
 
 .btn-danger:disabled {

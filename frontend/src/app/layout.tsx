@@ -12,6 +12,7 @@ import { ToastHost } from "@/components/ToastHost";
 import { RouteAttr } from "@/components/RouteAttr";
 import { CanvasToolbarProvider } from "@/components/CanvasToolbarContext";
 import { SwrProvider } from "@/components/SwrProvider";
+import { ConfirmProvider } from "@/components/ConfirmProvider";
 import { getCurrentUser } from "@/lib/api";
 import { cookies } from "next/headers";
 import { Suspense } from "react";
@@ -100,6 +101,8 @@ export default async function RootLayout({
       <body>
         {/* 客戶端資料快取：切走再切回某頁直接吃快取、瞬間顯示，背景再靜默重抓 */}
         <SwrProvider>
+        {/* 全站確認對話框（useConfirm）：取代原生 window.confirm，支援樣式/焦點陷阱/danger */}
+        <ConfirmProvider>
         {/* 把目前路由寫到 <html data-route>，供 CSS 調整版面 */}
         <RouteAttr />
 
@@ -147,6 +150,7 @@ export default async function RootLayout({
           children
         )}
         </CanvasToolbarProvider>
+        </ConfirmProvider>
         </SwrProvider>
       </body>
     </html>

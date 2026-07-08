@@ -24,6 +24,7 @@ import type {
   SystemPromptDto,
   TrashListingDto,
 } from './kaiwen-types'
+import { ConflictError } from '@/lib/errors'
 
 // 前端(3000)與 API(5009)為不同來源，畫布 API 必須打到後端絕對網址，不能用相對路徑
 // （相對路徑會打到 Next 前端而得到 404 的 HTML，造成 JSON 解析失敗 + 無限重試錯誤風暴）。
@@ -58,6 +59,10 @@ async function http<T>(
   }
 
   const json = JSON.parse(text) as ApiResponse<T>
+  // 樂觀鎖衝突（#4/#34）：轉成 ConflictError 讓呼叫端提示「覆蓋或重新載入」。
+  if (res.status === 409) {
+    throw new ConflictError(json.Error ?? undefined)
+  }
   if (!res.ok || !json.Success) {
     throw new Error(json.Error ?? res.statusText)
   }
@@ -104,8 +109,12 @@ export const kaiwenApi = {
   updateNodeLayout: (nodeId: string, body: Record<string, unknown>) =>
     http<NodeDto>('PATCH', `/nodes/${encodeURIComponent(nodeId)}`, body),
 
-  updateNodeContent: (nodeId: string, content: string) =>
-    http<NodeDto>('PUT', `/nodes/${encodeURIComponent(nodeId)}/content`, { Content: content }),
+  // baseVersion：樂觀鎖版本（#4/#34）；帶值時後端比對 xmin，衝突丟 ConflictError；不帶＝last-write-wins（覆蓋）。
+  updateNodeContent: (nodeId: string, content: string, baseVersion?: number) =>
+    http<NodeDto>('PUT', `/nodes/${encodeURIComponent(nodeId)}/content`, {
+      Content: content,
+      BaseVersion: baseVersion,
+    }),
 
   setNodeModel: (nodeId: string, model: string) =>
     http<NodeDto>('PUT', `/nodes/${encodeURIComponent(nodeId)}/model`, { Model: model }),

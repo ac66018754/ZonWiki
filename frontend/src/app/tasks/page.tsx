@@ -23,6 +23,7 @@ import { CalendarYearView } from "@/app/calendar/components/CalendarYearView";
 import { SkeletonCard } from "@/components/Skeleton";
 import { FALLBACK_TZ, fromLocalInputValue, isOverdue, isToday } from "./taskUtils";
 import { SHORTCUT_ACTION_EVENT } from "@/lib/shortcuts";
+import { useConfirm } from "@/components/ConfirmProvider";
 
 /**
  * 日程規劃（Todo & Planning）頁面
@@ -31,6 +32,7 @@ import { SHORTCUT_ACTION_EVENT } from "@/lib/shortcuts";
  * - 快速新增、分類篩選、時間篩選（今天 / 逾期 / 未排程）。
  */
 export default function TasksPage() {
+  const confirm = useConfirm();
   const [view, setView] = useState<"list" | "board" | "calendar">("list");
   const [calendarView, setCalendarView] = useState<"month" | "week" | "day" | "year">("month");
   // 客戶端快取（SWR）：切走再切回此頁直接吃快取、瞬間顯示，背景再靜默重抓。
@@ -324,7 +326,7 @@ export default function TasksPage() {
   /** 刪除分類（卡片會變成未分類）。 */
   const handleDeleteCategory = useCallback(
     async (group: TaskGroup) => {
-      if (!window.confirm(`刪除分類「${group.name}」？該分類底下的任務會變成未分類。`)) return;
+      if (!(await confirm({ message: `刪除分類「${group.name}」？該分類底下的任務會變成未分類。`, danger: true }))) return;
       try {
         await deleteTaskGroup(group.id);
         setCatFilterIds((prev) => {

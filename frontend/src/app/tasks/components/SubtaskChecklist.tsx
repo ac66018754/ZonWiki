@@ -17,6 +17,7 @@ import {
   arrayMove,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { useConfirm } from "@/components/ConfirmProvider";
 
 /** 暫存（尚未存到後端）的子任務 id 前綴。存檔時這些會被真正建立。 */
 const TEMP_PREFIX = "tmp-";
@@ -134,6 +135,7 @@ export function SubtaskChecklist({
   /** 點「🔗」管理該子任務的關聯（僅已存檔的子任務可用） */
   onLinkSubtask?: (subtaskId: string, title: string, e: React.MouseEvent) => void;
 }) {
+  const confirm = useConfirm();
   const [newTitle, setNewTitle] = useState("");
   const tempCounter = useRef(0);
 
@@ -165,12 +167,14 @@ export function SubtaskChecklist({
    * 從清單移除：暫存（未存檔）子任務直接拿掉；已存在的子任務則是「解除父子關係」
    * （存檔後變回獨立頂層任務、不刪除）——先跳確認，避免誤觸。
    */
-  const handleRemove = (s: SubTask) => {
+  const handleRemove = async (s: SubTask) => {
     if (!isTempSubtaskId(s.id)) {
-      const ok = window.confirm(
-        `要移除與子任務「${s.title}」的父子關係嗎？\n` +
-          `（此任務會變成獨立的頂層任務、不會被刪除；按父任務的「儲存」後才生效。）`
-      );
+      const ok = await confirm({
+        title: "移除父子關係？",
+        message:
+          `要移除與子任務「${s.title}」的父子關係嗎？\n` +
+          `（此任務會變成獨立的頂層任務、不會被刪除；按父任務的「儲存」後才生效。）`,
+      });
       if (!ok) return;
     }
     onChange(items.filter((i) => i.id !== s.id));

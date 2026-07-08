@@ -1,3 +1,4 @@
+using System.Net.Http;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -113,6 +114,18 @@ public static class DependencyInjection
         services.AddHttpClient("ai", client =>
         {
             client.Timeout = TimeSpan.FromSeconds(600);
+        });
+
+        // 文章抓取專用 client：關閉自動轉址（AllowAutoRedirect=false）。
+        // SSRF 防護要求「每個轉址目標都要重跑守門」，若讓 HttpClient 自動跟隨轉址，
+        // 中途轉去內網 IP 的那一跳就繞過了 RefineUrlGuard；故改由 ArticleFetchService 逐跳手動驗證後再跟隨。
+        services.AddHttpClient("refine-article", client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(60);
+        })
+        .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+        {
+            AllowAutoRedirect = false,
         });
 
         return services;

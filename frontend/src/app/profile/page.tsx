@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { getMyProfile, getCurrentUser, type MyProfile } from "@/lib/api";
+import { getMyProfile, type MyProfile } from "@/lib/api";
+import { useCurrentUser } from "@/lib/swr";
 import { getDeviceTimeZone } from "@/lib/timezone";
 import {
   ProfileShell,
@@ -19,7 +20,9 @@ import {
  */
 export default function ProfileAccountPage() {
   const [profile, setProfile] = useState<MyProfile | null>(null);
-  const [tz, setTz] = useState<string>(getDeviceTimeZone());
+  // 目前登入者（時區顯示）改由共用的 SWR 快取取得，不再與個人資料一起手動抓。
+  const { data: currentUser } = useCurrentUser();
+  const tz = currentUser?.timeZone || getDeviceTimeZone();
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -33,13 +36,12 @@ export default function ProfileAccountPage() {
     const load = async () => {
       try {
         setLoading(true);
-        const [p, currentUser] = await Promise.all([getMyProfile(), getCurrentUser()]);
+        const p = await getMyProfile();
         if (!p) {
           setLoadError("無法載入個人資料，請重新登入後再試。");
           return;
         }
         setProfile(p);
-        setTz(currentUser?.timeZone || getDeviceTimeZone());
         setLoadError(null);
       } catch {
         setLoadError("無法載入個人資料，請稍後重試。");

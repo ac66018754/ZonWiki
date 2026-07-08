@@ -13,6 +13,7 @@ import {
 } from "@/lib/api";
 import { SearchableMultiSelect } from "@/components/SearchableMultiSelect";
 import { logger } from "@/lib/logger";
+import { useConfirm } from "@/components/ConfirmProvider";
 
 /**
  * 首頁「常用連結」區塊。
@@ -32,6 +33,7 @@ export function QuickLinksSection({
   /** 新增/編輯/刪除後通知首頁重新載入。 */
   onChanged: () => void | Promise<void>;
 }) {
+  const confirm = useConfirm();
   const [formOpen, setFormOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [title, setTitle] = useState("");
@@ -125,7 +127,7 @@ export function QuickLinksSection({
   };
 
   const handleDelete = async (id: string) => {
-    if (!window.confirm("刪除這個常用連結？")) return;
+    if (!(await confirm({ message: "刪除這個常用連結？", danger: true }))) return;
     try {
       await deleteQuickLink(id);
       await onChanged();

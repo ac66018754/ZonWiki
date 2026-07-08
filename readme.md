@@ -1,6 +1,6 @@
 # ZonWiki — 個人知識與任務作業系統
 
-**一句話定位**：統一的個人知識庫 + 任務管理系統，集筆記、白板、知識圖譜、日程規劃、待辦事項、AI 繪畫於一身，支援多人使用。
+**一句話定位**：統一的個人知識庫 + 任務管理系統，集筆記、白板、知識圖譜、日程規劃、待辦事項、AI 繪畫於一身，支援多人各自獨立使用（單人為主，暫無跨帳號協作／分享）。
 
 **🔗 線上 Demo**：<https://zonwiki.pee-yang.com> ｜ **授權**：MIT License
 
@@ -37,7 +37,7 @@
 | **認證** | Cookie + HTTP-only；強制登入 | Google OAuth (optional，正式部署用) |
 | **API 金鑰加密** | ASP.NET Core Data Protection | AI 模型金鑰存 DB 時自動加密、解析時自動解密 |
 | **AI 整合** | Claude CLI + OpenAI 相容 + Gemini | 可擴展 IAiProvider 介面；內建 Gemini (format-md) |
-| **MCP** | 自家 MCP Server（Node.js/TypeScript，已實作） | 供任何 AI 助理讀寫知識庫/任務/畫布；stdio、16 工具。見 [docs/MCP使用說明.md](./docs/MCP使用說明.md) |
+| **MCP** | 自家 MCP Server（Node.js/TypeScript，已實作） | 供任何 AI 助理讀寫知識庫/任務/畫布；stdio、45 工具。見 [docs/MCP使用說明.md](./docs/MCP使用說明.md) |
 | **測試框架** | xUnit + FluentAssertions | 整合測試用 Testcontainers.PostgreSql |
 | **容器化** | Docker Compose | 本機開發用；正式部署可自選（K8s/VPS 等） |
 | **版本控制** | Git + GitHub | DB 為唯一真相（不再有檔案同步）|
@@ -512,14 +512,16 @@ dotnet test ZonWiki.slnx /p:CollectCoverage=true
 
 ```
 tests/
-├── ZonWiki.Domain.Tests/           # 領域邏輯單元測試
-│   └── Notes/
-│       └── NoteSlugGeneratorTests.cs
-├── ZonWiki.Api.Tests/              # API 單元測試
-│   └── Controllers/
-└── ZonWiki.Integration.Tests/      # 整合測試（Testcontainers）
-    └── Fixtures/
-        └── PostgresFixture.cs      # 真實 PG 容器
+├── ZonWiki.Api.Tests/                    # API 層測試（xUnit + FluentAssertions）
+│   ├── Endpoints/                        # 端點層測試（Task/NoteWrite/Calendar/QuickLink/Capture…）
+│   ├── Services/                         # 服務測試（AskQueue、CanvasSystemPromptResolver…）
+│   ├── Integration/                      # 整合測試（UserDataIsolationTests＝多租戶隔離，真 Postgres）
+│   ├── Notes/                            # NoteContentHelpers 等
+│   └── Smoke/                            # BuildSmokeTests
+└── ZonWiki.Infrastructure.Tests/         # 基礎設施層測試
+    └── Domain/                           # ApiResponse 等
+
+# 整合測試用 Testcontainers.PostgreSql 起真實 Postgres 容器（見 Integration/Fixtures）。
 ```
 
 ### TDD 流程（CLAUDE.md 規定）
@@ -557,14 +559,21 @@ dotnet test tests/ZonWiki.Api.Tests --filter "NoteSearch"
 ## MCP (Model Context Protocol)
 
 ZonWiki 已內建一支 **MCP Server**（[`mcp/`](./mcp/)，Node.js + TypeScript），讓 Claude（Desktop / Code）
-等支援 MCP 的 AI 助理**直接讀寫**你的知識庫、任務、捕捉與開問啦畫布，共 **19 個工具**：
+等支援 MCP 的 AI 助理**直接讀寫**你的知識庫、任務、捕捉與開問啦畫布，共 **45 個工具**（以 `mcp/src/index.ts` 實際註冊數為準）：
 
-- **筆記（6）**：`list_notes`、`get_note`、`create_note`、`create_classified_note`、`update_note`、`search_notes`
+- **筆記（9）**：`list_notes`、`get_note`、`create_note`、`create_classified_note`、`update_note`、`delete_note`、`search_notes`、`get_backlinks`、`set_note_categories`
   - `create_classified_note`（推薦）：以「分類名稱路徑」自動建立巢狀分類、以「標籤名稱」自動建標籤，一次完成「資料夾→分類、Markdown→筆記、正確歸類」。
-- **分類（2）**：`list_categories`、`create_category`
-- **任務（3）**：`list_tasks`、`create_task`、`update_task`
+- **分類（4）**：`list_categories`、`create_category`、`update_category`、`delete_category`
+- **標籤（3）**：`list_tags`、`create_tag`、`delete_tag`
+- **任務（7）**：`list_tasks`、`get_task`、`create_task`、`update_task`、`delete_task`、`list_task_groups`、`create_task_group`
+- **子任務（4）**：`list_subtasks`、`create_subtask`、`update_subtask`、`delete_subtask`
 - **快速捕捉（3）**：`list_captures`、`create_capture`、`archive_capture`
 - **開問啦畫布（5）**：`list_canvases`、`create_canvas`、`get_canvas`、`create_canvas_node`、`search_canvas_nodes`
+- **跨模組關聯（4）**：`list_links`、`create_link`、`delete_link`、`get_link_candidates`
+- **行事曆／活動（2）**：`get_calendar`、`get_activity`
+- **垃圾桶（2）**：`list_trash`、`restore_item`
+- **精煉（1）**：`refine_url`
+- **身分（1）**：`whoami`
 
 ### 對外 AI 整合：API 個人存取權杖（PAT）＋ ChatGPT/Hermes
 
@@ -601,7 +610,7 @@ npm install && npm run build      # 產生 dist/index.js
 ```
 
 > ZonWiki 後端為 Cookie 認證、強制登入，故需以 `ZONWIKI_API_COOKIE`（或 `ZONWIKI_API_TOKEN`）傳入認證。
-> 安裝、認證取得、16 工具完整參考與故障排除，**詳見 [docs/MCP使用說明.md](./docs/MCP使用說明.md)**。
+> 安裝、認證取得、45 工具完整參考與故障排除，**詳見 [docs/MCP使用說明.md](./docs/MCP使用說明.md)**。
 
 ---
 
@@ -770,7 +779,7 @@ const localDateTime = dateTimeUtc.toLocaleString('zh-TW', {
 | 文件 | 內容 |
 |---|---|
 | [使用說明書.md](./docs/使用說明書.md) | **新手必讀**：每個功能怎麼用、為何要分狀態/優先度/分類/標籤/父子任務/關聯/反向連結，附圖文 |
-| [MCP使用說明.md](./docs/MCP使用說明.md) | 讓 Claude 等 AI 助理直接讀寫 ZonWiki（16 工具、安裝、認證、故障排除） |
+| [MCP使用說明.md](./docs/MCP使用說明.md) | 讓 Claude 等 AI 助理直接讀寫 ZonWiki（45 工具、安裝、認證、故障排除） |
 | [升級執行計畫.md](./docs/design/升級執行計畫.md) | 鎖定決策、目標架構、資料模型、分階段路線圖 |
 | [升級藍圖-個人知識與任務作業系統.md](./docs/design/升級藍圖-個人知識與任務作業系統.md) | 願景與系統定位 |
 
@@ -791,7 +800,7 @@ A: 使用不同的 PostgreSQL 資料庫名稱或連接字串（`appsettings.Deve
 A: EF Core Code-First 流程：修改 `Entities` → 跑 `dotnet ef migrations add MigrationName` → `dotnet run` 自動應用。
 
 **Q: 怎樣確保多人編輯不衝突？**  
-A: 目前採樂觀鎖（EF Core `[Timestamp]` 欄）；涉及衝突的合併策略留待多人測試後定案。
+A: 目前筆記／任務／節點為 last-write-wins（後存者覆蓋），但每次更新都會寫入 NoteRevision／NodeRevision 版本快照，被覆蓋的內容可從版本歷史還原。**樂觀鎖（rowversion）已排入導入計畫**（見 [docs/DECISIONS.md](./docs/DECISIONS.md) 2026-07-06 一則），完成後衝突時會回 409 並提示使用者選擇覆蓋或重載。
 
 **Q: AI 金鑰存在 DB，會不會洩露？**  
 A: 金鑰存 `AiModel_ApiKeyEncrypted`，用 ASP.NET Core Data Protection 加密（依賴機器金鑰），僅解密時還原。不存明碼。
@@ -807,4 +816,4 @@ A: 健康檢查端點 `/healthz` + `/api/health/ready`；正式環境已接 **GC
 - 貢獻指引：遵守 CLAUDE.md 命名規則、TDD 流程、繁體中文註解
 - 提交 PR 前確保測試通過、無 lint 錯誤、覆蓋率 >= 80%
 
-**最後更新**：2026-06-11
+**最後更新**：2026-07-06

@@ -29,6 +29,9 @@ public sealed class ArticleFetchService
     /// <summary>內文上限（與 RefineService 的 prompt 長度上限呼應）。</summary>
     private const int MaxTextLength = 40000;
 
+    /// <summary>最多允許跟隨的 HTTP 轉址跳數（防轉址迴圈；每一跳都會重跑 SSRF 守門）。</summary>
+    private const int MaxRedirects = 5;
+
     /// <summary>
     /// 建立文章抓取服務。
     /// </summary>
@@ -46,17 +49,16 @@ public sealed class ArticleFetchService
     /// <returns>文章結果，或 null（不是可讀文章）。</returns>
     public async Task<ArticleResult?> FetchAsync(string url, CancellationToken cancellationToken)
     {
-        await RefineUrlGuard.ValidateAsync(url, cancellationToken);
+        // 用「不自動轉址」的 client，改由本方法逐跳跟隨並在每一跳前重跑 SSRF 守門，
+        // 避免「首個 URL 合法、但轉址目標指向內網」的 SSRF 繞道。
+        var http = _httpClientFactory.CreateClient("refine-article");
 
-        var http = _httpClientFactory.CreateClient("ai");
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        // 帶常見瀏覽器 UA：不少站對預設/空 UA 直接擋。
-        request.Headers.TryAddWithoutValidation(
-            "User-Agent",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36");
-        request.Headers.TryAddWithoutValidation("Accept", "text/html,application/xhtml+xml");
+        using var response = await FetchFollowingRedirectsAsync(http, url, cancellationToken);
+        if (response is null)
+        {
+            return null;
+        }
 
-        using var response = await http.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
             _logger.LogInformation("文章抓取非 2xx（{Status}）：{Url}", (int)response.StatusCode, url);
@@ -92,6 +94,87 @@ public sealed class ArticleFetchService
 
         return new ArticleResult(string.IsNullOrWhiteSpace(title) ? "未命名文章" : title, text);
     }
+
+    /// <summary>
+    /// 逐跳跟隨 HTTP 轉址並取回最終回應。關鍵安全點：
+    /// 每一跳（含初始 URL 與每個 3xx 轉址目標）都先呼叫 <see cref="RefineUrlGuard.ValidateAsync"/> 才連線，
+    /// 因此中途被轉去內網 / 私有 IP 會被擋下（SSRF 防護）。轉址超過上限或指向非 http(s) 一律回 null。
+    /// </summary>
+    /// <param name="http">已關閉自動轉址的 HttpClient（"refine-article"）。</param>
+    /// <param name="url">起始 URL。</param>
+    /// <param name="cancellationToken">取消權杖。</param>
+    /// <returns>最終非轉址回應；若轉址異常或不安全則回 null（呼叫端負責 Dispose）。</returns>
+    private async Task<HttpResponseMessage?> FetchFollowingRedirectsAsync(
+        HttpClient http,
+        string url,
+        CancellationToken cancellationToken)
+    {
+        var currentUrl = url;
+        HttpResponseMessage? response = null;
+
+        for (var redirectCount = 0; redirectCount <= MaxRedirects; redirectCount++)
+        {
+            // 每一跳都重跑守門；不安全時 ValidateAsync 會拋 ArgumentException，由呼叫端統一處理。
+            await RefineUrlGuard.ValidateAsync(currentUrl, cancellationToken);
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, currentUrl);
+            // 帶常見瀏覽器 UA：不少站對預設/空 UA 直接擋。
+            request.Headers.TryAddWithoutValidation(
+                "User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36");
+            request.Headers.TryAddWithoutValidation("Accept", "text/html,application/xhtml+xml");
+
+            // 換下一跳前先釋放上一跳的回應，避免連線洩漏。
+            response?.Dispose();
+            response = await http.SendAsync(request, cancellationToken);
+
+            if (!IsRedirect(response.StatusCode))
+            {
+                // 非轉址 → 這就是最終回應。
+                return response;
+            }
+
+            var location = response.Headers.Location;
+            if (location is null)
+            {
+                // 3xx 卻沒有 Location，無從跟隨。
+                return response;
+            }
+
+            // 相對轉址：以當前 URL 為基底解析成絕對 URL。
+            var nextUri = location.IsAbsoluteUri
+                ? location
+                : new Uri(new Uri(currentUrl), location);
+
+            if (nextUri.Scheme != Uri.UriSchemeHttp && nextUri.Scheme != Uri.UriSchemeHttps)
+            {
+                // 阻擋轉址到 file://、gopher:// 等危險 scheme。
+                _logger.LogInformation("文章抓取轉址到非 http(s) scheme，已拒絕：{Url}", nextUri.Scheme);
+                response.Dispose();
+                return null;
+            }
+
+            currentUrl = nextUri.AbsoluteUri;
+        }
+
+        // 轉址次數超過上限。
+        _logger.LogInformation("文章抓取轉址過多（>{Max} 次），已放棄：{Url}", MaxRedirects, url);
+        response?.Dispose();
+        return null;
+    }
+
+    /// <summary>判斷 HTTP 狀態碼是否為「需跟隨的轉址」（301/302/303/307/308）。</summary>
+    /// <param name="statusCode">HTTP 狀態碼。</param>
+    /// <returns>屬於可跟隨的轉址時回 true。</returns>
+    private static bool IsRedirect(HttpStatusCode statusCode) => statusCode switch
+    {
+        HttpStatusCode.MovedPermanently => true,   // 301
+        HttpStatusCode.Found => true,               // 302
+        HttpStatusCode.SeeOther => true,            // 303
+        HttpStatusCode.TemporaryRedirect => true,   // 307
+        HttpStatusCode.PermanentRedirect => true,   // 308
+        _ => false,
+    };
 
     /// <summary>取標題：優先 og:title，其次 &lt;title&gt;。</summary>
     private static string ExtractTitle(string html)

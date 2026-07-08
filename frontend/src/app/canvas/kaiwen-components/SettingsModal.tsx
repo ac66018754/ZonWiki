@@ -6,6 +6,7 @@ import { formatShort } from '../lib/datetime'
 import { CategorySection } from './CategorySection'
 import { SystemPromptSection } from './SystemPromptSection'
 import type { AiModelConfigDto, HealthStateDto, ModelHealthDto } from '../kaiwen-types'
+import { useConfirm } from '@/components/ConfirmProvider'
 
 /**
  * 設定面板 Modal — 時區 + AI 模型管理 + 健檢
@@ -97,6 +98,7 @@ function groupOf(m: AiModelConfigDto): { key: string; label: string } {
 }
 
 export function SettingsModal({ timezone: propTimezone, onClose, onModelsChanged }: SettingsModalProps) {
+  const confirm = useConfirm()
   // ─────── 時區狀態 ───────
   const [timezone, setTimezone] = useState<string>('Asia/Taipei')
 
@@ -514,9 +516,9 @@ export function SettingsModal({ timezone: propTimezone, onClose, onModelsChanged
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
       // 點背景（非內容）即關閉；若有未儲存變更先確認，避免誤關丟失模型設定。
-      onMouseDown={(e) => {
+      onMouseDown={async (e) => {
         if (e.target !== e.currentTarget) return
-        if (dirty && !window.confirm('有未儲存的變更，確定要關閉設定嗎？')) return
+        if (dirty && !(await confirm({ message: '有未儲存的變更，確定要關閉設定嗎？', danger: true, confirmLabel: '關閉' }))) return
         onClose()
       }}
     >

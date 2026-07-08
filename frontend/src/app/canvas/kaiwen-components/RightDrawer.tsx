@@ -14,6 +14,7 @@ import { useEffect, useState, useCallback } from 'react'
 import type { EdgeDto, InlineLinkDto, NodeDto } from '../kaiwen-types'
 import { MarkdownEditor } from '@/components/MarkdownEditor'
 import { LinkedEntitiesBar } from '@/components/LinkedEntitiesBar'
+import { useConfirm } from '@/components/ConfirmProvider'
 
 interface RightDrawerProps {
   /**
@@ -136,6 +137,7 @@ export function RightDrawer({
   onNavigate,
   timezone = 'UTC',
 }: RightDrawerProps) {
+  const confirm = useConfirm()
   // 編輯草稿狀態
   const [draft, setDraft] = useState(node.Node_Content)
 
@@ -438,8 +440,8 @@ export function RightDrawer({
         <button
           className="w-full rounded px-3 py-2 text-sm font-medium text-[var(--kw-danger-soft-fg)] hover:text-[var(--kw-danger)]"
           style={{ backgroundColor: 'var(--kw-danger-soft-bg)' }}
-          onClick={() => {
-            if (window.confirm('確定要刪除這個節點嗎？')) {
+          onClick={async () => {
+            if (await confirm({ message: '確定要刪除這個節點嗎？', danger: true })) {
               onDeleteNode()
               onClose()
             }
