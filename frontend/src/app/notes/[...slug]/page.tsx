@@ -266,9 +266,12 @@ export default function NotesDetailPage() {
   const [activeTab, setActiveTab] = useState<'preview' | 'comments' | 'history' | 'backlinks' | 'links'>('preview');
   // 「全部收合／展開」單鈕的狀態：false=目前視為全收合（後端 toggle 預設收合），點擊會展開全部並翻轉。
   const [allTogglesExpanded, setAllTogglesExpanded] = useState(false);
+  // 「全部收合／展開」的觸發序號：0＝尚未按過。批次寫入 details.open 的 effect 只在序號變動時執行一次——
+  // 初載與其他任何重繪都不得批次改寫（否則 :::toggle-open 的預設展開會被壓掉、使用者手動開合會被清空）。
+  const [allTogglesSeq, setAllTogglesSeq] = useState(0);
 
-  // 章節目錄表（浮動、可拖曳、可關閉）：每次載入頁面「預設打開」，位置固定在左側（不記憶、不壓內文）。
-  const [tocOpen, setTocOpen] = useState(true);
+  // 章節目錄表（浮動、可拖曳、可關閉）：預設不開啟，點右下角工具列「📖 目錄」才打開（使用者裁示 2026-07-08）。
+  const [tocOpen, setTocOpen] = useState(false);
 
   // 本頁捲動容器（.note-detail-page）：記住閱讀位置、下次打開自動捲回（N1）。
   const noteScrollRef = useRef<HTMLDivElement | null>(null);
@@ -331,21 +334,28 @@ export default function NotesDetailPage() {
       recordNoteNav(window.location.pathname + window.location.search);
     }
   }, [note?.id, slug]);
-  // 由內文 HTML 萃取章節（h1/h2/h3）並為各標題補上錨點 id（供目錄點擊捲動）。
+  // 由內文 HTML 萃取章節（h1/h2/h3 標題＋ :::toggle 摘要）並補上錨點 id（供目錄點擊捲動）。
   const { html: previewHtml, toc } = useMemo(
     () => (note ? buildToc(note.contentHtml) : { html: '', toc: [] }),
     [note],
   );
+  // 【關鍵】dangerouslySetInnerHTML 的物件必須「識別穩定」（memo 化）——
+  // React 19 的 commitUpdate 以物件識別比較此 prop，若每次 render 都是新的 {__html} 字面量，
+  // 任何不相關的重繪（例如點「📖 目錄」改 tocOpen）都會重新注入 innerHTML，
+  // 把所有 <details> 重建成預設收合、也順帶清掉畫重點的 DOM 包裹（2026-07-08 以位元組級插樁證實：
+  // 重注入的內容與原內容完全相同，純屬白做工的破壞性重寫）。
+  const previewHtmlObj = useMemo(() => ({ __html: previewHtml }), [previewHtml]);
 
-  // 「全部展開／收合」：改用 effect 套用到目前 DOM 的所有 details——
-  // 先前直接在點擊時 setOpen，但內文渲染層（NoteMarksLayer 等）在同次重繪會把 .markdown-prose 重新注入、
-  // 把 details 重建成預設收合，導致「全部展開」按了沒反應（全部收合看似 OK 只因預設就收合）。
-  // 放進 effect（父層 effect 於子層之後執行）→ 在重注入之後才套用，故一定生效；也隨 previewHtml 變動重套。
+  // 「全部展開／收合」：以 effect 套用到目前 DOM 的所有 details（點擊當下的重繪會先重注入內文，
+  // effect 於其後執行故一定生效）。只在「按鈕真的被按下」（序號變動）時批次寫入——
+  // 先前以 [allTogglesExpanded, previewHtml] 為依賴，初載就會把 :::toggle-open 壓成收合，
+  // 且任何 previewHtml 識別變動都會清空使用者手動的開合狀態。
   useEffect(() => {
+    if (allTogglesSeq === 0) return; // 尚未按過 → 尊重 markdown 預設與使用者手動狀態
     previewRef.current
       ?.querySelectorAll<HTMLDetailsElement>('details.md-toggle')
       .forEach((d) => { d.open = allTogglesExpanded; });
-  }, [allTogglesExpanded, previewHtml]);
+  }, [allTogglesSeq, allTogglesExpanded]);
 
   // 共用「復原 / 重做」：手繪塗鴉與畫重點共用同一條 Ctrl+Z 堆疊，僅在預覽分頁掛上單一鍵盤監聽。
   useUndoHotkeys(activeTab === 'preview');
@@ -808,7 +818,7 @@ export default function NotesDetailPage() {
                   toggle 是後端渲染的原生 <details>，直接設 .open 即可。 */}
               {activeTab === 'preview' && previewHtml.includes('md-toggle') && (
                 <button
-                  onClick={() => setAllTogglesExpanded((v) => !v)}
+                  onClick={() => { setAllTogglesExpanded((v) => !v); setAllTogglesSeq((s) => s + 1); }}
                   className="btn-secondary"
                   title={allTogglesExpanded ? '收合整頁所有摺疊區塊' : '展開整頁所有摺疊區塊'}
                 >
@@ -1247,7 +1257,7 @@ export default function NotesDetailPage() {
                     borderRadius: 'var(--radius-lg)',
                     border: '1px solid var(--border-default)',
                   }}
-                  dangerouslySetInnerHTML={{ __html: previewHtml }}
+                  dangerouslySetInnerHTML={previewHtmlObj}
                 />
                 <NoteMarksLayer
                   noteId={note.id}

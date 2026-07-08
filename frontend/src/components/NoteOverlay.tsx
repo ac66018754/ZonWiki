@@ -21,6 +21,9 @@ import {
   samePoint,
   eraseAt,
   eraseInBox,
+  eraseVisibleOnly,
+  scaleShape,
+  shapeAnchorPoint,
 } from '@/lib/drawing/shapes';
 import { ShapeEl } from '@/lib/drawing/ShapeEl';
 import { StickyBody } from '@/components/overlay/StickyBody';
@@ -106,6 +109,9 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
   // 「剛畫完的形狀」索引：可在工具列即時調整其顏色 / 線寬 / 虛線並立刻看到變化。
   // null＝沒有可調整的對象（換工具、擦除、開始畫新的一筆都會清除）。
   const [selectedShapeIdx, setSelectedShapeIdx] = useState<number | null>(null);
+  // 螢光筆「直線模式」：開啟時螢光筆拖曳畫出筆直的半透明線（type:'line' + opacity），
+  // 適合整行畫重點；關閉＝原本的自由筆螢光筆。
+  const [highlightStraight, setHighlightStraight] = useState(false);
 
   useEffect(() => setMounted(true), []);
 
@@ -248,6 +254,10 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
   };
 
   const addTextBox = async () => {
+    // 需求：按 T＝進入文字，同時取消畫筆/形狀/螢光筆/橡皮擦模式
+    //（否則繪圖 SVG 仍攔截指標，新文字框根本點不到）。
+    setTool(null);
+    setSelectedShapeIdx(null);
     const p = spawnPos();
     const created = await createNoteOverlay(noteId, {
       kind: 'text', x: p.x, y: p.y, width: 180, height: 48, zIndex: maxZ + 1,
@@ -287,6 +297,26 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
     setSelectedTextId(null);
     setEditingTextId(null);
     if (id) remove(id);
+  };
+
+  // 文字框「滾輪調整大小」（調整中狀態的 T 版本）：等比縮放字級與框尺寸。
+  // 滾輪連發 → 本地即時、持久化尾端去抖。
+  const textWheelPersistTimer = useRef<number | null>(null);
+  const adjustTextByWheel = (id: string, deltaY: number) => {
+    const it = itemsRef.current.find((x) => x.id === id);
+    if (!it || it.kind !== 'text') return;
+    const factor = deltaY < 0 ? 1.06 : 1 / 1.06;
+    const extra = parseTextExtra(it.dataJson);
+    const fontSize = Math.min(120, Math.max(8, Math.round(extra.fontSize * factor)));
+    const width = Math.max(40, Math.round(it.width * factor));
+    const height = Math.max(24, Math.round(it.height * factor));
+    patchLocal(id, { dataJson: JSON.stringify({ ...extra, fontSize }), width, height });
+    if (textWheelPersistTimer.current != null) window.clearTimeout(textWheelPersistTimer.current);
+    textWheelPersistTimer.current = window.setTimeout(() => {
+      textWheelPersistTimer.current = null;
+      const cur = itemsRef.current.find((x) => x.id === id);
+      if (cur) persist(id, { dataJson: cur.dataJson, width: cur.width, height: cur.height });
+    }, 500);
   };
 
   // 點文字框與其屬性面板 / 色盤以外的地方 → 取消選取（空框順手刪除）。
@@ -457,21 +487,31 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
       });
   };
 
-  // ── 便利貼/圖片板「跟著所在的 toggle 一起收合」（使用者需求）──
-  // 規格：非釘住（position:absolute、貼在內文上隨捲動）的便利貼/圖片板，若其「左上角的點」最靠近的文字所在的
-  // <details class="md-toggle">（或其任一祖先 details）被收合，這張就一起「隱藏」；再展開就恢復（可逆）。
-  // 釘住（fixed）者不受影響（它不貼著任何文字）。
+  // ── 便利貼/圖片板/文字框/手繪形狀「跟著所在的 toggle 一起收合」（使用者需求）──
+  // 規格：非釘住（position:absolute、貼在內文上隨捲動）的便利貼/圖片板/文字框，以及每一個手繪形狀，
+  // 若其錨定點下的內容所在的 <details class="md-toggle">（或其任一祖先 details）被收合，就一起「隱藏」；
+  // 再展開就恢復（可逆）。釘住（fixed）者不受影響（它不貼著任何文字）。
   //
   // 【為何用 DOM 錨點、而非幾何範圍——決定性關鍵】收合是「同一輸入→同一輸出」的需求。純用幾何（點是否落在
   // details 的 rect 內）會因「內層收合使外層 rect 縮短」「上方兄弟 toggle 收合使整段內容上移」而讓判定隨
-  // 『收合歷史』飄移，出現「有時不隱藏、有時不出現、多按幾下又好」的非決定性。改法：把項目錨定到它左上角點
+  // 『收合歷史』飄移，出現「有時不隱藏、有時不出現、多按幾下又好」的非決定性。改法：把項目錨定到它錨定點
   // 下方「真正的內容元素」（DOM 祖先鏈穩定、不受版面位移影響），再以純 DOM 判斷「該元素是否位於某個收合中的
   // <details> 內」決定隱藏——純函式、決定性。
   //
   // 錨點建立時機：只在「目前錨點可見（不在收合 details 內）或尚未建立」時，才用 elementsFromPoint 重抓點下的
   // 可見內容元素；若目前錨點已被收合（該藏），就保留它、不重抓（否則會抓到位移後的別段內容而誤判）。
+  // 觸發時機＝toggle 開合（立即）＋捲動/視窗改變（節流）＋項目/形狀變動（去抖）——後兩者讓「畫完當下」
+  // 與「捲進視野的既有畫記」都能在可見時就建好錨點（elementsFromPoint 只能作用於視窗內的點）。
+  // 從未進過視野的舊畫記維持「無錨點＝永遠顯示」的保守行為（與便利貼既有語意一致）。
+  //
+  // 錨點 key：項目級用 item.id；形狀級（手繪無 id）用「形狀 JSON 內容」——同 session 內容不變則 key 穩定；
+  // 擦除/改樣式/縮放會換 key，屆時形狀必為可見狀態（隱藏者不可被操作），會安全地重新錨定。
   const stickyAnchorRef = useRef<Map<string, Element>>(new Map());
   const [collapsedByToggle, setCollapsedByToggle] = useState<Set<string>>(new Set());
+  const shapeAnchorsRef = useRef<Map<string, Element>>(new Map());
+  const [hiddenShapeKeys, setHiddenShapeKeys] = useState<Set<string>>(new Set());
+  // 最新 recompute 的 ref：供「items/shapes 變動」的去抖 effect 呼叫（函式本體定義於下方 effect 內）。
+  const recomputeAnchorsRef = useRef<() => void>(() => {});
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -486,7 +526,7 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
       return false;
     };
 
-    /** 找左上角螢幕點下方「真正可見的內容元素」（在內文容器內、非 overlay、非 summary、不在收合 details 內）。 */
+    /** 找錨定螢幕點下方「真正可見的內容元素」（在內文容器內、非 overlay、非 summary、不在收合 details 內）。 */
     const contentElAt = (px: number, py: number): Element | null => {
       if (px < 0 || py < 0 || px > window.innerWidth || py > window.innerHeight) return null; // 視窗外 → elementsFromPoint 無效
       for (const el of document.elementsFromPoint(px, py)) {
@@ -498,44 +538,101 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
       return null;
     };
 
+    /**
+     * 通用的「錨定→判定隱藏」流程（項目級與形狀級共用同一套規則）。
+     * @param anchors 錨點表（key → 內容元素）。
+     * @param entries 待判定的 key 與其錨定螢幕點（pt 為 null＝點無法計算）。
+     * @returns 目前應隱藏的 key 集合。
+     */
+    const computeHidden = (
+      anchors: Map<string, Element>,
+      entries: { key: string; pt: [number, number] | null }[],
+    ): Set<string> => {
+      const liveKeys = new Set(entries.map((e) => e.key));
+      for (const k of Array.from(anchors.keys())) if (!liveKeys.has(k)) anchors.delete(k); // 清掉已不存在者
+
+      const hidden = new Set<string>();
+      for (const { key, pt } of entries) {
+        const cur = anchors.get(key);
+        const curHidden = !!cur && cur.isConnected && inClosedToggle(cur);
+        if (!curHidden) {
+          // 目前可見/未建立/已脫離 DOM → 依錨定點重抓錨點；已被收合藏起者則保留錨點、不重抓。
+          const el = pt ? contentElAt(pt[0], pt[1]) : null;
+          if (el) anchors.set(key, el);
+          else if (!cur || !cur.isConnected) anchors.delete(key); // 點上無可用內容 → 無錨點（永遠顯示）
+        }
+        const a = anchors.get(key);
+        if (a && a.isConnected && inClosedToggle(a)) hidden.add(key);
+      }
+      return hidden;
+    };
+
     const recompute = () => {
       const origin = overlayRef.current?.getBoundingClientRect();
       if (!origin) return;
+
+      // (1) 項目級：便利貼/圖片板/文字框（非釘住者），錨定點＝左上角。
       const nonPinned = itemsRef.current.filter(
-        (i) => (i.kind === 'sticky' || i.kind === 'slide') && !isPinned(i),
+        (i) => (i.kind === 'sticky' || i.kind === 'slide' || i.kind === 'text') && !isPinned(i),
       );
-      const anchors = stickyAnchorRef.current;
-      const liveIds = new Set(nonPinned.map((i) => i.id));
-      for (const id of Array.from(anchors.keys())) if (!liveIds.has(id)) anchors.delete(id); // 清掉已不存在項目
+      const hiddenItems = computeHidden(
+        stickyAnchorRef.current,
+        nonPinned.map((it) => ({ key: it.id, pt: [origin.left + it.x, origin.top + it.y] as [number, number] })),
+      );
+      setCollapsedByToggle((prev) => (sameStringSet(prev, hiddenItems) ? prev : hiddenItems));
 
-      const hidden = new Set<string>();
-      for (const it of nonPinned) {
-        const cur = anchors.get(it.id);
-        const curHidden = !!cur && cur.isConnected && inClosedToggle(cur);
-        if (!curHidden) {
-          // 目前可見/未建立/已脫離 DOM → 依左上角點重抓錨點；已被收合藏起者則保留錨點、不重抓。
-          const el = contentElAt(origin.left + it.x, origin.top + it.y);
-          if (el) anchors.set(it.id, el);
-          else if (!cur || !cur.isConnected) anchors.delete(it.id); // 點上無可用內容 → 無錨點（永遠顯示）
-        }
-        const a = anchors.get(it.id);
-        if (a && a.isConnected && inClosedToggle(a)) hidden.add(it.id);
-      }
-      setCollapsedByToggle((prev) => (sameStringSet(prev, hidden) ? prev : hidden));
+      // (2) 形狀級：每個手繪形狀以「代表點」（shapeAnchorPoint）錨定。
+      const hiddenShapes = computeHidden(
+        shapeAnchorsRef.current,
+        shapesRef.current.map((s) => {
+          const pt = shapeAnchorPoint(s);
+          return {
+            key: JSON.stringify(s),
+            pt: pt ? ([origin.left + pt[0], origin.top + pt[1]] as [number, number]) : null,
+          };
+        }),
+      );
+      setHiddenShapeKeys((prev) => (sameStringSet(prev, hiddenShapes) ? prev : hiddenShapes));
     };
+    recomputeAnchorsRef.current = recompute;
 
-    // toggle 事件不冒泡 → 於容器用 capture 監聽，可涵蓋事後才注入的 details。
+    // toggle 事件不冒泡 → 於容器用 capture 監聽，可涵蓋事後才注入的 details；開合當下立即重算。
     const onToggle = (e: Event) => {
       const d = e.target;
       if (!(d instanceof HTMLDetailsElement) || !d.classList.contains('md-toggle')) return;
       recompute();
     };
 
+    // 捲動/視窗改變 → 節流重算：讓「捲進視野」的既有畫記/便利貼漸進建立錨點。
+    // 已建立且仍有效的錨點不會被此舉破壞（可見時重抓＝當下正確；隱藏時保留不動）。
+    let throttleTimer: number | null = null;
+    const scheduleRecompute = () => {
+      if (throttleTimer != null) return;
+      throttleTimer = window.setTimeout(() => {
+        throttleTimer = null;
+        recompute();
+      }, 200);
+    };
+
     container.addEventListener('toggle', onToggle, true);
+    window.addEventListener('scroll', scheduleRecompute, true);
+    window.addEventListener('resize', scheduleRecompute);
     recompute();
-    return () => container.removeEventListener('toggle', onToggle, true);
+    return () => {
+      container.removeEventListener('toggle', onToggle, true);
+      window.removeEventListener('scroll', scheduleRecompute, true);
+      window.removeEventListener('resize', scheduleRecompute);
+      if (throttleTimer != null) window.clearTimeout(throttleTimer);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [containerRef]);
+
+  // 項目/形狀變動（畫完一筆、新增便利貼/文字框、載入完成…）→ 去抖重算錨點，
+  // 讓「畫完當下（必在視野內）」就建立錨點；拖曳中每幀的 patchLocal 也會觸發，60ms 去抖合併。
+  useEffect(() => {
+    const id = window.setTimeout(() => recomputeAnchorsRef.current(), 60);
+    return () => window.clearTimeout(id);
+  }, [items]);
 
   // ── 拖曳 / 縮放 ──
   const startDrag = (e: React.PointerEvent, item: NoteOverlayItem, mode: 'move' | 'resize') => {
@@ -588,14 +685,20 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
   const eraseBox = useRef<{ x0: number; y0: number; x1: number; y1: number } | null>(null); // 框選擦除進行中的選取框
   const [, forceRerender] = useState(0);
 
-  // 以 ref 持有最新狀態，避免復原 / 重做的閉包鎖死過時物件（例如尚未建立的繪圖項目）。
-  const shapesRef = useRef<Shape[]>(shapes);
-  shapesRef.current = shapes;
   const drawingRef = useRef<NoteOverlayItem | null>(drawing);
   drawingRef.current = drawing;
   // 建立 drawing 項目的 in-flight 守衛：避免「第一筆畫完、建立 POST 尚未回來時就 Ctrl+Z」
   // 導致重複建立第二個 drawing 項目。後續呼叫會等同一個建立完成、再更新同一項目。
   const creatingRef = useRef<Promise<void> | null>(null);
+
+  // 以 ref 持有最新狀態，避免復原 / 重做的閉包鎖死過時物件（例如尚未建立的繪圖項目）。
+  // 【對抗式復審修正】drawing 項目「建立中」（第一筆的 POST 往返空窗）時不要用 items 派生的
+  // shapes（此刻仍是空陣列）蓋掉 setDrawingShapes 樂觀寫入的最新值——否則空窗期間第一筆會
+  // 短暫消失、滾輪縮放/調色短路、甚至連畫第二筆會把第一筆蓋掉。
+  const shapesRef = useRef<Shape[]>(shapes);
+  if (!creatingRef.current) shapesRef.current = shapes;
+  /** 畫面與互動實際採用的形狀來源（建立空窗期走樂觀值，其餘走 items 派生值）。 */
+  const shapesForUi: Shape[] = creatingRef.current ? shapesRef.current : shapes;
 
   /** 把手繪寫入（local + 後端）；一律透過 drawingRef 取得「當前」繪圖項目，故供復原閉包安全沿用。 */
   const setDrawingShapes = async (next: Shape[]) => {
@@ -618,7 +721,15 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
       });
       if (created) {
         drawingRef.current = created; // 立即同步，後續呼叫直接走「更新」分支
-        setItems((prev) => [...prev, created]);
+        // POST 往返期間形狀可能又被更新（例如剛畫完立刻滾輪縮放）→ 以最新樂觀值回填，
+        // 避免建立回應的初始 json 蓋掉空窗期的變更。
+        const latest = JSON.stringify(shapesRef.current);
+        if (latest !== created.dataJson) {
+          setItems((prev) => [...prev, { ...created, dataJson: latest }]);
+          persist(created.id, { dataJson: latest });
+        } else {
+          setItems((prev) => [...prev, created]);
+        }
       }
     })();
     await creatingRef.current;
@@ -639,20 +750,39 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
   // 線寬滑桿目前控制的值：螢光筆用自己的較粗線寬，其餘用一般筆寬。
   const activeWidth = tool === 'highlight' ? highlightWidth : penWidth;
 
+  // 「調整中」：剛畫完的幾何形狀（直線/矩形/橢圓/螢光直線）→ 滾輪縮放、左鍵點一下完成、
+  // 完成後維持原工具模式可直接畫下一個。自由筆（free）不進調整中——手寫（如「坑」字）
+  // 是連續多筆劃，若每一筆的起筆都被「完成上一筆」吃掉會完全無法書寫。
+  const selectedShape =
+    selectedShapeIdx !== null && selectedShapeIdx >= 0 && selectedShapeIdx < shapesForUi.length
+      ? shapesForUi[selectedShapeIdx]
+      : null;
+  const adjustingShape = selectedShape !== null && selectedShape.type !== 'free' && isDrawShapeTool;
+
+  /** 形狀目前是否因 toggle 收合而隱藏（隱藏者不得被擦除、不渲染）。 */
+  const isHiddenShape = (s: Shape): boolean => hiddenShapeKeys.has(JSON.stringify(s));
+
   const relPoint = (e: React.PointerEvent<SVGSVGElement>): [number, number] => {
     const rect = e.currentTarget.getBoundingClientRect();
     return [e.clientX - rect.left, e.clientY - rect.top];
   };
 
   const onSvgDown = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (e.button !== 0) return; // 只有左鍵作畫/擦除（右鍵留給「取消模式」，見 contextmenu 監聽）
     if (!tool || tool === 'erase-stroke') return; // 整筆刪除由各形狀自行接收點擊
+    // 幾何形狀「調整中」→ 左鍵點一下＝完成（只結束調整、不開新的一筆），維持目前工具模式。
+    if (adjustingShape) {
+      setSelectedShapeIdx(null);
+      return;
+    }
     // 開始新的一筆 / 擦除 → 取消「可調整上一個形狀」的選取。
     setSelectedShapeIdx(null);
     const p = relPoint(e);
     // 抓住指標，跨出 SVG 仍持續繪圖 / 擦除；合成事件或無作用指標時可能拋錯，忽略即可。
     try { (e.target as Element).setPointerCapture?.(e.pointerId); } catch { /* ignore */ }
     if (tool === 'erase-area') {
-      eraseWork.current = eraseAt(shapes, p[0], p[1], eraseRadius);
+      // 被收合隱藏的形狀不可被看不見地誤擦 → 只擦可見形狀。
+      eraseWork.current = eraseVisibleOnly(shapesForUi, isHiddenShape, (sub) => eraseAt(sub, p[0], p[1], eraseRadius));
       forceRerender((n) => n + 1);
       return;
     }
@@ -661,7 +791,13 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
       forceRerender((n) => n + 1);
       return;
     }
-    if (tool === 'pen' || tool === 'highlight') {
+    if (tool === 'highlight' && highlightStraight) {
+      // 螢光筆直線模式：筆直的半透明線（type:'line' + opacity），適合整行畫重點。
+      curShape.current = {
+        type: 'line', color: penColor, width: highlightWidth, dash: false,
+        opacity: highlightOpacity, points: [p, p],
+      };
+    } else if (tool === 'pen' || tool === 'highlight') {
       // 螢光筆＝自由筆 + 較粗線寬 + 半透明（opacity）。
       curShape.current = {
         type: 'free', color: penColor,
@@ -678,7 +814,7 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
   const onSvgMove = (e: React.PointerEvent<SVGSVGElement>) => {
     if (tool === 'erase-area' && eraseWork.current) {
       const p = relPoint(e);
-      eraseWork.current = eraseAt(eraseWork.current, p[0], p[1], eraseRadius);
+      eraseWork.current = eraseVisibleOnly(eraseWork.current, isHiddenShape, (sub) => eraseAt(sub, p[0], p[1], eraseRadius));
       forceRerender((n) => n + 1);
       return;
     }
@@ -699,7 +835,7 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
       const next = eraseWork.current;
       eraseWork.current = null;
       // 只有真的擦掉東西才記錄一步（拖過空白不留下空的復原項）
-      if (JSON.stringify(next) !== JSON.stringify(shapes)) commitShapes(next);
+      if (JSON.stringify(next) !== JSON.stringify(shapesForUi)) commitShapes(next);
       else forceRerender((n) => n + 1);
       return;
     }
@@ -715,8 +851,9 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
         forceRerender((n) => n + 1);
         return;
       }
-      const next = eraseInBox(shapes, minX, minY, maxX, maxY);
-      if (JSON.stringify(next) !== JSON.stringify(shapes)) commitShapes(next);
+      // 被收合隱藏的形狀不可被看不見地誤擦 → 只擦可見形狀。
+      const next = eraseVisibleOnly(shapesForUi, isHiddenShape, (sub) => eraseInBox(sub, minX, minY, maxX, maxY));
+      if (JSON.stringify(next) !== JSON.stringify(shapesForUi)) commitShapes(next);
       else forceRerender((n) => n + 1);
       return;
     }
@@ -726,8 +863,8 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
     const ok = s.type === 'free' ? s.points.length > 1 : !samePoint(s.points[0], s.points[1]);
     if (ok) {
       // 把剛畫好的形狀設為「可即時調整」對象（它會是陣列最後一個）。
-      setSelectedShapeIdx(shapes.length);
-      commitShapes([...shapes, s]);
+      setSelectedShapeIdx(shapesForUi.length);
+      commitShapes([...shapesForUi, s]);
     } else {
       forceRerender((n) => n + 1);
     }
@@ -735,10 +872,10 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
   const eraseShape = (idx: number) => {
     if (tool !== 'erase-stroke') return;
     setSelectedShapeIdx(null);
-    commitShapes(shapes.filter((_, i) => i !== idx));
+    commitShapes(shapesForUi.filter((_, i) => i !== idx));
   };
   const clearDrawing = async () => {
-    if (!shapes.length) return;
+    if (!shapesForUi.length) return;
     if (!(await confirm({ message: '清除這張筆記上的所有手繪？（可用 Ctrl+Z 復原）', danger: true }))) return;
     setSelectedShapeIdx(null);
     commitShapes([]);
@@ -810,11 +947,91 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
     setTool((cur) => (cur === t ? null : t));
   };
 
+  // ── 調整中形狀的「滾輪縮放」（原生 wheel 監聽：React 合成事件是 passive，無法 preventDefault 擋捲動）──
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  // 以 ref 鏡像「調整中」的形狀索引，供原生監聽器取最新值（避免 stale closure）。
+  const adjustingIdxRef = useRef<number | null>(null);
+  adjustingIdxRef.current = adjustingShape ? selectedShapeIdx : null;
+  // 滾輪連發 → 本地即時更新、持久化走尾端去抖（不能每一格都 PATCH 後端）。
+  const wheelPersistTimer = useRef<number | null>(null);
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const onWheel = (e: WheelEvent) => {
+      const idx = adjustingIdxRef.current;
+      if (idx === null) return; // 非調整中 → 不攔截，頁面正常捲動
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.06 : 1 / 1.06;
+      const cur = shapesRef.current;
+      if (idx < 0 || idx >= cur.length) return;
+      const next = cur.map((s, i) => (i === idx ? scaleShape(s, factor) : s));
+      shapesRef.current = next;
+      const d = drawingRef.current;
+      // drawing 項目建立中（第一筆的 POST 空窗）→ 沒有可 patch 的 item，改強制重繪
+      //（畫面走 shapesForUi＝樂觀的 shapesRef，縮放仍即時可見）。
+      if (d) patchLocal(d.id, { dataJson: JSON.stringify(next) });
+      else forceRerender((n) => n + 1);
+      if (wheelPersistTimer.current != null) window.clearTimeout(wheelPersistTimer.current);
+      const schedulePersist = () => {
+        wheelPersistTimer.current = window.setTimeout(() => {
+          wheelPersistTimer.current = null;
+          const dd = drawingRef.current;
+          if (dd) persist(dd.id, { dataJson: JSON.stringify(shapesRef.current) });
+          else if (creatingRef.current) schedulePersist(); // 建立還沒回來 → 稍後再試，勿丟失縮放結果
+        }, 500);
+      };
+      schedulePersist();
+    };
+    svg.addEventListener('wheel', onWheel, { passive: false });
+    return () => svg.removeEventListener('wheel', onWheel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // 卸載時若滾輪調整尚未落地 → 立即持久化，避免遺失最後的縮放結果。
+  useEffect(
+    () => () => {
+      if (wheelPersistTimer.current != null) {
+        window.clearTimeout(wheelPersistTimer.current);
+        const d = drawingRef.current;
+        if (d) persist(d.id, { dataJson: JSON.stringify(shapesRef.current) });
+      }
+    },
+    [persist],
+  );
+
+  // ── 右鍵＝取消目前的繪圖 / 文字模式（需求：右鍵點一下取消畫筆/形狀/螢光筆/文字）──
+  // 僅在「有模式」時攔截（preventDefault 抑制該次右鍵選單）；平時右鍵完全不受影響。
+  const toolRef = useRef<DrawTool>(tool);
+  toolRef.current = tool;
+  const selectedTextIdRef = useRef<string | null>(selectedTextId);
+  selectedTextIdRef.current = selectedTextId;
+  const deleteIfEmptyRef = useRef(deleteIfEmpty);
+  deleteIfEmptyRef.current = deleteIfEmpty;
+  useEffect(() => {
+    const onContextMenu = (e: MouseEvent) => {
+      const hasMode = toolRef.current !== null || selectedTextIdRef.current !== null;
+      if (!hasMode) return;
+      e.preventDefault();
+      // 取消繪圖模式與調整中狀態；丟棄畫到一半的一筆與進行中的擦除。
+      curShape.current = null;
+      eraseWork.current = null;
+      eraseBox.current = null;
+      setSelectedShapeIdx(null);
+      setTool(null);
+      // 取消文字模式（選取/編輯中的文字框；空框順手刪除）。
+      const textId = selectedTextIdRef.current;
+      setSelectedTextId(null);
+      setEditingTextId(null);
+      if (textId) deleteIfEmptyRef.current(textId);
+    };
+    document.addEventListener('contextmenu', onContextMenu, true);
+    return () => document.removeEventListener('contextmenu', onContextMenu, true);
+  }, []);
+
   const allShapes = eraseWork.current
     ? eraseWork.current
     : curShape.current
-      ? [...shapes, curShape.current]
-      : shapes;
+      ? [...shapesForUi, curShape.current]
+      : shapesForUi;
   const drawingActive = tool !== null;
 
   /**
@@ -965,6 +1182,7 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
       >
         {/* 手繪 SVG（繪圖中捕捉指標；否則僅顯示、指標穿透）。高度含手動加高（extraHeight）。 */}
         <svg
+          ref={svgRef}
           width={size.w}
           height={size.h + extraHeight}
           style={{
@@ -978,14 +1196,41 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
           onPointerLeave={onSvgUp}
           data-testid="overlay-draw-svg"
         >
-          {allShapes.map((s, i) => (
-            <ShapeEl
-              key={i}
-              s={s}
-              erasable={tool === 'erase-stroke'}
-              onErase={() => eraseShape(i)}
-            />
-          ))}
+          {allShapes.map((s, i) =>
+            // 被 toggle 收合隱藏者不渲染，但「保留原始索引 i」（渲染 null、不可 filter 重排——
+            // 整筆刪除 eraseShape(i) 依索引對應完整 shapes 陣列，位移會刪錯形狀）。
+            // 進行中的一筆（curShape）永遠可見。
+            s !== curShape.current && hiddenShapeKeys.has(JSON.stringify(s)) ? null : (
+              <ShapeEl
+                key={i}
+                s={s}
+                erasable={tool === 'erase-stroke'}
+                onErase={() => eraseShape(i)}
+              />
+            )
+          )}
+          {/* 調整中的幾何形狀：虛線外接框提示（滾輪縮放、左鍵點一下完成）。 */}
+          {adjustingShape && selectedShape && (() => {
+            const xs = selectedShape.points.map((p) => p[0]);
+            const ys = selectedShape.points.map((p) => p[1]);
+            const pad = selectedShape.width / 2 + 4;
+            const minX = Math.min(...xs) - pad;
+            const minY = Math.min(...ys) - pad;
+            return (
+              <rect
+                data-testid="overlay-adjusting"
+                x={minX}
+                y={minY}
+                width={Math.max(...xs) + pad - minX}
+                height={Math.max(...ys) + pad - minY}
+                fill="none"
+                stroke="var(--action-primary-bg, #2563eb)"
+                strokeWidth={1}
+                strokeDasharray="4 3"
+                style={{ pointerEvents: 'none' }}
+              />
+            );
+          })()}
           {/* 框選擦除進行中的選取框（虛線；放開後框內內容被擦除） */}
           {eraseBox.current && (
             <rect
@@ -1007,8 +1252,9 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
           .filter((i) => (i.kind === 'sticky' || i.kind === 'slide') && !isPinned(i) && !collapsedByToggle.has(i.id))
           .map(renderOverlayItem)}
         {/* 純文字框（Snipaste 風格：可打字、設背景、旋轉縮放；與開問啦畫布共用元件）。
-            繪圖中時設為不可互動，讓底下手繪 SVG 接管指標。 */}
-        {items.filter((i) => i.kind === 'text').map((item) => (
+            繪圖中時設為不可互動，讓底下手繪 SVG 接管指標。
+            collapsedByToggle 內者＝其所在的 toggle 目前收合中 → 一起隱藏（展開即恢復）。 */}
+        {items.filter((i) => i.kind === 'text' && !collapsedByToggle.has(i.id)).map((item) => (
           <DrawingTextBox
             key={item.id}
             item={item}
@@ -1022,13 +1268,15 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
             onStopEdit={() => { setEditingTextId(null); deleteIfEmpty(item.id); }}
             onChange={(patch) => patchLocal(item.id, patch)}
             onCommit={(patch) => persist(item.id, patch)}
+            onAdjustWheel={(deltaY) => adjustTextByWheel(item.id, deltaY)}
           />
         ))}
       </div>
 
-      {/* pinned 便利貼/圖片板：portal 至 body、position:fixed → 可自由拖到整個畫面（含側欄），不隨內文捲動。 */}
+      {/* pinned 便利貼/圖片板：portal 至 body、position:fixed → 可自由拖到整個畫面（含側欄），不隨內文捲動。
+          （只限 sticky/slide——文字框沒有釘住功能，誤入會走錯渲染分支。） */}
       {mounted && createPortal(
-        <>{items.filter((i) => i.kind !== 'drawing' && isPinned(i)).map(renderOverlayItem)}</>,
+        <>{items.filter((i) => (i.kind === 'sticky' || i.kind === 'slide') && isPinned(i)).map(renderOverlayItem)}</>,
         document.body,
       )}
 
@@ -1061,9 +1309,12 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
           onToggleDash={togglePenDash}
           highlightOpacity={highlightOpacity}
           onHighlightOpacityChange={setHighlightOpacity}
+          highlightStraight={highlightStraight}
+          onToggleHighlightStraight={() => setHighlightStraight((v) => !v)}
+          adjustHint={adjustingShape ? '滾輪調大小・左鍵點一下完成' : undefined}
           eraseRadius={eraseRadius}
           selectedShapeIdx={selectedShapeIdx}
-          hasShapes={shapes.length > 0}
+          hasShapes={shapesForUi.length > 0}
           onClear={clearDrawing}
           drawingActive={drawingActive}
           onDone={() => { setSelectedShapeIdx(null); setTool(null); }}
