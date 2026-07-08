@@ -40,6 +40,8 @@ export default function NoteEditPopoutPage() {
   const [allTags, setAllTags] = useState<NoteTag[]>([]);
   const [isSaving, setIsSaving] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
+  // 圖片上傳進行中的數量：>0 時擋「保存」與 AI 動作，避免把佔位文字永久存進 DB。
+  const [uploadingCount, setUploadingCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [savedNote, setSavedNote] = useState<string | null>(null);
   const channelRef = useRef<BroadcastChannel | null>(null);
@@ -90,7 +92,7 @@ export default function NoteEditPopoutPage() {
 
   /** 保存到 DB（不關窗）；成功後通知筆記頁重抓。 */
   const handleSave = async () => {
-    if (!init || isSaving || aiBusy) return;
+    if (!init || isSaving || aiBusy || uploadingCount > 0) return;
     try {
       setIsSaving(true);
       setError(null);
@@ -134,8 +136,13 @@ export default function NoteEditPopoutPage() {
         {savedNote && <span style={{ fontSize: "var(--text-xs)", color: "var(--status-success-fg, green)" }}>● 已於 {savedNote} 保存</span>}
         {error && <span style={{ fontSize: "var(--text-xs)", color: "var(--status-danger-fg, #c00)" }}>{error}</span>}
         <span style={{ flex: 1 }} />
-        <button onClick={handleSave} className="btn-primary" disabled={isSaving || aiBusy} title={aiBusy ? "AI 處理中…" : "保存到資料庫（不關閉本視窗）"}>
-          {isSaving ? "保存中…" : "💾 保存"}
+        <button
+          onClick={handleSave}
+          className="btn-primary"
+          disabled={isSaving || aiBusy || uploadingCount > 0}
+          title={aiBusy ? "AI 處理中…" : uploadingCount > 0 ? "圖片上傳中，請稍候…" : "保存到資料庫（不關閉本視窗）"}
+        >
+          {isSaving ? "保存中…" : uploadingCount > 0 ? "圖片上傳中…" : "💾 保存"}
         </button>
       </div>
 
@@ -191,7 +198,7 @@ export default function NoteEditPopoutPage() {
           currentContent={content}
           onContentUpdate={(contentRaw) => setContent(contentRaw)}
           onError={(m) => setError(m)}
-          disabled={isSaving}
+          disabled={isSaving || uploadingCount > 0}
           onBusyChange={setAiBusy}
           taRef={taRef}
         />
@@ -203,6 +210,7 @@ export default function NoteEditPopoutPage() {
           minHeight={400}
           placeholder="用 Markdown 撰寫內容…（🔒 可框住不想被 AI 重排的內容）"
           taRef={taRef}
+          onUploadingChange={setUploadingCount}
         />
       </div>
     </div>

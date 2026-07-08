@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Serilog;
 using Serilog.Events;
+using ZonWiki.Api.Attachments;
 using ZonWiki.Api.Auth;
 using ZonWiki.Api.Endpoints;
 using ZonWiki.Api.RateLimiting;
@@ -77,6 +78,13 @@ builder.Services.AddScoped<RefineService>(); // 精煉成筆記協調器
 
 // 重複規則「到期具現化」背景服務（#17）：每日把母規則的到期發生具現化成可打勾的實體任務卡。
 builder.Services.AddHostedService<RecurringTaskMaterializationService>();
+
+// 筆記附件（貼圖改存磁碟，內文只放短網址；見 docs/DECISIONS.md 2026-07-08）。
+builder.Services.Configure<AttachmentOptions>(builder.Configuration.GetSection(AttachmentOptions.SectionName));
+builder.Services.AddScoped<AttachmentService>();
+builder.Services.AddSingleton<AttachmentOrphanScanner>();
+// 孤兒附件定期清掃：每日一輪，未被內容引用且超過寬限期者軟刪除（絕不硬刪）。
+builder.Services.AddHostedService<AttachmentOrphanCleanupService>();
 
 var connectionString = builder.Configuration.GetConnectionString(
     DependencyInjection.PostgresConnectionName)
@@ -212,6 +220,7 @@ app.MapNoteTaskLinkEndpoints();
 app.MapEntityLinkEndpoints(); // 通用實體關聯：任務/子任務/筆記/節點 互連
 app.MapNoteMarkEndpoints(); // 筆記文字標註：畫重點/做關聯/寫備註
 app.MapNoteOverlayEndpoints(); // 筆記浮層：便利貼/塗鴉/圖片輪播
+app.MapAttachmentEndpoints(); // 筆記附件：貼上/上傳圖片存磁碟，內文只放短網址
 app.MapQuickLinkEndpoints();
 app.MapCaptureItemEndpoints();
 app.MapCalendarEndpoints();

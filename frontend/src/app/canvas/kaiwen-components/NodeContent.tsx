@@ -9,9 +9,16 @@
  */
 
 import { useLayoutEffect, type RefObject } from 'react'
-import ReactMarkdown from 'react-markdown'
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { applyAnnotations, type AnnoHighlight, type AnnoLink } from '../lib/annotate'
+import { toAbsoluteAttachmentUrl } from '@/lib/attachmentUrl'
+
+/**
+ * 網址轉換：附件相對路徑（/api/attachments/{id}，節點編輯器貼圖產生）補成 API 絕對網址
+ * （本地 dev 前後端跨埠時 <img> 才載得到），再交給 react-markdown 預設安全過濾。
+ */
+const attachmentUrlTransform = (url: string) => defaultUrlTransform(toAbsoluteAttachmentUrl(url))
 
 /**
  * 節點內容元件 Props
@@ -110,7 +117,7 @@ export function NodeContent({
         </div>
       ) : (
         // Markdown 渲染（加 key 避免 React 複用舊 DOM）
-        <ReactMarkdown key={content} remarkPlugins={[remarkGfm]}>
+        <ReactMarkdown key={content} remarkPlugins={[remarkGfm]} urlTransform={attachmentUrlTransform}>
           {content || '（雙擊以編輯）'}
         </ReactMarkdown>
       )}

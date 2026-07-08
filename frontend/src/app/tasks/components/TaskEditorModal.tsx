@@ -101,6 +101,8 @@ export function TaskEditorModal({
 
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  // 圖片上傳進行中的數量：>0 時擋「儲存」，避免把「〔圖片上傳中 #xxx〕」佔位文字存進 DB。
+  const [uploadingCount, setUploadingCount] = useState(0);
   const [savedFlash, setSavedFlash] = useState(false);
   const [saveError, setSaveError] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -324,6 +326,12 @@ export function TaskEditorModal({
    */
   const handleSave = useCallback(async () => {
     if (!taskId || !title.trim()) return;
+    // 防線放在函式本體（非只有按鈕 disabled）：任何呼叫入口都不可在圖片上傳中儲存，
+    // 避免把「〔圖片上傳中 #xxx〕」佔位文字永久存進 DB。
+    if (uploadingCount > 0) {
+      showToast("圖片上傳中，請稍候再儲存", { type: "info" });
+      return;
+    }
     setSaving(true);
     setSaveError(false);
     try {
@@ -376,7 +384,7 @@ export function TaskEditorModal({
     } finally {
       setSaving(false);
     }
-  }, [taskId, title, doSave, populateFields]);
+  }, [taskId, title, doSave, populateFields, uploadingCount]);
 
   /** 有未存變更時詢問是否放棄；回傳 Promise<true>＝可離開。 */
   const confirmDiscardIfDirty = useCallback(async () => {
@@ -862,6 +870,7 @@ export function TaskEditorModal({
                   }}
                   minHeight={360}
                   placeholder="補充說明…（可用上方工具列套用 Markdown 格式）"
+                  onUploadingChange={setUploadingCount}
                 />
               </div>
             </div>
@@ -887,9 +896,10 @@ export function TaskEditorModal({
               <button
                 className="tk-btn tk-btn--primary"
                 onClick={handleSave}
-                disabled={!title.trim() || saving}
+                disabled={!title.trim() || saving || uploadingCount > 0}
+                title={uploadingCount > 0 ? "圖片上傳中，請稍候…" : undefined}
               >
-                {saving ? "儲存中…" : "儲存"}
+                {saving ? "儲存中…" : uploadingCount > 0 ? "圖片上傳中…" : "儲存"}
               </button>
             </div>
           </>

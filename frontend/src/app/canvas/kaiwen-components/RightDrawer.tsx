@@ -10,7 +10,7 @@
  * - 節點刪除
  */
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import type { EdgeDto, InlineLinkDto, NodeDto } from '../kaiwen-types'
 import { MarkdownEditor } from '@/components/MarkdownEditor'
 import { LinkedEntitiesBar } from '@/components/LinkedEntitiesBar'
@@ -148,6 +148,21 @@ export function RightDrawer({
     })
   }, [node.Node_Id, node.Node_Content])
 
+  // 圖片上傳進行中的數量：本面板是「失焦即存」，上傳中必須略過 blur 存檔
+  // （否則會把「〔圖片上傳中 #xxx〕」佔位文字存進節點），改在上傳歸零時補存最新內容。
+  const [uploadingCount, setUploadingCount] = useState(0)
+  // 以 ref 持有最新草稿，供「上傳歸零補存」讀取（歸零回呼觸發時 state 已刷新，見 MarkdownEditor 註解）。
+  const draftRef = useRef(draft)
+  useEffect(() => { draftRef.current = draft }, [draft])
+
+  /** 上傳數量變動：歸零時若草稿有異動就補存（涵蓋「上傳中曾失焦而略過存檔」的情況）。 */
+  const handleUploadingChange = (count: number) => {
+    setUploadingCount(count)
+    if (count === 0 && draftRef.current !== node.Node_Content) {
+      onSaveContent(draftRef.current)
+    }
+  }
+
   // 複製節點 ID 提示
   const [copied, setCopied] = useState(false)
   const copyId = () => {
@@ -234,9 +249,11 @@ export function RightDrawer({
             key={node.Node_Id}
             value={draft}
             onChange={setDraft}
-            onBlur={() => draft !== node.Node_Content && onSaveContent(draft)}
+            // 上傳中略過 blur 存檔（避免存進佔位文字）；上傳歸零時 handleUploadingChange 會補存。
+            onBlur={() => uploadingCount === 0 && draft !== node.Node_Content && onSaveContent(draft)}
             minHeight={160}
             placeholder="用 Markdown 撰寫內容…"
+            onUploadingChange={handleUploadingChange}
           />
         </section>
 

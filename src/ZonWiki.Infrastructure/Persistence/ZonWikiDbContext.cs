@@ -83,6 +83,9 @@ public sealed class ZonWikiDbContext(
     // --- 筆記浮層元件（便利貼 / 塗鴉 / 圖片輪播；疊在內文最上層）------------------
     public DbSet<NoteOverlayItem> NoteOverlayItem => Set<NoteOverlayItem>();
 
+    // --- 筆記附件（貼上/上傳的圖片；檔案存磁碟、此處存中繼資料）-------------------
+    public DbSet<NoteAttachment> NoteAttachment => Set<NoteAttachment>();
+
     // --- 首頁元件 -------------------------------------------------------------
     public DbSet<QuickLink> QuickLink => Set<QuickLink>();
     public DbSet<QuickLinkTag> QuickLinkTag => Set<QuickLinkTag>();

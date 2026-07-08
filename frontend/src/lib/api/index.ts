@@ -35,3 +35,4 @@ export * from "./calendar";
 export * from "./askQueue";
 export * from "./trash";
 export * from "./compat";
+export * from "./attachments";

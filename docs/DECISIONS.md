@@ -5,6 +5,31 @@
 
 ---
 
+## 2026-07-08 ｜ 筆記貼圖改「磁碟附件＋短網址」，廢除 base64 內嵌
+
+- **背景**：編輯器貼圖用 `FileReader.readAsDataURL` 把 base64 直接內嵌 Markdown（浮層圖片輪播同樣）。一張 1MB 截圖＝約 137 萬字元進內文：Note 的 `ContentRaw`＋`ContentHtml` 存兩份；`IX_Note_ContentRaw_Trgm`（GIN trigram）被高熵 base64 灌爆（trigram 幾乎全唯一，2GB e2-small 上是實際威脅）；筆記詳情 API 一次回兩份；AI 重排把 base64 整包餵 LLM 炸 token；編輯器游標/undo 卡頓。
+- **考慮過的選項**：①附件存磁碟＋DB 存中繼資料（沿用畫布 NodeImage 模式）；②附件存 DB bytea（備份簡單但 2GB VM 的 Postgres 記憶體壓力＋DB 膨脹）；③GCS bucket（多一個雲深依賴、本地開發要模擬）。
+- **最終決定**：採 **①磁碟＋中繼資料表 `NoteAttachment`**（使用者裁示）。
+  - **後端**：`POST /api/attachments`（multipart）→ ImageSharp 3.1 處理 → 落地 `App_Data/attachments/{userId:N}/{id:N}.webp`；`GET /api/attachments/{id}` 驗登入＋使用者隔離、回檔案＋`Cache-Control: private, max-age=31536000, immutable`＋`nosniff`。內文只放相對短網址 `![圖片](/api/attachments/{id})`（跨環境通用；顯示層再補 API base）。
+  - **影像處理安全（對抗式審查全採納）**：不信任 client MIME（一律 `Image.Identify` 實測）；解壓炸彈防護（header-only 探測像素數 ≤24MP 才完整解碼＋MemoryAllocator 256MB 上限）；EXIF `AutoOrient` 再縮圖（最長邊 2560）重編碼 WebP q80；GIF 原樣存（保留動畫，靠 nosniff 補償未重編碼清洗）；格式白名單 PNG/JPEG/WebP/BMP/GIF（SVG=XSS 風險、HEIC 無解碼器，拒收）；單檔 10MB＋每使用者總量 500MB 配額＋`zonwiki-upload` 限流（TokenBucket 20/補 10 每分）；先寫檔後寫 DB、DB 失敗補償刪檔。
+  - **前端貼上體驗**：貼上瞬間插入**純文字**佔位「〔圖片上傳中 #token〕」（刻意不用圖片語法——預覽零客製、就算防線全漏存進去也是無害文字）→ 上傳完成在最新內容替換成短網址；上傳中「保存」與 AI 動作 disable（否則佔位文字會被永久存庫——審查抓出的 CRITICAL 競態）；替換時找不到佔位（使用者刪了）→ 視同取消、toast 告知、孤兒掃描回收。
+  - **孤兒回收**：`AttachmentOrphanCleanupService` 每日一輪，建立超過 48h 且附件 Id 未出現在同使用者的 `Note.ContentRaw`／`NoteRevision.ContentRaw`（版本還原要看得到圖）／`NoteOverlayItem.DataJson`（含軟刪除列＝垃圾桶可還原）→ **只軟刪除**（ValidFlag=0，磁碟檔案保留，符合絕不硬刪鐵則）。比對用 `EF.Functions.ILike`（大小寫不敏感，防手貼大寫 GUID 誤殺）。
+  - **部署/備份**：compose 的 api 掛 `zonwiki-api-appdata:/app/App_Data` 具名卷（**prod 的 docker-compose.prod.yml 需比照補掛**，見 docs/deployment）；`scripts/backup-db.sh` 擴充為 DB＋附件雙備份（`files-*.tar.gz`，各自輪替 N 份）。
+- **理由與取捨（已知限制，之後別當 bug 追）**：
+  - 「永久清除（PurgedDateTime）」的筆記其 ContentRaw 仍留在 DB → 其引用的附件**永遠算被引用、永不回收**（磁碟單調成長；Phase 2 可考慮永久清除時一併清空內容欄）。
+  - **不**幫 `NoteRevision.ContentRaw` 建 trigram 索引：存量 base64 會讓 GIN 索引爆炸（正是本功能要解的問題）；孤兒掃描每日一輪 seq scan，單人規模可接受。
+  - 本地 DB 每日被 prod 覆蓋但**附件檔案不會跟著同步** → 本地看 prod 貼的圖會 404（Phase 2 可擴充 pull-backup 連 `files-*.tar.gz` 一起拉回解開）。
+  - **存量 base64 遷移為 Phase 2**（掃 ContentRaw 解出落地、替換短網址、重算 ContentHtml/Hash）；在遷移完成前**不加**「拒收 data URL」的存檔驗證，否則舊筆記無法再儲存。
+  - ImageSharp 釘 **3.1.12**：4.0 起 build-time 強制 License Key（公開 repo＋CI 會直接卡編譯）；3.1 為 Split License（個人/開源免費）無此機制。
+- **對抗式復審（第二輪）追加修正**：
+  - 【C】QuickCreateTaskModal 標題欄 Enter 鍵繞過「上傳中禁存」→ 防線一律放進 save/handleSave **函式本體**（按鈕 disabled 只是外觀），全站五處統一。
+  - 【H】配額 SUM 檢查非原子（並發可繞過 500MB）→ 交易內 `pg_advisory_xact_lock(使用者鍵)` 序列化「檢查＋寫入」，配額改以**落地後大小**計。
+  - 【M】轉檔加 `SemaphoreSlim(2)` 併發閘門（TokenBucket 擋不住瞬時並發的記憶體疊加）；上傳端點收斂 `MaxRequestBodySize`（Kestrel 預設 28MB > 單檔 10MB，避免整包讀進記憶體才拒絕）。
+  - 澄清：ImageSharp `AllocationLimitMegabytes` 只限「單一緩衝區」配置、非累積總量；總量靠併發閘門。
+  - 任務/畫布節點共用同一編輯器也能貼圖 → 孤兒掃描引用範圍含 `TaskCard.Content`、`Node.Content`、`NodeRevision.Content`；畫布 NodeContent 渲染補 urlTransform；節點抽屜（blur 即存）上傳中略過 blur 存檔、歸零時補存。
+
+---
+
 ## 2026-07-08（第二輪）｜畫記「跟著文字走」：持久化內容錨點＋位移 rebase（fix/note-annotations-and-toc）
 
 - **背景**：第一輪上線後使用者於本地（與 prod 同版）立刻重現新問題：多層 toggle 下，在「只展開 §2」的版面畫記，按「全部展開」後畫記視覺上跑到 §1 的內容上、且之後收合 §2 也藏不掉。根因＝畫記座標是絕對像素，只在「畫記當下的展開狀態」的版面正確；且點錨定機制「可見時重抓」會在版面位移後綁錯內容。第一輪「隱藏而非位移」的取捨在多層 toggle 的真實使用下不成立。
