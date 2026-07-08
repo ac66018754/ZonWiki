@@ -14,6 +14,7 @@ import {
 import { DateTimePicker } from "@/components/DateTimePicker";
 import { SearchableMultiSelect } from "@/components/SearchableMultiSelect";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
+import { TaskScheduleFields } from "./TaskScheduleFields";
 import { showToast } from "@/lib/toast";
 import { FALLBACK_TZ, PRIORITY_META } from "../taskUtils";
 
@@ -48,6 +49,11 @@ export function QuickCreateTaskModal({
   const [due, setDue] = useState<string | null>(null);
   const [priority, setPriority] = useState(0);
   const [groupId, setGroupId] = useState("");
+  // 釘選到首頁 / 長期任務（需求 #6：首頁「＋待辦」也要有這些功能）。
+  const [isPinnedToHome, setIsPinnedToHome] = useState(false);
+  const [isLongTerm, setIsLongTerm] = useState(false);
+  const [targetGranularity, setTargetGranularity] = useState("");
+  const [targetIso, setTargetIso] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   // 圖片上傳進行中的數量：>0 時擋「建立」，避免把「〔圖片上傳中 #xxx〕」佔位文字存進 DB。
   const [uploadingCount, setUploadingCount] = useState(0);
@@ -77,6 +83,10 @@ export function QuickCreateTaskModal({
     setDue(initial.dueDateTime);
     setPriority(0);
     setGroupId("");
+    setIsPinnedToHome(false);
+    setIsLongTerm(false);
+    setTargetGranularity("");
+    setTargetIso(null);
     setSelectedTagIds([]);
   }, [initial]);
 
@@ -110,6 +120,11 @@ export function QuickCreateTaskModal({
         groupId: groupId || undefined,
         plannedDateTime: planned,
         dueDateTime: due,
+        isPinnedToHome,
+        isLongTerm,
+        // 目標期只在「長期 + 有選粒度」時帶入（與完整編輯器一致）。
+        targetGranularity: isLongTerm && targetGranularity ? targetGranularity : undefined,
+        targetDateTime: isLongTerm && targetGranularity ? targetIso : undefined,
       });
       if (created) {
         // 標籤需在卡片建立後另以 PUT 整組指派（沿用編輯器同一流程）
@@ -185,6 +200,18 @@ export function QuickCreateTaskModal({
             color: "var(--text-primary)",
             fontSize: "var(--text-base)",
           }}
+        />
+
+        {/* 釘選到首頁 ｜ 長期任務（＋目標期）：與完整編輯器共用同一組欄位 */}
+        <TaskScheduleFields
+          isPinnedToHome={isPinnedToHome}
+          onPinnedChange={setIsPinnedToHome}
+          isLongTerm={isLongTerm}
+          onLongTermChange={setIsLongTerm}
+          targetGranularity={targetGranularity}
+          onGranularityChange={setTargetGranularity}
+          targetIso={targetIso}
+          onTargetIsoChange={setTargetIso}
         />
 
         <div style={{ display: "flex", gap: "var(--spacing-3)", flexWrap: "wrap" }}>
@@ -276,7 +303,8 @@ export function QuickCreateTaskModal({
             value={content}
             onChange={setContent}
             minHeight={110}
-            placeholder="內容（可留空，建立後也能再編輯）…"
+            withPreview
+            placeholder="內容（可留空，建立後也能再編輯）…（右上可切換 編輯／並排／預覽）"
             onUploadingChange={setUploadingCount}
           />
         </div>

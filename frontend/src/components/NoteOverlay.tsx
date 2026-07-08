@@ -22,7 +22,6 @@ import {
   eraseAt,
   eraseInBox,
   eraseVisibleOnly,
-  scaleShape,
   shapeAnchorPoint,
 } from '@/lib/drawing/shapes';
 import { ShapeEl } from '@/lib/drawing/ShapeEl';
@@ -908,7 +907,7 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
   // 線寬滑桿目前控制的值：螢光筆用自己的較粗線寬，其餘用一般筆寬。
   const activeWidth = tool === 'highlight' ? highlightWidth : penWidth;
 
-  // 「調整中」：剛畫完的幾何形狀（直線/矩形/橢圓/螢光直線）→ 滾輪縮放、左鍵點一下完成、
+  // 「調整中」：剛畫完的幾何形狀（直線/矩形/橢圓/螢光直線）→ 滾輪調粗細、Del 刪除、左鍵點一下完成、
   // 完成後維持原工具模式可直接畫下一個。自由筆（free）不進調整中——手寫（如「坑」字）
   // 是連續多筆劃，若每一筆的起筆都被「完成上一筆」吃掉會完全無法書寫。
   const selectedShape =
@@ -1111,7 +1110,8 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
     setTool((cur) => (cur === t ? null : t));
   };
 
-  // ── 調整中形狀的「滾輪縮放」（原生 wheel 監聽：React 合成事件是 passive，無法 preventDefault 擋捲動）──
+  // ── 調整中形狀的「滾輪調粗細」（原生 wheel 監聽：React 合成事件是 passive，無法 preventDefault 擋捲動）──
+  // 需求：滾輪調整的是「線條粗細」而非縮放範圍（範圍由拖曳兩端決定）。
   const svgRef = useRef<SVGSVGElement | null>(null);
   // 以 ref 鏡像「調整中」的形狀索引，供原生監聽器取最新值（避免 stale closure）。
   const adjustingIdxRef = useRef<number | null>(null);
@@ -1125,11 +1125,20 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
       const idx = adjustingIdxRef.current;
       if (idx === null) return; // 非調整中 → 不攔截，頁面正常捲動
       e.preventDefault();
-      const factor = e.deltaY < 0 ? 1.06 : 1 / 1.06;
       const cur = shapesRef.current;
       if (idx < 0 || idx >= cur.length) return;
-      const next = cur.map((s, i) => (i === idx ? scaleShape(s, factor) : s));
+      const shape = cur[idx];
+      // 螢光筆（半透明，opacity<1）線寬上限較粗（40），一般畫筆/形狀上限 20。
+      const isHighlightShape = typeof shape.opacity === 'number' && shape.opacity < 1;
+      const maxWidth = isHighlightShape ? 40 : 20;
+      const step = e.deltaY < 0 ? 1 : -1; // 上滾變粗、下滾變細
+      const nextWidth = Math.min(maxWidth, Math.max(1, shape.width + step));
+      if (nextWidth === shape.width) return; // 已到上/下限：不動作、不排持久化
+      const next = cur.map((s, i) => (i === idx ? { ...s, width: nextWidth } : s));
       shapesRef.current = next;
+      // 讓工具列「線寬」滑桿同步反映（螢光筆用自己的線寬 state）。
+      if (isHighlightShape) setHighlightWidth(nextWidth);
+      else setPenWidth(nextWidth);
       const d = drawingRef.current;
       // drawing 項目建立中（第一筆的 POST 空窗）→ 沒有可 patch 的 item，改強制重繪
       //（畫面走 shapesForUi＝樂觀的 shapesRef，縮放仍即時可見）。
@@ -1190,6 +1199,66 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
     document.addEventListener('contextmenu', onContextMenu, true);
     return () => document.removeEventListener('contextmenu', onContextMenu, true);
   }, []);
+
+  // ── Del＝刪除「調整中的形狀」或「已選取（非編輯中）的文字框」──（需求：調整狀態中的形狀/文字按 Del 刪除）
+  // 以 ref 鏡像最新狀態與動作，讓全域 keydown 監聽器只掛一次、又不吃到過時閉包。
+  const delRef = useRef<{
+    selectedShapeIdx: number | null;
+    adjustingShape: boolean;
+    selectedTextId: string | null;
+    editingTextId: string | null;
+    deleteShapeAt: (i: number) => void;
+    deleteSelectedText: () => void;
+  }>(null!);
+  delRef.current = {
+    selectedShapeIdx,
+    adjustingShape,
+    selectedTextId,
+    editingTextId,
+    deleteShapeAt: (i: number) => {
+      const cur = shapesRef.current;
+      if (i >= 0 && i < cur.length) commitShapes(cur.filter((_, k) => k !== i)); // 可 Ctrl+Z 復原
+      setSelectedShapeIdx(null);
+    },
+    deleteSelectedText,
+  };
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Delete') return;
+      // 在輸入框/可編輯區內打字時，Del 交給該元件刪字，不刪形狀/文字框。
+      const t = e.target as HTMLElement | null;
+      if (t && (t.isContentEditable || /^(input|textarea|select)$/i.test(t.tagName))) return;
+      const s = delRef.current;
+      // 優先刪「調整中的形狀」；否則刪「已選取但非編輯中的文字框」。
+      if (s.selectedShapeIdx !== null && s.adjustingShape) {
+        e.preventDefault();
+        s.deleteShapeAt(s.selectedShapeIdx);
+        return;
+      }
+      if (s.selectedTextId && s.editingTextId === null) {
+        e.preventDefault();
+        s.deleteSelectedText();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  // 「剛畫完的形狀」缺少「點畫布外即取消」→ 選取可能一直殘留，之後一次無關的 Del 就會靜默刪掉它。
+  // 比照文字框（見上方 selectedTextId 的 outside-pointerdown）：點在「繪圖 SVG／工具列／色盤」
+  // 以外任何地方，即取消 selectedShapeIdx，把 Del 刪除的作用範圍收斂在「剛畫完、仍在畫布上操作」時。
+  useEffect(() => {
+    if (selectedShapeIdx === null) return;
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (!t) return;
+      if (svgRef.current && svgRef.current.contains(t)) return; // SVG 內：交給 onSvgDown 處理（起新筆/完成）
+      if (t.closest('[data-testid="overlay-toolbar"]') || t.closest('[data-draw-colorpop]')) return; // 工具列/色盤：調整中不取消
+      setSelectedShapeIdx(null);
+    };
+    document.addEventListener('pointerdown', onDown, true);
+    return () => document.removeEventListener('pointerdown', onDown, true);
+  }, [selectedShapeIdx]);
 
   const allShapes = eraseWork.current
     ? eraseWork.current
@@ -1475,7 +1544,7 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
           onHighlightOpacityChange={setHighlightOpacity}
           highlightStraight={highlightStraight}
           onToggleHighlightStraight={() => setHighlightStraight((v) => !v)}
-          adjustHint={adjustingShape ? '滾輪調大小・左鍵點一下完成' : undefined}
+          adjustHint={adjustingShape ? '滾輪調粗細・Del 刪除・左鍵點一下完成' : undefined}
           eraseRadius={eraseRadius}
           selectedShapeIdx={selectedShapeIdx}
           hasShapes={shapesForUi.length > 0}

@@ -2,18 +2,22 @@
 
 import type React from 'react';
 import { ColorPickerInline } from '@/components/ColorPicker';
+import { CustomSwatches } from '@/components/CustomSwatches';
 import { parseTextExtra, type TextExtra } from './TextBox';
 
-/** 純文字框的字色 / 背景「快選」常用色（只放 4 個；其餘點色盤球球展開挑）。 */
-const TEXT_PRESET_COLORS = ['#ef4444', '#f59e0b', '#22c55e', '#3b82f6'];
-
 /**
- * 共用的「純文字框屬性面板」（筆記頁與開問啦畫布共用）：字級 ｜ 字色 ｜ 底 ｜ 刪除。
- * 顏色各只放 4 個快選＋一顆球球，點球球展開完整色盤。
+ * 共用的「純文字框屬性面板」（筆記頁與開問啦畫布共用）。
+ *
+ * 版面（依使用者要求）拆成三排：
+ *   第一排：字級（＋右側刪除鈕）
+ *   第二排：字色（使用者自訂 10 色快選 ＋ 球球展開完整色盤）
+ *   第三排：底（透明 ＋ 使用者自訂 10 色快選 ＋ 球球展開完整色盤）
+ *
+ * 字色與底色各自一組獨立的自訂色盤（見 CustomSwatches / customSwatches.ts），不再沿用固定預設色。
  *
  * 純呈現元件：選取的文字框內容、色盤開合狀態與行為皆由父層以 props 傳入。
- * 回傳一個 fragment（屬性列 + 兩個色盤），通常放進 {@link DrawingToolbar} 的 topContent 插槽，
- * 疊在工具列上方。
+ * 回傳一個 fragment（屬性面板 + 兩個完整色盤），通常放進 {@link import('./DrawingToolbar').DrawingToolbar}
+ * 的 topContent 插槽，疊在工具列上方。
  */
 export function TextPropsPanel({
   fontColor,
@@ -44,8 +48,12 @@ export function TextPropsPanel({
 }) {
   const te = parseTextExtra(dataJson);
   const curFont = fontColor || '#ef4444';
-  const lbl: React.CSSProperties = { color: 'var(--text-secondary)', whiteSpace: 'nowrap', marginLeft: 2 };
-  const dividerStyle: React.CSSProperties = { width: 1, alignSelf: 'stretch', background: 'var(--border-default)', margin: '2px 3px' };
+  const lbl: React.CSSProperties = { color: 'var(--text-secondary)', whiteSpace: 'nowrap', minWidth: 28 };
+  const rowStyle: React.CSSProperties = { display: 'flex', gap: 5, alignItems: 'center', flexWrap: 'wrap' };
+  const ballBase: React.CSSProperties = {
+    width: 18, height: 18, flexShrink: 0, borderRadius: '50%', cursor: 'pointer', padding: 0,
+    border: '2px solid var(--text-tertiary)',
+  };
 
   return (
     <>
@@ -53,92 +61,74 @@ export function TextPropsPanel({
         data-draw-textprops
         data-testid={`${testIdPrefix}-textprops`}
         style={{
-          display: 'flex', gap: 5, flexWrap: 'nowrap', alignItems: 'center', justifyContent: 'flex-end',
+          display: 'flex', flexDirection: 'column', gap: 6,
           background: 'var(--bg-surface)', border: '1px solid var(--border-default)',
-          borderRadius: 'var(--radius-md)', padding: '5px 8px', boxShadow: 'var(--shadow-md)',
-          fontSize: 'var(--text-xs)',
+          borderRadius: 'var(--radius-md)', padding: '6px 8px', boxShadow: 'var(--shadow-md)',
+          fontSize: 'var(--text-xs)', minWidth: 210,
         }}
       >
-        {/* 字級 */}
-        <span style={lbl}>字級</span>
-        <input
-          type="range" min={10} max={80} value={te.fontSize}
-          onChange={(e) => onUpdateExtra({ fontSize: Number(e.target.value) })}
-          style={{ width: 72 }}
-          title={`字級：${te.fontSize}`}
-          data-testid={`${testIdPrefix}-text-fontsize`}
-        />
-
-        <span style={dividerStyle} />
-        {/* 字色：4 快選 + 球球展開完整色盤 */}
-        <span style={lbl}>字色</span>
-        {TEXT_PRESET_COLORS.map((c) => (
+        {/* 第一排：字級（＋刪除鈕靠右） */}
+        <div style={rowStyle}>
+          <span style={lbl}>字級</span>
+          <input
+            type="range" min={10} max={80} value={te.fontSize}
+            onChange={(e) => onUpdateExtra({ fontSize: Number(e.target.value) })}
+            style={{ width: 96 }}
+            title={`字級：${te.fontSize}`}
+            data-testid={`${testIdPrefix}-text-fontsize`}
+          />
+          <span style={{ flex: 1 }} />
           <button
-            key={`fc-${c}`} onClick={() => onSetFontColor(c)} title="字體顏色"
+            className="tk-btn"
+            style={{ cursor: 'pointer', fontSize: 'var(--text-sm)', padding: '1px 6px', flexShrink: 0 }}
+            onClick={onDelete}
+            title="刪除此文字框"
+            data-testid={`${testIdPrefix}-text-delete`}
+          >
+            🗑
+          </button>
+        </div>
+
+        {/* 第二排：字色（自訂 10 色 + 球球展開完整色盤） */}
+        <div style={{ ...rowStyle, borderTop: '1px solid var(--border-default)', paddingTop: 6 }}>
+          <span style={lbl}>字色</span>
+          <CustomSwatches storageKey="text-font" current={curFont} onApply={onSetFontColor} size={16} />
+          <button
+            data-draw-textcolorbtn data-testid={`${testIdPrefix}-text-fontball`} title="更多字色（展開色盤）"
+            onClick={onToggleFontPop}
+            style={{ ...ballBase, background: curFont }}
+          />
+        </div>
+
+        {/* 第三排：底（透明 + 自訂 10 色 + 球球展開完整色盤） */}
+        <div style={{ ...rowStyle, borderTop: '1px solid var(--border-default)', paddingTop: 6 }}>
+          <span style={lbl}>底</span>
+          <button
+            className={`tk-btn ${te.bg ? '' : 'tk-btn--primary'}`}
+            style={{ cursor: 'pointer', fontSize: 'var(--text-xs)', padding: '1px 6px', flexShrink: 0 }}
+            onClick={() => onUpdateExtra({ bg: null })}
+            title="背景透明"
+            data-testid={`${testIdPrefix}-text-bg-none`}
+          >
+            透明
+          </button>
+          <CustomSwatches storageKey="text-bg" current={te.bg} onApply={(hex) => onUpdateExtra({ bg: hex })} square size={16} />
+          <button
+            data-draw-textcolorbtn data-testid={`${testIdPrefix}-text-bgball`} title="更多背景色（展開色盤）"
+            onClick={onToggleBgPop}
             style={{
-              width: 16, height: 16, flexShrink: 0, borderRadius: '50%', background: c, cursor: 'pointer', padding: 0,
-              border: curFont === c ? '2px solid var(--text-primary)' : '1px solid rgba(0,0,0,0.25)',
+              ...ballBase,
+              background: te.bg ?? 'transparent',
+              // 透明時用棋盤格表示「無背景」
+              backgroundImage: te.bg ? undefined
+                : 'linear-gradient(45deg, #bbb 25%, transparent 25%, transparent 75%, #bbb 75%), linear-gradient(45deg, #bbb 25%, #fff 25%, #fff 75%, #bbb 75%)',
+              backgroundSize: '8px 8px', backgroundPosition: '0 0, 4px 4px',
             }}
           />
-        ))}
-        <button
-          data-draw-textcolorbtn data-testid={`${testIdPrefix}-text-fontball`} title="更多字色（展開色盤）"
-          onClick={onToggleFontPop}
-          style={{
-            width: 18, height: 18, flexShrink: 0, borderRadius: '50%', background: curFont,
-            border: '2px solid var(--text-tertiary)', cursor: 'pointer', padding: 0,
-          }}
-        />
-
-        <span style={dividerStyle} />
-        {/* 底：透明 + 4 快選 + 球球 */}
-        <span style={lbl}>底</span>
-        <button
-          className={`tk-btn ${te.bg ? '' : 'tk-btn--primary'}`}
-          style={{ cursor: 'pointer', fontSize: 'var(--text-xs)', padding: '1px 6px', flexShrink: 0 }}
-          onClick={() => onUpdateExtra({ bg: null })}
-          title="背景透明"
-          data-testid={`${testIdPrefix}-text-bg-none`}
-        >
-          透明
-        </button>
-        {TEXT_PRESET_COLORS.map((c) => (
-          <button
-            key={`bg-${c}`} onClick={() => onUpdateExtra({ bg: c })} title="背景顏色"
-            style={{
-              width: 16, height: 16, flexShrink: 0, borderRadius: 4, background: c, cursor: 'pointer', padding: 0,
-              border: te.bg === c ? '2px solid var(--text-primary)' : '1px solid rgba(0,0,0,0.25)',
-            }}
-          />
-        ))}
-        <button
-          data-draw-textcolorbtn data-testid={`${testIdPrefix}-text-bgball`} title="更多背景色（展開色盤）"
-          onClick={onToggleBgPop}
-          style={{
-            width: 18, height: 18, flexShrink: 0, borderRadius: '50%', cursor: 'pointer', padding: 0,
-            border: '2px solid var(--text-tertiary)',
-            background: te.bg ?? 'transparent',
-            // 透明時用棋盤格表示「無背景」
-            backgroundImage: te.bg ? undefined
-              : 'linear-gradient(45deg, #bbb 25%, transparent 25%, transparent 75%, #bbb 75%), linear-gradient(45deg, #bbb 25%, #fff 25%, #fff 75%, #bbb 75%)',
-            backgroundSize: '8px 8px', backgroundPosition: '0 0, 4px 4px',
-          }}
-        />
-
-        <span style={dividerStyle} />
-        {/* 刪除 */}
-        <button
-          className="tk-btn"
-          style={{ cursor: 'pointer', fontSize: 'var(--text-sm)', padding: '1px 6px', flexShrink: 0 }}
-          onClick={onDelete}
-          title="刪除此文字框"
-          data-testid={`${testIdPrefix}-text-delete`}
-        >
-          🗑
-        </button>
+        </div>
       </div>
 
-      {/* 字色完整色盤（點球球展開） */}
+      {/* 字色完整色盤（點球球展開；快選＝自訂 text-font 色盤） */}
       {showFontPop && (
         <div
           data-draw-textpop data-testid={`${testIdPrefix}-text-fontpop`}
@@ -151,10 +141,11 @@ export function TextPropsPanel({
             initial={curFont}
             onChange={(hex) => onSetFontColor(hex)}
             onPick={(hex) => onSetFontColor(hex)}
+            swatchKey="text-font"
           />
         </div>
       )}
-      {/* 背景完整色盤（點球球展開） */}
+      {/* 背景完整色盤（點球球展開；快選＝自訂 text-bg 色盤） */}
       {showBgPop && (
         <div
           data-draw-textpop data-testid={`${testIdPrefix}-text-bgpop`}
@@ -167,6 +158,7 @@ export function TextPropsPanel({
             initial={te.bg ?? '#ffffff'}
             onChange={(hex) => onUpdateExtra({ bg: hex })}
             onPick={(hex) => onUpdateExtra({ bg: hex })}
+            swatchKey="text-bg"
           />
         </div>
       )}

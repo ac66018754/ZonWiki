@@ -180,3 +180,22 @@
 - **最終決定**：投影只讀「原生 xid→uint」（`EF.Property<uint>(n, "xmin")`，不加任何轉型、不下推 CAST），`ToListAsync`／`FirstOrDefaultAsync` 材質化後，再於記憶體用 `record with { Version = (long)uint }` 安全放大回填 DTO。單筆更新端點原本走 `db.Entry(e).GetConcurrencyVersion()`（記憶體讀 CurrentValue，無 SQL 轉型）不受影響。
 - **理由與取捨**：xid 無合法的 `→bigint` 直接轉型；正確作法是讓資料庫原生回 uint、轉型留在 CLR。取捨是投影多包一層匿名型別（可讀性成本極小）。
 - **測試**：新增 `OptimisticConcurrencyTests`（Testcontainers 真實 PostgreSQL）鎖死版本回傳＝DB 實際 xmin、過期 baseVersion→409、相符 baseVersion→成功，以及 `ConcurrencyTokenExtensionsTests`（提供者無關）鎖死 `GetConcurrencyVersion`／`ApplyBaseVersion` 契約（含 >int.MaxValue 的 uint↔long 無損往返）。
+
+## 2026-07-09 ｜ 行事曆背景重抓改「stale-while-revalidate」，修「點任務→閃一下＋捲回頂」
+
+- **背景**：關閉任務編輯彈窗時 `TasksPage.handleCloseEditor` 會 `calendarRefreshKey++` 讓行事曆重抓（因彈窗內可能改了日期/狀態）。四個行事曆視圖（月/週/日/年）原本 `if (loading) return <載入中>`——**每次重抓都把整塊內容卸載換成「載入中…」再重掛**，造成使用者看到「閃一下」，且週/日視圖的時間格重掛後 `useEffect` 會把捲動位置重設回 07:00（看起來像「捲回最上面」）。
+- **實證（Playwright，鐵則 #21）**：關閉彈窗當下 MutationObserver 觀察到「載入中」出現、時間格 DOM 被移除（remount）、捲動 300→280(07:00)。以 elementFromPoint／scrollTop 位元組級量測重現、修後複驗歸零。（初期誤把 Playwright `scrollIntoViewIfNeeded` 造成的 600→0 當成 bug，追查後確認那是測試工具產生的假象、真兇在關閉時的重抓卸載——對應鐵則 #26。）
+- **最終決定**：四視圖一律改為 `if (loading && !events) return <載入中>`——只有「首次載入（尚無資料）」才顯示載入中並卸載；背景重抓保留現有內容顯示、抓完再換上新資料（stale-while-revalidate）。內容不再卸載重掛 → 無閃動、時間格捲動位置保留。
+- **理由與取捨**：最小改動即根治；取捨是重抓期間短暫顯示舊資料（可接受，且資料抵達即換）。
+
+## 2026-07-09 ｜ 自訂色盤（畫筆/字色/底色各 10 色）存 localStorage（非 DB）
+
+- **背景**：使用者要求畫筆、形狀、文字字色/底色不要用固定預設色，改為可自存 10 個常用色。
+- **最終決定**：以 localStorage 存三組獨立色盤（`zonwiki:swatches:pen` / `:text-font` / `:text-bg`），模組層存放區（`lib/customSwatches.ts`）＋ `useSyncExternalStore` 讓工具列內嵌快選與展開色盤即時同步。`ColorPicker` 新增選用 `swatchKey` prop——只有畫筆與文字色盤傳入；畫重點/便利貼/圖片板等其它呼叫端維持原本 PRESET_COLORS 不變。
+- **理由與取捨**：色盤屬「個人裝置的輕量便利設定」，與既有 UI 偏好（主題、側欄寬、工具箱收合）一致都放 localStorage；不像快捷鍵需跨裝置同步（見 2026-06 快捷鍵存 DB 的決策）。取捨是不跨裝置同步（可接受）。
+
+## 2026-07-09 ｜ 互動式 Markdown 待辦核取：範圍限「編輯器預覽」，閱讀檢視暫不動
+
+- **背景**：使用者要求筆記與任務「內容 markdown 區塊」的 checkbox 可直接勾選。
+- **最終決定**：`ToggleAwareMarkdown` 新增選用 `onChange`，有傳時待辦核取方塊變可點擊，點擊即以文件順序索引切換原文第 N 個 `- [ ]`（`lib/markdownChecklist.ts`，掃描時略過程式碼圍欄）並回寫。套用於任務內容預覽（本次新開的 withPreview）與筆記編輯器的編輯/並排/預覽。**筆記「閱讀檢視（預覽分頁）」走後端 Markdig 產生的 HTML（dangerouslySetInnerHTML）＋NoteMarksLayer/NoteOverlay 疊層＋React19 innerHTML 識別陷阱**，就地互動風險高，本次暫不動、留待後續。
+- **理由與取捨**：編輯器預覽覆蓋「撰寫內容時勾選」的主要情境且實作乾淨；閱讀檢視就地勾選需另一套 event-delegation＋存檔回合，風險/成本較高，分階段處理。

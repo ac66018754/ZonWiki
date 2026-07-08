@@ -51,6 +51,12 @@ export function CalendarMonthView({
     return out;
   }, [grid]);
 
+  // 換月份（grid 變）時先清空內容，讓「換範圍」顯示載入中並套用新表頭；單純背景重抓
+  //（refreshKey 變、grid 不變，如關閉任務彈窗後）則保留現有內容、抓完再換，不卸載、不閃動。
+  useEffect(() => {
+    setEvents(null);
+  }, [grid]);
+
   // 抓「整個可見網格範圍」的資料（不是只有當月），跨月與補格的任務才完整。
   useEffect(() => {
     const load = async () => {
@@ -86,7 +92,9 @@ export function CalendarMonthView({
 
   const weekDayNames = ["日", "一", "二", "三", "四", "五", "六"];
 
-  if (loading) {
+  // 只有「首次載入（尚無資料）」才顯示載入中並卸載內容；背景重抓（如關閉任務彈窗後 refreshKey 變動）
+  // 保留現有內容顯示、抓完再換上新資料——避免整塊卸載重掛造成「閃一下＋捲動跳回」。
+  if (loading && !events) {
     return <div style={{ textAlign: "center", padding: "var(--spacing-8)" }}>載入中...</div>;
   }
 
