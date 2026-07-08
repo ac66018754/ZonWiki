@@ -49,6 +49,8 @@ export function QuickCreateTaskModal({
   const [priority, setPriority] = useState(0);
   const [groupId, setGroupId] = useState("");
   const [saving, setSaving] = useState(false);
+  // 圖片上傳進行中的數量：>0 時擋「建立」，避免把「〔圖片上傳中 #xxx〕」佔位文字存進 DB。
+  const [uploadingCount, setUploadingCount] = useState(0);
   // 分類清單（以 prop 為基底，可就地新增分類後即時反映）
   const [localGroups, setLocalGroups] = useState<TaskGroup[]>(groups);
   // 標籤（與筆記共用標籤庫）
@@ -92,6 +94,12 @@ export function QuickCreateTaskModal({
 
   const save = async () => {
     if (!title.trim() || saving) return;
+    // 防線放在函式本體（非只有按鈕 disabled）：標題欄 Enter 等所有入口一律受阻，
+    // 避免把「〔圖片上傳中 #xxx〕」佔位文字永久存進 DB。
+    if (uploadingCount > 0) {
+      showToast("圖片上傳中，請稍候再建立", { type: "info" });
+      return;
+    }
     setSaving(true);
     try {
       const created = await createTaskCard({
@@ -269,6 +277,7 @@ export function QuickCreateTaskModal({
             onChange={setContent}
             minHeight={110}
             placeholder="內容（可留空，建立後也能再編輯）…"
+            onUploadingChange={setUploadingCount}
           />
         </div>
 
@@ -276,8 +285,14 @@ export function QuickCreateTaskModal({
           <button onClick={onClose} className="tk-btn" style={{ cursor: "pointer" }}>
             取消
           </button>
-          <button onClick={save} disabled={!title.trim() || saving} className="tk-btn tk-btn--primary" style={{ cursor: "pointer" }}>
-            {saving ? "建立中…" : "建立"}
+          <button
+            onClick={save}
+            disabled={!title.trim() || saving || uploadingCount > 0}
+            className="tk-btn tk-btn--primary"
+            style={{ cursor: "pointer" }}
+            title={uploadingCount > 0 ? "圖片上傳中，請稍候…" : undefined}
+          >
+            {saving ? "建立中…" : uploadingCount > 0 ? "圖片上傳中…" : "建立"}
           </button>
         </div>
       </div>

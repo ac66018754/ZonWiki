@@ -46,6 +46,10 @@ services:
       TZ: Asia/Taipei
     ports:
       - "5009:8080"
+    volumes:
+      # 筆記附件（貼上的圖片）落地目錄:必須掛卷,否則重建容器附件全滅。
+      # 正式環境的 docker-compose.prod.yml(在 VM 上)也要照樣掛,並納入備份(scripts/backup-db.sh)。
+      - api-appdata:/app/App_Data
 
   web:
     profiles: ["full"]
@@ -69,3 +73,5 @@ services:
 volumes:
   postgres-data:
     name: zonwiki-postgres-data
+  api-appdata:
+    name: zonwiki-api-appdata

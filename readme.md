@@ -38,6 +38,7 @@
 | **API 金鑰加密** | ASP.NET Core Data Protection | AI 模型金鑰存 DB 時自動加密、解析時自動解密 |
 | **AI 整合** | Claude CLI + OpenAI 相容 + Gemini | 可擴展 IAiProvider 介面；內建 Gemini (format-md) |
 | **MCP** | 自家 MCP Server（Node.js/TypeScript，已實作） | 供任何 AI 助理讀寫知識庫/任務/畫布；stdio、45 工具。見 [docs/MCP使用說明.md](./docs/MCP使用說明.md) |
+| **圖片附件** | SixLabors.ImageSharp 3.1（WebP 重編碼） | 筆記貼圖存磁碟 `App_Data/attachments`＋DB 中繼資料；內文只放 `/api/attachments/{id}` 短網址（非 base64）；孤兒附件每日掃描軟刪除。詳見 docs/DECISIONS.md 2026-07-08 |
 | **測試框架** | xUnit + FluentAssertions | 整合測試用 Testcontainers.PostgreSql |
 | **容器化** | Docker Compose | 本機開發用；正式部署可自選（K8s/VPS 等） |
 | **版本控制** | Git + GitHub | DB 為唯一真相（不再有檔案同步）|

@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import Link from "next/link";
 import { getArticle, getCurrentUser, listComments } from "@/lib/api";
 import { buildToc } from "@/lib/toc";
+import { resolveAttachmentUrls } from "@/lib/attachmentUrl";
 import { ArticleView } from "@/components/ArticleView";
 import { CommentSection } from "@/components/CommentSection";
 
@@ -27,7 +28,8 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
     getCurrentUser(cookieHeader).catch(() => null),
   ]);
 
-  const { html, toc } = buildToc(article.contentHtml);
+  // 附件圖片 src 補成 API 絕對網址（helper 只用 NEXT_PUBLIC_API_URL，SSR 下也不會誤用容器內部網址）。
+  const { html, toc } = buildToc(resolveAttachmentUrls(article.contentHtml));
   // 依使用者選定時區顯示（資料存 UTC）；未設定時退回台北時區。
   const updated = new Date(article.updatedDateTime).toLocaleString("zh-TW", {
     timeZone: user?.timeZone || "Asia/Taipei",

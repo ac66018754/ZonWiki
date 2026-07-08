@@ -41,6 +41,12 @@ public static class RateLimitingExtensions
     /// </summary>
     public const string PatPolicy = "zonwiki-pat";
 
+    /// <summary>
+    /// 附件（圖片）上傳端點的限流 policy 名稱（以 UserId 分區、TokenBucket；
+    /// 允許連續貼多張截圖的短暫爆量、長期受限，防磁碟灌爆）。
+    /// </summary>
+    public const string UploadPolicy = "zonwiki-upload";
+
     // ── 登入限流參數（IP 分區）───────────────────────────────────────────────
     /// <summary>登入視窗長度（1 分鐘）。</summary>
     private static readonly TimeSpan LoginWindow = TimeSpan.FromMinutes(1);
@@ -62,6 +68,14 @@ public static class RateLimitingExtensions
     private const int PatTokensPerPeriod = 15;
     /// <summary>PAT 令牌補充週期（1 分鐘補一次）。</summary>
     private static readonly TimeSpan PatReplenishmentPeriod = TimeSpan.FromMinutes(1);
+
+    // ── 附件上傳限流參數（UserId 分區）──────────────────────────────────────
+    /// <summary>附件上傳權杖桶容量（允許一口氣貼多張截圖的短暫爆量）。</summary>
+    private const int UploadTokenLimit = 20;
+    /// <summary>每個補充週期補回的上傳令牌數。</summary>
+    private const int UploadTokensPerPeriod = 10;
+    /// <summary>上傳令牌補充週期（1 分鐘補一次）。</summary>
+    private static readonly TimeSpan UploadReplenishmentPeriod = TimeSpan.FromMinutes(1);
 
     /// <summary>
     /// 逾限時回應的 JSON 訊息（繁中＋英文提示，方便前端與外部 AI 客戶端辨識）。
@@ -114,6 +128,19 @@ public static class RateLimitingExtensions
                         TokenLimit = PatTokenLimit,
                         TokensPerPeriod = PatTokensPerPeriod,
                         ReplenishmentPeriod = PatReplenishmentPeriod,
+                        AutoReplenishment = true,
+                        QueueLimit = 0,
+                    }));
+
+            // 附件上傳：以 UserId 分區的令牌桶；允許連貼多張的爆量、長期受限；不排隊。
+            options.AddPolicy(UploadPolicy, httpContext =>
+                RateLimitPartition.GetTokenBucketLimiter(
+                    partitionKey: ResolveUserPartitionKey(httpContext),
+                    factory: _ => new TokenBucketRateLimiterOptions
+                    {
+                        TokenLimit = UploadTokenLimit,
+                        TokensPerPeriod = UploadTokensPerPeriod,
+                        ReplenishmentPeriod = UploadReplenishmentPeriod,
                         AutoReplenishment = true,
                         QueueLimit = 0,
                     }));

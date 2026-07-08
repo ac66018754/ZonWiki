@@ -31,6 +31,14 @@ public sealed class ZonWikiApiFactory : WebApplicationFactory<Program>, IAsyncLi
         .Build();
 
     /// <summary>
+    /// 附件落地用的暫存根目錄（每次測試回合唯一；避免測試把圖檔寫進 repo 的 App_Data）。
+    /// 注意：必須在此處（host build 之前）以環境變數注入——與連線字串同款的「唯一合法時機窗口」；
+    /// 個別測試類別內再設環境變數已來不及（設定值於 host 首次 build 時凍結）。
+    /// </summary>
+    public string AttachmentRootPath { get; } = Path.Combine(
+        Path.GetTempPath(), "zonwiki-test-attachments", Guid.NewGuid().ToString("N"));
+
+    /// <summary>
     /// 啟動 PostgreSQL 容器，並以「環境變數」注入連線字串與測試設定。
     ///
     /// 為何用環境變數而非 <c>ConfigureAppConfiguration</c>：本 API 採「最小主機」（<c>WebApplication.CreateBuilder</c>），
@@ -51,6 +59,8 @@ public sealed class ZonWikiApiFactory : WebApplicationFactory<Program>, IAsyncLi
         Environment.SetEnvironmentVariable("Ai__Provider", "Fake");
         // 環境設為 Testing：避開 Program.cs 內 IsDevelopment()／IsProduction() 專屬啟動分支。
         Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", "Testing");
+        // 附件落地改指到暫存目錄（絕對路徑會直接採用，不以 ContentRoot 為基準）。
+        Environment.SetEnvironmentVariable("Attachments__RootPath", AttachmentRootPath);
     }
 
     /// <summary>
@@ -61,9 +71,23 @@ public sealed class ZonWikiApiFactory : WebApplicationFactory<Program>, IAsyncLi
         Environment.SetEnvironmentVariable("ConnectionStrings__Postgres", null);
         Environment.SetEnvironmentVariable("Ai__Provider", null);
         Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", null);
+        Environment.SetEnvironmentVariable("Attachments__RootPath", null);
         await _postgresContainer.StopAsync();
         await _postgresContainer.DisposeAsync();
         await base.DisposeAsync();
+
+        // 清掉本回合的附件暫存目錄（測試自建的暫存資料，非產品資料）。
+        try
+        {
+            if (Directory.Exists(AttachmentRootPath))
+            {
+                Directory.Delete(AttachmentRootPath, recursive: true);
+            }
+        }
+        catch
+        {
+            // 暫存目錄清理失敗不影響測試結果（OS 會定期清 Temp）。
+        }
     }
 }
 

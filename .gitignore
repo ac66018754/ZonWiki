@@ -101,6 +101,8 @@ appsettings.Production.json
 # ------------------------------------------------------------
 .docker/
 postgres-data/
+# 筆記附件等 runtime 落地檔（使用者資料，絕不進公開 repo；備份走 scripts/backup-db.sh）
+App_Data/
 
 # ------------------------------------------------------------
 # Logs

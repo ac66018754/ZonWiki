@@ -23,8 +23,18 @@ VM（GCP）                                   本機（Windows）
 
 ## (a) VM 端每日備份：`scripts/backup-db.sh`
 
-在 VM 上以 cron 每日執行，對 `zonwiki` 資料庫做 `pg_dump`（純 SQL）＋gzip，落地到
-`~/zonwiki/backup/db-YYYY-MM-DD_HHMMSS.sql.gz`，只保留最近 N 份，成功／失敗都寫日誌並可打 webhook 告警。
+在 VM 上以 cron 每日執行，做兩件事：
+1. **DB**：對 `zonwiki` 資料庫 `pg_dump`（純 SQL）＋gzip → `db-YYYY-MM-DD_HHMMSS.sql.gz`。
+2. **附件（App_Data）**：對 API 容器內 `/app/App_Data`（筆記貼圖等附件檔）`tar`＋gzip →
+   `files-YYYY-MM-DD_HHMMSS.tar.gz`。附件檔**不在 DB 裡**（DB 只存中繼資料），
+   還原時兩者缺一不可（2026-07-08 起筆記貼圖改存磁碟，見 `docs/DECISIONS.md`）。
+
+皆落地 `~/zonwiki/backup/`，兩類各自只保留最近 N 份，成功／失敗都寫日誌並可打 webhook 告警。
+附件備份失敗不會中止 DB 備份（只告警，下一輪再補）。
+
+> ⚠️ 前置：prod 的 `docker-compose.prod.yml`（在 VM 上）的 api 服務必須掛
+> `zonwiki-api-appdata:/app/App_Data` 具名卷（repo 的 dev `docker-compose.yml` 已示範），
+> 否則重建容器附件全滅、備份也備不到東西。
 
 ### 啟用步驟（在 VM 上）
 
@@ -65,6 +75,8 @@ VM（GCP）                                   本機（Windows）
 | `ZONWIKI_BACKUP_KEEP` | `14` | 保留份數 |
 | `ZONWIKI_BACKUP_WEBHOOK` | 空 | 告警 webhook（成功／失敗都會打；留空則只寫日誌） |
 | `ZONWIKI_BACKUP_LOG` | `<備份目錄>/backup.log` | 日誌檔 |
+| `ZONWIKI_API_CONTAINER` | 自動偵測名稱含 `api` 的容器 | API 容器名（附件備份用；設 `skip` 可停用附件備份） |
+| `ZONWIKI_APPDATA_PATH` | `/app/App_Data` | 容器內的附件根目錄 |
 
 ### 告警範例（可選）
 
@@ -128,6 +140,14 @@ Get-Content -Raw D:\Backups\ZonWiki\YYYY-MM-DD\db-XXXX.sql.gz  # 僅示意；請
 > 二進位／壓縮檔切勿用 PowerShell 的 `<`／`>` 重導（會插入 CRLF 搞壞內容）。
 > 本機還原請在 WSL/Git Bash 用 `gunzip -c file.sql.gz | docker exec -i <容器> psql ...`，
 > 或先 `gunzip` 解成 `.sql` 再 `docker cp` 進容器內 `psql -f`。
+
+附件（App_Data）的還原：把 `files-*.tar.gz` 解回 API 容器掛的卷即可：
+
+```bash
+# 在 VM 上：解進 api 容器（tar 內為相對的 App_Data/ 結構，-C /app 對位）
+gunzip -c ~/zonwiki/backup/files-YYYY-MM-DD_HHMMSS.tar.gz \
+  | docker exec -i <api容器> tar -xf - -C /app
+```
 
 > ⚠️ 正式庫的實際還原一律由使用者本人操作（Claude 不部署／不動 prod 資料）。
 > 提醒：AI 金鑰密文以 DataProtection 加密、金鑰存檔案系統（不在 DB），跨環境還原時金鑰卷需一致才解得開，詳見 `scripts/local/取得ProdDB密碼與倒回本機.md`。

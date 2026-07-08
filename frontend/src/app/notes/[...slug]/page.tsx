@@ -35,6 +35,7 @@ import { LinkedEntitiesBar } from '@/components/LinkedEntitiesBar';
 import { TocPanel } from '@/components/TocPanel';
 import { ToggleAwareMarkdown } from '@/components/MarkdownPreview';
 import { buildToc } from '@/lib/toc';
+import { resolveAttachmentUrls } from '@/lib/attachmentUrl';
 import { useUndoHotkeys, resetUndo } from '@/lib/undoManager';
 import { useConfirm } from '@/components/ConfirmProvider';
 import { registerNavigationGuard } from '@/lib/navigationGuard';
@@ -107,6 +108,9 @@ export default function NotesDetailPage() {
   const [isSaving, setIsSaving] = useState(false);
   // AI（排版/美化）進行中：用來與「保存」互鎖，避免兩者重疊寫入造成競態。
   const [aiBusy, setAiBusy] = useState(false);
+  // 圖片上傳進行中的數量：>0 時擋「保存」與 AI 動作，
+  // 避免把編輯器裡的「〔圖片上傳中 #xxx〕」佔位文字永久存進 DB。
+  const [uploadingCount, setUploadingCount] = useState(0);
   // 預覽內文容器參考（供 NoteMarksLayer 套用文字標註）。
   const previewRef = useRef<HTMLDivElement | null>(null);
   // 編輯器 textarea 參考：供「局部排版（重排選取範圍）」讀取目前選取位置。
@@ -332,8 +336,9 @@ export default function NotesDetailPage() {
     }
   }, [note?.id, slug]);
   // 由內文 HTML 萃取章節（h1/h2/h3）並為各標題補上錨點 id（供目錄點擊捲動）。
+  // 附件圖片 src 先由相對路徑補成 API 絕對網址（本地 dev 前後端跨埠時 <img> 才載得到）。
   const { html: previewHtml, toc } = useMemo(
-    () => (note ? buildToc(note.contentHtml) : { html: '', toc: [] }),
+    () => (note ? buildToc(resolveAttachmentUrls(note.contentHtml)) : { html: '', toc: [] }),
     [note],
   );
 
@@ -461,6 +466,12 @@ export default function NotesDetailPage() {
     // 前端先擋：標題不可為空（與後端規則一致，給即時回饋、免一次無謂往返）。
     if (!editTitle.trim()) {
       setError('標題不可為空');
+      return;
+    }
+    // 防線放在函式本體（非只有按鈕 disabled）：任何呼叫入口都不可在圖片上傳中保存，
+    // 避免把「〔圖片上傳中 #xxx〕」佔位文字永久存進 DB。
+    if (uploadingCount > 0) {
+      setError('圖片上傳中，請稍候再保存');
       return;
     }
 
@@ -966,10 +977,16 @@ export default function NotesDetailPage() {
                 <button
                   onClick={handleSave}
                   className="btn-primary"
-                  disabled={isSaving || aiBusy}
-                  title={aiBusy ? 'AI 處理中，請稍候…' : undefined}
+                  disabled={isSaving || aiBusy || uploadingCount > 0}
+                  title={
+                    aiBusy
+                      ? 'AI 處理中，請稍候…'
+                      : uploadingCount > 0
+                        ? '圖片上傳中，請稍候…'
+                        : undefined
+                  }
                 >
-                  {isSaving ? '保存中...' : '💾 保存'}
+                  {isSaving ? '保存中...' : uploadingCount > 0 ? '圖片上傳中…' : '💾 保存'}
                 </button>
               </div>
             </div>
@@ -1062,7 +1079,7 @@ export default function NotesDetailPage() {
                 currentContent={editContent}
                 onContentUpdate={handleAiContentUpdate}
                 onError={(message) => setError(message)}
-                disabled={isSaving}
+                disabled={isSaving || uploadingCount > 0}
                 onBusyChange={setAiBusy}
                 taRef={editorTaRef}
               />
@@ -1075,6 +1092,7 @@ export default function NotesDetailPage() {
               minHeight={400}
               placeholder="用 Markdown 撰寫內容…（可用工具列套用格式；🔒 可框住不想被 AI 重排的內容）"
               taRef={editorTaRef}
+              onUploadingChange={setUploadingCount}
             />
           </div>
         ) : (

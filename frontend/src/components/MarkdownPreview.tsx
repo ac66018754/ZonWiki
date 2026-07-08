@@ -1,9 +1,19 @@
 "use client";
 
 import { useMemo, useState, type ComponentPropsWithoutRef } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { parseToggleSegments } from "@/lib/toggleBlocks";
+import { toAbsoluteAttachmentUrl } from "@/lib/attachmentUrl";
+
+/**
+ * 網址轉換：附件相對路徑（/api/attachments/{id}）先補成 API 絕對網址
+ * （本地 dev 前後端跨埠，<img> 不補會 404），再交給 react-markdown 預設的安全過濾。
+ * 其他網址（http(s)/data: 等）原樣進預設過濾——行為與未加此轉換前完全一致
+ * （註：預設過濾本就會擋掉 data: 協定，所以舊 base64 圖在「編輯預覽」一直都不顯示，
+ * 只在「閱讀檢視」（後端渲染 HTML）顯示；此為既有行為，非本次改動造成）。
+ */
+const attachmentUrlTransform = (url: string) => defaultUrlTransform(toAbsoluteAttachmentUrl(url));
 
 /**
  * 預覽中的程式碼區塊：包一層容器並加上「複製」按鈕。
@@ -81,7 +91,12 @@ export function ToggleAwareMarkdown({ value }: { value: string }) {
           );
         }
         return (
-          <ReactMarkdown key={key} remarkPlugins={[remarkGfm]} components={{ pre: PreWithCopy }}>
+          <ReactMarkdown
+            key={key}
+            remarkPlugins={[remarkGfm]}
+            components={{ pre: PreWithCopy }}
+            urlTransform={attachmentUrlTransform}
+          >
             {seg.text}
           </ReactMarkdown>
         );

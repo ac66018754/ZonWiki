@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { ToggleAwareMarkdown } from "@/components/MarkdownPreview";
 import { TOGGLE_SNIPPET, PROTECT_SNIPPET } from "@/lib/toggleBlocks";
+import { uploadAttachment } from "@/lib/api";
+import { showToast } from "@/lib/toast";
 
 /** 彈出預覽視窗與編輯器之間的即時同步頻道名稱（同源 BroadcastChannel）。 */
 export const PREVIEW_CHANNEL = "zonwiki:note-preview";
@@ -30,6 +32,7 @@ export function MarkdownEditor({
   textareaClassName,
   ariaLabel = "Markdown 編輯器",
   taRef,
+  onUploadingChange,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -47,6 +50,12 @@ export function MarkdownEditor({
   ariaLabel?: string;
   /** 上層若需讀取目前選取範圍（如「局部排版」），可傳入 ref 取得 textarea 元素。 */
   taRef?: React.RefObject<HTMLTextAreaElement | null>;
+  /**
+   * 圖片上傳進行中數量變動時回呼（0 = 全部完成）。
+   * 上層應在數量 > 0 時 disable「保存」與 AI 重排等會覆寫內容的動作，
+   * 避免把「〔圖片上傳中 #xxx〕」佔位文字永久存進資料庫。
+   */
+  onUploadingChange?: (count: number) => void;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const [view, setView] = useState<ViewMode>("edit");
@@ -209,27 +218,60 @@ export function MarkdownEditor({
     restore(start, start + sel.length);
   };
 
-  // 圖片插入：支援「貼上剪貼簿圖片」與「選檔上傳」，直接以 data URL 內嵌（不需網址）。
+  // 圖片插入：支援「貼上剪貼簿圖片」與「選檔上傳」。
+  // 改走「上傳附件 API → 內文只放短網址」（取代舊的 base64 data URL 內嵌——
+  // base64 會灌爆內文/搜尋索引/AI 重排 token，見 docs/DECISIONS.md 2026-07-08）。
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  /** 在指定位置插入圖片 Markdown（src 可為 data URL 或網址）。 */
-  const insertImageAt = (src: string, pos: number, alt = "圖片") => {
-    const md = `![${alt}](${src})`;
-    onChange(value.slice(0, pos) + md + value.slice(pos));
-    restore(pos + md.length, pos + md.length);
+  // 進行中的上傳數：曝露給上層（保存鈕/AI 動作在上傳中必須 disable，
+  // 否則會把佔位文字永久存進 DB）。用 ref 累計、每次變動即回呼。
+  const uploadingCountRef = useRef(0);
+  const bumpUploading = (delta: number) => {
+    uploadingCountRef.current = Math.max(0, uploadingCountRef.current + delta);
+    onUploadingChange?.(uploadingCountRef.current);
   };
 
-  /** 讀取圖片檔成 data URL 後插入到 pos。 */
+  /**
+   * 上傳圖片檔並插入 Markdown 短網址。
+   * 流程：游標處先插入「純文字」佔位標記（非圖片語法，預覽自然顯示為文字；
+   * 極端情況被存入也只是無害文字）→ 背景上傳 → 成功後在「最新內容」中把佔位換成
+   * `![圖片](/api/attachments/{id})`；失敗則移除佔位並以 Toast 告知。
+   */
   const insertImageFile = (file: File, pos: number) => {
     if (!file.type.startsWith("image/")) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === "string") insertImageAt(reader.result, pos);
-    };
-    reader.readAsDataURL(file);
+    const token = Math.random().toString(36).slice(2, 8);
+    const uploadingMark = `〔圖片上傳中 #${token}〕`;
+    const current = valueRef.current;
+    onChange(current.slice(0, pos) + uploadingMark + current.slice(pos));
+    restore(pos + uploadingMark.length, pos + uploadingMark.length);
+
+    bumpUploading(1);
+    uploadAttachment(file)
+      .then((uploaded) => {
+        const md = `![圖片](${uploaded.url})`;
+        const latest = valueRef.current;
+        if (latest.includes(uploadingMark)) {
+          onChange(latest.replace(uploadingMark, md));
+        } else {
+          // 佔位標記已被使用者（或 AI 重排）移除 → 視同取消，不強行插入；
+          // 已上傳的孤兒附件會由後端定期掃描回收。
+          showToast("圖片已上傳，但插入點已被移除；需要時請重新貼上", { type: "info" });
+        }
+      })
+      .catch((error: unknown) => {
+        const latest = valueRef.current;
+        if (latest.includes(uploadingMark)) {
+          onChange(latest.replace(uploadingMark, ""));
+        }
+        const message = error instanceof Error ? error.message : "圖片上傳失敗";
+        showToast(message, { type: "error" });
+      })
+      // 歸零延後一個 macrotask：保證上層收到「count=0」時，React 已把替換後的內容
+      // 刷進 state（上層可安心以「歸零⇒內容為最終網址」做補存，如節點抽屜的 blur 存檔）。
+      .finally(() => window.setTimeout(() => bumpUploading(-1), 0));
   };
 
-  /** 貼上事件：剪貼簿含圖片時直接內嵌（不需網址）。 */
+  /** 貼上事件：剪貼簿含圖片時自動上傳成附件並插入短網址（貼上瞬間先顯示佔位文字）。 */
   const onPasteImage = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const items = Array.from(e.clipboardData?.items ?? []);
     const imgItem = items.find((it) => it.type.startsWith("image/"));

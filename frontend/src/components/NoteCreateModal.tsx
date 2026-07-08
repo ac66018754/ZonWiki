@@ -45,6 +45,8 @@ export function NoteCreateModal({ open, onClose, onCreated, presetCategoryIds }:
   const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
 
   const [busy, setBusy] = useState(false);
+  // 圖片上傳進行中的數量：>0 時擋「建立筆記」，避免把「〔圖片上傳中 #xxx〕」佔位文字存進 DB。
+  const [uploadingCount, setUploadingCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   // 開啟時載入分類/標籤並重設表單（若有帶入預設分類則預先選取）
@@ -69,6 +71,10 @@ export function NoteCreateModal({ open, onClose, onCreated, presetCategoryIds }:
       setError("請輸入標題");
       return;
     }
+    if (uploadingCount > 0) {
+      setError("圖片上傳中，請稍候再建立");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -89,7 +95,7 @@ export function NoteCreateModal({ open, onClose, onCreated, presetCategoryIds }:
     } finally {
       setBusy(false);
     }
-  }, [title, content, selectedCats, selectedTags, onCreated, onClose, router]);
+  }, [title, content, selectedCats, selectedTags, onCreated, onClose, router, uploadingCount]);
 
   // 鍵盤：Esc 關閉、Ctrl/Cmd+Enter 建立
   useEffect(() => {
@@ -192,6 +198,7 @@ export function NoteCreateModal({ open, onClose, onCreated, presetCategoryIds }:
             withPreview
             minHeight={260}
             placeholder="用 Markdown 撰寫內容…（Ctrl+Enter 建立、Esc 取消）"
+            onUploadingChange={setUploadingCount}
           />
         </div>
 
@@ -200,8 +207,13 @@ export function NoteCreateModal({ open, onClose, onCreated, presetCategoryIds }:
           <span className="ncm-count">{wordCount} 字</span>
           <div className="ncm-foot-actions">
             <button className="ncm-btn" onClick={onClose} disabled={busy}>取消</button>
-            <button className="ncm-btn ncm-btn--primary" onClick={handleCreate} disabled={busy || !title.trim()}>
-              {busy ? "建立中…" : "建立筆記"}
+            <button
+              className="ncm-btn ncm-btn--primary"
+              onClick={handleCreate}
+              disabled={busy || !title.trim() || uploadingCount > 0}
+              title={uploadingCount > 0 ? "圖片上傳中，請稍候…" : undefined}
+            >
+              {busy ? "建立中…" : uploadingCount > 0 ? "圖片上傳中…" : "建立筆記"}
             </button>
           </div>
         </footer>
