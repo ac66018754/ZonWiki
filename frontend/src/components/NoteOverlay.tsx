@@ -32,6 +32,7 @@ import { STICKY_COLORS, parseSlideData } from '@/components/overlay/overlayShare
 import { DrawingTextBox, parseTextExtra, type TextExtra } from '@/components/drawing/TextBox';
 import { DrawingToolbar } from '@/components/drawing/DrawingToolbar';
 import { TextPropsPanel } from '@/components/drawing/TextPropsPanel';
+import { computeAnchorAt, locateAnchor, isOverlayAnchor, type OverlayAnchor } from '@/lib/overlayAnchor';
 
 /**
  * 事件：框選提問的答案要放進「就在原處旁邊」的便利貼（由 NoteMarksLayer 派發、NoteOverlay 接收建立）。
@@ -155,6 +156,20 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
   const itemsRef = useRef(items);
   itemsRef.current = items;
 
+  /**
+   * 依「容器相對座標點」建立內容錨點（畫記跟著文字走的基準；點在視窗外或無文字時回 null）。
+   * useCallback：只依賴穩定的 containerRef，供下方 effect 安全列入依賴。
+   * @param px 相對內文容器的 X。
+   * @param py 相對內文容器的 Y。
+   * @returns 內容錨點或 null（呼叫端 fallback 絕對座標）。
+   */
+  const anchorAtContainerPoint = useCallback((px: number, py: number): OverlayAnchor | null => {
+    const container = containerRef.current;
+    const rect = container?.getBoundingClientRect();
+    if (!container || !rect) return null;
+    return computeAnchorAt(container, rect.left + px, rect.top + py);
+  }, [containerRef]);
+
   // 接收「框選提問答案 → 便利貼」事件：在指定座標建立便利貼並加入浮層（取代開新筆記）。
   useEffect(() => {
     const onAskSticky = (e: Event) => {
@@ -162,6 +177,8 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
       if (!detail) return;
       const z = itemsRef.current.reduce((m, i) => Math.max(m, i.zIndex), 0) + 1;
       // detail.x/y 為「相對內文容器」座標；新便利貼預設跟著內文（absolute），直接沿用即可。
+      // 一併建立內容錨點（跟著所選段落的文字走）。
+      const askAnchor = anchorAtContainerPoint(Math.max(0, detail.x), Math.max(0, detail.y));
       createNoteOverlay(noteId, {
         kind: 'sticky',
         x: Math.max(0, detail.x),
@@ -171,13 +188,14 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
         zIndex: z,
         color: STICKY_COLORS[2],
         text: detail.text,
+        ...(askAnchor ? { dataJson: JSON.stringify({ anchor: askAnchor }) } : {}),
       }).then((created) => {
         if (created) setItems((prev) => [...prev, created]);
       });
     };
     window.addEventListener(NOTE_ASK_STICKY_EVENT, onAskSticky);
     return () => window.removeEventListener(NOTE_ASK_STICKY_EVENT, onAskSticky);
-  }, [noteId, containerRef]);
+  }, [noteId, containerRef, anchorAtContainerPoint]);
 
   // 量測內文容器尺寸（繪圖 SVG 用）
   useEffect(() => {
@@ -227,17 +245,20 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
   };
   const addSticky = async () => {
     const p = spawnPos();
+    const anchor = anchorAtContainerPoint(p.x, p.y);
     const created = await createNoteOverlay(noteId, {
       kind: 'sticky', x: p.x, y: p.y, width: 220, height: 200, zIndex: maxZ + 1,
       color: STICKY_COLORS[0], text: '',
+      ...(anchor ? { dataJson: JSON.stringify({ anchor }) } : {}),
     });
     if (created) setItems((prev) => [...prev, created]);
   };
   const addSlide = async () => {
     const p = spawnPos();
+    const anchor = anchorAtContainerPoint(p.x, p.y);
     const created = await createNoteOverlay(noteId, {
       kind: 'slide', x: p.x, y: p.y, width: 260, height: 200, zIndex: maxZ + 1,
-      dataJson: JSON.stringify([]),
+      dataJson: JSON.stringify(anchor ? { images: [], anchor } : []),
     });
     if (created) setItems((prev) => [...prev, created]);
   };
@@ -259,9 +280,11 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
     setTool(null);
     setSelectedShapeIdx(null);
     const p = spawnPos();
+    const anchor = anchorAtContainerPoint(p.x, p.y);
     const created = await createNoteOverlay(noteId, {
       kind: 'text', x: p.x, y: p.y, width: 180, height: 48, zIndex: maxZ + 1,
-      color: '#ef4444', text: '', dataJson: JSON.stringify({ bg: null, fontSize: 20, rotation: 0 }),
+      color: '#ef4444', text: '',
+      dataJson: JSON.stringify({ bg: null, fontSize: 20, rotation: 0, ...(anchor ? { anchor } : {}) }),
     });
     if (created) {
       setItems((prev) => [...prev, created]);
@@ -277,11 +300,10 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
   };
 
   const selectedTextItem = items.find((i) => i.id === selectedTextId && i.kind === 'text') ?? null;
-  /** 更新選取文字框的額外屬性（bg / fontSize / rotation）並持久化。 */
+  /** 更新選取文字框的額外屬性（bg / fontSize / rotation）並持久化（合併寫入，保留 anchor 等其他欄位）。 */
   const updateTextExtra = (patch: Partial<TextExtra>) => {
     if (!selectedTextItem) return;
-    const cur = parseTextExtra(selectedTextItem.dataJson);
-    const json = JSON.stringify({ ...cur, ...patch });
+    const json = JSON.stringify({ ...rawDataObj(selectedTextItem), ...patch });
     patchLocal(selectedTextItem.id, { dataJson: json });
     persist(selectedTextItem.id, { dataJson: json });
   };
@@ -299,6 +321,34 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
     if (id) remove(id);
   };
 
+  /**
+   * 文字框持久化：移動（patch 含 x/y）時順便以新位置重建內容錨點——拖到新文字上就跟著新文字；
+   * 其他 patch（打字、旋轉…）原樣持久化。
+   * @param id 文字框 id。
+   * @param patch 來自 DrawingTextBox 的 onCommit 內容。
+   */
+  const commitTextItemPatch = (id: string, patch: Partial<NoteOverlayItem>) => {
+    if (patch.x === undefined || patch.y === undefined) {
+      persist(id, patch);
+      return;
+    }
+    const cur = itemsRef.current.find((x) => x.id === id);
+    if (!cur) return;
+    // 縮放/旋轉的 commit 也帶 x/y 但值可能沒變（rotation=0 的 resize）→ 沒真的移動就不重錨（省一次定位）。
+    const anchorObj = rawDataObj(cur).anchor;
+    if (isOverlayAnchor(anchorObj) && Math.abs(patch.x - cur.x) < 0.5 && Math.abs(patch.y - cur.y) < 0.5) {
+      persist(id, patch);
+      return;
+    }
+    const anchor = anchorAtContainerPoint(patch.x, patch.y);
+    const obj = { ...rawDataObj({ ...cur, ...patch }) } as Record<string, unknown>;
+    if (anchor) obj.anchor = anchor;
+    else delete obj.anchor;
+    const json = JSON.stringify(obj);
+    patchLocal(id, { dataJson: json });
+    persist(id, { ...patch, dataJson: json });
+  };
+
   // 文字框「滾輪調整大小」（調整中狀態的 T 版本）：等比縮放字級與框尺寸。
   // 滾輪連發 → 本地即時、持久化尾端去抖。
   const textWheelPersistTimer = useRef<number | null>(null);
@@ -310,7 +360,8 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
     const fontSize = Math.min(120, Math.max(8, Math.round(extra.fontSize * factor)));
     const width = Math.max(40, Math.round(it.width * factor));
     const height = Math.max(24, Math.round(it.height * factor));
-    patchLocal(id, { dataJson: JSON.stringify({ ...extra, fontSize }), width, height });
+    // 合併寫入（保留 anchor 等其他欄位）。
+    patchLocal(id, { dataJson: JSON.stringify({ ...rawDataObj(it), fontSize }), width, height });
     if (textWheelPersistTimer.current != null) window.clearTimeout(textWheelPersistTimer.current);
     textWheelPersistTimer.current = window.setTimeout(() => {
       textWheelPersistTimer.current = null;
@@ -481,9 +532,15 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
       .forEach((item, i) => {
         const x = 28 + (i % 8) * 26;
         const y = 28 + (i % 8) * 26;
-        patchLocal(item.id, { x, y });
-        persist(item.id, { x, y });
-        if (isPinned(item)) setPinnedFlag(item, false);
+        // 歸位＝移到內文左上角 → 內容錨點已不代表它的位置，一併重建（左上角多半無文字 → 移除錨點）。
+        const anchor = anchorAtContainerPoint(x, y);
+        const obj = { ...rawDataObj(item) } as Record<string, unknown>;
+        if (anchor) obj.anchor = anchor;
+        else delete obj.anchor;
+        if (isPinned(item)) obj.pinned = false;
+        const json = JSON.stringify(obj);
+        patchLocal(item.id, { x, y, dataJson: json });
+        persist(item.id, { x, y, dataJson: json });
       });
   };
 
@@ -492,26 +549,49 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
   // 若其錨定點下的內容所在的 <details class="md-toggle">（或其任一祖先 details）被收合，就一起「隱藏」；
   // 再展開就恢復（可逆）。釘住（fixed）者不受影響（它不貼著任何文字）。
   //
-  // 【為何用 DOM 錨點、而非幾何範圍——決定性關鍵】收合是「同一輸入→同一輸出」的需求。純用幾何（點是否落在
-  // details 的 rect 內）會因「內層收合使外層 rect 縮短」「上方兄弟 toggle 收合使整段內容上移」而讓判定隨
-  // 『收合歷史』飄移，出現「有時不隱藏、有時不出現、多按幾下又好」的非決定性。改法：把項目錨定到它錨定點
-  // 下方「真正的內容元素」（DOM 祖先鏈穩定、不受版面位移影響），再以純 DOM 判斷「該元素是否位於某個收合中的
-  // <details> 內」決定隱藏——純函式、決定性。
-  //
-  // 錨點建立時機：只在「目前錨點可見（不在收合 details 內）或尚未建立」時，才用 elementsFromPoint 重抓點下的
-  // 可見內容元素；若目前錨點已被收合（該藏），就保留它、不重抓（否則會抓到位移後的別段內容而誤判）。
-  // 觸發時機＝toggle 開合（立即）＋捲動/視窗改變（節流）＋項目/形狀變動（去抖）——後兩者讓「畫完當下」
-  // 與「捲進視野的既有畫記」都能在可見時就建好錨點（elementsFromPoint 只能作用於視窗內的點）。
-  // 從未進過視野的舊畫記維持「無錨點＝永遠顯示」的保守行為（與便利貼既有語意一致）。
-  //
-  // 錨點 key：項目級用 item.id；形狀級（手繪無 id）用「形狀 JSON 內容」——同 session 內容不變則 key 穩定；
-  // 擦除/改樣式/縮放會換 key，屆時形狀必為可見狀態（隱藏者不可被操作），會安全地重新錨定。
+  // 【雙軌機制】
+  // (A) 持久化「內容錨點」（新資料，建立當下寫入）：畫記建立時把「壓在哪段文字上」存成文字錨點
+  //     （lib/overlayAnchor.ts），之後一律以文字重新定位——文字被收合（Range 無 rects）→ 隱藏；
+  //     文字可見但位置改變（收合/展開其他段落造成位移、甚至重載後版面不同）→ 把畫記座標「跟著位移量」
+  //     rebase 搬移。如此畫記永遠貼著它的文字，判定是純函式（同版面 → 同結果），且不依賴視窗可見性。
+  //     【為什麼不能只用絕對座標＋點錨定】絕對座標只在「畫記當下的展開狀態」的版面正確；多層 toggle 下
+  //     展開別的段落就會讓文字整段位移，畫記視覺上跑到別段文字上，點錨定也會在重抓時綁錯內容
+  //     （2026-07-08 使用者於 reamde 筆記實測重現）。
+  // (B) 點錨定 session 機制（舊資料回退，無持久化錨點者）：以錨定點下的 DOM 元素判定收合隱藏，
+  //     行為與先前版本一致（絕對座標、不跟隨位移）。舊畫記重畫一次即自動升級為 (A)。
   const stickyAnchorRef = useRef<Map<string, Element>>(new Map());
   const [collapsedByToggle, setCollapsedByToggle] = useState<Set<string>>(new Set());
   const shapeAnchorsRef = useRef<Map<string, Element>>(new Map());
   const [hiddenShapeKeys, setHiddenShapeKeys] = useState<Set<string>>(new Set());
   // 最新 recompute 的 ref：供「items/shapes 變動」的去抖 effect 呼叫（函式本體定義於下方 effect 內）。
   const recomputeAnchorsRef = useRef<() => void>(() => {});
+  // rebase 後待持久化的項目 id 與 drawing 髒旗標（rebase 高頻觸發 → 尾端去抖批次寫回後端）。
+  const rebaseDirtyItemIdsRef = useRef<Set<string>>(new Set());
+  const rebaseDrawingDirtyRef = useRef(false);
+  const rebasePersistTimer = useRef<number | null>(null);
+  /** 排程把 rebase 結果批次持久化（800ms 尾端去抖；讀 itemsRef/shapesRef 的最新值）。 */
+  const scheduleRebasePersist = useCallback(() => {
+    if (rebasePersistTimer.current != null) window.clearTimeout(rebasePersistTimer.current);
+    rebasePersistTimer.current = window.setTimeout(() => {
+      rebasePersistTimer.current = null;
+      const ids = Array.from(rebaseDirtyItemIdsRef.current);
+      rebaseDirtyItemIdsRef.current.clear();
+      for (const id of ids) {
+        const it = itemsRef.current.find((x) => x.id === id);
+        if (it) persist(id, { x: it.x, y: it.y, dataJson: it.dataJson });
+      }
+      if (rebaseDrawingDirtyRef.current) {
+        rebaseDrawingDirtyRef.current = false;
+        const d = drawingRef.current;
+        if (d) persist(d.id, { dataJson: JSON.stringify(shapesRef.current) });
+      }
+    }, 800);
+  }, [persist]);
+  /** 讀取項目的持久化內容錨點（無/壞 → null＝走舊點錨定回退）。 */
+  const itemAnchor = (item: NoteOverlayItem): OverlayAnchor | null => {
+    const a = rawDataObj(item).anchor;
+    return isOverlayAnchor(a) ? a : null;
+  };
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -570,29 +650,88 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
     const recompute = () => {
       const origin = overlayRef.current?.getBoundingClientRect();
       if (!origin) return;
+      // 一輪只序列化一次容器純文字，供本輪所有錨點重定位共用（大筆記×多畫記的成本控制）。
+      const containerText = container.textContent ?? '';
 
-      // (1) 項目級：便利貼/圖片板/文字框（非釘住者），錨定點＝左上角。
+      // ── (1) 項目級：便利貼/圖片板/文字框（非釘住者） ──
       const nonPinned = itemsRef.current.filter(
         (i) => (i.kind === 'sticky' || i.kind === 'slide' || i.kind === 'text') && !isPinned(i),
       );
-      const hiddenItems = computeHidden(
+      const hiddenItems = new Set<string>();
+      const legacyItems: typeof nonPinned = [];
+      for (const it of nonPinned) {
+        const a = itemAnchor(it);
+        if (!a) {
+          legacyItems.push(it); // 無持久化錨點 → 舊點錨定回退
+          continue;
+        }
+        const loc = locateAnchor(container, a, containerText);
+        if (!loc) continue; // 錨定文字已不存在（內容被編輯掉）→ 絕對座標、永遠顯示
+        if (!loc.visible) {
+          hiddenItems.add(it.id); // 文字在收合的 toggle 內 → 一起隱藏
+          continue;
+        }
+        if (it.id === draggingItemIdRef.current) continue; // 拖曳中 → 不與使用者搶位置
+        // 文字可見但位置改變 → 座標跟著位移（rebase），並更新錨點基準位置。
+        const dx = loc.x - a.ex;
+        const dy = loc.y - a.ey;
+        if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+          const json = JSON.stringify({ ...rawDataObj(it), anchor: { ...a, ex: loc.x, ey: loc.y } });
+          patchLocal(it.id, { x: it.x + dx, y: it.y + dy, dataJson: json });
+          rebaseDirtyItemIdsRef.current.add(it.id);
+        }
+      }
+      // 舊資料回退：點錨定 session 機制（絕對座標、只做隱藏判定）。
+      const hiddenLegacy = computeHidden(
         stickyAnchorRef.current,
-        nonPinned.map((it) => ({ key: it.id, pt: [origin.left + it.x, origin.top + it.y] as [number, number] })),
+        legacyItems.map((it) => ({ key: it.id, pt: [origin.left + it.x, origin.top + it.y] as [number, number] })),
       );
+      hiddenLegacy.forEach((id) => hiddenItems.add(id));
       setCollapsedByToggle((prev) => (sameStringSet(prev, hiddenItems) ? prev : hiddenItems));
 
-      // (2) 形狀級：每個手繪形狀以「代表點」（shapeAnchorPoint）錨定。
-      const hiddenShapes = computeHidden(
-        shapeAnchorsRef.current,
-        shapesRef.current.map((s) => {
+      // ── (2) 形狀級 ──
+      const hiddenShapes = new Set<string>();
+      const legacyShapeEntries: { key: string; pt: [number, number] | null }[] = [];
+      // 互動進行中（畫到一半/擦除中/建立空窗）不做位移 rebase，避免與暫存陣列打架；隱藏判定照算。
+      const interacting =
+        curShape.current !== null || eraseWork.current !== null || eraseBox.current !== null || creatingRef.current !== null;
+      let shifted = false;
+      const nextShapes = shapesRef.current.map((s) => {
+        if (!s.anchor) {
           const pt = shapeAnchorPoint(s);
-          return {
+          legacyShapeEntries.push({
             key: JSON.stringify(s),
             pt: pt ? ([origin.left + pt[0], origin.top + pt[1]] as [number, number]) : null,
-          };
-        }),
-      );
+          });
+          return s;
+        }
+        const loc = locateAnchor(container, s.anchor, containerText);
+        if (!loc) return s; // 錨定文字不存在 → 絕對座標、永遠顯示
+        if (!loc.visible) {
+          hiddenShapes.add(JSON.stringify(s));
+          return s;
+        }
+        const dx = loc.x - s.anchor.ex;
+        const dy = loc.y - s.anchor.ey;
+        if (interacting || (Math.abs(dx) <= 0.5 && Math.abs(dy) <= 0.5)) return s;
+        shifted = true;
+        return {
+          ...s,
+          points: s.points.map(([x, y]) => [x + dx, y + dy] as [number, number]),
+          anchor: { ...s.anchor, ex: loc.x, ey: loc.y },
+        };
+      });
+      if (shifted && drawingRef.current) {
+        shapesRef.current = nextShapes;
+        patchLocal(drawingRef.current.id, { dataJson: JSON.stringify(nextShapes) });
+        rebaseDrawingDirtyRef.current = true;
+      }
+      // 舊資料形狀：點錨定回退。
+      const hiddenLegacyShapes = computeHidden(shapeAnchorsRef.current, legacyShapeEntries);
+      hiddenLegacyShapes.forEach((k) => hiddenShapes.add(k));
       setHiddenShapeKeys((prev) => (sameStringSet(prev, hiddenShapes) ? prev : hiddenShapes));
+
+      if (rebaseDirtyItemIdsRef.current.size > 0 || rebaseDrawingDirtyRef.current) scheduleRebasePersist();
     };
     recomputeAnchorsRef.current = recompute;
 
@@ -635,9 +774,12 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
   }, [items]);
 
   // ── 拖曳 / 縮放 ──
+  // 拖曳中的項目 id：rebase 不得動它（避免背景重算與使用者手動拖曳互相覆寫，對抗式復審 MEDIUM）。
+  const draggingItemIdRef = useRef<string | null>(null);
   const startDrag = (e: React.PointerEvent, item: NoteOverlayItem, mode: 'move' | 'resize') => {
     e.preventDefault();
     e.stopPropagation();
+    draggingItemIdRef.current = item.id;
     bringToFront(item);
     const sx = e.clientX, sy = e.clientY;
     const ox = item.x, oy = item.y, ow = item.width, oh = item.height;
@@ -671,7 +813,20 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
     const onUp = () => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
-      persist(item.id, mode === 'move' ? { x: next.x, y: next.y } : { width: next.width, height: next.height });
+      draggingItemIdRef.current = null;
+      if (mode === 'move' && !isPinned(item)) {
+        // 拖曳＝使用者把它放到新的文字上 → 重建內容錨點一併持久化（拖到無文字處則移除錨點、回絕對座標）。
+        const anchor = anchorAtContainerPoint(next.x, next.y);
+        const cur = itemsRef.current.find((x) => x.id === item.id) ?? item;
+        const obj = { ...rawDataObj(cur) } as Record<string, unknown>;
+        if (anchor) obj.anchor = anchor;
+        else delete obj.anchor;
+        const json = JSON.stringify(obj);
+        patchLocal(item.id, { dataJson: json });
+        persist(item.id, { x: next.x, y: next.y, dataJson: json });
+      } else {
+        persist(item.id, mode === 'move' ? { x: next.x, y: next.y } : { width: next.width, height: next.height });
+      }
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
@@ -703,6 +858,9 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
   /** 把手繪寫入（local + 後端）；一律透過 drawingRef 取得「當前」繪圖項目，故供復原閉包安全沿用。 */
   const setDrawingShapes = async (next: Shape[]) => {
     shapesRef.current = next; // 立即同步，連續復原 / 重做不必等重繪
+    // 復原/重做可能把形狀設回「rebase 前」的舊座標快照（rebase 不進 undo 堆疊）——
+    // 明確排程一次錨點重算，讓有錨點的形狀立刻被 rebase 回目前版面的正確位置（對抗式復審 HIGH）。
+    window.setTimeout(() => recomputeAnchorsRef.current(), 0);
     const json = JSON.stringify(next);
     // 若有建立中的請求，先等它完成（屆時 drawingRef 已就緒），避免重複建立。
     if (!drawingRef.current && creatingRef.current) {
@@ -862,6 +1020,12 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
     if (!s) return;
     const ok = s.type === 'free' ? s.points.length > 1 : !samePoint(s.points[0], s.points[1]);
     if (ok) {
+      // 建立內容錨點（畫記跟著文字走）：以形狀代表點下的文字為錨；無文字（空白區）→ 絕對座標。
+      const pt = shapeAnchorPoint(s);
+      if (pt) {
+        const anchor = anchorAtContainerPoint(pt[0], pt[1]);
+        if (anchor) s.anchor = anchor;
+      }
       // 把剛畫好的形狀設為「可即時調整」對象（它會是陣列最後一個）。
       setSelectedShapeIdx(shapesForUi.length);
       commitShapes([...shapesForUi, s]);
@@ -1267,7 +1431,7 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
             onStartEdit={() => { setSelectedTextId(item.id); setEditingTextId(item.id); }}
             onStopEdit={() => { setEditingTextId(null); deleteIfEmpty(item.id); }}
             onChange={(patch) => patchLocal(item.id, patch)}
-            onCommit={(patch) => persist(item.id, patch)}
+            onCommit={(patch) => commitTextItemPatch(item.id, patch)}
             onAdjustWheel={(deltaY) => adjustTextByWheel(item.id, deltaY)}
           />
         ))}

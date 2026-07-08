@@ -114,5 +114,21 @@ console.log("drawGeometry spec:");
   assertTrue("4 line+opacity 持久化格式保留", s.type === "line" && s.opacity === 0.4 && s.width === 16);
 }
 
+// ── normalizeShapes：內容錨點（anchor）欄位保留與壞資料丟棄 ──
+{
+  const anchor = { text: "想像你是新到職的後端工程師", start: 120, prefix: "情境", suffix: "，第一天", ex: 36.5, ey: 480 };
+  const raw = [
+    { type: "rect", color: "#f00", width: 3, points: [[0, 0], [10, 10]], anchor },
+    { type: "rect", color: "#f00", width: 3, points: [[0, 0], [10, 10]], anchor: { text: "", start: 0 } }, // 壞：text 空
+    { type: "rect", color: "#f00", width: 3, points: [[0, 0], [10, 10]], anchor: "not-an-object" },        // 壞：非物件
+  ];
+  const [ok, bad1, bad2] = normalizeShapes(raw);
+  assertEqual("5a 合法 anchor 完整保留", ok.anchor, anchor);
+  assertTrue("5b 壞 anchor 丟棄（回退絕對座標）", bad1.anchor === undefined && bad2.anchor === undefined);
+  // 縮放/展開（spread）不得弄丟 anchor
+  const scaled = scaleShape(ok, 2);
+  assertEqual("5c scaleShape 保留 anchor", scaled.anchor, anchor);
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

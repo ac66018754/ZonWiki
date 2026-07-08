@@ -83,6 +83,15 @@ export function DrawingTextBox({
   const taRef = useRef<HTMLTextAreaElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
+  /** 取 dataJson 的原始物件（保留 anchor 等未知欄位；寫回時必須合併，不可只寫已知三欄）。 */
+  const rawData = (): Record<string, unknown> => {
+    try {
+      const o = JSON.parse(item.dataJson || '{}') as unknown;
+      if (o && typeof o === 'object' && !Array.isArray(o)) return o as Record<string, unknown>;
+    } catch { /* 壞資料 → 空物件 */ }
+    return {};
+  };
+
   // 選取/編輯中 → 攔截滾輪做「調整大小」（原生監聽器＋passive:false 才能 preventDefault 擋頁面捲動）。
   useEffect(() => {
     if (!onAdjustWheel || (!selected && !editing)) return;
@@ -174,12 +183,12 @@ export function DrawingTextBox({
       const p = toFlow(ev.clientX, ev.clientY);
       // 握把在上方，故 +90 讓「指標朝上」對應 0 度
       nextDeg = Math.round((Math.atan2(p.y - ccy, p.x - ccx) * 180) / Math.PI + 90);
-      onChange({ dataJson: JSON.stringify({ ...extra, rotation: nextDeg }) });
+      onChange({ dataJson: JSON.stringify({ ...rawData(), rotation: nextDeg }) });
     };
     const up = () => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
-      onCommit({ dataJson: JSON.stringify({ ...extra, rotation: nextDeg }) });
+      onCommit({ dataJson: JSON.stringify({ ...rawData(), rotation: nextDeg }) });
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);

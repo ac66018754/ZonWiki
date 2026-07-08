@@ -25,6 +25,8 @@ export type DrawTool =
 /**
  * 一個繪圖形狀。free＝多點折線；line/rect/ellipse＝起訖兩點。
  * opacity（0~1）＝描邊透明度，供「螢光筆」用（未設＝1＝不透明，沿用一般畫筆）。
+ * anchor＝內容錨點（筆記版「畫記跟著文字走」用；畫布版不使用，維持 undefined）。
+ * 本模組與座標系無關，故錨點型別以結構相容的寬鬆物件持有，實際語意見 lib/overlayAnchor.ts。
  */
 export interface Shape {
   type: 'free' | 'line' | 'rect' | 'ellipse';
@@ -34,23 +36,53 @@ export interface Shape {
   /** 描邊透明度（0~1）；undefined 視為 1（不透明）。螢光筆會給較低值（半透明）。 */
   opacity?: number;
   points: [number, number][];
+  /** 內容錨點（見 lib/overlayAnchor.ts 的 OverlayAnchor）；無＝絕對座標（舊資料/畫布版）。 */
+  anchor?: {
+    text: string;
+    start: number;
+    prefix: string;
+    suffix: string;
+    ex: number;
+    ey: number;
+  };
+}
+
+/** 寬鬆驗證形狀上的內容錨點欄位（壞資料一律丟棄，回退絕對座標行為）。 */
+function normalizeAnchor(raw: unknown): Shape['anchor'] | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const a = raw as Record<string, unknown>;
+  if (
+    typeof a.text === 'string' && a.text.length > 0 &&
+    typeof a.start === 'number' &&
+    typeof a.prefix === 'string' &&
+    typeof a.suffix === 'string' &&
+    typeof a.ex === 'number' &&
+    typeof a.ey === 'number'
+  ) {
+    return { text: a.text, start: a.start, prefix: a.prefix, suffix: a.suffix, ex: a.ex, ey: a.ey };
+  }
+  return undefined;
 }
 
 /** 把（可能是舊版只有 points 的）資料正規化成 Shape（缺 type 視為 free）。 */
 export function normalizeShapes(raw: unknown[]): Shape[] {
   return (raw || [])
     .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
-    .map((s) => ({
-      type: (['free', 'line', 'rect', 'ellipse'].includes(s.type as string) ? s.type : 'free') as Shape['type'],
-      color: typeof s.color === 'string' ? s.color : '#ef4444',
-      width: typeof s.width === 'number' ? s.width : 3,
-      dash: !!s.dash,
-      // 只有合法範圍 (0,1] 的數值才視為透明度；其餘（含舊資料無此欄）回退不透明。
-      ...(typeof s.opacity === 'number' && s.opacity > 0 && s.opacity <= 1
-        ? { opacity: s.opacity }
-        : {}),
-      points: Array.isArray(s.points) ? (s.points as [number, number][]) : [],
-    }));
+    .map((s) => {
+      const anchor = normalizeAnchor(s.anchor);
+      return {
+        type: (['free', 'line', 'rect', 'ellipse'].includes(s.type as string) ? s.type : 'free') as Shape['type'],
+        color: typeof s.color === 'string' ? s.color : '#ef4444',
+        width: typeof s.width === 'number' ? s.width : 3,
+        dash: !!s.dash,
+        // 只有合法範圍 (0,1] 的數值才視為透明度；其餘（含舊資料無此欄）回退不透明。
+        ...(typeof s.opacity === 'number' && s.opacity > 0 && s.opacity <= 1
+          ? { opacity: s.opacity }
+          : {}),
+        ...(anchor ? { anchor } : {}),
+        points: Array.isArray(s.points) ? (s.points as [number, number][]) : [],
+      };
+    });
 }
 
 /** 兩點是否幾乎相同（用於判斷形狀是否有實際拖出大小）。 */
