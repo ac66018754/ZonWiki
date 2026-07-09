@@ -209,6 +209,47 @@ export async function createTaskCard(payload: {
 }
 
 /**
+ * 複製一張任務卡片：以來源卡片建立一張新的獨立任務（標題加「(副本)」），
+ * 帶入內容/狀態/優先度/分類/日期/長期設定，並複製標籤與子任務。
+ * 副本刻意「不」帶：
+ *  - 父任務關係、首頁釘選（避免與原卡片糾纏、或洗掉首頁排序）；
+ *  - **重複規則（recurrenceRule）**——否則副本會變成「第二條母規則」，背景具現化服務會照它的錨點日期
+ *    另外生出一整串重複實例，與原本那串重疊、無聲爆量（見 RecurringTaskMaterializationService）。
+ *    需要重複的話，請到副本上自行重新設定。
+ * 以既有的 create / assignTags / createSubTask API 組合完成（多次請求；個別失敗不影響已建立的主卡）。
+ * @param source 來源任務（需含 tags 與 subTasks，通常來自 getTaskCard 詳情）。
+ * @returns 新建立的任務卡片；主卡建立失敗回 null。
+ */
+export async function duplicateTask(source: TaskCard): Promise<TaskCard | null> {
+  const created = await createTaskCard({
+    title: `${source.title} (副本)`,
+    content: source.content || undefined,
+    status: (source.status as "todo" | "doing" | "done") || "todo",
+    priority: source.priority ?? 0,
+    groupId: source.groupId || undefined,
+    plannedDateTime: source.plannedDateTime ?? null,
+    dueDateTime: source.dueDateTime ?? null,
+    // 重複規則刻意不複製（見上方 doc）——避免副本變成第二條重複母規則。
+    isLongTerm: source.isLongTerm ?? false,
+    targetGranularity: source.targetGranularity ?? undefined,
+    targetDateTime: source.targetDateTime ?? undefined,
+  });
+  if (!created) return null;
+
+  const tagIds = (source.tags ?? []).map((t) => t.id);
+  if (tagIds.length > 0) await assignTaskTags(created.id, tagIds);
+
+  // 複製子任務（依原順序建立；已完成者補打勾）。
+  for (const sub of source.subTasks ?? []) {
+    const title = sub.title.trim();
+    if (!title) continue;
+    const createdSub = await createSubTask(created.id, title);
+    if (createdSub && sub.isDone) await updateSubTask(createdSub.id, { isDone: true });
+  }
+  return created;
+}
+
+/**
  * 更新任務卡片的請求酬載。
  * 日期/分類欄位：傳值＝設定；對應的 clearXxx=true＝清空為 null；兩者皆不傳＝維持原值。
  */

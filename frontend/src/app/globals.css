@@ -932,6 +932,123 @@ html[data-route="login"] .main-content {
   overflow-wrap: anywhere;
 }
 
+/* ── 進階程式碼區塊（.code-block）：VS Code Dark+ 配色＋標題列（檔名／語言／複製）。
+   編輯器預覽（互動：可改檔名/語言）與閱讀檢視（唯讀，由 enhanceReadingCodeBlocks 包裝）共用同一套外觀。
+   刻意一律深底（不隨 App 亮/暗變），貼近 VS Code 的觀感。 */
+.code-block {
+  margin: var(--spacing-4) 0;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 1px solid #333;
+  background: #1e1e1e; /* VS Code Dark+ 編輯器底 */
+  box-shadow: var(--shadow-sm);
+}
+.code-block-header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  padding: 4px 8px;
+  background: #252526; /* VS Code 標題列底 */
+  border-bottom: 1px solid #333;
+  font-size: var(--text-xs);
+}
+.code-block-header-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.code-block-filename,
+.code-block-lang {
+  background: #1e1e1e;
+  color: #d4d4d4;
+  border: 1px solid #3c3c3c;
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+}
+.code-block-filename { min-width: 100px; flex: 0 1 240px; }
+.code-block-filename::placeholder { color: #858585; } /* 對比 4.5:1（過 WCAG AA） */
+.code-block-filename:focus,
+.code-block-lang:focus { outline: 1px solid var(--action-primary-bg); }
+.code-block-lang { cursor: pointer; }
+.code-block-lang option { background: #1e1e1e; color: #d4d4d4; }
+.code-block-filename-ro { color: #cccccc; font-family: var(--font-mono); font-size: var(--text-xs); }
+.code-block-filename-ro.code-block-muted { color: #a6a6a6; } /* 對比 6.3:1（過 WCAG AA） */
+.code-block-lang-ro {
+  color: #9cdcfe; text-transform: uppercase; font-size: 10px;
+  letter-spacing: 0.04em; font-weight: 700;
+}
+/* 標題列裡的複製鈕改為靜態定位（非絕對，避免蓋住語言下拉）。 */
+.code-block-header .code-copy-btn {
+  position: static;
+  top: auto;
+  right: auto;
+  padding: 2px 8px;
+  opacity: 0.9;
+}
+/* 內文 pre：深底、覆寫 .md-preview/.markdown-prose pre 的通用外觀（用 .code-block 後代提升 specificity）。 */
+.code-block .code-block-pre,
+.code-block pre {
+  margin: 0;
+  border: none;
+  border-left: none;
+  border-radius: 0;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  padding: var(--spacing-3);
+  box-shadow: none;
+  overflow-x: auto;
+}
+.code-block .code-block-pre code,
+.code-block pre code {
+  background: transparent;
+  color: inherit;
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  white-space: pre; /* 程式碼保留縮排、可橫向捲動 */
+  word-break: normal;
+  overflow-wrap: normal;
+  display: block;
+  padding: 0;
+}
+
+/* VS Code Dark+ 語法配色（highlight.js token class → 顏色；scope 在 .code-block 內不影響他處）。 */
+.code-block .hljs-comment,
+.code-block .hljs-quote { color: #6a9955; } /* 註解＝綠（需求 #5） */
+.code-block .hljs-keyword,
+.code-block .hljs-built_in,
+.code-block .hljs-literal { color: #569cd6; } /* 關鍵字＝藍 */
+.code-block .hljs-string,
+.code-block .hljs-meta .hljs-string { color: #ce9178; } /* 字串＝橘 */
+.code-block .hljs-number { color: #b5cea8; } /* 數字＝淺綠 */
+.code-block .hljs-title,
+.code-block .hljs-title.function_ { color: #dcdcaa; } /* 函式名＝黃 */
+.code-block .hljs-title.class_,
+.code-block .hljs-type,
+.code-block .hljs-class .hljs-title { color: #4ec9b0; } /* 類別/型別＝青綠 */
+.code-block .hljs-variable,
+.code-block .hljs-attr,
+.code-block .hljs-property,
+.code-block .hljs-template-variable { color: #9cdcfe; } /* 變數/屬性＝淺藍 */
+.code-block .hljs-name,
+.code-block .hljs-tag { color: #569cd6; }
+.code-block .hljs-attribute { color: #9cdcfe; }
+.code-block .hljs-selector-tag,
+.code-block .hljs-selector-class,
+.code-block .hljs-selector-id { color: #d7ba7d; }
+.code-block .hljs-regexp { color: #d16969; }
+.code-block .hljs-symbol,
+.code-block .hljs-bullet,
+.code-block .hljs-link { color: #569cd6; }
+.code-block .hljs-meta { color: #9b9b9b; }
+.code-block .hljs-deletion { color: #ce9178; background: rgba(255, 0, 0, 0.10); }
+.code-block .hljs-addition { color: #b5cea8; background: rgba(0, 255, 0, 0.08); }
+.code-block .hljs-emphasis { font-style: italic; }
+.code-block .hljs-strong { font-weight: 700; }
+
 /* ===========================================================================
    摺疊區塊（Notion 式 toggle）：:::toggle 標題 … :::  → 原生 <details class="md-toggle">
    全域定義，閱讀檢視（.markdown-prose 注入 HTML）與編輯預覽（.md-preview）外觀一致。

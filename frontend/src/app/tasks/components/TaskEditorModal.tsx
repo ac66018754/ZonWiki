@@ -11,6 +11,7 @@ import {
   updateTaskCard,
   listTaskCards,
   deleteTaskCard,
+  duplicateTask,
   assignTaskTags,
   listNoteTags,
   createNoteTag,
@@ -436,6 +437,48 @@ export function TaskEditorModal({
     }
   }, [taskId, onDeleted, onClose]);
 
+  // 複製任務（#7）：以「目前彈窗內的即時內容」（含尚未儲存的編輯）建立一張獨立副本，
+  // 而非只用上次存檔的 card——否則使用者「改了字→按複製→未存」時，副本會漏掉剛改的內容（像掉資料）。
+  const [duplicating, setDuplicating] = useState(false);
+  const handleDuplicate = useCallback(async () => {
+    if (!card) return;
+    setDuplicating(true);
+    try {
+      // 以草稿狀態組出來源（duplicateTask 只讀 tags.id 與 subTasks.title/isDone）。
+      const liveSource: TaskCard = {
+        ...card,
+        title: title.trim(),
+        content,
+        status,
+        priority,
+        groupId: groupId || null,
+        plannedDateTime: plannedIso,
+        dueDateTime: dueIso,
+        isLongTerm,
+        targetGranularity: targetGranularity || null,
+        targetDateTime: targetIso,
+        tags: selectedTagIds.map((id) => ({ id, name: "" })),
+        subTasks,
+      };
+      const dup = await duplicateTask(liveSource);
+      if (dup) {
+        showToast("已複製為副本", { type: "success" });
+        onSaved(); // 刷新清單/看板/行事曆
+        onClose();
+      } else {
+        showToast("複製失敗，請重試", { type: "error" });
+      }
+    } catch (e) {
+      logger.error("複製任務失敗：", e);
+      showToast("複製失敗，請重試", { type: "error" });
+    } finally {
+      setDuplicating(false);
+    }
+  }, [
+    card, title, content, status, priority, groupId, plannedIso, dueIso,
+    isLongTerm, targetGranularity, targetIso, selectedTagIds, subTasks, onSaved, onClose,
+  ]);
+
   // 目標期選單/輸入框的共用樣式（重複規則的每月/自訂 RRULE 仍用；長期目標期已抽到 TaskScheduleFields）。
   const ctlStyle: React.CSSProperties = {
     padding: "4px 6px", border: "1px solid var(--border-default)", borderRadius: "var(--radius-sm)",
@@ -797,6 +840,14 @@ export function TaskEditorModal({
                   確認刪除
                 </button>
               )}
+              <button
+                className="tk-btn"
+                onClick={handleDuplicate}
+                disabled={saving || duplicating || !card}
+                title="複製成一張新任務（標題加「(副本)」，帶內容／標籤／子任務）"
+              >
+                {duplicating ? "複製中…" : "⧉ 複製"}
+              </button>
               <div style={{ flex: 1 }} />
               {saveError && !saving && (
                 <span style={{ fontSize: "var(--text-xs)", color: "var(--status-danger-fg)" }}>儲存失敗，請重試</span>

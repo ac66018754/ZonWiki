@@ -16,14 +16,15 @@ export type SwatchKey = 'pen' | 'text-font' | 'text-bg';
 /** 每組色盤最多可存的顏色數。 */
 export const MAX_SWATCHES = 10;
 
-/** 各組色盤的「首次使用」預設值（可被使用者覆寫／移除，覆寫後即以 localStorage 為準）。 */
+/**
+ * 各組色盤的「首次使用」預設值。
+ * 依使用者要求（2026-07-09）：不再預設塞任何顏色——三組色盤一律「空的」開始，
+ * 由使用者自行用「＋」把常用色一個個存進去（最多 10）。
+ */
 const DEFAULT_SWATCHES: Record<SwatchKey, string[]> = {
-  // 畫筆／形狀：鮮明的前景色。
-  pen: ['#ef4444', '#f59e0b', '#22c55e', '#3b82f6', '#111827'],
-  // 文字字色：同樣是前景色（獨立一組，改了不影響畫筆）。
-  'text-font': ['#ef4444', '#f59e0b', '#22c55e', '#3b82f6', '#111827'],
-  // 文字底色：柔和的背景色。
-  'text-bg': ['#fef08a', '#fbcfe8', '#bfdbfe', '#bbf7d0', '#fecaca'],
+  pen: [],
+  'text-font': [],
+  'text-bg': [],
 };
 
 /** 組出 localStorage 的鍵名。 */
@@ -111,6 +112,20 @@ export function removeSwatchAt(key: SwatchKey, index: number): void {
   const cur = getSwatches(key);
   if (index < 0 || index >= cur.length) return;
   setSwatches(key, cur.filter((_, i) => i !== index));
+}
+
+/**
+ * 把色盤中指定索引的顏色改成新色（編輯／覆寫該格）。已存在相同色（在別格）則不動作，避免重複。
+ * @param key 色盤命名空間。
+ * @param index 要編輯的索引。
+ * @param hex 新顏色。
+ */
+export function setSwatchAt(key: SwatchKey, index: number, hex: string): void {
+  const cur = getSwatches(key);
+  if (index < 0 || index >= cur.length) return;
+  if (cur[index] === hex) return;
+  if (cur.some((c, i) => c === hex && i !== index)) return; // 別格已有此色 → 不重複
+  setSwatches(key, cur.map((c, i) => (i === index ? hex : c)));
 }
 
 /**

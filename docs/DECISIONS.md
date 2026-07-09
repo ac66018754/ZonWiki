@@ -199,3 +199,19 @@
 - **背景**：使用者要求筆記與任務「內容 markdown 區塊」的 checkbox 可直接勾選。
 - **最終決定**：`ToggleAwareMarkdown` 新增選用 `onChange`，有傳時待辦核取方塊變可點擊，點擊即以文件順序索引切換原文第 N 個 `- [ ]`（`lib/markdownChecklist.ts`，掃描時略過程式碼圍欄）並回寫。套用於任務內容預覽（本次新開的 withPreview）與筆記編輯器的編輯/並排/預覽。**筆記「閱讀檢視（預覽分頁）」走後端 Markdig 產生的 HTML（dangerouslySetInnerHTML）＋NoteMarksLayer/NoteOverlay 疊層＋React19 innerHTML 識別陷阱**，就地互動風險高，本次暫不動、留待後續。
 - **理由與取捨**：編輯器預覽覆蓋「撰寫內容時勾選」的主要情境且實作乾淨；閱讀檢視就地勾選需另一套 event-delegation＋存檔回合，風險/成本較高，分階段處理。
+
+## 2026-07-09（二）｜ 程式碼區塊：VS Code Dark+ 語法上色＋互動式檔名/語言（圍欄慣例 `lang:filename`）
+
+- **背景**：使用者要程式碼區塊像 VS Code——語法上色（註解綠）、左上可填檔名、右上可選語言且依語言配色。
+- **最終決定**：
+  - 上色用 **highlight.js**（`lib/common` 包＋另註冊 powershell/dockerfile），VS Code Dark+ 顏色以 CSS 對映 hljs token（`globals.css` 的 `.code-block .hljs-*`）；程式碼區塊一律深底 `#1e1e1e`（不隨 App 亮/暗變，貼近 VS Code）。
+  - 語言＋檔名以圍欄資訊字串 **`lang:filename`**（例 ```js:app.js）承載——因 react-markdown 與後端 Markdig 都取「第一個詞」當語言 class，中間無空白故兩邊都渲成 `class="language-js:app.js"`，前端統一由 class 解析（`lib/codeBlockMeta.ts`），達成編輯預覽與閱讀檢視一致。
+  - **編輯器預覽**（ToggleAwareMarkdown 的 `pre` override → `CodeBlock`）＝互動：檔名輸入框（失焦寫回）＋語言下拉（變更寫回），以 `setCodeFenceMeta` 重寫第 N 個圍欄；索引在「事件當下查 DOM 的 .code-block 文件順序」算出（與互動 checkbox 同一套 StrictMode-safe 模式）。
+  - **閱讀檢視**（後端 Markdig HTML）＝唯讀：`enhanceReadingCodeBlocks` 以 DOM 就地把 `<pre><code>` 包成 `.code-block`＋上色＋標題列（取代舊的只加複製鈕的 `codeBlocks.ts`，已刪）。
+- **理由與取捨**：`lang:filename` 慣例讓「一份原文、兩端渲染」一致且免動後端；互動只在編輯器（閱讀檢視就地編輯風險高）。取捨：閱讀檢視改語言/檔名要進編輯器。
+
+## 2026-07-09（二）｜ 自訂色盤改「空的開始」；行事曆窄任務格兩段式點擊；複製走前端組合
+
+- **色盤**：三組自訂色盤（畫筆/字色/底）預設值改為 **空陣列**（先前有種子色，使用者要求移除），由使用者用「＋」自己存；`CustomSwatches` 加「✎ 編輯」模式（每格右上 ✕ 移除、點格改成目前色，觸控可用）；「開色盤」鈕改成明顯膠囊（🎨＋▾）。
+- **行事曆兩段式**（`useRevealThenOpen`）：月/週視圖窄任務格「太窄看不出是啥」→ 點第一下若標題被截斷就先原地放大顯示完整標題、不開任務；點第二下（或本來就沒截斷）才開。套用月視圖橫條、週全天橫條、時間格任務塊。
+- **複製任務/筆記**：以既有 create API 於前端組合（`duplicateTask`＝createTaskCard＋assignTaskTags＋createSubTask；`duplicateNote`＝createNote 帶內容/分類/標籤），標題加「(副本)」。取捨：非後端原子端點、多次請求（個別失敗不影響主體）；副本刻意不帶父任務/首頁釘選。

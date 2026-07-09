@@ -246,13 +246,26 @@ export function DrawingToolbar({
         {(showColor || tool === 'erase-area' || drawingActive || extraControls) && (
           <div style={{ ...rowStyle, flexWrap: 'wrap', borderTop: '1px solid var(--border-default)', paddingTop: 4 }}>
             {showColor && (
+              // 「開色盤」按鈕做成明顯的膠囊（色點＋🎨＋▾ 展開箭頭），並在展開時高亮，
+              // 避免使用者不知道點哪顆才會彈出色盤。
               <button
-                title={isHighlight ? '螢光筆顏色' : '畫筆顏色'}
+                title={isHighlight ? '螢光筆顏色（點此開／收色盤）' : '畫筆顏色（點此開／收色盤）'}
                 onClick={onTogglePenColor}
                 data-testid={`${testIdPrefix}-pen-color`}
                 data-draw-colorbtn
-                style={{ width: 18, height: 18, flexShrink: 0, borderRadius: '50%', background: penColor, border: '1px solid var(--border-strong, #999)', cursor: 'pointer' }}
-              />
+                aria-label="開啟顏色色盤"
+                aria-expanded={showPenColor}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 3, flexShrink: 0,
+                  padding: '2px 5px', borderRadius: 'var(--radius-sm)', cursor: 'pointer',
+                  border: showPenColor ? '1px solid var(--action-primary-bg)' : '1px solid var(--border-strong, #999)',
+                  background: showPenColor ? 'var(--action-secondary-bg)' : 'var(--bg-surface-secondary)',
+                }}
+              >
+                <span style={{ width: 14, height: 14, flexShrink: 0, borderRadius: '50%', background: penColor, border: '1px solid var(--border-strong, #999)' }} />
+                <span style={{ fontSize: 11, lineHeight: 1 }}>🎨</span>
+                <span style={{ fontSize: 9, lineHeight: 1, color: 'var(--text-secondary)' }}>{showPenColor ? '▴' : '▾'}</span>
+              </button>
             )}
             {isWidthTool(tool) && (
               <input
