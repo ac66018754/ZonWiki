@@ -14,12 +14,16 @@ internal static class NoteContentHelpers
     /// Markdown 渲染管線（禁用 raw HTML 以防 XSS）。
     /// 另啟用「摺疊區塊（Notion 式 toggle）」：<c>:::toggle 標題 … :::</c> → 原生 &lt;details&gt;。
     /// 註：UseZonWikiToggles 必須在 UseAdvancedExtensions 之後，才能替換自訂容器的輸出器。
+    /// 另啟用「字面 &lt;br&gt; 換行」：白名單只認 <c>&lt;br&gt;</c>/<c>&lt;br/&gt;</c>/<c>&lt;br /&gt;</c>
+    /// → 硬換行（<c>&lt;br /&gt;</c>），供表格格內／段落內手動換行；其餘 HTML 標籤維持轉義。
+    /// 註：UseZonWikiLineBreaks 必須在 DisableHtml 之後，才能把解析器插到最前面攔到 &lt;br&gt;。
     /// </summary>
     public static readonly MarkdownPipeline MarkdownPipeline = new MarkdownPipelineBuilder()
         .UseAdvancedExtensions()
         .UseAutoLinks()
         .UseZonWikiToggles()
         .DisableHtml()
+        .UseZonWikiLineBreaks()
         .Build();
 
     /// <summary>
