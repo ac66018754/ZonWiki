@@ -3,6 +3,8 @@
 import { useRef, useState } from 'react';
 import { HexColorPicker } from 'react-colorful';
 import { PRESET_COLORS, resolveColor } from '@/lib/highlightColor';
+import { CustomSwatches } from '@/components/CustomSwatches';
+import type { SwatchKey } from '@/lib/customSwatches';
 
 // 轉出供既有 import 路徑沿用。
 export { PRESET_COLORS, resolveColor };
@@ -16,15 +18,19 @@ export { PRESET_COLORS, resolveColor };
  * @param onPick 選定顏色後的回呼（回傳 hex）。
  * @param onChange 調色過程的即時回呼（可選；例如畫筆要即時預覽當前色）。
  * @param initial 初始色（色盤起始值）。
+ * @param swatchKey 若指定，頂端快選改用「使用者自訂色盤」（可存 10 色）取代固定預設色；
+ *                  未指定則沿用原本的 PRESET_COLORS（畫重點、便利貼、圖片板等維持不變）。
  */
 export function ColorPickerInline({
   onPick,
   onChange,
   initial = '#fef08a',
+  swatchKey,
 }: {
   onPick: (hex: string) => void;
   onChange?: (hex: string) => void;
   initial?: string;
+  swatchKey?: SwatchKey;
 }) {
   const [c, setC] = useState(initial);
   // 以 ref 持有最新色，避免 pointerup 時讀到尚未重繪的舊值。
@@ -38,20 +44,30 @@ export function ColorPickerInline({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }} data-testid="color-picker">
-      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-        {PRESET_COLORS.map((p) => (
-          <button
-            key={p}
-            title={p}
-            onClick={() => onPick(p)}
-            data-testid={`preset-${p}`}
-            style={{
-              width: 18, height: 18, borderRadius: '50%', background: p,
-              border: '1px solid var(--border-strong, #999)', cursor: 'pointer',
-            }}
-          />
-        ))}
-      </div>
+      {swatchKey ? (
+        // 自訂色盤模式：快選＝使用者存的 10 色；「＋」把目前調到的色（c）存進色盤。
+        <CustomSwatches
+          storageKey={swatchKey}
+          current={c}
+          onApply={(hex) => onPick(hex)}
+          square={swatchKey === 'text-bg'}
+        />
+      ) : (
+        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+          {PRESET_COLORS.map((p) => (
+            <button
+              key={p}
+              title={p}
+              onClick={() => onPick(p)}
+              data-testid={`preset-${p}`}
+              style={{
+                width: 18, height: 18, borderRadius: '50%', background: p,
+                border: '1px solid var(--border-strong, #999)', cursor: 'pointer',
+              }}
+            />
+          ))}
+        </div>
+      )}
       {/* 拖曳調色 → 放開指標即套用 */}
       <div onPointerUp={() => onPick(cRef.current)}>
         <HexColorPicker color={c} onChange={handleChange} style={{ width: '100%', height: 120 }} />

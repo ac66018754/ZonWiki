@@ -328,6 +328,7 @@ export function DrawingToolbar({
             initial={penColor}
             onChange={(hex) => onPenColorChange(hex)}
             onPick={(hex) => onPenColorChange(hex)}
+            swatchKey="pen"
           />
         </div>
       )}

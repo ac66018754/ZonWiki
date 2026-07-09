@@ -694,6 +694,13 @@ html[data-route="login"] .main-content {
   animation: fade-in 0.2s ease;
 }
 
+/* 最上層確認框（useConfirm/ConfirmDialog）：必須疊在所有一般彈窗之上——
+   任務彈窗 .tk-overlay 為 z-index:1000、快速新增為 3500，故此處用更高值，
+   確保「放棄未儲存變更？」等確認一定看得到、不被蓋住。 */
+.modal-overlay--top {
+  z-index: 4000;
+}
+
 .modal {
   background: var(--bg-surface);
   border: 1px solid var(--border-default);

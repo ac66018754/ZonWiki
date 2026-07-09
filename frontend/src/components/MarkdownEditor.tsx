@@ -468,7 +468,8 @@ export function MarkdownEditor({
         {showPreview && (
           <div className="mde-preview md-preview" style={{ minHeight }}>
             {value.trim() ? (
-              <ToggleAwareMarkdown value={value} />
+              // 傳入 onChange → 預覽/並排中的待辦核取方塊可直接點擊勾選，切換後即時寫回內容。
+              <ToggleAwareMarkdown value={value} onChange={onChange} />
             ) : (
               <span className="mde-muted">預覽會顯示在這裡…</span>
             )}

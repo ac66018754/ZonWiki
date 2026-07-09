@@ -38,6 +38,7 @@ import {
   WEEKDAY_LABELS,
 } from "../recurrence";
 import { SubtaskChecklist, isTempSubtaskId } from "./SubtaskChecklist";
+import { TaskScheduleFields } from "./TaskScheduleFields";
 import { SearchableMultiSelect } from "@/components/SearchableMultiSelect";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
 import { DateTimePicker } from "@/components/DateTimePicker";
@@ -435,19 +436,7 @@ export function TaskEditorModal({
     }
   }, [taskId, onDeleted, onClose]);
 
-  // 粗粒度目標期：把代表日（UTC）拆成 年/月(1-12)/季(1-4)；無代表日時用今年/本月當預設。
-  const targetParts = (() => {
-    const d = targetIso ? new Date(targetIso) : new Date();
-    const m = d.getUTCMonth() + 1;
-    return { year: d.getUTCFullYear(), month: m, quarter: Math.floor((m - 1) / 3) + 1 };
-  })();
-  /** 依粒度與年 + 月/季組出代表日（該期起始日 UTC）並寫入。 */
-  const setTargetFromParts = (g: string, year: number, monthOrQuarter: number) => {
-    const monthIndex = g === "month" ? monthOrQuarter - 1 : g === "quarter" ? (monthOrQuarter - 1) * 3 : 0;
-    setTargetIso(new Date(Date.UTC(year, monthIndex, 1)).toISOString());
-    markDirty();
-  };
-  // 目標期選單/輸入框的共用樣式。
+  // 目標期選單/輸入框的共用樣式（重複規則的每月/自訂 RRULE 仍用；長期目標期已抽到 TaskScheduleFields）。
   const ctlStyle: React.CSSProperties = {
     padding: "4px 6px", border: "1px solid var(--border-default)", borderRadius: "var(--radius-sm)",
     background: "var(--bg-surface)", color: "var(--text-primary)", fontSize: "var(--text-sm)",
@@ -498,97 +487,18 @@ export function TaskEditorModal({
             <div className="tk-edit-body">
               {/* 左欄：屬性 */}
               <div className="tk-edit-meta">
-                {/* 首頁釘選 ｜ 長期任務（置於最上方；長期可設粗粒度目標期「月/季/年」，且不列入逾期） */}
-                <div className="tk-field">
-                  <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
-                    <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: "var(--text-sm)", cursor: "pointer" }}>
-                      <input
-                        type="checkbox"
-                        checked={isPinnedToHome}
-                        onChange={(e) => {
-                          setIsPinnedToHome(e.target.checked);
-                          markDirty();
-                        }}
-                      />
-                      📌 釘選到首頁
-                    </label>
-                    <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: "var(--text-sm)", cursor: "pointer" }}>
-                      <input
-                        type="checkbox"
-                        checked={isLongTerm}
-                        onChange={(e) => {
-                          setIsLongTerm(e.target.checked);
-                          markDirty();
-                        }}
-                      />
-                      ♾️ 長期任務
-                    </label>
-                  </div>
-                  {isLongTerm && (
-                    <div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-                      <span style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>目標期（截止日難設定時用）</span>
-                      <select
-                        style={ctlStyle}
-                        value={targetGranularity}
-                        onChange={(e) => {
-                          const g = e.target.value;
-                          setTargetGranularity(g);
-                          if (g && !targetIso) {
-                            setTargetFromParts(g, targetParts.year, g === "quarter" ? targetParts.quarter : targetParts.month);
-                          } else if (!g) {
-                            setTargetIso(null);
-                          }
-                          markDirty();
-                        }}
-                        aria-label="目標期粒度"
-                      >
-                        <option value="">不設定（純長期）</option>
-                        <option value="year">年</option>
-                        <option value="quarter">季</option>
-                        <option value="month">月</option>
-                      </select>
-                      {targetGranularity && (
-                        <input
-                          type="number"
-                          style={{ ...ctlStyle, width: 84 }}
-                          value={targetParts.year}
-                          onChange={(e) =>
-                            setTargetFromParts(
-                              targetGranularity,
-                              Number(e.target.value) || targetParts.year,
-                              targetGranularity === "quarter" ? targetParts.quarter : targetParts.month
-                            )
-                          }
-                          aria-label="目標年份"
-                        />
-                      )}
-                      {targetGranularity === "quarter" && (
-                        <select
-                          style={ctlStyle}
-                          value={targetParts.quarter}
-                          onChange={(e) => setTargetFromParts("quarter", targetParts.year, Number(e.target.value))}
-                          aria-label="目標季"
-                        >
-                          {[1, 2, 3, 4].map((q) => (
-                            <option key={q} value={q}>Q{q}</option>
-                          ))}
-                        </select>
-                      )}
-                      {targetGranularity === "month" && (
-                        <select
-                          style={ctlStyle}
-                          value={targetParts.month}
-                          onChange={(e) => setTargetFromParts("month", targetParts.year, Number(e.target.value))}
-                          aria-label="目標月"
-                        >
-                          {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
-                            <option key={m} value={m}>{m} 月</option>
-                          ))}
-                        </select>
-                      )}
-                    </div>
-                  )}
-                </div>
+                {/* 首頁釘選 ｜ 長期任務（置於最上方；長期可設粗粒度目標期「月/季/年」，且不列入逾期）。
+                    與快速新增共用 TaskScheduleFields，避免兩處走樣。 */}
+                <TaskScheduleFields
+                  isPinnedToHome={isPinnedToHome}
+                  onPinnedChange={(v) => { setIsPinnedToHome(v); markDirty(); }}
+                  isLongTerm={isLongTerm}
+                  onLongTermChange={(v) => { setIsLongTerm(v); markDirty(); }}
+                  targetGranularity={targetGranularity}
+                  onGranularityChange={(v) => { setTargetGranularity(v); markDirty(); }}
+                  targetIso={targetIso}
+                  onTargetIsoChange={(v) => { setTargetIso(v); markDirty(); }}
+                />
 
                 {/* 狀態 */}
                 <div className="tk-field">
@@ -869,7 +779,8 @@ export function TaskEditorModal({
                     markDirty();
                   }}
                   minHeight={360}
-                  placeholder="補充說明…（可用上方工具列套用 Markdown 格式）"
+                  withPreview
+                  placeholder="補充說明…（可用上方工具列套用 Markdown 格式；右上可切換 編輯／並排／預覽，或彈出獨立預覽視窗）"
                   onUploadingChange={setUploadingCount}
                 />
               </div>

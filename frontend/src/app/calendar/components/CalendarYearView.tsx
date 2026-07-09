@@ -26,6 +26,12 @@ export function CalendarYearView({
   const year = selectedDate.getFullYear();
   const userTz = (user as { timeZone?: string } | undefined)?.timeZone || FALLBACK_TZ;
 
+  // 換年（year 變）時先清空內容顯示載入中；單純背景重抓（refreshKey 變、year 不變，
+  // 如關閉任務彈窗後）則保留現有內容、抓完再換——不卸載、不閃動。
+  useEffect(() => {
+    setEvents(null);
+  }, [year]);
+
   useEffect(() => {
     const load = async () => {
       try {
@@ -67,7 +73,9 @@ export function CalendarYearView({
 
   const todayKey = dateKeyInTz(new Date().toISOString(), userTz);
 
-  if (loading) {
+  // 只有「首次載入（尚無資料）」才顯示載入中並卸載內容；背景重抓（如關閉任務彈窗後 refreshKey 變動）
+  // 保留現有內容顯示、抓完再換上新資料——避免整塊卸載重掛造成「閃一下」。
+  if (loading && !events) {
     return <div style={{ textAlign: "center", padding: "var(--spacing-8)" }}>載入中...</div>;
   }
 
