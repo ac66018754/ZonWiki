@@ -39,6 +39,13 @@ import { computeAnchorAt, locateAnchor, isOverlayAnchor, type OverlayAnchor } fr
  */
 export const NOTE_ASK_STICKY_EVENT = 'zonwiki:note-ask-sticky';
 
+/**
+ * 螢光筆「直線／自由筆」偏好的 localStorage 鍵。
+ * 帶 v1 版本後綴：日後若儲存格式改變，可換 v2 而不會誤讀舊值。
+ * 值為 '1'（直線）／'0'（自由筆）。
+ */
+const HIGHLIGHT_STRAIGHT_STORAGE_KEY = 'zonwiki:highlightStraight:v1';
+
 /** 兩個字串集合內容是否相同（供避免無意義的 state 更新/重繪）。 */
 function sameStringSet(a: Set<string>, b: Set<string>): boolean {
   if (a.size !== b.size) return false;
@@ -111,7 +118,38 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
   const [selectedShapeIdx, setSelectedShapeIdx] = useState<number | null>(null);
   // 螢光筆「直線模式」：開啟時螢光筆拖曳畫出筆直的半透明線（type:'line' + opacity），
   // 適合整行畫重點；關閉＝原本的自由筆螢光筆。
-  const [highlightStraight, setHighlightStraight] = useState(false);
+  //
+  // 預設 true（直線）：多數畫重點情境要的是「整行拉一條直線」，故預設直線；
+  // 但仍「記住上次選擇」——若使用者用工具列切回自由筆，換一篇筆記不該被強制拉回直線（否則體驗矛盾）。
+  // SSR 安全：初始一律給 true（伺服器端無 window，不可讀 localStorage），掛載後再從 localStorage 覆蓋，
+  //          以此避免 hydration mismatch（見下方兩個 effect）。
+  const [highlightStraight, setHighlightStraight] = useState(true);
+  // 偏好是否已從 localStorage 還原完畢。用來擋住「還沒讀就先寫回」把舊偏好覆蓋掉的競態；
+  // 刻意用 state（而非 ref）故不依賴 effect 的宣告順序，較穩健。
+  const [highlightStraightLoaded, setHighlightStraightLoaded] = useState(false);
+
+  // 掛載後從 localStorage 還原螢光筆直線偏好（放 effect 而非 useState 初始值，以避免 SSR/水合不一致）。
+  // 讀不到（首次使用）時維持預設 true（直線）。
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(HIGHLIGHT_STRAIGHT_STORAGE_KEY);
+      if (raw !== null) setHighlightStraight(raw === '1');
+    } catch {
+      /* 隱私模式／停用 storage 時忽略，維持預設直線。 */
+    }
+    setHighlightStraightLoaded(true);
+  }, []);
+
+  // highlightStraight 變動時寫回 localStorage（工具列切換直線／自由筆即持久化，跨筆記與 session 保持）。
+  // 還原完成前（loaded=false）不寫，避免掛載瞬間的預設值覆蓋掉使用者上次存下的偏好。
+  useEffect(() => {
+    if (!highlightStraightLoaded) return;
+    try {
+      window.localStorage.setItem(HIGHLIGHT_STRAIGHT_STORAGE_KEY, highlightStraight ? '1' : '0');
+    } catch {
+      /* 忽略寫入失敗（storage 已滿或被停用等）。 */
+    }
+  }, [highlightStraight, highlightStraightLoaded]);
 
   useEffect(() => setMounted(true), []);
 
