@@ -4,12 +4,13 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
-import { enhanceCodeBlocks } from '@/lib/codeBlocks';
+import { enhanceReadingCodeBlocks } from '@/lib/enhanceReadingCodeBlocks';
 import {
   getNote,
   markNoteOpened,
   updateNote,
   deleteNote,
+  duplicateNote,
   listNoteComments,
   addNoteComment,
   createNoteCategory,
@@ -370,17 +371,17 @@ export default function NotesDetailPage() {
     return () => resetUndo();
   }, [note?.id]);
 
-  // 預覽容器的 callback ref：掛載當下就為程式碼區塊注入「複製」鈕，並以 MutationObserver
-  // 持續處理之後才出現/重繪的區塊（取代原本相依 previewRef 時序的 useEffect——實測它不一定跑到）。
-  // 同時把 node 存回 previewRef，供 NoteMarksLayer / NoteOverlay 使用。
+  // 預覽容器的 callback ref：掛載當下就把程式碼區塊美化（VS Code 語法上色＋檔名/語言標題列＋複製鈕），
+  // 並以 MutationObserver 持續處理之後才出現/重繪的區塊。同時把 node 存回 previewRef，供 NoteMarksLayer / NoteOverlay 使用。
+  // 註：enhanceReadingCodeBlocks 會包一層 .code-block（本身也是 DOM 變動），但對已包裝者會跳過，故不會無限迴圈。
   const previewObsRef = useRef<MutationObserver | null>(null);
   const setPreviewNode = useCallback((node: HTMLDivElement | null) => {
     previewRef.current = node;
     previewObsRef.current?.disconnect();
     previewObsRef.current = null;
     if (!node) return;
-    enhanceCodeBlocks(node);
-    const obs = new MutationObserver(() => enhanceCodeBlocks(node));
+    enhanceReadingCodeBlocks(node);
+    const obs = new MutationObserver(() => enhanceReadingCodeBlocks(node));
     obs.observe(node, { childList: true, subtree: true });
     previewObsRef.current = obs;
   }, []);
@@ -696,6 +697,22 @@ export default function NotesDetailPage() {
     }
   };
 
+  // 複製筆記（#7）：以本篇建立一則副本（標題加「(副本)」，帶內容/分類/標籤），成功後導向新筆記。
+  const [duplicatingNote, setDuplicatingNote] = useState(false);
+  const handleDuplicateNote = async () => {
+    if (!note || duplicatingNote) return;
+    setDuplicatingNote(true);
+    try {
+      const dup = await duplicateNote(note);
+      if (dup?.slug) router.push(`/notes/${encodeURIComponent(dup.slug)}`);
+      else setError('無法複製筆記，請稍後重試。');
+    } catch {
+      setError('無法複製筆記，請稍後重試。');
+    } finally {
+      setDuplicatingNote(false);
+    }
+  };
+
   // 新增留言
   const handlePostComment = async () => {
     if (!note || !commentContent.trim()) return;
@@ -905,6 +922,14 @@ export default function NotesDetailPage() {
                   </>
                 )}
               </div>
+              <button
+                onClick={handleDuplicateNote}
+                className="btn-secondary"
+                disabled={duplicatingNote}
+                title="複製成一則新筆記（標題加「(副本)」，帶內容／分類／標籤）"
+              >
+                {duplicatingNote ? '複製中…' : '⧉ 複製'}
+              </button>
               <button onClick={handleExportPdf} className="btn-secondary" title="以瀏覽器列印（可另存為 PDF）">
                 📄 匯出 PDF
               </button>

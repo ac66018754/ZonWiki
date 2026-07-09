@@ -1,11 +1,13 @@
 "use client";
 
-import { useMemo, useRef, useState, type ComponentPropsWithoutRef } from "react";
+import { useMemo, useRef, type ComponentPropsWithoutRef, type ReactElement, type ReactNode } from "react";
 import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { parseToggleSegments } from "@/lib/toggleBlocks";
 import { toAbsoluteAttachmentUrl } from "@/lib/attachmentUrl";
 import { toggleTaskCheckbox } from "@/lib/markdownChecklist";
+import { parseCodeMeta, setCodeFenceMeta } from "@/lib/codeBlockMeta";
+import { CodeBlock } from "@/components/CodeBlock";
 
 /**
  * 網址轉換：附件相對路徑（/api/attachments/{id}）先補成 API 絕對網址
@@ -17,58 +19,28 @@ import { toggleTaskCheckbox } from "@/lib/markdownChecklist";
 const attachmentUrlTransform = (url: string) => defaultUrlTransform(toAbsoluteAttachmentUrl(url));
 
 /**
- * 預覽中的程式碼區塊：包一層容器並加上「複製」按鈕。
- * react-markdown 會把 ```code``` 渲染成 <pre><code>…</code></pre>，
- * 這裡覆寫 pre 的渲染以加入複製鈕（醒目化與換行樣式見 globals.css 的 .md-preview pre）。
- * 複製時直接從 DOM 讀同層的 <pre> 文字（避免 useRef，與本檔其餘 React 風格一致）。
- */
-function PreWithCopy(props: ComponentPropsWithoutRef<"pre"> & { node?: unknown }) {
-  const [copied, setCopied] = useState(false);
-  const { children, ...rest } = props;
-  // 移除 react-markdown 注入的 node，避免被展開到 DOM。
-  delete (rest as { node?: unknown }).node;
-
-  const copy = async (e: React.MouseEvent<HTMLButtonElement>) => {
-    const pre = e.currentTarget.parentElement?.querySelector("pre");
-    const text = pre?.textContent ?? "";
-    try {
-      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
-    } catch {
-      /* 忽略複製失敗 */
-    }
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1500);
-  };
-
-  return (
-    <div className="code-block-wrap">
-      <button
-        type="button"
-        className={`code-copy-btn${copied ? " copied" : ""}`}
-        onClick={copy}
-        aria-label="複製程式碼"
-      >
-        {copied ? "已複製" : "複製"}
-      </button>
-      <pre {...rest}>{children}</pre>
-    </div>
-  );
-}
-
-/**
- * 互動式待辦核取的共享脈絡（遞迴時往下傳）。
- * rootRef＝整棵渲染樹的根容器（供點擊時就地數「這是第幾個 checkbox」）；
- * root＝完整 Markdown 原文；onRoot＝把切換後的完整原文回寫上層。
+ * 互動式編輯的共享脈絡（遞迴時往下傳），供「待辦核取」與「程式碼區塊語言／檔名」回寫共用。
+ * rootRef＝整棵渲染樹的根容器（供點擊/變更時就地數「這是第幾個 checkbox／程式碼區塊」）；
+ * root＝完整 Markdown 原文；onRoot＝把變更後的完整原文回寫上層。
  *
- * 為何用「點擊時查 DOM 的文件順序」而非「render 時遞增計數器」：
+ * 為何用「點擊/變更時查 DOM 的文件順序」而非「render 時遞增計數器」：
  * 在 render 過程中對共享可變物件自增是 impure render（React StrictMode 會 double-invoke
- * render，同一顆計數器被多算一次，導致索引錯位、勾錯 checkbox）。改在「點擊事件」時，
- * 從已提交的 DOM 依文件順序算出被點的是第幾個 checkbox，與 render 次數無關，恆正確。
+ * render，同一顆計數器被多算一次，導致索引錯位）。改在「事件」時，從已提交的 DOM 依文件順序
+ * 算出目標是第幾個，與 render 次數無關，恆正確。
  */
-interface CheckboxToggleContext {
+interface InteractiveContext {
   rootRef: React.RefObject<HTMLElement | null>;
   root: string;
   onRoot: (next: string) => void;
+}
+
+/** 從 react-markdown 傳給 `pre` 的 props 取出內部 `<code>` 的原始文字與 className。 */
+function extractCode(children: ReactNode): { text: string; className?: string } {
+  const codeEl = children as ReactElement<{ className?: string; children?: ReactNode }> | undefined;
+  const className = codeEl?.props?.className;
+  const raw = codeEl?.props?.children;
+  const text = typeof raw === "string" ? raw : Array.isArray(raw) ? raw.join("") : String(raw ?? "");
+  return { text: text.replace(/\n$/, ""), className: className ?? undefined };
 }
 
 /**
@@ -95,22 +67,48 @@ export function ToggleAwareMarkdown({
 }: {
   value: string;
   onChange?: (next: string) => void;
-  __ctx?: CheckboxToggleContext;
+  __ctx?: InteractiveContext;
 }) {
   // 只在 value 改變時重新解析（切換檢視等其他重繪不必重跑）。
   const segments = useMemo(() => parseToggleSegments(value), [value]);
 
-  // 整棵渲染樹的根容器（只有頂層互動模式才掛在真正的容器上，供點擊時算文件順序索引）。
+  // 整棵渲染樹的根容器（只有頂層互動模式才掛在真正的容器上，供點擊/變更時算文件順序索引）。
   const rootRef = useRef<HTMLDivElement>(null);
-  // 頂層依 onChange 建立脈絡；遞迴時沿用同一個 rootRef／root／onRoot（巢狀 checkbox 也回寫同一份原文）。
-  const ctx: CheckboxToggleContext | undefined =
+  // 頂層依 onChange 建立脈絡；遞迴時沿用同一個 rootRef／root／onRoot（巢狀元素也回寫同一份原文）。
+  const ctx: InteractiveContext | undefined =
     __ctx ?? (onChange ? { rootRef, root: value, onRoot: onChange } : undefined);
+
+  // 程式碼區塊：一律用 CodeBlock 渲染（語法上色＋標題列）；互動模式（有 ctx）時檔名/語言可就地編輯，
+  // 變更時查 DOM 算出「這是第幾個程式碼區塊」再回寫圍欄（StrictMode/concurrent 皆對齊）。
+  const renderPre = (props: ComponentPropsWithoutRef<"pre"> & { node?: unknown }) => {
+    const { text, className } = extractCode(props.children);
+    const { lang, filename } = parseCodeMeta(className);
+    return (
+      <CodeBlock
+        code={text}
+        lang={lang}
+        filename={filename}
+        interactive={!!ctx}
+        onMetaChange={
+          ctx
+            ? (newLang, newFile, self) => {
+                const container = ctx.rootRef.current;
+                if (!container || !self) return;
+                const blocks = Array.from(container.querySelectorAll(".code-block"));
+                const idx = blocks.indexOf(self);
+                if (idx >= 0) ctx.onRoot(setCodeFenceMeta(ctx.root, idx, newLang, newFile));
+              }
+            : undefined
+        }
+      />
+    );
+  };
 
   // 互動模式才覆寫 input：把待辦核取方塊改成可點擊。點擊時從已提交 DOM 依文件順序算出
   // 「這是第幾個 checkbox」（不依賴 render 次數 → StrictMode/concurrent 皆正確），再切換原文對應項目。
   const components: Components = ctx
     ? {
-        pre: PreWithCopy,
+        pre: renderPre,
         input: (props) => {
           const { node: _node, type, checked, disabled: _disabled, ...rest } =
             props as ComponentPropsWithoutRef<"input"> & { node?: unknown };
@@ -132,7 +130,7 @@ export function ToggleAwareMarkdown({
           );
         },
       }
-    : { pre: PreWithCopy };
+    : { pre: renderPre };
 
   const body = segments.map((seg, i) => {
     // 以「型別＋位置＋內容前綴」當 key：內容變動（如重排 toggle）時會換 key →

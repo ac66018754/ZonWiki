@@ -50,10 +50,16 @@ export function TextPropsPanel({
   const curFont = fontColor || '#ef4444';
   const lbl: React.CSSProperties = { color: 'var(--text-secondary)', whiteSpace: 'nowrap', minWidth: 28 };
   const rowStyle: React.CSSProperties = { display: 'flex', gap: 5, alignItems: 'center', flexWrap: 'wrap' };
-  const ballBase: React.CSSProperties = {
-    width: 18, height: 18, flexShrink: 0, borderRadius: '50%', cursor: 'pointer', padding: 0,
-    border: '2px solid var(--text-tertiary)',
-  };
+  /** 「開色盤」膠囊按鈕（色點＋🎨＋▾ 展開箭頭），展開時高亮，讓使用者一眼看出點它可開色盤。 */
+  const popBtn = (active: boolean): React.CSSProperties => ({
+    display: 'inline-flex', alignItems: 'center', gap: 3, flexShrink: 0,
+    padding: '2px 5px', borderRadius: 'var(--radius-sm)', cursor: 'pointer',
+    border: active ? '1px solid var(--action-primary-bg)' : '1px solid var(--border-strong, #999)',
+    background: active ? 'var(--action-secondary-bg)' : 'var(--bg-surface-secondary)',
+  });
+  const chip = (extra: React.CSSProperties): React.CSSProperties => ({
+    width: 14, height: 14, flexShrink: 0, borderRadius: '50%', border: '1px solid var(--border-strong, #999)', ...extra,
+  });
 
   return (
     <>
@@ -94,10 +100,15 @@ export function TextPropsPanel({
           <span style={lbl}>字色</span>
           <CustomSwatches storageKey="text-font" current={curFont} onApply={onSetFontColor} size={16} />
           <button
-            data-draw-textcolorbtn data-testid={`${testIdPrefix}-text-fontball`} title="更多字色（展開色盤）"
+            data-draw-textcolorbtn data-testid={`${testIdPrefix}-text-fontball`}
+            title="字色色盤（點此開／收）" aria-label="開啟字色色盤" aria-expanded={showFontPop}
             onClick={onToggleFontPop}
-            style={{ ...ballBase, background: curFont }}
-          />
+            style={popBtn(showFontPop)}
+          >
+            <span style={chip({ background: curFont })} />
+            <span style={{ fontSize: 10, lineHeight: 1 }}>🎨</span>
+            <span style={{ fontSize: 9, lineHeight: 1, color: 'var(--text-secondary)' }}>{showFontPop ? '▴' : '▾'}</span>
+          </button>
         </div>
 
         {/* 第三排：底（透明 + 自訂 10 色 + 球球展開完整色盤） */}
@@ -114,17 +125,24 @@ export function TextPropsPanel({
           </button>
           <CustomSwatches storageKey="text-bg" current={te.bg} onApply={(hex) => onUpdateExtra({ bg: hex })} square size={16} />
           <button
-            data-draw-textcolorbtn data-testid={`${testIdPrefix}-text-bgball`} title="更多背景色（展開色盤）"
+            data-draw-textcolorbtn data-testid={`${testIdPrefix}-text-bgball`}
+            title="底色色盤（點此開／收）" aria-label="開啟底色色盤" aria-expanded={showBgPop}
             onClick={onToggleBgPop}
-            style={{
-              ...ballBase,
-              background: te.bg ?? 'transparent',
-              // 透明時用棋盤格表示「無背景」
-              backgroundImage: te.bg ? undefined
-                : 'linear-gradient(45deg, #bbb 25%, transparent 25%, transparent 75%, #bbb 75%), linear-gradient(45deg, #bbb 25%, #fff 25%, #fff 75%, #bbb 75%)',
-              backgroundSize: '8px 8px', backgroundPosition: '0 0, 4px 4px',
-            }}
-          />
+            style={popBtn(showBgPop)}
+          >
+            <span
+              style={chip({
+                borderRadius: 4,
+                background: te.bg ?? 'transparent',
+                // 透明時用棋盤格表示「無背景」
+                backgroundImage: te.bg ? undefined
+                  : 'linear-gradient(45deg, #bbb 25%, transparent 25%, transparent 75%, #bbb 75%), linear-gradient(45deg, #bbb 25%, #fff 25%, #fff 75%, #bbb 75%)',
+                backgroundSize: '8px 8px', backgroundPosition: '0 0, 4px 4px',
+              })}
+            />
+            <span style={{ fontSize: 10, lineHeight: 1 }}>🎨</span>
+            <span style={{ fontSize: 9, lineHeight: 1, color: 'var(--text-secondary)' }}>{showBgPop ? '▴' : '▾'}</span>
+          </button>
         </div>
       </div>
 

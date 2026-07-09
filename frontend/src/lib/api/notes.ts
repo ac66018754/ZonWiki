@@ -202,6 +202,22 @@ export async function createNote(payload: {
 }
 
 /**
+ * 複製一則筆記：以來源筆記建立一則新筆記（標題加「(副本)」），
+ * 帶入原始 Markdown 內容、分類與標籤。後端會為新筆記另產生 slug。
+ * 註：不複製留言／編輯歷史（那是原筆記的軌跡），畫記/浮層貼圖亦不複製（屬原筆記的疊層資料）。
+ * @param source 來源筆記詳情（需含 contentRaw、categories、tags）。
+ * @returns 新建立的筆記詳情（含新 slug）；失敗回 null。
+ */
+export async function duplicateNote(source: NoteDetail): Promise<NoteDetail | null> {
+  return createNote({
+    title: `${source.title} (副本)`,
+    contentRaw: source.contentRaw ?? "",
+    categoryIds: (source.categories ?? []).map((c) => c.id),
+    tagIds: (source.tags ?? []).map((t) => t.id),
+  });
+}
+
+/**
  * 更新筆記
  */
 export async function updateNote(

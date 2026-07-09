@@ -5,6 +5,7 @@ import { logger } from "@/lib/logger";
 import { dateKeyInTz, FALLBACK_TZ } from "../../tasks/taskUtils";
 import { localKey, buildRowBars, barColors, isMultiDay } from "./calendarBars";
 import { CalendarTimeGrid } from "./CalendarTimeGrid";
+import { useRevealThenOpen } from "./useRevealThenOpen";
 
 const BAR_STEP = 22;
 const HOUR_H = 40; // 每小時格高（px）
@@ -30,6 +31,8 @@ export function CalendarWeekView({
   const [loading, setLoading] = useState(true);
   // 目前登入者（僅用於時區顯示）改由共用的 SWR 快取取得，避免每個檢視各自重打 /api/me。
   const { data: user } = useCurrentUser();
+  // 兩段式點擊（全天橫條）：窄條先點放大看完整標題，再點才開任務。
+  const { revealedId, handleTaskClick } = useRevealThenOpen(onTaskClick);
 
   const weekDays = useMemo(() => getWeekDays(selectedDate), [selectedDate]);
 
@@ -142,18 +145,36 @@ export function CalendarWeekView({
           <div style={{ gridColumn: "2 / 9", position: "relative", minHeight: `${barsHeight}px` }}>
             {segments.map((s, i) => {
               const c = barColors(s.task);
+              const revealed = revealedId === s.task.id;
               return (
                 <div
                   key={`${s.task.id}-${i}`}
+                  data-cal-task
                   title={s.task.title}
-                  onClick={onTaskClick ? (e) => { e.stopPropagation(); onTaskClick(s.task.id); } : undefined}
+                  onClick={onTaskClick ? (e) => { e.stopPropagation(); handleTaskClick(s.task.id, e.currentTarget); } : undefined}
                   style={{
                     position: "absolute",
                     left: `calc(${(s.startCol / 7) * 100}% + 3px)`,
                     width: `calc(${(s.span / 7) * 100}% - 6px)`,
                     top: `${s.lane * BAR_STEP + 2}px`,
-                    height: `${BAR_STEP - 4}px`,
-                    lineHeight: `${BAR_STEP - 4}px`,
+                    ...(revealed
+                      ? {
+                          minHeight: `${BAR_STEP - 4}px`,
+                          height: "auto",
+                          lineHeight: 1.3,
+                          whiteSpace: "normal",
+                          overflow: "visible",
+                          zIndex: 20,
+                          boxShadow: "var(--shadow-lg)",
+                          outline: "2px solid var(--action-primary-bg)",
+                        }
+                      : {
+                          height: `${BAR_STEP - 4}px`,
+                          lineHeight: `${BAR_STEP - 4}px`,
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }),
                     background: c.bg,
                     color: c.fg,
                     border: `1px solid ${c.border}`,
@@ -161,9 +182,6 @@ export function CalendarWeekView({
                     padding: "0 6px",
                     fontSize: "var(--text-xs)",
                     fontWeight: 600,
-                    whiteSpace: "nowrap",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
                     textDecoration: s.task.status === "done" ? "line-through" : "none",
                     cursor: onTaskClick ? "pointer" : "default",
                     boxSizing: "border-box",
