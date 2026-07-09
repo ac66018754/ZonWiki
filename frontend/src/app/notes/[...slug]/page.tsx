@@ -5,6 +5,7 @@ import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { enhanceReadingCodeBlocks } from '@/lib/enhanceReadingCodeBlocks';
+import { enhanceReadingTables } from '@/lib/enhanceReadingTables';
 import {
   getNote,
   markNoteOpened,
@@ -504,12 +505,18 @@ export default function NotesDetailPage() {
     if (!node) return;
     enhanceReadingCodeBlocks(node);
     const nid = noteIdRef.current;
+    // 表格增強（可拖曳調寬＋記住寬度）與程式碼區塊美化同一時機處理；欄寬還原需要 noteId。
+    enhanceReadingTables(node, nid);
     if (nid) {
       applyStoredToggleState(node, nid);
       restoreScrollPosition(nid);
     }
     node.addEventListener('toggle', handleToggleChange, true);
-    const obs = new MutationObserver(() => enhanceReadingCodeBlocks(node));
+    // 重注入後（React 19 會清掉就地 DOM 改動）由 observer 重跑兩者：程式碼美化＋表格增強（會從 localStorage 還原欄寬）。
+    const obs = new MutationObserver(() => {
+      enhanceReadingCodeBlocks(node);
+      enhanceReadingTables(node, noteIdRef.current);
+    });
     obs.observe(node, { childList: true, subtree: true });
     previewObsRef.current = obs;
   }, [applyStoredToggleState, restoreScrollPosition, handleToggleChange]);

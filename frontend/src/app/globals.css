@@ -1468,6 +1468,64 @@ th {
   font-weight: 600;
 }
 
+/* 長網址／長字串在儲存格內能斷行，避免撐爆版面（閱讀檢視表格）。 */
+.markdown-prose td,
+.markdown-prose th {
+  overflow-wrap: break-word;
+}
+
+/* ── 閱讀檢視表格：可拖曳調寬（enhanceReadingTables 就地包裝）─────────────────────────
+   .md-table-wrap 提供水平捲動：拖寬後表格總寬可超出容器，改由此層捲動而非壓縮欄位、不爆版。 */
+.md-table-wrap {
+  overflow-x: auto;
+  max-width: 100%;
+}
+/* 表頭儲存格需相對定位，才能容納絕對定位在右緣的拖曳把手。 */
+.markdown-prose .md-table-wrap th.zw-th-resizable {
+  position: relative;
+}
+/* 拖曳把手：貼在表頭儲存格右緣的細長可點區（8px 命中寬，較利觸控抓取，實際視覺以中央細線呈現）。 */
+.zw-col-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+  user-select: none;
+  touch-action: none;
+  z-index: 2;
+  background: transparent;
+  transition: background 0.12s ease;
+}
+/* 靜置態：中央一條細線提示此處可拖。
+   用 --text-secondary（非 --border-strong）並 opacity:1，確保對表頭底 --bg-surface-secondary 於
+   warmpaper/light/dark/night 四主題皆達 WCAG 非文字對比 3:1（實測 4.81/5.48/5.26/5.62:1）——
+   否則把手在 hover 前近乎隱形、使用者不知道欄位可拖（可發現性即等於功能是否存在）。 */
+.zw-col-resizer::before {
+  content: '';
+  position: absolute;
+  top: 15%;
+  bottom: 15%;
+  right: 2px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--text-secondary);
+  opacity: 1;
+  transition: opacity 0.12s ease, background 0.12s ease, width 0.12s ease;
+}
+/* hover／拖曳中：把手區帶淡底、細線換成主色並加粗——亮暗兩主題皆清楚可見（非文字元件對比 ≥3:1）。 */
+.zw-col-resizer:hover,
+.zw-col-resizer.zw-resizing {
+  background: var(--action-secondary-bg);
+}
+.zw-col-resizer:hover::before,
+.zw-col-resizer.zw-resizing::before {
+  background: var(--action-primary-bg);
+  opacity: 1;
+  width: 3px;
+}
+
 /* ============================================================================
    Media Queries (RWD 響應式)
    ============================================================================ */

@@ -3,6 +3,7 @@
 import { useMemo, useRef, type ComponentPropsWithoutRef, type ReactElement, type ReactNode } from "react";
 import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkHtmlLineBreak from "@/lib/remarkHtmlLineBreak";
 import { parseToggleSegments } from "@/lib/toggleBlocks";
 import { toAbsoluteAttachmentUrl } from "@/lib/attachmentUrl";
 import { toggleTaskCheckbox } from "@/lib/markdownChecklist";
@@ -157,7 +158,7 @@ export function ToggleAwareMarkdown({
     return (
       <ReactMarkdown
         key={key}
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkHtmlLineBreak]}
         components={components}
         urlTransform={attachmentUrlTransform}
       >

@@ -214,4 +214,152 @@ public sealed class NoteContentHelpersTests
         html.Should().Contain("&lt;details&gt;");
         html.Should().NotContain("<details><summary>X</summary>");
     }
+
+    // ---------------------------------------------------------------------
+    // 需求1：表格格子（與一般段落）內以字面 <br> 家族換行。
+    // 白名單只認 <br> / <br/> / <br />（大小寫不敏感、標籤內允許空白），
+    // 轉成硬換行（<br />）；其餘任何 HTML 標籤一律維持轉義（維持 DisableHtml 的零注入面）。
+    // ---------------------------------------------------------------------
+
+    [Fact]
+    public void TableCell_WithLiteralBr_RendersHardLineBreak()
+    {
+        // Arrange：GFM pipe table，格內用 <br> 換行（GitHub 通用逃生口）。
+        var markdown =
+            "| 欄位 | 說明 |\n" +
+            "| --- | --- |\n" +
+            "| 第一行<br>第二行 | x |\n";
+
+        // Act
+        var html = NoteContentHelpers.RenderToHtml(markdown);
+
+        // Assert：格內 <br> 應轉成硬換行 <br />，不得殘留字面 &lt;br&gt;。
+        html.Should().Contain("<br />");
+        html.Should().NotContain("&lt;br&gt;");
+        // 換行落在同一個表格格內（<td> … </td> 之間），而非把儲存格拆成兩列。
+        html.Should().Contain("第一行<br />");
+        html.Should().Contain("第二行");
+        html.Should().Contain("<td>").And.Contain("</td>");
+    }
+
+    [Theory]
+    [InlineData("<br>")]
+    [InlineData("<br/>")]
+    [InlineData("<br />")]
+    [InlineData("<BR>")]
+    [InlineData("<br >")]
+    [InlineData("<br  />")]
+    public void BrVariants_AllRenderHardLineBreak(string brToken)
+    {
+        // Arrange：一般段落內的各種 <br> 變體（大小寫、有無斜線、標籤內空白）皆應生效。
+        var markdown = $"第一行{brToken}第二行";
+
+        // Act
+        var html = NoteContentHelpers.RenderToHtml(markdown);
+
+        // Assert
+        html.Should().Contain("<br />");
+        html.Should().NotContain("&lt;br");
+    }
+
+    [Fact]
+    public void Paragraph_WithLiteralBr_RendersHardLineBreak()
+    {
+        // Arrange：一般段落內的 <br> 也應轉硬換行（與表格格內行為一致）。
+        var markdown = "第一段落<br>接續同段落";
+
+        // Act
+        var html = NoteContentHelpers.RenderToHtml(markdown);
+
+        // Assert
+        html.Should().Contain("第一段落<br />");
+        html.Should().Contain("接續同段落");
+        html.Should().NotContain("&lt;br&gt;");
+    }
+
+    [Fact]
+    public void InlineCode_WithBr_KeepsLiteralNotConverted()
+    {
+        // Arrange：inline code 內的 <br> 必須維持字面（不可被當成硬換行）。
+        var markdown = "這是程式碼 `<br>` 標籤";
+
+        // Act
+        var html = NoteContentHelpers.RenderToHtml(markdown);
+
+        // Assert：inline code 內容轉義成 &lt;br&gt;，且不得產生 <br />。
+        html.Should().Contain("<code>&lt;br&gt;</code>");
+        html.Should().NotContain("<br />");
+    }
+
+    [Fact]
+    public void FencedCodeBlock_WithBr_KeepsLiteralNotConverted()
+    {
+        // Arrange：程式碼區塊內的 <br> 也必須維持字面。
+        var markdown = "```\n<br>\n```";
+
+        // Act
+        var html = NoteContentHelpers.RenderToHtml(markdown);
+
+        // Assert
+        html.Should().Contain("&lt;br&gt;");
+        html.Should().NotContain("<br />");
+    }
+
+    [Theory]
+    [InlineData("<script>alert(1)</script>", "&lt;script&gt;")]
+    [InlineData("<div>x</div>", "&lt;div&gt;")]
+    [InlineData("<b>粗</b>", "&lt;b&gt;")]
+    [InlineData("<brs>", "&lt;brs&gt;")]
+    [InlineData("<br x>", "&lt;br x&gt;")]
+    public void NonWhitelistedTags_StillEscaped_ProvesNoRawHtmlOpened(
+        string tagInput,
+        string expectedEscaped)
+    {
+        // Arrange：非白名單標籤（含近似 <br> 但不合法的 <brs>/<br x>）一律維持轉義。
+        var markdown = $"前綴 {tagInput} 後綴";
+
+        // Act
+        var html = NoteContentHelpers.RenderToHtml(markdown);
+
+        // Assert：應轉義輸出，且完全不得產生硬換行（證明只開放 <br> 家族、沒開放其他標籤）。
+        html.Should().Contain(expectedEscaped);
+        html.Should().NotContain("<br />");
+    }
+
+    [Fact]
+    public void Autolink_StillWorks_ParserInsertedAtFrontDoesNotBreakAngleBracketLinks()
+    {
+        // 迴歸守門：<br> parser 被插到 InlineParsers[0]、搶在其他 '<' 家族解析器（含 autolink）之前，
+        // 必須確認合法 autolink（<https://...>）在改動後仍正常轉成 <a>，沒有被誤吃或擋掉。
+        var markdown = "請看 <https://example.com>";
+
+        var html = NoteContentHelpers.RenderToHtml(markdown);
+
+        html.Should().Contain("<a href=\"https://example.com\"");
+        html.Should().Contain(">https://example.com</a>");
+    }
+
+    [Fact]
+    public void DanglingBr_WithoutClosingBracket_NoException_KeepsLiteral()
+    {
+        // 邊界安全：懸空 <br（無收尾 '>'，延伸到行尾）不得拋例外，且退化為字面（不觸發硬換行）。
+        var markdown = "前綴 <br 後面還有文字";
+
+        var html = NoteContentHelpers.RenderToHtml(markdown);
+
+        html.Should().NotContain("<br />");
+        html.Should().Contain("&lt;br");
+    }
+
+    [Fact]
+    public void ConsecutiveBr_BothRenderHardLineBreak()
+    {
+        // 連續 <br><br> 應各自轉成硬換行（兩個 <br />），彼此不互相干擾。
+        var markdown = "一<br><br>二";
+
+        var html = NoteContentHelpers.RenderToHtml(markdown);
+
+        System.Text.RegularExpressions.Regex.Matches(html, "<br />").Count.Should().Be(2);
+        html.Should().NotContain("&lt;br");
+    }
 }
