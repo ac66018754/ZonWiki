@@ -71,6 +71,56 @@ const TaskEditorModal = dynamic(
 );
 
 /**
+ * 解析「站內同源錨點導航」的目的地（capture 階段 document click 的共用過濾）。
+ *
+ * 這段錨點過濾＋同源目的地解析同時服務本檔兩個 capture 階段的 click 攔截器：
+ *   1)「軟離開防護 B」——編輯中有未存變更時，先確認再導頁；
+ *   2)「站內筆記連結客戶端導航」——乾淨狀態時，攔內文裸 &lt;a&gt; 改走部分渲染。
+ * 兩者「這個點擊算不算一個該攔的站內同源導航、以及要導去哪裡」的判斷完全相同，
+ * 故抽成單一純函式避免兩份過濾邏輯日後各自漂移（DRY）。抽取時逐檢查、逐順序保持與
+ * 防護 B 原本的行為完全一致——防護 B 久經對抗式復審，語意不得改變；本函式只封裝
+ * 「是否攔＋目的地」的純判斷，兩個攔截器各自的額外條件（如只攔 /notes/）與動作
+ * （確認導頁／直接 router.push）仍留在各自的 effect 內。
+ *
+ * @param event capture 階段收到的滑鼠點擊事件
+ * @returns 通過全部過濾、且與目前頁面不同的「同源目的地 URL」；任一條件不符則回傳
+ *          null（呼叫端據此 return，維持瀏覽器／Next &lt;Link&gt; 的原生行為）。
+ */
+function resolveSameOriginAnchorTarget(event: MouseEvent): URL | null {
+  // 只處理單純左鍵、無修飾鍵的點擊；其餘（開新分頁/中鍵等）交給瀏覽器預設行為。
+  if (
+    event.defaultPrevented ||
+    event.button !== 0 ||
+    event.metaKey ||
+    event.ctrlKey ||
+    event.shiftKey ||
+    event.altKey
+  ) {
+    return null;
+  }
+  const anchor = (event.target as HTMLElement | null)?.closest?.('a');
+  if (!anchor) return null;
+  // 自管導頁的連結（自己會透過 navigationGuard 確認）→ 不由攔截器插手。
+  if (anchor.closest('[data-skip-leave-guard]')) return null;
+  const href = anchor.getAttribute('href');
+  if (!href || href.startsWith('#')) return null; // 純錨點捲動不算離開
+  if (anchor.target && anchor.target !== '_self') return null; // 開新分頁
+  if (anchor.hasAttribute('download')) return null;
+  // 解析為絕對網址：外部連結（不同 origin）交給瀏覽器預設（由 beforeunload 接手）。
+  let destination: URL;
+  try {
+    destination = new URL(href, window.location.href);
+  } catch {
+    return null;
+  }
+  if (destination.origin !== window.location.origin) return null;
+  // 目的地與目前頁面相同則略過（避免對自身連結誤攔）。
+  const current = window.location.pathname + window.location.search;
+  if (destination.pathname + destination.search === current) return null;
+  return destination;
+}
+
+/**
  * 筆記詳細編輯與查看頁面
  *
  * 功能：
@@ -217,36 +267,10 @@ export default function NotesDetailPage() {
   useEffect(() => {
     if (!hasUnsavedChanges) return;
     const handleAnchorClick = (event: MouseEvent) => {
-      // 只處理單純左鍵、無修飾鍵的點擊；其餘（開新分頁/中鍵等）交給瀏覽器預設行為。
-      if (
-        event.defaultPrevented ||
-        event.button !== 0 ||
-        event.metaKey ||
-        event.ctrlKey ||
-        event.shiftKey ||
-        event.altKey
-      ) {
-        return;
-      }
-      const anchor = (event.target as HTMLElement | null)?.closest?.('a');
-      if (!anchor) return;
-      // 自管導頁的連結（自己會透過 navigationGuard 確認）→ 不由本攔截器插手。
-      if (anchor.closest('[data-skip-leave-guard]')) return;
-      const href = anchor.getAttribute('href');
-      if (!href || href.startsWith('#')) return; // 純錨點捲動不算離開
-      if (anchor.target && anchor.target !== '_self') return; // 開新分頁
-      if (anchor.hasAttribute('download')) return;
-      // 解析為絕對網址：外部連結（不同 origin）交給瀏覽器預設（由 beforeunload 接手）。
-      let destination: URL;
-      try {
-        destination = new URL(href, window.location.href);
-      } catch {
-        return;
-      }
-      if (destination.origin !== window.location.origin) return;
-      // 目的地與目前頁面相同則略過（避免對自身連結誤攔）。
-      const current = window.location.pathname + window.location.search;
-      if (destination.pathname + destination.search === current) return;
+      // 錨點過濾＋同源目的地解析抽成共用純函式（見檔案上方 resolveSameOriginAnchorTarget）：
+      // 逐檢查、逐順序與本防護原本的行為完全一致，僅去除與下方客戶端導航攔截器的重複，語意不變。
+      const destination = resolveSameOriginAnchorTarget(event);
+      if (!destination) return;
 
       // 只攔下預設導頁（Next <Link> 會因 defaultPrevented 而不自行導頁）；
       // 不呼叫 stopPropagation，讓同一 <a> 上其他 onClick 仍能執行自己的邏輯。
@@ -262,6 +286,39 @@ export default function NotesDetailPage() {
     document.addEventListener('click', handleAnchorClick, true);
     return () => document.removeEventListener('click', handleAnchorClick, true);
   }, [hasUnsavedChanges, confirmDiscardIfDirty, router]);
+
+  // 站內筆記連結客戶端導航（部分渲染）｜乾淨狀態時攔內文裸 <a>，改走 router.push：
+  //   ● 為什麼要攔：查看模式的內文是後端渲染的 HTML 經 dangerouslySetInnerHTML 注入，
+  //     內文的站內連結是裸 <a>，點擊會走瀏覽器原生「整頁重載」——白白重抓整個頁面殼、
+  //     閃一下白畫面、丟掉前端狀態。改用 router.push 走 App Router 的客戶端導航後，只有
+  //     本頁主體重繪（Header／左側欄常駐），與左側欄筆記列（next/link）今天已在用、已驗證
+  //     的路徑完全一致：不同 URL 對應不同 cache node，[...slug] 頁元件卸載重掛→重抓該篇→
+  //     重廣播分類給側欄，捲動還原（setPreviewNode）／toggle 還原／返回堆疊（recordNoteNav）
+  //     皆天然成立，無需另寫還原邏輯。
+  //   ● 為什麼只在乾淨狀態（!hasUnsavedChanges）啟用：與上面「軟離開防護 B」互斥——髒狀態
+  //     （編輯中有未存變更）一律交給防護 B（它會先跳「放棄變更？」確認再導頁），本攔截器完全
+  //     不介入。兩者都以 hasUnsavedChanges 決定是否掛 document click 監聽，任一時刻只有一個
+  //     生效（狀態翻轉時舊 effect 卸監聽、新 effect 掛監聽），避免同一點擊被雙重處理或順序耦合。
+  //   ● 為什麼只攔 /notes/：本需求只涵蓋「筆記→筆記」的部分渲染。其他 app 路由（首頁／任務／
+  //     行事曆…）、/api/... 一律不攔，維持瀏覽器原生整頁行為，避免誤攔到需要整頁載入的目的地。
+  //   過濾與同源目的地解析與防護 B 共用 resolveSameOriginAnchorTarget（見檔案上方註解）。
+  useEffect(() => {
+    if (hasUnsavedChanges) return; // 髒狀態交給防護 B，本攔截器不介入（兩者互斥）
+    const handleInternalNoteNavClick = (event: MouseEvent) => {
+      const destination = resolveSameOriginAnchorTarget(event);
+      if (!destination) return;
+      // 只涵蓋筆記→筆記；其餘同源路由維持原生整頁導航（不攔 /api/... 與其他 app 路由）。
+      if (!destination.pathname.startsWith('/notes/')) return;
+
+      // 只 preventDefault、不 stopPropagation（理由同防護 B）：讓 Next <Link> 與同一 <a>
+      // 上其他 onClick 仍能各自運作，只改由我們以 router.push 走客戶端部分渲染。
+      event.preventDefault();
+      router.push(destination.pathname + destination.search + destination.hash);
+    };
+    // capture 階段攔截：先於 Next.js Link 與 React 合成事件（與防護 B 同一機制）。
+    document.addEventListener('click', handleInternalNoteNavClick, true);
+    return () => document.removeEventListener('click', handleInternalNoteNavClick, true);
+  }, [hasUnsavedChanges, router]);
 
   // 留言狀態
   const [commentContent, setCommentContent] = useState('');
@@ -292,43 +349,51 @@ export default function NotesDetailPage() {
   const noteIdRef = useRef<string | null>(null);
   noteIdRef.current = note?.id ?? null;
 
-  // 取得某個 <details class="md-toggle"> 的穩定鍵：沿用 TOC（buildToc）已賦予其直屬 <summary> 的錨點 id
-  // （同一篇筆記、內容不變時穩定；標題文字改了 id 會跟著變，該筆舊紀錄自然失效——與 TOC 錨點本身同樣的取捨）。
-  const getToggleStorageKey = (details: HTMLDetailsElement): string | null =>
-    details.querySelector<HTMLElement>(':scope > summary.md-toggle-summary')?.id || null;
-
-  // 把上次記住的展開狀態套用到目前 DOM 上的 toggle（找不到對應鍵的維持 markdown 預設收合/展開）。
-  const applyStoredToggleState = useCallback((container: HTMLElement, noteId: string) => {
-    let saved: Record<string, boolean> = {};
+  // 讀取某篇筆記記住的 toggle 展開狀態（序號→是否展開的表；壞資料視同沒有）。
+  // 包成穩定 useCallback（鍵直接內嵌，不相依外層的 noteToggleKey），供下方兩個 callback 安全列入依賴，
+  // 才不會讓 setPreviewNode 每次 render 都重建、導致查看模式內文區被無謂重掛。
+  const readToggleMap = useCallback((noteId: string): Record<string, boolean> => {
     try {
-      const raw = localStorage.getItem(noteToggleKey(noteId));
-      if (raw) saved = JSON.parse(raw);
-    } catch { /* 壞資料視同沒有 */ }
-    if (!saved || typeof saved !== 'object') return;
-    container.querySelectorAll<HTMLDetailsElement>('details.md-toggle').forEach((d) => {
-      const key = getToggleStorageKey(d);
-      if (key && Object.prototype.hasOwnProperty.call(saved, key)) {
-        d.open = saved[key];
+      const raw = localStorage.getItem(`zonwiki:note-toggles:${noteId}`);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') return parsed as Record<string, boolean>;
       }
-    });
+    } catch { /* 壞資料視同沒有 */ }
+    return {};
   }, []);
 
-  // 使用者手動點開/收合 toggle（或「全部展開/收合」批次寫入 .open）時存回 localStorage。
-  // <details> 的 toggle 事件不冒泡，但捕獲階段仍會由祖先往下經過目標，故在容器上用 capture 監聽單一委派。
+  // toggle 的持久化鍵＝「該 toggle 在整篇筆記 .markdown-prose 容器內、依文件順序（含巢狀）的序號」。
+  // 為什麼用序號而非標題／錨點 id：查看模式（後端 HTML＋dangerouslySetInnerHTML）與編輯彈窗即時預覽
+  // （ToggleAwareMarkdown React 元件）是兩條不同的渲染路徑——前者 summary 有 buildToc 注入的 id、
+  // 後者完全沒有。用「容器內第幾個 details.md-toggle」這種兩邊都能一致算出的序號當鍵，才能讓
+  // 「查看模式展開 → 開編輯彈窗，即時預覽」延續同一份展開狀態（本次修的正是後者仍全部收合的問題）。
+  //
+  // 把上次記住的展開狀態套用到容器內的 toggle（沒記到的維持 markdown 預設收合/展開）。
+  const applyStoredToggleState = useCallback((container: HTMLElement, noteId: string) => {
+    const saved = readToggleMap(noteId);
+    container.querySelectorAll<HTMLDetailsElement>('details.md-toggle').forEach((d, index) => {
+      if (Object.prototype.hasOwnProperty.call(saved, index)) {
+        d.open = saved[index];
+      }
+    });
+  }, [readToggleMap]);
+
+  // 使用者手動點開/收合 toggle（或「全部展開/收合」批次寫入 .open 也會非同步觸發 toggle 事件）時存回 localStorage。
+  // 以 target 最近的 .markdown-prose 當容器算序號，故查看模式與編輯彈窗即時預覽兩條路徑共用同一支 handler、
+  // 存進同一份以序號為鍵的紀錄。<details> 的 toggle 事件不冒泡，故在容器上以 capture 委派單一監聽。
   const handleToggleChange = useCallback((e: Event) => {
     const nid = noteIdRef.current;
     const target = e.target;
     if (!nid || !(target instanceof HTMLDetailsElement) || !target.classList.contains('md-toggle')) return;
-    const key = getToggleStorageKey(target);
-    if (!key) return;
-    let saved: Record<string, boolean> = {};
-    try {
-      const raw = localStorage.getItem(noteToggleKey(nid));
-      if (raw) saved = JSON.parse(raw);
-    } catch { /* ignore */ }
-    saved[key] = target.open;
+    const container = target.closest<HTMLElement>('.markdown-prose');
+    if (!container) return;
+    const index = Array.from(container.querySelectorAll<HTMLDetailsElement>('details.md-toggle')).indexOf(target);
+    if (index < 0) return;
+    const saved = readToggleMap(nid);
+    saved[index] = target.open;
     try { localStorage.setItem(noteToggleKey(nid), JSON.stringify(saved)); } catch { /* ignore */ }
-  }, []);
+  }, [readToggleMap]);
 
   // 任務編輯彈窗（從框選關聯點任務時，在筆記頁就地開啟，不離開頁面）（N4）。
   const [taskGroups, setTaskGroups] = useState<TaskGroup[]>([]);
@@ -448,6 +513,18 @@ export default function NotesDetailPage() {
     obs.observe(node, { childList: true, subtree: true });
     previewObsRef.current = obs;
   }, [applyStoredToggleState, restoreScrollPosition, handleToggleChange]);
+
+  // 編輯彈窗「即時預覽」容器的 callback ref：這條路徑用 ToggleAwareMarkdown（React 元件）渲染，
+  // 與查看模式的 dangerouslySetInnerHTML 是兩套 DOM，但同為 .markdown-prose 容器、同以序號記憶 toggle。
+  // 掛載當下套用記住的展開狀態（否則一開編輯彈窗，即時預覽會把所有 toggle 掉回 markdown 預設收合），
+  // 並掛上同一支 toggle 監聽讓在即時預覽裡的開合也存回同一份紀錄。此 callback 為穩定 useCallback，
+  // 只在該 div 真正掛載/卸載時被呼叫，鍵入預覽內容時不會重複掛監聽。
+  const setLivePreviewNode = useCallback((node: HTMLDivElement | null) => {
+    if (!node) return;
+    const nid = noteIdRef.current;
+    if (nid) applyStoredToggleState(node, nid);
+    node.addEventListener('toggle', handleToggleChange, true);
+  }, [applyStoredToggleState, handleToggleChange]);
 
   // 把「目前筆記所屬分類」廣播給左側欄，讓它標示「📍 此筆記在這」（避免迷路）。
   // 用分類 id 串接當相依，分類載入/切換筆記時更新；離開時清空。
@@ -1030,7 +1107,7 @@ export default function NotesDetailPage() {
               <button className="btn-secondary" style={{ fontSize: 'var(--text-xs)' }} onClick={() => editPopupRef.current?.focus()}>切到編輯視窗</button>
               <button className="btn-secondary" style={{ fontSize: 'var(--text-xs)' }} onClick={closeEditPopout}>結束編輯</button>
             </div>
-            <div className="markdown-prose" style={{ background: 'var(--bg-surface)', padding: 'var(--spacing-6)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-default)' }}>
+            <div ref={setLivePreviewNode} className="markdown-prose" style={{ background: 'var(--bg-surface)', padding: 'var(--spacing-6)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-default)' }}>
               {editPopoutContent.trim() ? <ToggleAwareMarkdown value={editPopoutContent} /> : <span style={{ color: 'var(--text-tertiary)' }}>（空白）</span>}
             </div>
           </div>

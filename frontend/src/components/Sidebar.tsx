@@ -163,6 +163,19 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
 
   // 預設「全部收合」：分類與筆記首次載入後，把所有「可展開（有子分類或底下有筆記）的分類」
   // 放進收合集合（只做一次）。之後使用者自由展開/收合；CRUD 重抓不會重設（didInitCollapse 守衛）。
+  //
+  // 競態修復（2026-07-10）：直接輸入筆記網址進頁時，「筆記詳情 / 筆記清單 / 分類」三個 API
+  // 是平行起跑的，完成順序不定。若「筆記詳情」先回來，會先透過 emitNoteActiveCategory
+  // 把所屬分類廣播出去（見下方監聽 activeNoteCats 的 effect），但此時 collapsed 還是空集合，
+  // 那個「展開 activeNoteCats 祖先」的 effect 跑起來等於無事可做；等「分類 + 筆記清單」才
+  // 載完，這個初始化 effect 才把「全部可展開分類」一次性塞進 collapsed（此時已包含
+  // activeNoteCats 的祖先）——但 activeNoteCats／categories 之後都沒有再變化，展開 effect
+  // 不會重新觸發，於是 📍 所在分類的祖先就這樣被鎖在收合狀態，樹整棵看起來全收合、找不到
+  // 目前筆記。（若換成「分類 + 筆記清單」先回來，初始化先跑完再收到廣播，則展開 effect 會
+  // 正常補上——這就是「有時候正常、有時候不正常」的原因。）
+  // 解法：初始化當下就先把 activeNoteCats 的所有祖先從「要收合」的集合裡排除，讓兩種到達
+  // 順序都收斂到同一個正確結果。只排除「祖先」、不排除該分類本身——語意與下方展開 effect
+  // 一致（該分類本身的展開/收合仍交由使用者點三角形控制，不被自動展開蓋掉）。
   const didInitCollapse = useRef(false);
   useEffect(() => {
     if (didInitCollapse.current || categories.length === 0 || !notesLoaded) return;
@@ -172,8 +185,19 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
     for (const c of categories) if (c.parentId) expandable.add(c.parentId);
     // 底下有筆記者（一篇筆記可屬多個分類）
     for (const note of notes) for (const cat of note.categories ?? []) expandable.add(cat.id);
+    // 排除目前筆記所屬分類（activeNoteCats）的所有祖先，避免與展開 effect 產生上述競態。
+    if (activeNoteCats.length > 0) {
+      const byId = new Map(categories.map((c) => [c.id, c] as const));
+      for (const id of activeNoteCats) {
+        let cur = byId.get(id);
+        while (cur?.parentId) {
+          expandable.delete(cur.parentId);
+          cur = byId.get(cur.parentId);
+        }
+      }
+    }
     setCollapsed(expandable);
-  }, [categories, notes, notesLoaded]);
+  }, [categories, notes, notesLoaded, activeNoteCats]);
 
   // 筆記頁快捷鍵「A」→ 開「新增筆記」彈窗。ShortcutRuntime 在 /notes 派發 SHORTCUT_ACTION_EVENT，
   // 側欄在所有頁面常駐、又擁有新增筆記彈窗，故由它統一接收並開啟。（全域快捷鍵事件保留為 window 事件。）
