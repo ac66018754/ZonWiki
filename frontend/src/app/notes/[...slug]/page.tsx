@@ -281,8 +281,54 @@ export default function NotesDetailPage() {
   // 本頁捲動容器（.note-detail-page）：記住閱讀位置、下次打開自動捲回（N1）。
   const noteScrollRef = useRef<HTMLDivElement | null>(null);
   const scrollSaveRaf = useRef<number | null>(null);
-  const scrollRestoredFor = useRef<string | null>(null);
   const noteScrollKey = (noteId: string) => `zonwiki:note-scroll:${noteId}`;
+  // 每篇筆記記住 toggle 展開狀態的 key（N-toggle：編輯彈窗/切分頁造成內文區重掛時，
+  // 不再讓 toggle 被重新注入的 markdown 預設值蓋掉；同時也是「續讀」功能的一部分）。
+  const noteToggleKey = (noteId: string) => `zonwiki:note-toggles:${noteId}`;
+  // 目前筆記 id 的最新值：供不隨 note 變動而重建的 setPreviewNode callback 讀取（避免閉包捕捉到舊值）。
+  // 直接在 render 期間同步賦值（合法的 React 逃生艙模式），不透過 useEffect——
+  // ref callback 與 useLayoutEffect 同屬「commit 階段」執行，早於 useEffect 這類被動效果被 flush，
+  // 若改用 useEffect 同步，首次掛載時 setPreviewNode 可能搶先在 noteIdRef 被寫入前執行，讀到 null。
+  const noteIdRef = useRef<string | null>(null);
+  noteIdRef.current = note?.id ?? null;
+
+  // 取得某個 <details class="md-toggle"> 的穩定鍵：沿用 TOC（buildToc）已賦予其直屬 <summary> 的錨點 id
+  // （同一篇筆記、內容不變時穩定；標題文字改了 id 會跟著變，該筆舊紀錄自然失效——與 TOC 錨點本身同樣的取捨）。
+  const getToggleStorageKey = (details: HTMLDetailsElement): string | null =>
+    details.querySelector<HTMLElement>(':scope > summary.md-toggle-summary')?.id || null;
+
+  // 把上次記住的展開狀態套用到目前 DOM 上的 toggle（找不到對應鍵的維持 markdown 預設收合/展開）。
+  const applyStoredToggleState = useCallback((container: HTMLElement, noteId: string) => {
+    let saved: Record<string, boolean> = {};
+    try {
+      const raw = localStorage.getItem(noteToggleKey(noteId));
+      if (raw) saved = JSON.parse(raw);
+    } catch { /* 壞資料視同沒有 */ }
+    if (!saved || typeof saved !== 'object') return;
+    container.querySelectorAll<HTMLDetailsElement>('details.md-toggle').forEach((d) => {
+      const key = getToggleStorageKey(d);
+      if (key && Object.prototype.hasOwnProperty.call(saved, key)) {
+        d.open = saved[key];
+      }
+    });
+  }, []);
+
+  // 使用者手動點開/收合 toggle（或「全部展開/收合」批次寫入 .open）時存回 localStorage。
+  // <details> 的 toggle 事件不冒泡，但捕獲階段仍會由祖先往下經過目標，故在容器上用 capture 監聽單一委派。
+  const handleToggleChange = useCallback((e: Event) => {
+    const nid = noteIdRef.current;
+    const target = e.target;
+    if (!nid || !(target instanceof HTMLDetailsElement) || !target.classList.contains('md-toggle')) return;
+    const key = getToggleStorageKey(target);
+    if (!key) return;
+    let saved: Record<string, boolean> = {};
+    try {
+      const raw = localStorage.getItem(noteToggleKey(nid));
+      if (raw) saved = JSON.parse(raw);
+    } catch { /* ignore */ }
+    saved[key] = target.open;
+    try { localStorage.setItem(noteToggleKey(nid), JSON.stringify(saved)); } catch { /* ignore */ }
+  }, []);
 
   // 任務編輯彈窗（從框選關聯點任務時，在筆記頁就地開啟，不離開頁面）（N4）。
   const [taskGroups, setTaskGroups] = useState<TaskGroup[]>([]);
@@ -301,9 +347,13 @@ export default function NotesDetailPage() {
   }, []);
 
   // 捲動時節流存目前位置（每幀最多存一次）。
+  // 只在真正的「查看模式＋預覽分頁」時存——編輯彈窗／編輯頁／其他分頁把內文換成短很多的版面時，
+  // 瀏覽器會自動把 scrollTop 夾小（因為 scrollHeight 變短了），這個「夾動」也會觸發 scroll 事件；
+  // 若不分辨就存，會把使用者原本讀到一半的真實位置洗成夾動後的 0，回到預覽時自然也還原不回去。
   const handleNoteScroll = useCallback(() => {
     const nid = note?.id;
     if (!nid) return;
+    if (isEditing || editPopoutContent !== null || activeTab !== 'preview') return;
     if (scrollSaveRaf.current != null) return;
     scrollSaveRaf.current = requestAnimationFrame(() => {
       scrollSaveRaf.current = null;
@@ -312,24 +362,26 @@ export default function NotesDetailPage() {
         try { localStorage.setItem(noteScrollKey(nid), String(Math.round(el.scrollTop))); } catch { /* ignore */ }
       }
     });
-  }, [note?.id]);
+  }, [note?.id, isEditing, editPopoutContent, activeTab]);
 
-  // 載入完成後，把捲動位置還原到上次離開處（每篇只還原一次；等內文渲染後再捲）。
-  useEffect(() => {
-    const nid = note?.id;
-    if (!nid || loading) return;
-    if (scrollRestoredFor.current === nid) return;
+  // 還原捲動位置：改由 setPreviewNode（見下方）在「預覽內文區重新掛載」當下觸發，不再是
+  // 「每篇筆記只還原一次」——那個舊限制正是本 bug 的根因之一：編輯彈窗／切分頁只會讓內文區
+  // 卸載重掛（note.id 不變），舊效果的 once-guard 會直接跳過，捲動位置就永遠停在重掛當下
+  // 瀏覽器因內容變短而夾出來的 0。統一交給 setPreviewNode，涵蓋「首次載入／切換筆記（會整頁
+  // 卸載重掛）／編輯彈窗或切分頁切回預覽（只有內文區卸載重掛）」三種情境。
+  const restoreScrollPosition = useCallback((noteId: string) => {
     let saved = 0;
-    try { saved = Number(localStorage.getItem(noteScrollKey(nid)) || '0'); } catch { /* ignore */ }
-    if (!saved) { scrollRestoredFor.current = nid; return; }
-    const timer = setTimeout(() => {
+    try { saved = Number(localStorage.getItem(noteScrollKey(noteId)) || '0'); } catch { /* ignore */ }
+    if (!saved) return;
+    // 等內文（含圖片版面）穩定後再捲，避免捲到一半又被非同步載入的圖片撐開版面推走。
+    setTimeout(() => {
+      // 這 250ms 空窗內若使用者已經切到別篇筆記，noteIdRef 會先變成新筆記的 id——
+      // 此時必須放棄，否則會把「這篇」的舊捲動位置套到「新筆記」現正顯示的容器上（兩者共用同一個 DOM 節點）。
+      if (noteIdRef.current !== noteId) return;
       const el = noteScrollRef.current;
       if (el) el.scrollTop = saved;
-      scrollRestoredFor.current = nid;
     }, 250);
-    return () => clearTimeout(timer);
-    // 內文渲染後再捲；用 250ms 緩衝，不相依 previewHtml（它宣告於後方，避免 TDZ）。
-  }, [note?.id, loading]);
+  }, []);
 
   // 記住「最後看的筆記」slug：之後從 Header 點「筆記」會直接回到這篇（N1：打開筆記功能＝回到該篇該位置）。
   useEffect(() => {
@@ -374,6 +426,11 @@ export default function NotesDetailPage() {
   // 預覽容器的 callback ref：掛載當下就把程式碼區塊美化（VS Code 語法上色＋檔名/語言標題列＋複製鈕），
   // 並以 MutationObserver 持續處理之後才出現/重繪的區塊。同時把 node 存回 previewRef，供 NoteMarksLayer / NoteOverlay 使用。
   // 註：enhanceReadingCodeBlocks 會包一層 .code-block（本身也是 DOM 變動），但對已包裝者會跳過，故不會無限迴圈。
+  //
+  // 這裡也是「續讀」的還原時機：這個 div 每次（重新）掛載，就代表 dangerouslySetInnerHTML 剛注入
+  // 一份全新內容（markdown 預設的 toggle 開合狀態），不論起因是首次載入、切換到別篇筆記（會整頁
+  // 卸載重掛）、或是編輯彈窗／切分頁切回預覽（只有這個 div 卸載重掛，note.id 不變）——三種情境都
+  // 統一在此還原，取代舊版「每篇筆記只還原一次」的捲動還原（會漏掉後兩種情境）。
   const previewObsRef = useRef<MutationObserver | null>(null);
   const setPreviewNode = useCallback((node: HTMLDivElement | null) => {
     previewRef.current = node;
@@ -381,10 +438,16 @@ export default function NotesDetailPage() {
     previewObsRef.current = null;
     if (!node) return;
     enhanceReadingCodeBlocks(node);
+    const nid = noteIdRef.current;
+    if (nid) {
+      applyStoredToggleState(node, nid);
+      restoreScrollPosition(nid);
+    }
+    node.addEventListener('toggle', handleToggleChange, true);
     const obs = new MutationObserver(() => enhanceReadingCodeBlocks(node));
     obs.observe(node, { childList: true, subtree: true });
     previewObsRef.current = obs;
-  }, []);
+  }, [applyStoredToggleState, restoreScrollPosition, handleToggleChange]);
 
   // 把「目前筆記所屬分類」廣播給左側欄，讓它標示「📍 此筆記在這」（避免迷路）。
   // 用分類 id 串接當相依，分類載入/切換筆記時更新；離開時清空。
