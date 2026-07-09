@@ -287,6 +287,39 @@ export default function NotesDetailPage() {
     return () => document.removeEventListener('click', handleAnchorClick, true);
   }, [hasUnsavedChanges, confirmDiscardIfDirty, router]);
 
+  // 站內筆記連結客戶端導航（部分渲染）｜乾淨狀態時攔內文裸 <a>，改走 router.push：
+  //   ● 為什麼要攔：查看模式的內文是後端渲染的 HTML 經 dangerouslySetInnerHTML 注入，
+  //     內文的站內連結是裸 <a>，點擊會走瀏覽器原生「整頁重載」——白白重抓整個頁面殼、
+  //     閃一下白畫面、丟掉前端狀態。改用 router.push 走 App Router 的客戶端導航後，只有
+  //     本頁主體重繪（Header／左側欄常駐），與左側欄筆記列（next/link）今天已在用、已驗證
+  //     的路徑完全一致：不同 URL 對應不同 cache node，[...slug] 頁元件卸載重掛→重抓該篇→
+  //     重廣播分類給側欄，捲動還原（setPreviewNode）／toggle 還原／返回堆疊（recordNoteNav）
+  //     皆天然成立，無需另寫還原邏輯。
+  //   ● 為什麼只在乾淨狀態（!hasUnsavedChanges）啟用：與上面「軟離開防護 B」互斥——髒狀態
+  //     （編輯中有未存變更）一律交給防護 B（它會先跳「放棄變更？」確認再導頁），本攔截器完全
+  //     不介入。兩者都以 hasUnsavedChanges 決定是否掛 document click 監聽，任一時刻只有一個
+  //     生效（狀態翻轉時舊 effect 卸監聽、新 effect 掛監聽），避免同一點擊被雙重處理或順序耦合。
+  //   ● 為什麼只攔 /notes/：本需求只涵蓋「筆記→筆記」的部分渲染。其他 app 路由（首頁／任務／
+  //     行事曆…）、/api/... 一律不攔，維持瀏覽器原生整頁行為，避免誤攔到需要整頁載入的目的地。
+  //   過濾與同源目的地解析與防護 B 共用 resolveSameOriginAnchorTarget（見檔案上方註解）。
+  useEffect(() => {
+    if (hasUnsavedChanges) return; // 髒狀態交給防護 B，本攔截器不介入（兩者互斥）
+    const handleInternalNoteNavClick = (event: MouseEvent) => {
+      const destination = resolveSameOriginAnchorTarget(event);
+      if (!destination) return;
+      // 只涵蓋筆記→筆記；其餘同源路由維持原生整頁導航（不攔 /api/... 與其他 app 路由）。
+      if (!destination.pathname.startsWith('/notes/')) return;
+
+      // 只 preventDefault、不 stopPropagation（理由同防護 B）：讓 Next <Link> 與同一 <a>
+      // 上其他 onClick 仍能各自運作，只改由我們以 router.push 走客戶端部分渲染。
+      event.preventDefault();
+      router.push(destination.pathname + destination.search + destination.hash);
+    };
+    // capture 階段攔截：先於 Next.js Link 與 React 合成事件（與防護 B 同一機制）。
+    document.addEventListener('click', handleInternalNoteNavClick, true);
+    return () => document.removeEventListener('click', handleInternalNoteNavClick, true);
+  }, [hasUnsavedChanges, router]);
+
   // 留言狀態
   const [commentContent, setCommentContent] = useState('');
   const [isPostingComment, setIsPostingComment] = useState(false);
