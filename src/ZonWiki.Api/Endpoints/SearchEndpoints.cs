@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using ZonWiki.Api.Notes;
 using ZonWiki.Domain.Common;
 using ZonWiki.Domain.Dtos;
 using ZonWiki.Infrastructure.Persistence;
@@ -6,9 +7,11 @@ using ZonWiki.Infrastructure.Persistence;
 namespace ZonWiki.Api.Endpoints;
 
 /// <summary>
-/// 全站搜尋端點：同時搜尋筆記、任務卡片、畫布、節點、標籤、分類與快速捕捉。
+/// 全站搜尋端點：同時搜尋筆記、任務卡片、畫布、節點、標籤、分類、快速捕捉，
+/// 以及筆記內文上的浮層元件（T 文字框 / 便利貼）。
 /// 支援大小寫不敏感的子字串搜尋（走 pg_trgm GIN 索引）；
 /// 結果依「相關性（trigram similarity）」排序，並帶類型標記供前端分類/篩選。
+/// 另支援以 <c>types</c> 參數（CSV）篩選要搜尋哪些型別。
 /// </summary>
 public static class SearchEndpoints
 {
@@ -20,7 +23,7 @@ public static class SearchEndpoints
     {
         /// <summary>
         /// 執行全站搜尋。
-        /// GET /api/search?q={query}
+        /// GET /api/search?q={query}&amp;types={csv}
         ///
         /// 搜尋範圍（每筆結果都帶 Type 類型標記，供前端分類與篩選）：
         /// - note（筆記：標題、原始內容）
@@ -30,18 +33,27 @@ public static class SearchEndpoints
         /// - tag（標籤：名稱）
         /// - category（分類：名稱）
         /// - capture（快速捕捉／Inbox：原始內容）
+        /// - overlay-text（筆記浮層 T 文字框：文字內容）
+        /// - overlay-sticky（筆記浮層便利貼：文字內容＋標題 DataJson.title）
+        ///
+        /// 類型篩選（types 參數；選擇性）：
+        /// - 合法值：note-title / note-content / task / node / canvas / tag / category / capture /
+        ///   overlay-text / overlay-sticky（大小寫不敏感）。以逗號分隔的 CSV。
+        /// - 空／未帶／全部為未知值 → 視同「不篩選」，回傳全部型別。
+        /// - note-title / note-content 控制「筆記查詢」的 WHERE 欄位：只勾標題→只比對 Title；
+        ///   只勾內文→只比對 ContentRaw；兩者皆勾或未篩→ Title OR ContentRaw（現行為）。結果 Type 仍為 "note"。
         ///
         /// 相關性排序：
         /// - 以 pg_trgm 的 similarity() 計算查詢字串與各欄位的相似度，做為相關性分數；
         ///   標題／名稱命中權重高於內文命中（見 <see cref="ContentSimilarityWeight"/>）。
         /// - 多欄位類型（note/task/node）：撈回所有 ILIKE 命中列，先算完「標題＋內文」合併相關性分數，
         ///   再依該分數排序並取 limit 筆；不可在合併前以單一欄位（標題）截斷，否則僅內文命中的相關列會漏掉。
-        /// - 單欄位類型（canvas/tag/category/capture）：該欄位相似度即相關性，於 SQL 端排序取 limit 筆即可。
+        /// - 單欄位類型（canvas/tag/category/capture/overlay-text）：該欄位相似度即相關性，取 limit 筆。
         /// - 最後跨類型再依相關性分數合併排序、取 limit 筆。
         ///
         /// 隔離策略（重要）：
-        /// - Note / TaskCard / Canvas / Tag / Category / CaptureItem 皆實作 IUserOwned，
-        ///   靠 EF Core 全域查詢過濾自動限定「本人」；此處仍明確加上 ValidFlag 過濾（軟刪除）。
+        /// - Note / TaskCard / Canvas / Tag / Category / CaptureItem / NoteOverlayItem 皆實作 IUserOwned，
+        ///   靠 EF Core 全域查詢過濾自動限定「本人」；此處仍明確加上 ValidFlag 與 UserId 過濾（縱深防禦、軟刪除）。
         /// - Node（開問啦節點）**不是** IUserOwned、**沒有**任何全域過濾；它的擁有權來自所屬 Canvas。
         ///   因此節點搜尋**必須**明確 Join/過濾 `Node.Canvas.UserId == 目前使用者`，否則會把所有人的節點都撈出來
         ///   （曾發生的跨帳號外洩漏洞：以 "." 搜尋會看到別的帳號的節點內容）。
@@ -49,6 +61,7 @@ public static class SearchEndpoints
         /// <param name="currentUser">目前登入使用者（用於對非 IUserOwned 的節點做擁有權過濾）。</param>
         /// <param name="db">資料庫 DbContext。</param>
         /// <param name="q">搜尋關鍵字（大小寫不敏感）。</param>
+        /// <param name="types">要搜尋的型別 CSV（選擇性；空/未帶/全未知＝全部）。</param>
         /// <param name="limit">結果數量限制（預設 50）。</param>
         /// <param name="ct">取消令牌。</param>
         /// <returns>
@@ -58,6 +71,7 @@ public static class SearchEndpoints
             ICurrentUser currentUser,
             ZonWikiDbContext db,
             string q,
+            string? types = null,
             int limit = 50,
             CancellationToken ct = default) =>
         {
@@ -79,227 +93,348 @@ public static class SearchEndpoints
             }
 
             // 子字串、大小寫不敏感搜尋：改用 PostgreSQL 的 ILIKE（搭配 pg_trgm GIN 索引）。
-            // 原本的 n.Title.ToLower().Contains(...) 會翻成 lower() LIKE，無法用索引、且每列都要轉小寫；
-            // ILIKE '%關鍵字%' 則能命中 IX_*_Trgm 索引。
             // 使用者輸入中的 LIKE 萬用字元（% _ \）必須轉義，否則會被當成萬用字元而比對到非預期結果。
             var term = q.Trim();
             var pattern = $"%{EscapeLikePattern(term)}%";
             // 片段擷取仍以小寫關鍵字在內容中定位（純顯示用，與查詢條件無關）。
             var keywordLower = term.ToLowerInvariant();
 
+            // 解析 types 篩選：只保留合法值；空集合＝不篩選（涵蓋「未帶」與「全為未知值」兩種情況）。
+            var activeTypes = ParseTypeFilter(types);
+            var noFilter = activeTypes.Count == 0;
+            // 某型別是否要被搜尋：未篩選時全部要，篩選時只搜命中的型別。
+            bool Want(string typeKey) => noFilter || activeTypes.Contains(typeKey);
+
             // 各類型查詢：以 ILIKE 過濾（走 GIN 索引），以 trigram similarity 排序取相關性最高者。
             // 為避免 EF 把 ExtractSnippet 等 C# 方法誤帶入 SQL 轉譯，一律「先把可轉譯的欄位＋相似度撈回記憶體，
-            // 再於記憶體端組 DTO（含片段擷取與相關性分數合併）」。
+            // 再於記憶體端組 DTO（含片段擷取與相關性分數合併）」。每個型別區塊皆以 Want(...) 閘門控制是否執行；
+            // 未被選中的型別維持空集合。
 
-            // 1. 筆記（標題＋原始內容）
+            // 1. 筆記（標題／內文；受 note-title / note-content 篩選拆分控制）
             // 重要：不可在 SQL 端「先依標題相似度排序再 Take(limit)」，否則只靠內文命中、標題不相關的列
             // 會在合併相關性分數之前就被整批截掉，永遠進不了候選池（finding #W8-1）。
-            // 正確作法：撈回所有 ILIKE 命中列與標題／內文兩個相似度，於記憶體端算完合併相關性分數後才截斷。
-            var noteRows = await db.Note
-                .Where(n => n.ValidFlag &&
-                    (EF.Functions.ILike(n.Title, pattern, LikeEscapeChar) ||
-                     EF.Functions.ILike(n.ContentRaw, pattern, LikeEscapeChar)))
-                .AsNoTracking()
-                .Select(n => new
+            var includeNoteTitle = Want(TypeFilterNoteTitle);
+            var includeNoteContent = Want(TypeFilterNoteContent);
+            IEnumerable<ScoredSearchResult> noteScored = Enumerable.Empty<ScoredSearchResult>();
+            if (includeNoteTitle || includeNoteContent)
+            {
+                // 依篩選動態組 WHERE：只勾標題→只比對 Title；只勾內文→只比對 ContentRaw；兩者→ Title OR ContentRaw。
+                var noteQuery = db.Note.Where(n => n.ValidFlag);
+                if (includeNoteTitle && includeNoteContent)
                 {
-                    n.Id,
-                    n.Title,
-                    n.ContentRaw,
-                    n.Slug,
-                    TitleSimilarity = EF.Functions.TrigramsSimilarity(n.Title, term),
-                    ContentSimilarity = EF.Functions.TrigramsSimilarity(n.ContentRaw, term),
-                })
-                .ToListAsync(ct);
+                    noteQuery = noteQuery.Where(n =>
+                        EF.Functions.ILike(n.Title, pattern, LikeEscapeChar) ||
+                        EF.Functions.ILike(n.ContentRaw, pattern, LikeEscapeChar));
+                }
+                else if (includeNoteTitle)
+                {
+                    noteQuery = noteQuery.Where(n => EF.Functions.ILike(n.Title, pattern, LikeEscapeChar));
+                }
+                else
+                {
+                    noteQuery = noteQuery.Where(n => EF.Functions.ILike(n.ContentRaw, pattern, LikeEscapeChar));
+                }
 
-            var noteScored = noteRows
-                .Select(row => new ScoredSearchResult(
-                    new SearchResultDto(
-                        TypeNote,
-                        row.Id.ToString(),
-                        row.Title,
-                        ExtractSnippet(row.ContentRaw, keywordLower, SnippetMaxLength),
-                        $"/notes/{row.Slug}"),
-                    CombineRelevance(row.TitleSimilarity, row.ContentSimilarity),
-                    TypeRankNote))
-                // 合併相關性分數算完之後才截斷，確保內文命中列有公平機會進入候選池。
-                .OrderByDescending(scored => scored.Relevance)
-                .Take(limit);
+                var noteRows = await noteQuery
+                    .AsNoTracking()
+                    .Select(n => new
+                    {
+                        n.Id,
+                        n.Title,
+                        n.ContentRaw,
+                        n.Slug,
+                        TitleSimilarity = EF.Functions.TrigramsSimilarity(n.Title, term),
+                        ContentSimilarity = EF.Functions.TrigramsSimilarity(n.ContentRaw, term),
+                    })
+                    .ToListAsync(ct);
+
+                noteScored = noteRows
+                    .Select(row => new ScoredSearchResult(
+                        new SearchResultDto(
+                            TypeNote,
+                            row.Id.ToString(),
+                            row.Title,
+                            ExtractSnippet(row.ContentRaw, keywordLower, SnippetMaxLength),
+                            $"/notes/{row.Slug}"),
+                        CombineRelevance(row.TitleSimilarity, row.ContentSimilarity),
+                        TypeRankNote))
+                    // 合併相關性分數算完之後才截斷，確保內文命中列有公平機會進入候選池。
+                    .OrderByDescending(scored => scored.Relevance)
+                    .Take(limit);
+            }
 
             // 2. 任務卡片（標題＋內容）
-            // 同筆記：不可在合併相關性分數前依標題相似度截斷（finding #W8-1）。
-            var taskRows = await db.TaskCard
-                .Where(t => t.ValidFlag &&
-                    (EF.Functions.ILike(t.Title, pattern, LikeEscapeChar) ||
-                     EF.Functions.ILike(t.Content, pattern, LikeEscapeChar)))
-                .AsNoTracking()
-                .Select(t => new
-                {
-                    t.Id,
-                    t.Title,
-                    t.Content,
-                    TitleSimilarity = EF.Functions.TrigramsSimilarity(t.Title, term),
-                    ContentSimilarity = EF.Functions.TrigramsSimilarity(t.Content, term),
-                })
-                .ToListAsync(ct);
+            IEnumerable<ScoredSearchResult> taskScored = Enumerable.Empty<ScoredSearchResult>();
+            if (Want(TypeTask))
+            {
+                var taskRows = await db.TaskCard
+                    .Where(t => t.ValidFlag &&
+                        (EF.Functions.ILike(t.Title, pattern, LikeEscapeChar) ||
+                         EF.Functions.ILike(t.Content, pattern, LikeEscapeChar)))
+                    .AsNoTracking()
+                    .Select(t => new
+                    {
+                        t.Id,
+                        t.Title,
+                        t.Content,
+                        TitleSimilarity = EF.Functions.TrigramsSimilarity(t.Title, term),
+                        ContentSimilarity = EF.Functions.TrigramsSimilarity(t.Content, term),
+                    })
+                    .ToListAsync(ct);
 
-            var taskScored = taskRows
-                .Select(row => new ScoredSearchResult(
-                    new SearchResultDto(
-                        TypeTask,
-                        row.Id.ToString(),
-                        row.Title,
-                        ExtractSnippet(row.Content, keywordLower, SnippetMaxLength),
-                        "/tasks"),
-                    CombineRelevance(row.TitleSimilarity, row.ContentSimilarity),
-                    TypeRankTask))
-                // 合併相關性分數算完之後才截斷。
-                .OrderByDescending(scored => scored.Relevance)
-                .Take(limit);
+                taskScored = taskRows
+                    .Select(row => new ScoredSearchResult(
+                        new SearchResultDto(
+                            TypeTask,
+                            row.Id.ToString(),
+                            row.Title,
+                            ExtractSnippet(row.Content, keywordLower, SnippetMaxLength),
+                            "/tasks"),
+                        CombineRelevance(row.TitleSimilarity, row.ContentSimilarity),
+                        TypeRankTask))
+                    .OrderByDescending(scored => scored.Relevance)
+                    .Take(limit);
+            }
 
             // 3. 畫布（名稱）
-            var canvasRows = await db.Canvas
-                .Where(c => c.ValidFlag &&
-                    EF.Functions.ILike(c.Title, pattern, LikeEscapeChar))
-                .OrderByDescending(c => EF.Functions.TrigramsSimilarity(c.Title, term))
-                .Take(limit)
-                .AsNoTracking()
-                .Select(c => new
-                {
-                    c.Id,
-                    c.Title,
-                    TitleSimilarity = EF.Functions.TrigramsSimilarity(c.Title, term),
-                })
-                .ToListAsync(ct);
+            IEnumerable<ScoredSearchResult> canvasScored = Enumerable.Empty<ScoredSearchResult>();
+            if (Want(TypeCanvas))
+            {
+                var canvasRows = await db.Canvas
+                    .Where(c => c.ValidFlag &&
+                        EF.Functions.ILike(c.Title, pattern, LikeEscapeChar))
+                    .OrderByDescending(c => EF.Functions.TrigramsSimilarity(c.Title, term))
+                    .Take(limit)
+                    .AsNoTracking()
+                    .Select(c => new
+                    {
+                        c.Id,
+                        c.Title,
+                        TitleSimilarity = EF.Functions.TrigramsSimilarity(c.Title, term),
+                    })
+                    .ToListAsync(ct);
 
-            var canvasScored = canvasRows.Select(row => new ScoredSearchResult(
-                new SearchResultDto(
-                    TypeCanvas,
-                    row.Id.ToString(),
-                    row.Title,
-                    null,
-                    $"/canvas?canvasId={row.Id}"),
-                row.TitleSimilarity,
-                TypeRankCanvas));
+                canvasScored = canvasRows.Select(row => new ScoredSearchResult(
+                    new SearchResultDto(
+                        TypeCanvas,
+                        row.Id.ToString(),
+                        row.Title,
+                        null,
+                        $"/canvas?canvasId={row.Id}"),
+                    row.TitleSimilarity,
+                    TypeRankCanvas));
+            }
 
             // 4. 開問啦節點（標題＋內容）
             // 節點的 URL 格式為 /canvas?canvasId={CanvasId}&nodeId={NodeId}
             // 跨帳號隔離：Node 非 IUserOwned、無全域過濾，必須明確以「所屬 Canvas 屬於目前使用者」過濾，
             // 否則會撈到所有使用者的節點（跨帳號外洩）。此處以 Canvas.UserId 比對目前登入者。
-            // 同筆記：不可在合併相關性分數前依標題相似度截斷（finding #W8-1）。
-            var nodeRows = await db.Node
-                .Where(n => n.ValidFlag &&
-                    n.Canvas != null &&
-                    n.Canvas.UserId == currentUser.UserId &&
-                    n.Canvas.ValidFlag &&
-                    (EF.Functions.ILike(n.Title, pattern, LikeEscapeChar) ||
-                     EF.Functions.ILike(n.Content, pattern, LikeEscapeChar)))
-                .AsNoTracking()
-                .Select(n => new
-                {
-                    n.Id,
-                    n.Title,
-                    n.Content,
-                    n.CanvasId,
-                    TitleSimilarity = EF.Functions.TrigramsSimilarity(n.Title, term),
-                    ContentSimilarity = EF.Functions.TrigramsSimilarity(n.Content, term),
-                })
-                .ToListAsync(ct);
+            IEnumerable<ScoredSearchResult> nodeScored = Enumerable.Empty<ScoredSearchResult>();
+            if (Want(TypeNode))
+            {
+                var nodeRows = await db.Node
+                    .Where(n => n.ValidFlag &&
+                        n.Canvas != null &&
+                        n.Canvas.UserId == currentUser.UserId &&
+                        n.Canvas.ValidFlag &&
+                        (EF.Functions.ILike(n.Title, pattern, LikeEscapeChar) ||
+                         EF.Functions.ILike(n.Content, pattern, LikeEscapeChar)))
+                    .AsNoTracking()
+                    .Select(n => new
+                    {
+                        n.Id,
+                        n.Title,
+                        n.Content,
+                        n.CanvasId,
+                        TitleSimilarity = EF.Functions.TrigramsSimilarity(n.Title, term),
+                        ContentSimilarity = EF.Functions.TrigramsSimilarity(n.Content, term),
+                    })
+                    .ToListAsync(ct);
 
-            var nodeScored = nodeRows
-                .Select(row => new ScoredSearchResult(
-                    new SearchResultDto(
-                        TypeNode,
-                        row.Id.ToString(),
-                        string.IsNullOrEmpty(row.Title) ? "（無標題）" : row.Title,
-                        ExtractSnippet(row.Content, keywordLower, SnippetMaxLength),
-                        $"/canvas?canvasId={row.CanvasId}&nodeId={row.Id}"),
-                    CombineRelevance(row.TitleSimilarity, row.ContentSimilarity),
-                    TypeRankNode))
-                // 合併相關性分數算完之後才截斷。
-                .OrderByDescending(scored => scored.Relevance)
-                .Take(limit);
+                nodeScored = nodeRows
+                    .Select(row => new ScoredSearchResult(
+                        new SearchResultDto(
+                            TypeNode,
+                            row.Id.ToString(),
+                            string.IsNullOrEmpty(row.Title) ? "（無標題）" : row.Title,
+                            ExtractSnippet(row.Content, keywordLower, SnippetMaxLength),
+                            $"/canvas?canvasId={row.CanvasId}&nodeId={row.Id}"),
+                        CombineRelevance(row.TitleSimilarity, row.ContentSimilarity),
+                        TypeRankNode))
+                    .OrderByDescending(scored => scored.Relevance)
+                    .Take(limit);
+            }
 
             // 5. 標籤（名稱）
-            // Tag 為 IUserOwned，靠全域過濾限定本人；點按導向以此標籤篩選的筆記清單。
-            var tagRows = await db.Tag
-                .Where(t => t.ValidFlag &&
-                    EF.Functions.ILike(t.Name, pattern, LikeEscapeChar))
-                .OrderByDescending(t => EF.Functions.TrigramsSimilarity(t.Name, term))
-                .Take(limit)
-                .AsNoTracking()
-                .Select(t => new
-                {
-                    t.Id,
-                    t.Name,
-                    NameSimilarity = EF.Functions.TrigramsSimilarity(t.Name, term),
-                })
-                .ToListAsync(ct);
+            IEnumerable<ScoredSearchResult> tagScored = Enumerable.Empty<ScoredSearchResult>();
+            if (Want(TypeTag))
+            {
+                var tagRows = await db.Tag
+                    .Where(t => t.ValidFlag &&
+                        EF.Functions.ILike(t.Name, pattern, LikeEscapeChar))
+                    .OrderByDescending(t => EF.Functions.TrigramsSimilarity(t.Name, term))
+                    .Take(limit)
+                    .AsNoTracking()
+                    .Select(t => new
+                    {
+                        t.Id,
+                        t.Name,
+                        NameSimilarity = EF.Functions.TrigramsSimilarity(t.Name, term),
+                    })
+                    .ToListAsync(ct);
 
-            var tagScored = tagRows.Select(row => new ScoredSearchResult(
-                new SearchResultDto(
-                    TypeTag,
-                    row.Id.ToString(),
-                    row.Name,
-                    null,
-                    $"/notes?tagId={row.Id}"),
-                row.NameSimilarity,
-                TypeRankTag));
+                tagScored = tagRows.Select(row => new ScoredSearchResult(
+                    new SearchResultDto(
+                        TypeTag,
+                        row.Id.ToString(),
+                        row.Name,
+                        null,
+                        $"/notes?tagId={row.Id}"),
+                    row.NameSimilarity,
+                    TypeRankTag));
+            }
 
             // 6. 分類（名稱）
-            // Category 為 IUserOwned；點按導向以此分類篩選的筆記清單。
-            var categoryRows = await db.Category
-                .Where(c => c.ValidFlag &&
-                    EF.Functions.ILike(c.Name, pattern, LikeEscapeChar))
-                .OrderByDescending(c => EF.Functions.TrigramsSimilarity(c.Name, term))
-                .Take(limit)
-                .AsNoTracking()
-                .Select(c => new
-                {
-                    c.Id,
-                    c.Name,
-                    NameSimilarity = EF.Functions.TrigramsSimilarity(c.Name, term),
-                })
-                .ToListAsync(ct);
+            IEnumerable<ScoredSearchResult> categoryScored = Enumerable.Empty<ScoredSearchResult>();
+            if (Want(TypeCategory))
+            {
+                var categoryRows = await db.Category
+                    .Where(c => c.ValidFlag &&
+                        EF.Functions.ILike(c.Name, pattern, LikeEscapeChar))
+                    .OrderByDescending(c => EF.Functions.TrigramsSimilarity(c.Name, term))
+                    .Take(limit)
+                    .AsNoTracking()
+                    .Select(c => new
+                    {
+                        c.Id,
+                        c.Name,
+                        NameSimilarity = EF.Functions.TrigramsSimilarity(c.Name, term),
+                    })
+                    .ToListAsync(ct);
 
-            var categoryScored = categoryRows.Select(row => new ScoredSearchResult(
-                new SearchResultDto(
-                    TypeCategory,
-                    row.Id.ToString(),
-                    row.Name,
-                    null,
-                    $"/notes?categoryId={row.Id}"),
-                row.NameSimilarity,
-                TypeRankCategory));
+                categoryScored = categoryRows.Select(row => new ScoredSearchResult(
+                    new SearchResultDto(
+                        TypeCategory,
+                        row.Id.ToString(),
+                        row.Name,
+                        null,
+                        $"/notes?categoryId={row.Id}"),
+                    row.NameSimilarity,
+                    TypeRankCategory));
+            }
 
             // 7. 快速捕捉（Inbox 收件匣：原始內容）
-            // CaptureItem 為 IUserOwned；沒有標題，故以內容前段作為顯示標題、關鍵字周邊作為片段。
-            // 收件匣位於首頁儀表板，點按導向首頁。
-            var captureRows = await db.CaptureItem
-                .Where(c => c.ValidFlag &&
-                    EF.Functions.ILike(c.RawContent, pattern, LikeEscapeChar))
-                .OrderByDescending(c => EF.Functions.TrigramsSimilarity(c.RawContent, term))
-                .Take(limit)
-                .AsNoTracking()
-                .Select(c => new
-                {
-                    c.Id,
-                    c.RawContent,
-                    ContentSimilarity = EF.Functions.TrigramsSimilarity(c.RawContent, term),
-                })
-                .ToListAsync(ct);
+            IEnumerable<ScoredSearchResult> captureScored = Enumerable.Empty<ScoredSearchResult>();
+            if (Want(TypeCapture))
+            {
+                var captureRows = await db.CaptureItem
+                    .Where(c => c.ValidFlag &&
+                        EF.Functions.ILike(c.RawContent, pattern, LikeEscapeChar))
+                    .OrderByDescending(c => EF.Functions.TrigramsSimilarity(c.RawContent, term))
+                    .Take(limit)
+                    .AsNoTracking()
+                    .Select(c => new
+                    {
+                        c.Id,
+                        c.RawContent,
+                        ContentSimilarity = EF.Functions.TrigramsSimilarity(c.RawContent, term),
+                    })
+                    .ToListAsync(ct);
 
-            var captureScored = captureRows.Select(row => new ScoredSearchResult(
-                new SearchResultDto(
-                    TypeCapture,
-                    row.Id.ToString(),
-                    BuildCaptureTitle(row.RawContent),
-                    ExtractSnippet(row.RawContent, keywordLower, SnippetMaxLength),
-                    "/"),
-                // 快速捕捉只有內容一個文字欄位，相關性直接採內容相似度（不再打折）。
-                row.ContentSimilarity,
-                TypeRankCapture));
+                captureScored = captureRows.Select(row => new ScoredSearchResult(
+                    new SearchResultDto(
+                        TypeCapture,
+                        row.Id.ToString(),
+                        BuildCaptureTitle(row.RawContent),
+                        ExtractSnippet(row.RawContent, keywordLower, SnippetMaxLength),
+                        "/"),
+                    // 快速捕捉只有內容一個文字欄位，相關性直接採內容相似度（不再打折）。
+                    row.ContentSimilarity,
+                    TypeRankCapture));
+            }
 
-            // 8. 跨類型合併：依相關性分數由高到低排序；分數相同時以類型優先序（TypeRank）穩定收斂。
+            // 8. 筆記浮層 — T 文字框（overlay-text）
+            // 需 Join Note 取 Slug（組 URL）並確保筆記未軟刪；NoteOverlayItem 為 IUserOwned，
+            // 靠全域過濾＋明確 UserId 過濾雙保險。Text 為 null 者以 WHERE 排除（避免 similarity(NULL) 讀取問題）。
+            IEnumerable<ScoredSearchResult> overlayTextScored = Enumerable.Empty<ScoredSearchResult>();
+            if (Want(TypeOverlayText))
+            {
+                var textRows = await (
+                    from o in db.NoteOverlayItem
+                    join n in db.Note on o.NoteId equals n.Id
+                    where o.ValidFlag
+                        && o.UserId == currentUser.UserId
+                        && o.Kind == OverlayKindText
+                        && n.ValidFlag
+                        && o.Text != null
+                        && EF.Functions.ILike(o.Text, pattern, LikeEscapeChar)
+                    select new
+                    {
+                        o.Id,
+                        o.Text,
+                        n.Slug,
+                        TextSimilarity = EF.Functions.TrigramsSimilarity(o.Text!, term),
+                    })
+                    .AsNoTracking()
+                    .ToListAsync(ct);
+
+                overlayTextScored = textRows
+                    .Select(row => new ScoredSearchResult(
+                        new SearchResultDto(
+                            TypeOverlayText,
+                            row.Id.ToString(),
+                            NoteQuestionHelpers.DeriveOverlayTitle(OverlayKindText, row.Text, null, OverlayEmptyTitle),
+                            ExtractSnippet(row.Text ?? string.Empty, keywordLower, SnippetMaxLength),
+                            $"/notes/{row.Slug}?overlay={row.Id}"),
+                        row.TextSimilarity,
+                        TypeRankOverlayText))
+                    .OrderByDescending(scored => scored.Relevance)
+                    .Take(limit);
+            }
+
+            // 9. 筆記浮層 — 便利貼（overlay-sticky）
+            // 標題存於 DataJson.title；為求簡潔，DataJson 以「整欄 ILIKE」比對（極少數 JSON 雜訊誤中可接受，
+            // 不在 SQL 端解析 JSON）。Text／DataJson 以 COALESCE 成空字串避免 NULL 造成的比對/相似度問題。
+            IEnumerable<ScoredSearchResult> overlayStickyScored = Enumerable.Empty<ScoredSearchResult>();
+            if (Want(TypeOverlaySticky))
+            {
+                var stickyRows = await (
+                    from o in db.NoteOverlayItem
+                    join n in db.Note on o.NoteId equals n.Id
+                    where o.ValidFlag
+                        && o.UserId == currentUser.UserId
+                        && o.Kind == OverlayKindSticky
+                        && n.ValidFlag
+                        && (EF.Functions.ILike(o.Text ?? string.Empty, pattern, LikeEscapeChar)
+                            || EF.Functions.ILike(o.DataJson ?? string.Empty, pattern, LikeEscapeChar))
+                    select new
+                    {
+                        o.Id,
+                        o.Text,
+                        o.DataJson,
+                        n.Slug,
+                        TextSimilarity = EF.Functions.TrigramsSimilarity(o.Text ?? string.Empty, term),
+                        DataSimilarity = EF.Functions.TrigramsSimilarity(o.DataJson ?? string.Empty, term),
+                    })
+                    .AsNoTracking()
+                    .ToListAsync(ct);
+
+                overlayStickyScored = stickyRows
+                    .Select(row => new ScoredSearchResult(
+                        new SearchResultDto(
+                            TypeOverlaySticky,
+                            row.Id.ToString(),
+                            NoteQuestionHelpers.DeriveOverlayTitle(OverlayKindSticky, row.Text, row.DataJson, OverlayEmptyTitle),
+                            ExtractSnippet(row.Text ?? string.Empty, keywordLower, SnippetMaxLength),
+                            $"/notes/{row.Slug}?overlay={row.Id}"),
+                        // 相關性取「文字相似度」與「DataJson（含標題）相似度」較大者。
+                        Math.Max(row.TextSimilarity, row.DataSimilarity),
+                        TypeRankOverlaySticky))
+                    .OrderByDescending(scored => scored.Relevance)
+                    .Take(limit);
+            }
+
+            // 10. 跨類型合併：依相關性分數由高到低排序；分數相同時以類型優先序（TypeRank）穩定收斂。
             var finalResults = noteScored
                 .Concat(taskScored)
                 .Concat(canvasScored)
@@ -307,6 +442,8 @@ public static class SearchEndpoints
                 .Concat(tagScored)
                 .Concat(categoryScored)
                 .Concat(captureScored)
+                .Concat(overlayTextScored)
+                .Concat(overlayStickyScored)
                 .OrderByDescending(scored => scored.Relevance)
                 .ThenBy(scored => scored.TypeRank)
                 .Take(limit)
@@ -327,6 +464,37 @@ public static class SearchEndpoints
     private const string TypeTag = "tag";
     private const string TypeCategory = "category";
     private const string TypeCapture = "capture";
+    private const string TypeOverlayText = "overlay-text";
+    private const string TypeOverlaySticky = "overlay-sticky";
+
+    /// <summary>
+    /// types 篩選專用的「筆記標題／內文」子鍵（不是結果 Type；結果 Type 一律為 "note"）。
+    /// </summary>
+    private const string TypeFilterNoteTitle = "note-title";
+    private const string TypeFilterNoteContent = "note-content";
+
+    /// <summary>
+    /// 浮層元件型別字串（與 <see cref="Domain.Entities.NoteOverlayItem.Kind"/> 一致）。
+    /// </summary>
+    private const string OverlayKindText = "text";
+    private const string OverlayKindSticky = "sticky";
+
+    /// <summary>
+    /// types 參數所有合法值集合（大小寫不敏感）；不在此集合內的值一律忽略。
+    /// </summary>
+    private static readonly HashSet<string> ValidTypeFilters = new(StringComparer.OrdinalIgnoreCase)
+    {
+        TypeFilterNoteTitle,
+        TypeFilterNoteContent,
+        TypeTask,
+        TypeNode,
+        TypeCanvas,
+        TypeTag,
+        TypeCategory,
+        TypeCapture,
+        TypeOverlayText,
+        TypeOverlaySticky,
+    };
 
     /// <summary>
     /// 類型優先序：相關性分數相同時的穩定次序（數字越小越前面）。
@@ -338,6 +506,8 @@ public static class SearchEndpoints
     private const int TypeRankTag = 4;
     private const int TypeRankCategory = 5;
     private const int TypeRankCapture = 6;
+    private const int TypeRankOverlayText = 7;
+    private const int TypeRankOverlaySticky = 8;
 
     /// <summary>
     /// 內文命中的相關性權重（相對於標題／名稱命中）。
@@ -354,6 +524,39 @@ public static class SearchEndpoints
     /// 快速捕捉顯示標題的最大字元長度（快速捕捉本身沒有標題，取內容前段當標題）。
     /// </summary>
     private const int CaptureTitleMaxLength = 40;
+
+    /// <summary>
+    /// 浮層元件完全沒有可用文字時的預留標題。
+    /// 標題推導（含截斷長度）與問題清單共用 <see cref="NoteQuestionHelpers.DeriveOverlayTitle"/>（DRY）。
+    /// </summary>
+    private const string OverlayEmptyTitle = "(無文字)";
+
+    /// <summary>
+    /// 解析 types CSV 篩選字串為合法值集合；未知值一律忽略。
+    /// 回傳空集合代表「不篩選」（涵蓋未帶、空字串、全部為未知值三種情況）。
+    /// </summary>
+    /// <param name="types">原始 types 參數（CSV，可為 null）。</param>
+    /// <returns>合法型別鍵集合（大小寫不敏感比對）。</returns>
+    private static HashSet<string> ParseTypeFilter(string? types)
+    {
+        var selected = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(types))
+        {
+            return selected;
+        }
+
+        foreach (var raw in types.Split(
+            ',',
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (ValidTypeFilters.Contains(raw))
+            {
+                selected.Add(raw);
+            }
+        }
+
+        return selected;
+    }
 
     /// <summary>
     /// 合併「標題／名稱相似度」與「內文相似度」為單一相關性分數。

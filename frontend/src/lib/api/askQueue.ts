@@ -17,7 +17,7 @@ import { fetchJson } from "./client";
  * 因此 JSON 中是 camelCase，但 TypeScript interface 仍使用 camelCase 以符合習慣。
  */
 /** AI 處理佇列的工作種類。 */
-export type AskQueueKind = 'floatingnote' | 'node' | 'beautify' | 'reformat' | 'refine';
+export type AskQueueKind = 'floatingnote' | 'node' | 'beautify' | 'reformat' | 'refine' | 'notequestion';
 
 /** AI 處理佇列的狀態。 */
 export type AskQueueStatus = 'Running' | 'Completed' | 'Failed';

@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import { GlobalSearch } from "./GlobalSearch";
 import { AiProcessingMenu } from "./AiProcessingMenu";
 import { confirmNavigation } from "@/lib/navigationGuard";
+import { getNotesNavTarget } from "@/lib/notesNavTarget";
 import { useCanvasToolbar } from "./CanvasToolbarContext";
 import {
   toggleMobileNav,
@@ -48,16 +49,9 @@ export function Header({ user }: { user: CurrentUser | null }) {
     // 修飾鍵 / 非左鍵（開新分頁、另開視窗等）交給瀏覽器預設行為，不攔。
     if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
     // 一律自行導頁：先算目的地（記得的最後一篇；否則清單），再過守門確認。
+    // 目的地計算抽到 getNotesNavTarget() 與快捷鍵 N 共用（DRY）。
     e.preventDefault();
-    let target = "/notes";
-    try {
-      const slug = localStorage.getItem("zonwiki:last-note-slug");
-      if (slug) {
-        target = `/notes/${slug.split("/").map(encodeURIComponent).join("/")}`;
-      }
-    } catch {
-      /* localStorage 不可用 → 進清單 */
-    }
+    const target = getNotesNavTarget();
     void confirmNavigation().then((canLeave) => {
       if (canLeave) router.push(target);
     });

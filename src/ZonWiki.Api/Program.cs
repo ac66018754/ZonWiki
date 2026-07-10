@@ -248,6 +248,9 @@ app.MapCanvasSystemEndpoints();
 // 全站搜尋端點（I6 - 納入筆記、任務、畫布、節點）
 app.MapSearchEndpoints();
 
+// 問題清單端點（列出被標記為「問題」的浮層元件，支援依分類含子孫過濾）
+app.MapQuestionEndpoints();
+
 // 通用 AI 提問（供開問啦畫布便利貼「繼續問」等無筆記脈絡場景）
 app.MapAiEndpoints();
 

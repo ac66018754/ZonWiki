@@ -32,6 +32,10 @@ import { DrawingTextBox, parseTextExtra, type TextExtra } from '@/components/dra
 import { DrawingToolbar } from '@/components/drawing/DrawingToolbar';
 import { TextPropsPanel } from '@/components/drawing/TextPropsPanel';
 import { computeAnchorAt, locateAnchor, isOverlayAnchor, type OverlayAnchor } from '@/lib/overlayAnchor';
+import { NoteQuestionListPanel } from '@/components/questions/NoteQuestionListPanel';
+import { QuestionAnswerPopup } from '@/components/questions/QuestionAnswerPopup';
+import { deriveQuestionTitle } from '@/lib/questionTitle';
+import { scrollToOverlayItem } from '@/lib/scrollToOverlayItem';
 
 /**
  * 事件：框選提問的答案要放進「就在原處旁邊」的便利貼（由 NoteMarksLayer 派發、NoteOverlay 接收建立）。
@@ -74,6 +78,15 @@ interface Props {
   onToggleToc?: () => void;
   /** 章節目錄表目前是否開啟（開啟時工具列目錄鈕加深底色，標示 On）。 */
   tocOpen?: boolean;
+  /**
+   * 「問題清單」面板是否開啟（由筆記頁工具列的「❓ 問題清單」鈕控制）。
+   * 面板本身由本元件渲染（因需存取 overlay items 與回答狀態），開關狀態上提給頁面。
+   */
+  questionPanelOpen?: boolean;
+  /** 問題清單面板要求關閉時回呼（面板 ✕／點列定位後同步頁面的開關狀態）。 */
+  onQuestionPanelOpenChange?: (open: boolean) => void;
+  /** 本篇問題項目變動時回呼（供頁面工具列鈕顯示問題數）。 */
+  onQuestionsChange?: (questions: NoteOverlayItem[]) => void;
 }
 
 /**
@@ -88,9 +101,19 @@ interface Props {
  * 浮層容器 pointer-events:none；繪圖中時 SVG 捕捉指標、便利貼暫不可拖；未繪圖時指標穿透、便利貼可互動，
  * 故不影響底下文字選取（#5 標註）。
  */
-export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Props) {
+export function NoteOverlay({
+  noteId,
+  containerRef,
+  onToggleToc,
+  tocOpen,
+  questionPanelOpen,
+  onQuestionPanelOpenChange,
+  onQuestionsChange,
+}: Props) {
   const confirm = useConfirm();
   const [items, setItems] = useState<NoteOverlayItem[]>([]);
+  // 目前開著答題彈窗的問題 item id 清單（可多開；只存 React state，刷新即消失）。
+  const [openAnswerItemIds, setOpenAnswerItemIds] = useState<string[]>([]);
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [mounted, setMounted] = useState(false);
   // 疊在內文上的浮層容器（position:absolute; inset:0）——非釘住便利貼/圖片板的絕對定位原點。
@@ -264,6 +287,55 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
     patchLocal(item.id, { zIndex: z });
     persist(item.id, { zIndex: z });
   };
+
+  // ── 問題功能 ──
+  // 本篇被標記為問題的浮層元件（僅 sticky / text；建立時間新→舊）。
+  const questionItems = items
+    .filter((i) => i.isQuestion && (i.kind === 'sticky' || i.kind === 'text'));
+
+  // 問題項目變動時通知頁面（供工具列「❓ 問題清單 (N)」顯示數量）。用 JSON key 避免無意義的重複回呼。
+  const questionsSignature = questionItems
+    .map((i) => `${i.id}:${i.isQuestion ? 1 : 0}:${(i.questionAnswer ?? '') !== '' ? 1 : 0}`)
+    .join('|');
+  useEffect(() => {
+    onQuestionsChange?.(questionItems);
+    // 僅在「問題集合／已答狀態」真的變動時回呼（questionsSignature 為穩定的內容指紋）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [questionsSignature]);
+
+  /** 切換「設為問題／移除問題」（樂觀更新 + 持久化）。 */
+  const toggleQuestion = (item: NoteOverlayItem) => {
+    const next = !item.isQuestion;
+    patchLocal(item.id, { isQuestion: next });
+    persist(item.id, { isQuestion: next });
+  };
+
+  /** 開啟某問題的答題彈窗（同一 item 已開則不重開）。 */
+  const openAnswerPopup = (itemId: string) => {
+    setOpenAnswerItemIds((prev) => (prev.includes(itemId) ? prev : [...prev, itemId]));
+  };
+
+  /** 關閉某問題的答題彈窗。 */
+  const closeAnswerPopup = (itemId: string) => {
+    setOpenAnswerItemIds((prev) => prev.filter((id) => id !== itemId));
+  };
+
+  /** 答題彈窗儲存成功：同步本地 item 的回答（彈窗已自行持久化，此處只更新本地狀態）。 */
+  const onAnswerSaved = (itemId: string, answer: string) => {
+    patchLocal(itemId, { questionAnswer: answer });
+  };
+
+  // scrollToOverlayItem 會回傳清理函式（取消尚未完成的重試與高亮計時器）。保存最近一次，
+  // 下次定位前先執行上一次的清理、元件卸載時也清理，避免遺留計時器（對抗式復審 MEDIUM）。
+  const locateCleanupRef = useRef<(() => void) | null>(null);
+  const handleLocateQuestion = useCallback((itemId: string) => {
+    onQuestionPanelOpenChange?.(false);
+    locateCleanupRef.current?.();
+    locateCleanupRef.current = scrollToOverlayItem(itemId);
+  }, [onQuestionPanelOpenChange]);
+  useEffect(() => () => {
+    locateCleanupRef.current?.();
+  }, []);
 
   // ── 新增便利貼 / 輪播 ──
   // 新元件預設「跟著內文捲動」（pinned=false、相對內文座標），出現在內文左上、稍微階梯錯開避免完全重疊；
@@ -1328,6 +1400,7 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
         }}
         onPointerDown={() => bringToFront(item)}
         data-testid={`overlay-item-${item.kind}`}
+        data-overlay-id={item.id}
       >
         <div
           className="overlay-item-chrome"
@@ -1375,6 +1448,22 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
           {/* 可拖曳的留白（標題與按鈕之間）：讓人好抓著拖曳整張便利貼。 */}
           {editingTitleId !== item.id && (
             <span aria-hidden="true" style={{ flex: 1, alignSelf: 'stretch', cursor: 'move' }} />
+          )}
+          {/* ❓ 設為問題 / 移除問題（僅便利貼；標記後會出現在「問題清單」中） */}
+          {isSticky && (
+            <button
+              onClick={() => toggleQuestion(item)}
+              onPointerDown={(e) => e.stopPropagation()}
+              title={item.isQuestion ? '移除問題標記' : '設為問題'}
+              data-testid="overlay-item-question"
+              style={{
+                ...chromeBtnStyle,
+                opacity: item.isQuestion ? 1 : 0.5,
+                color: item.isQuestion ? 'var(--action-primary-bg, #2563eb)' : 'var(--text-tertiary)',
+              }}
+            >
+              ❓
+            </button>
           )}
           {/* 📌 釘住浮動 / 跟著內文 切換（便利貼、圖片板皆可） */}
           <button
@@ -1529,6 +1618,7 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
           <DrawingTextBox
             key={item.id}
             item={item}
+            overlayId={item.id}
             zoomRef={noteZoomRef}
             toFlow={toFlow}
             selected={selectedTextId === item.id}
@@ -1540,6 +1630,8 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
             onChange={(patch) => patchLocal(item.id, patch)}
             onCommit={(patch) => commitTextItemPatch(item.id, patch)}
             onAdjustWheel={(deltaY) => adjustTextByWheel(item.id, deltaY)}
+            isQuestion={item.isQuestion}
+            onToggleQuestion={() => toggleQuestion(item)}
           />
         ))}
       </div>
@@ -1619,6 +1711,36 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
         />,
         document.body,
       )}
+
+      {/* 問題清單面板（由本元件渲染，因需存取 overlay items 與回答狀態；開關由頁面工具列鈕控制）。 */}
+      {mounted && questionPanelOpen && (
+        <NoteQuestionListPanel
+          questions={questionItems}
+          onLocate={handleLocateQuestion}
+          onAnswer={(item) => openAnswerPopup(item.id)}
+          onClose={() => onQuestionPanelOpenChange?.(false)}
+        />
+      )}
+
+      {/* 答題彈窗（可多開；狀態只存 React、刷新即消失）。 */}
+      {mounted && openAnswerItemIds.map((itemId, index) => {
+        const item = items.find((i) => i.id === itemId);
+        if (!item) return null;
+        return (
+          <QuestionAnswerPopup
+            key={itemId}
+            itemId={item.id}
+            noteId={noteId}
+            kind={item.kind === 'text' ? 'text' : 'sticky'}
+            questionTitle={deriveQuestionTitle(item.kind, item.text, item.dataJson)}
+            questionText={item.text ?? ''}
+            initialAnswer={item.questionAnswer ?? ''}
+            offsetIndex={index}
+            onClose={() => closeAnswerPopup(itemId)}
+            onSaved={(answer) => onAnswerSaved(itemId, answer)}
+          />
+        );
+      })}
     </>
   );
 }

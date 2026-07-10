@@ -839,6 +839,18 @@ html[data-route="login"] .main-content {
   }
 }
 
+/* 從搜尋結果 / 問題清單以 ?overlay= 跳轉到浮層元件時，短暫脈衝一圈琥珀色外框以標示位置。
+   用琥珀色（非藍）確保暖紙/明亮/暗色/夜間四主題下皆有足夠對比、且不與選取態藍框混淆。 */
+@keyframes zonwiki-overlay-locate-flash {
+  0%,
+  20% {
+    outline-color: rgba(245, 158, 11, 0.95);
+  }
+  100% {
+    outline-color: rgba(245, 158, 11, 0);
+  }
+}
+
 /* 登入錯誤提示框：出現時輕微抖動一下以吸引注意（醒目的紅框已在 inline style）。 */
 @keyframes zonwiki-error-shake {
   0%,

@@ -695,15 +695,25 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
   // 目前正在閱讀的筆記路徑（用來在樹中高亮該「檔案」）。slug 可能含「/」，路徑直接比對即可。
   const currentNotePath = decodeURIComponent(pathname);
 
-  // 「全部」清除篩選列（分類/標籤共用）
+  // 「全部」也是一個分類篩選：只有在「筆記清單的全部頁」才視為選中並突出——
+  // 即 pathname 精確等於 /notes 且無 categoryId/tagId 篩選。
+  // 為何要加 pathname 精確匹配：讀單篇筆記（/notes/{slug}）時網址同樣沒有 query，
+  // noFilter 會誤為 true；但那時該亮的是筆記所屬分類的 📍，不該讓「全部」跟著亮。
+  const isAllActive = pathname === "/notes" && noFilter;
+
+  // 「全部」清除篩選列（分類/標籤共用）。選中時比照分類列 highlighted（CategoryNode 的
+  // isCurrentNote）：粗體＋強調字色＋背景膠囊（--action-secondary-* 為既有語意 token，
+  // 四主題皆已驗過對比）。未選中維持次要字色、無背景。
   const allRow = (
     <Link
       href="/notes"
       prefetch
       className="nt-all"
+      aria-current={isAllActive ? "page" : undefined}
       style={{
-        fontWeight: noFilter ? 600 : 400,
-        color: noFilter ? "var(--action-secondary-fg)" : "var(--text-secondary)",
+        fontWeight: isAllActive ? 600 : 400,
+        color: isAllActive ? "var(--action-secondary-fg)" : "var(--text-secondary)",
+        background: isAllActive ? "var(--action-secondary-bg)" : undefined,
       }}
     >
       全部
