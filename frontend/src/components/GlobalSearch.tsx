@@ -338,10 +338,9 @@ export function GlobalSearch() {
               border: "1px solid var(--border-default)",
               borderRadius: "var(--radius-sm)",
               padding: "0 6px",
-              maxWidth: "220px",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
+              // 完整顯示分類路徑（不截斷）；過長時在框內換行，不外溢。
+              whiteSpace: "normal",
+              wordBreak: "break-word",
             }}
           >
             {chip.text}
