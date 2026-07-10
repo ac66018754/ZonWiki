@@ -4,6 +4,7 @@ import { useMemo, useRef, type ComponentPropsWithoutRef, type ReactElement, type
 import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkHtmlLineBreak from "@/lib/remarkHtmlLineBreak";
+import remarkMarkFenced from "@/lib/remarkMarkFenced";
 import { parseToggleSegments } from "@/lib/toggleBlocks";
 import { toAbsoluteAttachmentUrl } from "@/lib/attachmentUrl";
 import { toggleTaskCheckbox } from "@/lib/markdownChecklist";
@@ -36,12 +37,16 @@ interface InteractiveContext {
 }
 
 /** 從 react-markdown 傳給 `pre` 的 props 取出內部 `<code>` 的原始文字與 className。 */
-function extractCode(children: ReactNode): { text: string; className?: string } {
-  const codeEl = children as ReactElement<{ className?: string; children?: ReactNode }> | undefined;
+function extractCode(children: ReactNode): { text: string; className?: string; fenced: boolean } {
+  const codeEl = children as
+    | ReactElement<{ className?: string; children?: ReactNode; "data-fenced"?: string }>
+    | undefined;
   const className = codeEl?.props?.className;
+  // data-fenced 由 remarkMarkFenced 標在圍欄程式碼區塊的 <code> 上（縮排碼沒有）。
+  const fenced = codeEl?.props?.["data-fenced"] !== undefined;
   const raw = codeEl?.props?.children;
   const text = typeof raw === "string" ? raw : Array.isArray(raw) ? raw.join("") : String(raw ?? "");
-  return { text: text.replace(/\n$/, ""), className: className ?? undefined };
+  return { text: text.replace(/\n$/, ""), className: className ?? undefined, fenced };
 }
 
 /**
@@ -82,20 +87,24 @@ export function ToggleAwareMarkdown({
   // 程式碼區塊：一律用 CodeBlock 渲染（語法上色＋標題列）；互動模式（有 ctx）時檔名/語言可就地編輯，
   // 變更時查 DOM 算出「這是第幾個程式碼區塊」再回寫圍欄（StrictMode/concurrent 皆對齊）。
   const renderPre = (props: ComponentPropsWithoutRef<"pre"> & { node?: unknown }) => {
-    const { text, className } = extractCode(props.children);
+    const { text, className, fenced } = extractCode(props.children);
     const { lang, filename } = parseCodeMeta(className);
+    // 只有「圍欄程式碼區塊」可就地編輯，且以「圍欄順序」對應原文（querySelector 只挑 data-fenced）——
+    // 與後端 data-fence-index、setCodeFenceMeta（只數圍欄碼）一致；含縮排碼時也不會改到別的區塊。
+    const editable = !!ctx && fenced;
     return (
       <CodeBlock
         code={text}
         lang={lang}
         filename={filename}
-        interactive={!!ctx}
+        interactive={editable}
+        fenced={fenced}
         onMetaChange={
-          ctx
+          editable && ctx
             ? (newLang, newFile, self) => {
                 const container = ctx.rootRef.current;
                 if (!container || !self) return;
-                const blocks = Array.from(container.querySelectorAll(".code-block"));
+                const blocks = Array.from(container.querySelectorAll(".code-block[data-fenced]"));
                 const idx = blocks.indexOf(self);
                 if (idx >= 0) ctx.onRoot(setCodeFenceMeta(ctx.root, idx, newLang, newFile));
               }
@@ -158,7 +167,7 @@ export function ToggleAwareMarkdown({
     return (
       <ReactMarkdown
         key={key}
-        remarkPlugins={[remarkGfm, remarkHtmlLineBreak]}
+        remarkPlugins={[remarkGfm, remarkHtmlLineBreak, remarkMarkFenced]}
         components={components}
         urlTransform={attachmentUrlTransform}
       >

@@ -18,6 +18,7 @@ export function CodeBlock({
   lang,
   filename,
   interactive = false,
+  fenced = false,
   onMetaChange,
 }: {
   /** 程式碼原文（不含尾端多餘換行）。 */
@@ -28,6 +29,8 @@ export function CodeBlock({
   filename: string;
   /** 是否可就地編輯檔名／語言。 */
   interactive?: boolean;
+  /** 是否為圍欄程式碼區塊（供上層以「圍欄順序」精準對應原文；縮排碼為 false、維持唯讀）。 */
+  fenced?: boolean;
   /** 檔名／語言變更時回寫（lang, filename, 本區塊根 DOM）。 */
   onMetaChange?: (lang: string, filename: string, self: HTMLElement | null) => void;
 }) {
@@ -53,7 +56,7 @@ export function CodeBlock({
   const langValue = canonicalLangValue(lang);
 
   return (
-    <div className="code-block" ref={selfRef}>
+    <div className="code-block" ref={selfRef} {...(fenced ? { 'data-fenced': '' } : {})}>
       <div className="code-block-header">
         {interactive ? (
           <input

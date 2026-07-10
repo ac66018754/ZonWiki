@@ -5,6 +5,18 @@
 
 ---
 
+## 2026-07-10 ｜查看模式就地改程式碼區塊語言/檔名，用「後端圍欄來源行號」定位（feature/table-reading-ux）
+
+- **背景**：閱讀檢視（查看模式）的程式碼區塊標題列原為唯讀；使用者要能就地改語言/檔名、隨改隨存 DB，不必進編輯模式。難點是「使用者在 DOM 上點的那個區塊」要可靠對應到「原文 markdown 的哪一個圍欄」才能改寫圍欄資訊字串（```lang:filename）。
+- **考慮過的選項**：①前端逐行正則掃 markdown 數「第 N 個圍欄」、DOM 也數第 N 個 `.code-block`，兩邊對齊（v1 採用，被對抗復審打掉）；②後端 Markdig 給每個圍欄程式碼區塊標來源行號 `data-fence-line`、前端據此直接改該行（採用）。
+- **最終決定**：採 **②後端行號**。`RenderToHtml` 對每個 `FencedCodeBlock` 標 `data-fence-line`＝Markdig 的來源起始行號（`fenced.Line + 1`）；前端 `enhanceReadingCodeBlocks` 讀它、`setFenceMetaAtLine` 直接改寫該行。縮排程式碼區塊不是 `FencedCodeBlock`、不標行號 → 維持唯讀。
+- **理由與取捨**：選項①有 CRITICAL 資料損毀——**前端逐行正則拿不到 CommonMark 的「容器縮排基準」**：頂層縮排 ≥4 空白的字面 ``` 是縮排碼（非圍欄），但清單/引用內縮排 ≥4 的 ``` 卻是合法圍欄，兩者絕對縮排相同、無法用逐行正則區分。這讓「清單縮排續行段落」「頂層縮排展示字面 markdown 圍欄」等內容的前端計數與後端（Markdig 依 CommonMark）分歧，改到別的區塊並存回 DB。改由後端（有 AST、判定權威）吐行號徹底根治。`NormalizeToggleFences` 只改 `:::` 冒號數、不增減行，故 `data-fence-line` 與原始 `contentRaw` 行號一致（真後端反射實測 13 案例：toggle/巢狀/blockquote/list/CRLF 全對）。
+- **健壯性**：跨編輯彈窗/編輯頁保存用 draft 版本標記（記 `appliedTo`/`result`）避免過期草稿覆寫別路徑的整篇編輯（資料遺失）；即存重注入後由 observer 重套 toggle 展開狀態與捲動；圍欄資訊字串剝反引號/換行（含反引號會提前關閉 ``` 圍欄、吃掉後續內容）。
+- **已知取捨（LOW，非 bug）**：編輯預覽（非查看模式）仍用「前端逐行過度計數 + `remarkMarkFenced` 過度計數」的自洽機制——對「頂層縮排展示字面圍欄」會誤顯示可編輯下拉，但兩端同步過度計數、改它只動使用者點的那行、不影響別區塊資料。閱讀檢視該區塊仍正確唯讀。完整修復需編輯預覽改用 segment 位移的來源行號定位，另案。
+- **教訓**：DOM 元素 ↔ markdown 位置的對應，別用「逐行正則近似 CommonMark」——縮排碼/容器縮排靠逐行拿不到基準。要嘛用真 parser（後端 Markdig／前端 mdast position），要嘛讓權威端（後端 AST）吐位置給另一端。
+
+---
+
 ## 2026-07-10 ｜筆記「問題功能」＋搜尋涵蓋浮層（feature/note-questions-and-search）
 
 - **背景**：使用者要能把便利貼／T 文字框標記為「問題」，集中在清單裡檢視、逐題作答（手寫或請 AI 回答），並在分類頁看到該分類（含所有子孫分類）的所有問題；同時搜尋要能搜到浮層文字並可依類型篩選。
