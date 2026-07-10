@@ -292,10 +292,12 @@ GCP Compute Engine VM（e2-micro, Always Free）
   - **AI 模型機制對齊開問啦原版（差別只在存 DB）**：模型清單來源為設定檔 `src/ZonWiki.Api/ai-models.json`（含金鑰、已 gitignore；範本為 committed 的 `ai-models.example.json`，金鑰用 `${ENV}` 佔位），格式與原版相同。`ListModels` 載入時把設定檔模型寫進 DB（金鑰用 Data Protection 加密存 `AiModel_ApiKeyEncrypted`）；之後 DB 為真相，可在「設定」頁編輯。節點下拉只顯示 enabled 且 Kind=chat 的模型，value=模型 Key。
   - **共用預設模型（系統擁有、設定頁隱藏、金鑰只存一份）**：設定檔中標記 `"IsDefault": true` 的模型（目前為 `banana-gemini-lite`／Gemini Flash Lite）會以「系統身分」(`AiProviderFactory.SharedModelUserId`) 植入**一份**到 DB，金鑰加密。它不屬於任何使用者 → **不會出現在任何人的「設定頁(AI 模型管理)」或節點下拉具名清單**（避免金鑰外洩），只作為節點的「預設」被使用（`ResolveAsync`：節點未選模型時即走它）。**所有人免設定即可用預設**；想用其它模型再自行於設定頁新增（帶自己的金鑰）。種子三規則：IsDefault+金鑰→系統共用一份；無金鑰（Claude CLI）→ 補到使用者名下；有金鑰但非預設→不植入（不把擁有者金鑰複製給每位使用者）。
 
-### 6. 全域搜尋（Header）
+### 6. 全域搜尋（Header）＋ 獨立進階搜尋頁（/search）
 - 快速搜尋欄（Header 固定）
 - 支援全文搜尋筆記（標題／內文）、任務、Canvas 畫布與節點、標籤、分類、快速捕捉，以及**筆記浮層的 T 文字框與便利貼**（`overlay-text`／`overlay-sticky`；便利貼含標題）。點浮層結果會開該筆記並 `?overlay=` 捲動定位到該元件。
+- **結果脈絡（區分同名筆記）**：下拉的筆記結果會顯示所屬**分類完整路徑**（📁 學習 / 併發）與**標籤**（🏷 dotnet），浮層結果顯示所屬筆記標題（於《…》）——解決「多篇同名 README 分不清是哪一篇」。後端 `SearchResultDto` 對筆記帶 `categories`/`tags`、對浮層帶 `parentTitle`、所有型別帶 `updatedAt`（皆為選擇性欄位）。
 - **類型篩選 chips**：全部／筆記標題／筆記內文／任務／T(文字)／便利貼／開問啦節點（多選；後端 `?types=` CSV，未帶＝全部）。
+- **獨立進階搜尋頁 `/search`**（下拉底部「🔎 進階搜尋『…』→」或 Header 搜尋「進階搜尋」進入）：大搜尋框＋更完整的篩選——全 10 種型別 chip、**分類下拉（樹狀縮排，含子孫分類）**、**標籤多選**、**排序（相關性／最近更新）**、關鍵字高亮、「載入更多」（`limit` 遞增至上限 500）。所有條件同步進 URL（可分享、重整還原）。後端新參數：`categoryId`（含**所有子孫分類**）、`tags`（CSV，任一命中）、`sort`（relevance｜updated）；帶 `categoryId`/`tags` 時**只回筆記**，**空關鍵字＋分類/標籤＝瀏覽該範圍全部筆記**（依更新時間排序）。
 - 關鍵字高亮；便利貼標題存 `DataJson.title`，故搜尋以整欄 ILIKE 比對（顯示標題時於後端安全解析 JSON）。
 
 ### 7. 系統設定（Account & System）
@@ -313,6 +315,9 @@ GCP Compute Engine VM（e2-micro, Always Free）
   - **顯示時區（#7）**：可選擇全站時間顯示所用的時區（以 UTC 偏移標示的下拉，例如 `UTC+00`／`UTC+08`，或「跟隨裝置」）。資料一律存 UTC，僅顯示時換算；改成例如 UTC+0 後，**全站所有時間顯示**（筆記/任務/行事曆/活動紀錄/建立時間…）都會跟著變。儲存後整頁重新載入以即時套用。**關鍵修正**：`GET /api/me` 現在會從 DB 回傳 `timeZone`（與 `displayMode`）——先前未回傳，導致前端各處的 `user.timeZone` 永遠落到預設台北、使用者設定的時區從未生效。
   - **統計數據 `/profile/stats`**：筆記／任務／畫布／節點／常用連結／快速記錄／標籤／分類筆數。
   - **活動紀錄 `/profile/activity`**：每日活動（近 30 天，依裝置時區歸日）＋**活動明細（近 30 天逐筆操作紀錄）**——列出「對哪個實體做了什麼」（新增／編輯／刪除／還原，標題級，不含完整內容），涵蓋筆記、任務、子任務、開問啦節點、API 金鑰、快速記錄、常用連結、系統提示詞。底層由 EF Core 的 `ActivityLogInterceptor` 在每次 SaveChanges 自動記錄（連 AI 自動建立的節點也會記），寫入 `ActivityLog` 表（依使用者隔離）。
+    - **變更摘要（改了什麼）**：「編輯」項目會顯示**變更內容摘要**（`ActivityLog_Detail`）——短欄位附「標題『舊』→『新』」、長文欄位只列名稱（如「內容」）、分類/標籤異動列出「加入分類『工作』；移出分類『暫存』」。攔截器排除稽核欄、影子屬性（xmin）與衍生欄（ContentHtml/Slug/ContentHash）以免噪音，摘要截斷於 500 字元。
+    - **分類脈絡（區分同名筆記）**：筆記項目會附**目前分類完整路徑**（📁 學習 / 併發），讓多篇同名筆記在明細裡也能分辨是哪一篇。
+    - 分類/標籤異動（`NoteCategory`/`NoteTag`）現在也會被攔截記錄（攔 Added ＋ 軟刪/復活的 ValidFlag 翻轉），依所屬筆記**合併成同一筆** `updated`；「建立即帶分類」只記一筆 `created`（`CreateNoteHandler` 已改為單一原子 SaveChanges）。刪除整個標籤/分類時的連帶關聯移除**不**逐筆記成假活動。
   - **快捷鍵 `/profile/shortcuts`**：分「全域」與「Todo 頁」兩區列出所有快捷動作；點「重新綁定」後按下新鍵即改鍵（Esc 取消），即時偵測按鍵衝突（任兩動作同鍵則禁止儲存），可單項或一鍵全部還原預設。設定**存後端、跨裝置同步**（見下方決策）。
 - **右上角大頭照選單已精簡（#4）**：選單只保留「個人頁面」連結＋「登出」。原本內嵌的「修改密碼」彈窗已移除（與 `/profile` 帳號資訊頁的修改密碼重複，且 `/profile` 那份較完整——多了「確認新密碼」欄位），改由個人頁進行。主題切換維持為標題列獨立按鈕。
 - **後端端點**：`GET/PUT /api/me/profile`、`GET /api/me/stats`、`GET /api/me/activity`、`GET /api/me/activity-log`、`GET/PUT /api/me/settings`（顯示模式／時區／**快捷鍵覆寫 `shortcutsJson`**）、`DELETE /api/me`。

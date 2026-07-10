@@ -603,15 +603,27 @@ public sealed record NoteTagDto(
 /// 全站搜尋結果資料傳輸物件。
 /// 支援搜尋筆記、任務卡片、畫布、節點、標籤、分類、快速捕捉，
 /// 以及筆記浮層的 T 文字框（overlay-text）與便利貼（overlay-sticky）。
+///
+/// 脈絡強化欄位（<see cref="Categories"/> / <see cref="Tags"/> / <see cref="UpdatedAt"/> / <see cref="ParentTitle"/>）
+/// 皆為選擇性，僅在適用的結果型別上填值（例如分類/標籤只對筆記填、所屬筆記標題只對浮層填），
+/// 讓下拉與進階搜尋頁能區分同名筆記、依更新時間排序、標示浮層文字位於哪篇筆記。
 /// </summary>
 /// <param name="Type">結果類型（note / task / canvas / node / tag / category / capture / overlay-text / overlay-sticky）。</param>
 /// <param name="Id">結果識別碼。</param>
 /// <param name="Title">結果標題。</param>
 /// <param name="Snippet">結果內容摘要（搜尋片段、節點開頭部分，可空）。</param>
 /// <param name="Url">結果對應的路由 URL。</param>
+/// <param name="Categories">（僅筆記）所屬分類的完整路徑清單，如 <c>學習 / 併發</c>；無分類為空陣列、非筆記為 null。</param>
+/// <param name="Tags">（僅筆記）標籤名稱清單；無標籤為空陣列、非筆記為 null。</param>
+/// <param name="UpdatedAt">結果實體的更新時間（UTC，供依更新時間排序；可空）。</param>
+/// <param name="ParentTitle">（僅浮層）所屬筆記的標題；非浮層為 null。</param>
 public sealed record SearchResultDto(
     string Type,
     string Id,
     string Title,
     string? Snippet,
-    string Url);
+    string Url,
+    IReadOnlyList<string>? Categories = null,
+    IReadOnlyList<string>? Tags = null,
+    DateTime? UpdatedAt = null,
+    string? ParentTitle = null);
