@@ -1,7 +1,11 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using Markdig;
+using Markdig.Renderers;
+using Markdig.Renderers.Html;
+using Markdig.Syntax;
 
 namespace ZonWiki.Api.Notes;
 
@@ -33,8 +37,31 @@ internal static class NoteContentHelpers
     /// </summary>
     /// <param name="markdown">筆記 Markdown 原文。</param>
     /// <returns>渲染後的 HTML。</returns>
-    public static string RenderToHtml(string markdown) =>
-        Markdown.ToHtml(NormalizeToggleFences(markdown), MarkdownPipeline);
+    public static string RenderToHtml(string markdown)
+    {
+        var document = Markdown.Parse(NormalizeToggleFences(markdown), MarkdownPipeline);
+
+        // 給每個「圍欄程式碼區塊」標上 data-fence-line＝其在原文的「來源起始行號」（1 起算）。
+        // 供查看模式就地改檔名／語言時，直接定位並改寫原文的那一行圍欄——後端 Markdig 依循 CommonMark、
+        // 知道每個圍欄的確切位置（縮排程式碼區塊不是 FencedCodeBlock、不會被標記）。
+        // 為何用「行號」而非「第幾個」：前端逐行重數圍欄拿不到 CommonMark 的容器縮排基準——頂層縮排 ≥4
+        // 空白的字面 ``` 是縮排碼（非圍欄）、但清單／引用內縮排 ≥4 的 ``` 卻是合法圍欄，兩者絕對縮排相同、
+        // 無法用逐行正則區分，會與後端計數分歧而改到別的區塊（跨區塊資料損毀）。改由後端吐行號可根治。
+        // NormalizeToggleFences 只改 ::: 容器行的冒號數、不增減行，故行號與原始 contentRaw 一致。
+        foreach (var fenced in document.Descendants().OfType<FencedCodeBlock>())
+        {
+            fenced.GetAttributes().AddProperty(
+                "data-fence-line",
+                (fenced.Line + 1).ToString(CultureInfo.InvariantCulture));
+        }
+
+        using var writer = new StringWriter();
+        var renderer = new HtmlRenderer(writer);
+        MarkdownPipeline.Setup(renderer);
+        renderer.Render(document);
+        writer.Flush();
+        return writer.ToString();
+    }
 
     /// <summary>
     /// 正規化摺疊區塊的圍欄冒號數：把「同長度 <c>:::</c> 巢狀」重寫成「外層冒號較多、內層較少」的變長圍欄。

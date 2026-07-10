@@ -362,4 +362,68 @@ public sealed class NoteContentHelpersTests
         System.Text.RegularExpressions.Regex.Matches(html, "<br />").Count.Should().Be(2);
         html.Should().NotContain("&lt;br");
     }
+
+    // ---------------------------------------------------------------------
+    // 查看模式就地改程式碼區塊 metadata：後端給每個「圍欄程式碼區塊」標 data-fence-line＝
+    // 其在原文的來源起始行號（1 起算），供前端直接定位並改寫該行圍欄；縮排程式碼區塊不標。
+    // ---------------------------------------------------------------------
+
+    [Fact]
+    public void FencedCodeBlocks_GetSourceLineNumber()
+    {
+        // Arrange：兩個圍欄程式碼區塊（js 在第 1 行、py 在第 5 行）。
+        var markdown = "```js\na();\n```\n\n```py\nb();\n```";
+
+        // Act
+        var html = NoteContentHelpers.RenderToHtml(markdown);
+
+        // Assert：各標其來源行號（1 起算），共兩個。
+        html.Should().Contain("data-fence-line=\"1\"");
+        html.Should().Contain("data-fence-line=\"5\"");
+        System.Text.RegularExpressions.Regex.Matches(html, "data-fence-line=").Count.Should().Be(2);
+    }
+
+    [Fact]
+    public void DataFenceLine_SkipsListIndentedContinuation_C1Regression()
+    {
+        // C1 迴歸守門：清單項下縮排 4 空白的續行段落是「普通段落」（不是縮排程式碼區塊），
+        // 不得被當成圍欄；兩個真正的圍欄在第 5、9 行。
+        var markdown = string.Join("\n",
+            "- point", "", "    continuation paragraph indented 4 spaces", "",
+            "```a", "AAA", "```", "", "```b", "BBB", "```");
+
+        var html = NoteContentHelpers.RenderToHtml(markdown);
+
+        html.Should().Contain("continuation paragraph");
+        System.Text.RegularExpressions.Regex.Matches(html, "data-fence-line=").Count.Should().Be(2);
+        html.Should().Contain("data-fence-line=\"5\"");
+        html.Should().Contain("data-fence-line=\"9\"");
+    }
+
+    [Fact]
+    public void DataFenceLine_SkipsTopLevelIndentedFenceLiteral_High1Regression()
+    {
+        // HIGH-1 迴歸守門：頂層縮排 4 空白的字面 ```bash 是「縮排程式碼區塊」（CommonMark），
+        // 不是圍欄、不標行號；只有真正的圍欄 py（第 7 行）被標。這正是前端逐行正則會誤判、
+        // 而後端 Markdig 正確判定之處——查看模式據此定位才不會改到縮排展示區塊。
+        var markdown = string.Join("\n",
+            "段落", "", "    ```bash", "    echo", "    ```", "", "```py", "print", "```");
+
+        var html = NoteContentHelpers.RenderToHtml(markdown);
+
+        System.Text.RegularExpressions.Regex.Matches(html, "data-fence-line=").Count.Should().Be(1);
+        html.Should().Contain("data-fence-line=\"7\"");
+    }
+
+    [Fact]
+    public void IndentedCodeBlock_GetsNoDataFenceLine()
+    {
+        // 真正的縮排程式碼區塊不是 FencedCodeBlock → 不標 data-fence-line；只有圍欄 js（第 5 行）被標。
+        var markdown = "para\n\n    indented_code()\n\n```js\nx\n```";
+
+        var html = NoteContentHelpers.RenderToHtml(markdown);
+
+        System.Text.RegularExpressions.Regex.Matches(html, "data-fence-line=").Count.Should().Be(1);
+        html.Should().Contain("data-fence-line=\"5\"");
+    }
 }

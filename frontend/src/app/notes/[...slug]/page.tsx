@@ -6,6 +6,8 @@ import Link from 'next/link';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { enhanceReadingCodeBlocks } from '@/lib/enhanceReadingCodeBlocks';
 import { enhanceReadingTables } from '@/lib/enhanceReadingTables';
+import { setFenceMetaAtLine } from '@/lib/codeBlockMeta';
+import { showToast } from '@/lib/toast';
 import {
   getNote,
   markNoteOpened,
@@ -349,6 +351,15 @@ export default function NotesDetailPage() {
   // 若改用 useEffect 同步，首次掛載時 setPreviewNode 可能搶先在 noteIdRef 被寫入前執行，讀到 null。
   const noteIdRef = useRef<string | null>(null);
   noteIdRef.current = note?.id ?? null;
+  // 以 ref 持有最新 note，供查看模式就地改程式碼區塊 metadata 時讀到最新 contentRaw（避免 stale closure）。
+  const noteRef = useRef<NoteDetail | null>(null);
+  noteRef.current = note;
+  // 查看模式就地改程式碼 metadata 的暫存基準（H2：連續快速改不遺失更新；切換筆記時由下方 effect 重置）。
+  // appliedTo＝算此結果時的基準 contentRaw、result＝算出的新 contentRaw，用來偵測 note 是否被別條路徑換掉。
+  const readingDraftRef = useRef<{ appliedTo: string; result: string } | null>(null);
+  // 即存後 setNote 會整篇重注入，用此旗標讓 observer 在重注入後重套 toggle 展開狀態與捲動位置（M1）。
+  const pendingMetaReflowRef = useRef(false);
+  useEffect(() => { readingDraftRef.current = null; }, [note?.id]);
 
   // 讀取某篇筆記記住的 toggle 展開狀態（序號→是否展開的表；壞資料視同沒有）。
   // 包成穩定 useCallback（鍵直接內嵌，不相依外層的 noteToggleKey），供下方兩個 callback 安全列入依賴，
@@ -497,13 +508,42 @@ export default function NotesDetailPage() {
   // 一份全新內容（markdown 預設的 toggle 開合狀態），不論起因是首次載入、切換到別篇筆記（會整頁
   // 卸載重掛）、或是編輯彈窗／切分頁切回預覽（只有這個 div 卸載重掛，note.id 不變）——三種情境都
   // 統一在此還原，取代舊版「每篇筆記只還原一次」的捲動還原（會漏掉後兩種情境）。
+  // 查看模式「就地改程式碼區塊 metadata 即存」：在閱讀檢視改檔名／語言 → 算出這是第幾個程式碼區塊
+  // → 改寫 Markdown 圍欄（```lang:filename）→ 即時存 DB，並以回傳的最新版重繪（不必進編輯模式）。
+  // 索引以「變更當下查 DOM 的 .code-block 文件順序」算出，與 setCodeFenceMeta 的文件順序掃描對齊
+  // （同編輯預覽既有機制）；用 noteRef 讀最新 contentRaw 避免 stale closure。
+  const handleReadingCodeMeta = useCallback((fenceLine: number, lang: string, filename: string) => {
+    const cur = noteRef.current;
+    if (!cur) return;
+    // H2：draft 記錄「基於哪份 contentRaw（appliedTo）算出哪份結果（result）」。只有當前 note 仍停在
+    // draft 起點（in-flight、尚未 setNote）或已成為 draft 結果（本函式存回）時才續用 draft 當基準；
+    // 若 note.contentRaw 已被別條路徑（編輯彈窗／編輯頁／AI 保存）換掉，draft 即失效、改以最新
+    // note.contentRaw 為基準——否則會用過期 draft 覆寫掉別條路徑的整篇編輯（靜默資料遺失）。
+    const draft = readingDraftRef.current;
+    const draftValid = draft !== null && (cur.contentRaw === draft.appliedTo || cur.contentRaw === draft.result);
+    const base = draftValid ? draft.result : cur.contentRaw;
+    const nextRaw = setFenceMetaAtLine(base, fenceLine, lang, filename);
+    if (nextRaw === base) return; // 行號無對應圍欄或無實際變更 → 不打擾
+    readingDraftRef.current = { appliedTo: base, result: nextRaw };
+    updateNote(cur.id, { contentRaw: nextRaw })
+      .then((latest) => {
+        if (latest) {
+          pendingMetaReflowRef.current = true; // M1：重注入後由 observer 重套 toggle 展開狀態與捲動位置
+          setNote(latest);
+        } else {
+          showToast('程式碼區塊資訊儲存失敗，請稍後再試', { type: 'error' });
+        }
+      })
+      .catch(() => showToast('程式碼區塊資訊儲存失敗，請稍後再試', { type: 'error' }));
+  }, []);
+
   const previewObsRef = useRef<MutationObserver | null>(null);
   const setPreviewNode = useCallback((node: HTMLDivElement | null) => {
     previewRef.current = node;
     previewObsRef.current?.disconnect();
     previewObsRef.current = null;
     if (!node) return;
-    enhanceReadingCodeBlocks(node);
+    enhanceReadingCodeBlocks(node, handleReadingCodeMeta);
     const nid = noteIdRef.current;
     // 表格增強（可拖曳調寬＋記住寬度）與程式碼區塊美化同一時機處理；欄寬還原需要 noteId。
     enhanceReadingTables(node, nid);
@@ -514,12 +554,23 @@ export default function NotesDetailPage() {
     node.addEventListener('toggle', handleToggleChange, true);
     // 重注入後（React 19 會清掉就地 DOM 改動）由 observer 重跑兩者：程式碼美化＋表格增強（會從 localStorage 還原欄寬）。
     const obs = new MutationObserver(() => {
-      enhanceReadingCodeBlocks(node);
+      enhanceReadingCodeBlocks(node, handleReadingCodeMeta);
       enhanceReadingTables(node, noteIdRef.current);
+      // 就地改程式碼 metadata 即存後的整篇重注入：重套使用者的 toggle 展開狀態與捲動位置，
+      // 避免「讀到一半改個語言就把展開的段落全收合、畫面跳回頂端」（只認即存觸發的那次重注入，
+      // 不干擾一般 DOM 變動如畫記包字）。
+      if (pendingMetaReflowRef.current) {
+        pendingMetaReflowRef.current = false;
+        const reflowNid = noteIdRef.current;
+        if (reflowNid) {
+          applyStoredToggleState(node, reflowNid);
+          restoreScrollPosition(reflowNid);
+        }
+      }
     });
     obs.observe(node, { childList: true, subtree: true });
     previewObsRef.current = obs;
-  }, [applyStoredToggleState, restoreScrollPosition, handleToggleChange]);
+  }, [applyStoredToggleState, restoreScrollPosition, handleToggleChange, handleReadingCodeMeta]);
 
   // 編輯彈窗「即時預覽」容器的 callback ref：這條路徑用 ToggleAwareMarkdown（React 元件）渲染，
   // 與查看模式的 dangerouslySetInnerHTML 是兩套 DOM，但同為 .markdown-prose 容器、同以序號記憶 toggle。
