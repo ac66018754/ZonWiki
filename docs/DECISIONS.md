@@ -5,6 +5,23 @@
 
 ---
 
+## 2026-07-10 ｜修「開啟筆記即假衝突」＋側欄筆記可拖曳歸類（feature/table-reading-ux）
+
+- **背景（Bug）**：使用者回報「只是改個分類存檔，就跳假的『此筆記已被其他來源修改』」，但全程只有本人、也沒改過別處。實測根因（HTTP 整合測試重現）：載入筆記後前端會呼叫 `POST /api/notes/{id}/opened` 標記「最後打開時間」，該端點以 `ExecuteUpdateAsync` 直接 UPDATE 該列的 `Note_LastOpenedDateTime`；而樂觀鎖權杖 `xmin`（見 2026-07-06 決策）是 PostgreSQL 的「整列」系統欄——**任何** UPDATE 都會使其前進，無法只改某欄而不動它。於是「載入時記下的 Version」在標記打開後立刻過期，接著存檔（帶過期 `baseVersion`）便撲空 → 假 409。此問題與「分類」無關，幾乎每次「開筆記→編輯→存」都會中，使用者剛好用改分類測到。
+- **考慮過的選項**：①把 `LastOpenedDateTime` 移到獨立表，讓「開啟」不碰 Note 列的 xmin（根治，但要 migration＋改清單排序查詢，對單人系統過重）；②折進 GET 詳情端點一併 stamp 並回傳 stamp 後版本（少一次往返，但 GET 產生寫入副作用、且 `getNote` 有多個呼叫點會被牽動）；③`/opened` 於更新後回讀最新 xmin 一併回傳，前端據此把 `baseVersion` 同步成最新（採用）。
+- **最終決定（Bug）**：採 **③回讀並回傳最新版本**。`/opened` 在 `ExecuteUpdateAsync` 後以「原生 `EF.Property<uint>(n,"xmin")` 讀出、記憶體再轉 long」（沿用既有慣例，避免 `(long)` 下推成 `CAST(xid AS bigint)` 觸發 `42846`）回傳 `{ id, version }`；前端 `markNoteOpened` 改回傳 `number|null`，詳情頁載入後 `markNoteOpened(...).then(v => setNote(prev => prev && prev.id===noteData.id ? {...prev, version:v} : prev))` 把 `note.version` 同步成最新（只覆寫 version 欄、且守衛「仍停在同一篇」避免切走後誤蓋）。
+- **理由與取捨（Bug）**：③最小 blast radius——保持 GET 純讀、把版本同步限縮在唯一的「明確開啟」訊號，不像②會讓 4 個 `getNote` 呼叫點都產生寫入。**已知殘留（可接受）**：`markNoteOpened` 未解析前（載入後約 <150ms）若使用者以人力完成「開→讀→編輯→存」仍可能撞一次假 409；人手不可能這麼快，且該對話框本就有「覆蓋/重載」出口自癒，故不為此加「進編輯模式時再抓一次版本」的額外往返。真正根治（選項①獨立表）留待需求變重再做。
+- **驗證**：新增 2 則 HTTP 整合測試（`NoteEndpointsHttpTests`）——`MarkOpened_ReturnsFreshVersion_MakingSubsequentUpdateConflictFree`（RED→GREEN 鎖住修法契約，是本次真正的回歸守門）、`MarkOpened_ThenUpdateWithPreOpenVersion_Returns409`（旁路防線：鎖住「打開前版本仍過期＝併發保護未被誤關」，修法前後皆 PASS、對本 bug 不具區辨力，定位如此即可）；全 Api.Tests 281 passed。Playwright 對本機實測「開→改分類→存」無假衝突對話框、分類正確更新。
+- **對抗式復審（C#／前端兩路平行）修正**：
+  - 【後端 兩路都指出】`/opened` 回讀 xmin 原用 `FirstAsync` 且漏 `ValidFlag` → 極窄競態下（UPDATE 成功提交後、回讀 SELECT 前，該列被同帳號另一請求軟刪）回讀撈空、`FirstAsync` 對空序列丟未處理例外變 500。改用 `FirstOrDefaultAsync`＋補 `&& n.ValidFlag`、投影匿名型別，`null`（回讀當下已消失）視同筆記不存在回 404（前端 `markNoteOpened` 對非 200 靜默回 null、不影響閱讀）。
+  - 【前端 HIGH 亂序覆寫】原 `setNote` 只用 `prev.id === noteData.id` 當守衛，只防「寫到錯的筆記」、沒防「同一筆記多次 `/opened`（StrictMode 雙掛載／快速切回同篇／多分頁）回應亂序抵達」把 `note.version` 覆寫成**較舊**值 → 又假衝突。改為**單調取大** `version: Math.max(prev.version ?? 0, openedVersion)`（xmin 隨每次更新遞增，取大＝最新，永不回退；存檔後更大的 xmin 也不會被較舊的 /opened 回應蓋掉）。
+  - 【已知殘留・未改（可接受）】`handleSave` 未 `await` 尚未完成的 `markNoteOpened`：使用者若在「載入→編輯→存」全程於單次網路來回（數十毫秒）內完成，仍可能撞一次假 409（人手不可能這麼快，且對話框本有覆蓋/重載出口自癒）。`previewHtml` 的 `useMemo` 依賴整個 `note` 物件、version-only 更新會白跑一次 `buildToc`（下游 `previewHtmlObj` 以字串值記憶保護，不觸發 `dangerouslySetInnerHTML` 重注入——2026-07-08 React19 identity 防線仍成立）。此二者屬 LOW，不值得為之增複雜度。
+- **背景（Feature）**：使用者要能「在左側欄直接把某筆記拖到某分類下」。現況：側欄分類列（`CategoryNode`）**本來就會**接收 `NOTE_DND_MIME` 拖入（`handleDropNoteOnCategory` → `addNoteToCategory`，冪等），只是拖曳來源僅有「筆記清單頁的卡片」；側欄裡的筆記列（`NoteRow`）當時不能當拖曳來源。
+- **最終決定（Feature）**：讓 `NoteRow` 的 `<Link>` 加 `draggable` + `onDragStart` 帶 `NOTE_DND_MIME`（= note.id），與清單頁卡片同一套拖放協定，drop 端完全複用既有邏輯。**語意＝「加入」**（使用者裁示）：拖到目標分類是把筆記「加入」該分類（來源分類保留，一篇筆記可同屬多分類），與現有「清單頁拖進分類」一致、非破壞性。HTML5 拖曳與 click 互斥，純點擊仍照常開啟筆記。
+- **理由與取捨（Feature）**：drop 端與 `addNoteToCategory` 已是既有且測過的路徑，本次只補「側欄可當來源」一小塊，改動面最小。手機無原生 DnD → 側欄拖曳在觸控裝置不可用（不劣化既有行為；批次歸類仍可走清單頁編輯模式）。
+
+---
+
 ## 2026-07-10 ｜查看模式就地改程式碼區塊語言/檔名，用「後端圍欄來源行號」定位（feature/table-reading-ux）
 
 - **背景**：閱讀檢視（查看模式）的程式碼區塊標題列原為唯讀；使用者要能就地改語言/檔名、隨改隨存 DB，不必進編輯模式。難點是「使用者在 DOM 上點的那個區塊」要可靠對應到「原文 markdown 的哪一個圍欄」才能改寫圍欄資訊字串（```lang:filename）。
