@@ -396,13 +396,16 @@ export function ActivityDetailSection({ log, tz }: { log: ActivityLogEntry[]; tz
               color: "var(--text-secondary)",
             };
             const typeLabel = ENTITY_LABEL[e.entityType] ?? e.entityType;
+            // 只有筆記才顯示「目前分類路徑」（用來區分多篇同名筆記）；其餘型別為空。
+            const categories = e.entityType === "note" ? e.categories ?? [] : [];
+            const hasSecondRow = categories.length > 0 || !!e.detail;
             return (
               <div
                 key={e.id}
                 style={{
                   display: "flex",
-                  alignItems: "baseline",
-                  gap: "var(--spacing-2)",
+                  flexDirection: "column",
+                  gap: "var(--spacing-1)",
                   padding: "var(--spacing-2) var(--spacing-3)",
                   background: "var(--bg-default)",
                   border: "1px solid var(--border-default)",
@@ -410,28 +413,71 @@ export function ActivityDetailSection({ log, tz }: { log: ActivityLogEntry[]; tz
                   fontSize: "var(--text-sm)",
                 }}
               >
-                <span style={{ flexShrink: 0, fontWeight: 600, color: a.color, minWidth: "56px" }}>
-                  {a.icon} {a.label}
-                </span>
-                <span style={{ flexShrink: 0, color: "var(--text-tertiary)", minWidth: "56px" }}>
-                  {typeLabel}
-                </span>
-                <span
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    color: "var(--text-primary)",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                  title={e.title}
-                >
-                  {e.title || "（無標題）"}
-                </span>
-                <span style={{ flexShrink: 0, color: "var(--text-tertiary)", fontSize: "var(--text-xs)" }}>
-                  {fmt(e.at)}
-                </span>
+                {/* 第一列：動作 ｜ 型別 ｜ 標題 ｜ 時間 */}
+                <div style={{ display: "flex", alignItems: "baseline", gap: "var(--spacing-2)" }}>
+                  <span style={{ flexShrink: 0, fontWeight: 600, color: a.color, minWidth: "56px" }}>
+                    {a.icon} {a.label}
+                  </span>
+                  <span style={{ flexShrink: 0, color: "var(--text-tertiary)", minWidth: "56px" }}>
+                    {typeLabel}
+                  </span>
+                  <span
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      color: "var(--text-primary)",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                    title={e.title}
+                  >
+                    {e.title || "（無標題）"}
+                  </span>
+                  <span style={{ flexShrink: 0, color: "var(--text-tertiary)", fontSize: "var(--text-xs)" }}>
+                    {fmt(e.at)}
+                  </span>
+                </div>
+
+                {/* 第二列（若有）：分類路徑 chip ＋ 變更內容摘要 */}
+                {hasSecondRow && (
+                  <div
+                    style={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      alignItems: "center",
+                      gap: "var(--spacing-1)",
+                      // 對齊到標題起始處（動作與型別各 56px + 兩個間距）。
+                      paddingLeft: "calc(112px + var(--spacing-2) * 2)",
+                    }}
+                  >
+                    {categories.map((path) => (
+                      <span
+                        key={path}
+                        title={path}
+                        style={{
+                          fontSize: "var(--text-xs)",
+                          color: "var(--text-secondary)",
+                          background: "var(--bg-surface)",
+                          border: "1px solid var(--border-default)",
+                          borderRadius: "var(--radius-sm)",
+                          padding: "0 6px",
+                          maxWidth: "260px",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        📁 {path}
+                      </span>
+                    ))}
+                    {e.detail && (
+                      <span style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                        {e.detail}
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}

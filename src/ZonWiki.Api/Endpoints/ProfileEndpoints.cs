@@ -160,11 +160,60 @@ public static class ProfileEndpoints
                     entityType = a.EntityType,
                     entityId = a.EntityId,
                     title = a.Title,
+                    detail = a.Detail,
                     at = a.CreatedDateTime,
                 })
                 .ToListAsync(ct);
 
-            return Results.Ok(new { success = true, data = items });
+            // 為「筆記」項目補上該筆記「目前」的分類完整路徑（用於在活動明細中區分同名筆記；
+            // 註：這是查詢當下的分類，非動作發生時的歷史快照——ActivityLog 不存分類歷史，取捨見 DECISIONS）。
+            var noteEntityIds = items
+                .Where(i => i.entityType == "note")
+                .Select(i => i.entityId)
+                .Distinct()
+                .ToList();
+
+            var categoriesByNote = new Dictionary<Guid, List<string>>();
+            if (noteEntityIds.Count > 0)
+            {
+                var categoryRows = await db.Category.AsNoTracking()
+                    .Where(c => c.UserId == userGuid && c.ValidFlag)
+                    .Select(c => new { c.Id, c.ParentId, c.Name })
+                    .ToListAsync(ct);
+                var hierarchy = CategoryHierarchy.Build(
+                    categoryRows.Select(c => (c.Id, c.ParentId, c.Name)));
+
+                var noteCategoryLinks = await db.NoteCategory.AsNoTracking()
+                    .Where(nc => nc.UserId == userGuid && nc.ValidFlag && noteEntityIds.Contains(nc.NoteId))
+                    .Select(nc => new { nc.NoteId, nc.CategoryId })
+                    .ToListAsync(ct);
+
+                categoriesByNote = noteCategoryLinks
+                    .GroupBy(link => link.NoteId)
+                    .ToDictionary(
+                        group => group.Key,
+                        group => group
+                            .Select(link => hierarchy.BuildPath(link.CategoryId))
+                            .Where(path => !string.IsNullOrEmpty(path))
+                            .ToList());
+            }
+
+            var result = items.Select(i => new
+            {
+                i.id,
+                i.action,
+                i.entityType,
+                i.entityId,
+                i.title,
+                i.detail,
+                i.at,
+                // 筆記→目前分類路徑（可能為空陣列）；其他型別→null（前端據此只對筆記顯示分類）。
+                categories = i.entityType == "note"
+                    ? (categoriesByNote.TryGetValue(i.entityId, out var paths) ? paths : new List<string>())
+                    : null,
+            });
+
+            return Results.Ok(new { success = true, data = result });
         }).RequireAuthorization();
 
         // 首頁「AI 最近動作」：列出由「外部 AI（API 權杖）」對知識庫做的 CRUD 軌跡，

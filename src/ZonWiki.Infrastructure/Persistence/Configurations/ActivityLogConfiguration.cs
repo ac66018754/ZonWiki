@@ -21,6 +21,8 @@ public sealed class ActivityLogConfiguration : IEntityTypeConfiguration<Activity
         builder.Property(e => e.ActionType).IsRequired().HasMaxLength(32);
         builder.Property(e => e.EntityType).IsRequired().HasMaxLength(32);
         builder.Property(e => e.Title).IsRequired().HasMaxLength(256);
+        // 變更摘要（可空）：只在「編輯」時填；上限 500 字元，攔截器產生時亦會截斷。
+        builder.Property(e => e.Detail).HasMaxLength(ActivityLog.DetailMaxLength);
         // 來源："web" 或 API 權杖名稱（上限對齊權杖名稱長度）；舊資料預設 "web"。
         builder.Property(e => e.Source).IsRequired().HasMaxLength(128).HasDefaultValue("web");
         builder.Property(e => e.CreatedUser).IsRequired().HasMaxLength(128);

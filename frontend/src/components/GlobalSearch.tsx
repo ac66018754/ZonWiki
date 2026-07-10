@@ -28,6 +28,7 @@ interface FeatureEntry {
 }
 
 const FEATURE_INDEX: readonly FeatureEntry[] = [
+  { title: "進階搜尋", url: "/search", keywords: ["search", "搜尋", "進階搜尋", "advanced", "篩選"] },
   { title: "首頁（儀表板）", url: "/", keywords: ["home", "dashboard", "首頁", "主頁"] },
   { title: "日程規劃 / 任務 / 行事曆", url: "/tasks", keywords: ["task", "todo", "calendar", "任務", "日程", "行事曆", "看板", "清單"] },
   { title: "開問啦（AI 畫布）", url: "/canvas", keywords: ["canvas", "kaiwen", "畫布", "節點", "ai", "開問啦"] },
@@ -190,6 +191,21 @@ export function GlobalSearch() {
   };
 
   /**
+   * 前往獨立「進階搜尋頁」/search，帶上目前的關鍵字與型別篩選（可分享、可再細調）。
+   */
+  const goToAdvancedSearch = async () => {
+    if (!(await confirmNavigation())) return;
+    const params = new URLSearchParams();
+    if (query.trim()) params.append("q", query.trim());
+    if (!isAllTypes) params.append("types", Array.from(selectedTypes).join(","));
+    const qs = params.toString();
+    router.push(qs ? `/search?${qs}` : "/search");
+    setIsOpen(false);
+    setQuery("");
+    setResults([]);
+  };
+
+  /**
    * 鍵盤導航
    */
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -275,6 +291,64 @@ export function GlobalSearch() {
       default:
         return { label: type, emoji: "◆" };
     }
+  }
+
+  /**
+   * 渲染結果列的「脈絡」metadata：
+   * - 筆記：顯示所屬分類完整路徑（📁）與標籤（🏷），用來區分同名筆記；
+   * - 浮層（T 文字/便利貼）：顯示所屬筆記標題（於《…》），標示這段文字在哪篇筆記。
+   * 無可顯示的 metadata 時回傳 null。
+   */
+  function renderMeta(result: SearchItem) {
+    const chips: { key: string; text: string }[] = [];
+
+    if (result.type === "note") {
+      for (const path of result.categories ?? []) {
+        chips.push({ key: `cat:${path}`, text: `📁 ${path}` });
+      }
+      for (const tag of result.tags ?? []) {
+        chips.push({ key: `tag:${tag}`, text: `🏷 ${tag}` });
+      }
+    } else if (
+      (result.type === "overlay-text" || result.type === "overlay-sticky") &&
+      result.parentTitle
+    ) {
+      chips.push({ key: "parent", text: `於《${result.parentTitle}》` });
+    }
+
+    if (chips.length === 0) return null;
+
+    return (
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          gap: "var(--spacing-1)",
+          marginTop: "var(--spacing-1)",
+        }}
+      >
+        {chips.map((chip) => (
+          <span
+            key={chip.key}
+            title={chip.text}
+            style={{
+              fontSize: "var(--text-xs)",
+              color: "var(--text-secondary)",
+              background: "var(--bg-surface)",
+              border: "1px solid var(--border-default)",
+              borderRadius: "var(--radius-sm)",
+              padding: "0 6px",
+              maxWidth: "220px",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {chip.text}
+          </span>
+        ))}
+      </div>
+    );
   }
 
   return (
@@ -477,11 +551,38 @@ export function GlobalSearch() {
                           </span>
                         )}
                       </div>
+                      {renderMeta(result)}
                     </div>
                   </div>
                 </div>
               );
             })
+          )}
+
+          {/* 底部固定「進階搜尋」入口：帶著目前關鍵字與型別到獨立搜尋頁做更細的篩選 */}
+          {query.trim() && (
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={goToAdvancedSearch}
+              style={{
+                position: "sticky",
+                bottom: 0,
+                width: "100%",
+                padding: "var(--spacing-3)",
+                border: "none",
+                borderTop: "1px solid var(--border-default)",
+                background: "var(--bg-elevated)",
+                color: "var(--action-secondary-fg)",
+                fontSize: "var(--text-sm)",
+                fontWeight: 600,
+                cursor: "pointer",
+                textAlign: "center",
+              }}
+              aria-label="開啟進階搜尋頁"
+            >
+              🔎 進階搜尋「{query.trim()}」→
+            </button>
           )}
         </div>
       )}

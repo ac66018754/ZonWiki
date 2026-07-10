@@ -5,6 +5,29 @@
 
 ---
 
+## 2026-07-11 ｜搜尋結果附分類/標籤脈絡＋獨立進階搜尋頁＋活動明細記「改了什麼」（feature/search-and-activity-ux）
+
+- **背景（兩個痛點）**：①使用者有多篇同名「README」筆記，Header 搜尋下拉只顯示標題＋一段來源不明的內文片段，**無法分辨是哪一篇**（希望顯示分類/標籤等脈絡），且沒有可做進階篩選的獨立搜尋頁；②個人頁「活動明細」只記到「編輯 筆記 README」這種標題級資訊，**看不出改了什麼**（改標題？調分類？），多篇同名筆記也分不出是哪篇。
+- **搜尋結果 enrichment：DTO 加可空欄位、只在最終結果補齊（非全體候選）**
+  - **考慮過的選項**：①`SearchResultDto` 加必填欄位（會炸掉現有 9 處 `new SearchResultDto(...)`）；②加**可空選擇性**欄位 `Categories`/`Tags`/`UpdatedAt`/`ParentTitle`，且只對「最終排序後的前 N 筆」批次補分類/標籤（採用）。
+  - **最終決定**：採 **②**。`UpdatedAt`（所有型別）與 overlay 的 `ParentTitle`（所屬筆記標題）於各型別查詢內就地帶出；筆記的分類路徑/標籤在 `EnrichNoteResultsAsync` 對「回傳的前 N 筆」批次補（載入本人分類建 `CategoryHierarchy` 拼完整路徑、查 NoteCategory/NoteTag），**非**對每個 ILIKE 候選補（避免放大）。分類/標籤只對筆記填、`ParentTitle` 只對浮層填；筆記一律得「非 null 的空陣列」讓前端免 null 防禦分支。
+  - **取捨**：活動明細與搜尋的「分類」都是**查詢當下**的分類，非「動作/命中發生當時」的歷史快照（ActivityLog 不存分類歷史）——單人知識庫夠用，要歷史快照再另設計。
+- **進階篩選與瀏覽模式**：`/api/search` 加 `categoryId`（含**所有子孫分類**）、`tags`（CSV，任一命中）、`sort`（relevance｜updated）、`limit` clamp [1,500]。帶 `categoryId`/`tags` 時**只回筆記型別**；**空關鍵字＋範圍篩選＝瀏覽模式**（回該範圍全部筆記、依更新時間排序），空關鍵字且無篩選仍回空（維持現狀）。跨租戶：所有 enrich/scope 查詢明確 `UserId==` 過濾，`BuildPath` 對「不在本人階層」的 categoryId 回空字串被濾除（DB 級異常連結也不外洩他人分類名）。
+- **`CategoryHierarchy`（新共用類別，cycle-safe）**：`BuildPath`（回溯到根拼「學習 / 併發」）與 `DescendantsAndSelf`（BFS 展開子孫）皆以 visited 集合防環——API 端有防環但 DB 直改可繞過，不防環會無窮迴圈。搜尋（路徑＋範圍展開）與活動明細（目前分類路徑）共用。
+- **活動明細「改了什麼」：ActivityLog 加 `Detail` 欄＋攔截器記變更摘要、攔分類/標籤異動**
+  - **最終決定**：`ActivityLog` 加可空 `Detail`（varchar(500)，migration `AddActivityLogDetail`）。`ActivityLogInterceptor` 大改：`updated` 時掃 ChangeTracker 產友善中文摘要（短欄位附「舊 → 新」、長文欄位只列名、**排除**稽核欄/影子屬性 xmin/衍生欄 ContentHtml·Slug·ContentHash）；並攔 `NoteCategory`/`NoteTag` 的 **Added ＋ ValidFlag 翻轉**（本 repo 移除＝軟刪、重加＝復活，故不能只看 Added/Deleted），依所屬筆記**合併成同一筆** note/updated 活動（`加入分類「工作」；移出分類「暫存」`）。
+  - **關鍵取捨**：`CreateNoteHandler` 原本「先存筆記→再存分類」**兩段 SaveChanges**，會被攔成 created＋updated 兩筆雜訊；因 `Id` 於實體建構即 `Guid.NewGuid()`，改為**單一原子 SaveChanges**（同時更正確），「建立即帶分類」只記一筆 created。
+  - **`/api/me/activity-log`** 回傳加 `detail`，並對 note 項目補「目前分類完整路徑」`categories`（區分同名筆記）。前端明細列改雙行：第一列動作/型別/標題/時間，第二列（若有）分類 chip ＋變更摘要。
+- **攔截器在 SaveChanges 內查 DB（補分類/標籤名、筆記標題）**：`SavingChangesAsync` 內對同一 DbContext 發 `AsNoTracking` 查詢——經查證 EF Core 10 的攔截器在真正持有並行臨界區之前派發，循序 await 不會重疊、不死鎖；`AddRange` 在 await 後仍納入本次 save（沿用舊模式）。同步路徑另備一份同步查詢（全 repo 皆 async，屬完備）。
+- **對抗式復審（.NET 資安）修正**：
+  - 【CRITICAL】`Truncate` off-by-one：`s[..max] + "…"` ＝ **max+1** 字元，塞進 varchar(500) 溢位（22001）→ 因 log 與使用者變更同交易，**整批 rollback、使用者存檔直接 500**。改為 `s[..(max-1)] + "…"` 確保 ≤ max。加回歸測試（一次加兩個 250 字長名分類，摘要 >500，斷言存檔成功且 Detail ≤ 500）。
+  - 【MEDIUM】刪除整個標籤會硬刪其在 N 篇筆記上的關聯 → 攔截器誤記 N 筆假的「筆記 updated：移除標籤」。修：掃描先收集「本批次整個被刪除的分類/標籤 Id」，其連帶移除的關聯不記逐筆活動（`CollectDeletedParents`）。加回歸測試。
+  - 【查證為安全】跨租戶無外洩、CreateNote 合併 SaveChanges 正確（FK 拓撲排序保證 Note 先插）、瀏覽模式 `similarity(x,'')` 回 0 可轉譯、Detail 只含欄位名/短值不含長文。
+- **驗證**：後端 26 個新整合測試（`SearchEnrichmentHttpTests` 12＋`ActivityLogDetailHttpTests` 14，含 2 個復審回歸），全 Api.Tests **309 passed**。前端 tsc/eslint/`next build` 全過。本地部署（後端套新 migration、前端換新 build）後 Playwright 實測：Header 下拉三篇同名 README 以「📁 分類路徑＋🏷 標籤」可辨識、`/search` 頁篩選/高亮/排序、活動明細顯示「標題「README」→「…」；加入分類「工作」」＋分類 chip；亮暗雙主題各截圖、375px 無爆版、console 零錯、新配色組合 WCAG AA 全過（≥4.95:1）。
+- **不變式（給後人）**：任何新的「存 Markdown/文字欄位」若要納入搜尋或活動摘要，記得同步 `SearchEndpoints`／`ActivityLogInterceptor`；`ActivityLog.Detail` 一律只存「摘要」（欄位名／短值／分類標籤名），**絕不**塞完整內容。
+
+---
+
 ## 2026-07-10 ｜修「開啟筆記即假衝突」＋側欄筆記可拖曳歸類（feature/table-reading-ux）
 
 - **背景（Bug）**：使用者回報「只是改個分類存檔，就跳假的『此筆記已被其他來源修改』」，但全程只有本人、也沒改過別處。實測根因（HTTP 整合測試重現）：載入筆記後前端會呼叫 `POST /api/notes/{id}/opened` 標記「最後打開時間」，該端點以 `ExecuteUpdateAsync` 直接 UPDATE 該列的 `Note_LastOpenedDateTime`；而樂觀鎖權杖 `xmin`（見 2026-07-06 決策）是 PostgreSQL 的「整列」系統欄——**任何** UPDATE 都會使其前進，無法只改某欄而不動它。於是「載入時記下的 Version」在標記打開後立刻過期，接著存檔（帶過期 `baseVersion`）便撲空 → 假 409。此問題與「分類」無關，幾乎每次「開筆記→編輯→存」都會中，使用者剛好用改分類測到。

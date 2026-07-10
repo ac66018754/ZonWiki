@@ -406,7 +406,9 @@ public static class NoteWriteEndpoints
             };
 
             db.Note.Add(note);
-            await db.SaveChangesAsync(ct);
+            // 注意：不在此先 SaveChanges。Id 於實體建構時即以 Guid.NewGuid() 產生，版本/分類/標籤/連結
+            // 都可直接引用 note.Id，全部併入「單一 SaveChanges」原子寫入。這樣「建立即帶分類」只會產生
+            // 一筆 created 活動——若拆成「先存筆記→再存分類」兩段式，活動攔截器會記成 created + updated 兩筆。
 
             // 建立版本紀錄（ChangeKind = "create"）
             var revision = new NoteRevision

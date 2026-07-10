@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using ZonWiki.Api.Notes;
+using ZonWiki.Api.Services;
 using ZonWiki.Domain.Common;
 using ZonWiki.Domain.Dtos;
 using ZonWiki.Infrastructure.Persistence;
@@ -70,9 +71,12 @@ public static class SearchEndpoints
         app.MapGet("/api/search", async (
             ICurrentUser currentUser,
             ZonWikiDbContext db,
-            string q,
+            string? q = null,
             string? types = null,
-            int limit = 50,
+            Guid? categoryId = null,
+            string? tags = null,
+            string? sort = null,
+            int limit = DefaultLimit,
             CancellationToken ct = default) =>
         {
             // 必須為已登入使用者：未登入則回 401（雖然全域 FallbackPolicy 已要求認證，此處再明確守門一次，
@@ -84,26 +88,48 @@ public static class SearchEndpoints
                     statusCode: StatusCodes.Status401Unauthorized);
             }
 
-            // 若查詢字串為空，直接回傳空結果
-            if (string.IsNullOrWhiteSpace(q))
+            var userId = currentUser.UserId;
+            // 數量上限夾在 [1, MaxLimit]（前端「載入更多」會遞增到 MaxLimit；非法/超大值一律夾住，防自傷型大查詢）。
+            limit = Math.Clamp(limit, 1, MaxLimit);
+
+            // 子字串、大小寫不敏感搜尋：改用 PostgreSQL 的 ILIKE（搭配 pg_trgm GIN 索引）。
+            // 使用者輸入中的 LIKE 萬用字元（% _ \）必須轉義，否則會被當成萬用字元而比對到非預期結果。
+            var term = (q ?? string.Empty).Trim();
+            var hasQuery = term.Length > 0;
+            var pattern = $"%{EscapeLikePattern(term)}%";
+            // 片段擷取仍以小寫關鍵字在內容中定位（純顯示用，與查詢條件無關）。
+            var keywordLower = term.ToLowerInvariant();
+
+            // 進階篩選：categoryId（含所有子孫分類）／tags（任一標籤）→ 只在「筆記」範圍內搜尋。
+            // 兩者皆屬「筆記範圍」限定，計算出被限定的筆記 id 集合（scopedNoteIds；null＝不限定）。
+            var tagFilterIds = ParseGuidCsv(tags);
+            var hasScopeFilter = categoryId.HasValue || tagFilterIds.Count > 0;
+            var scopedNoteIds = await ComputeScopedNoteIdsAsync(db, userId, categoryId, tagFilterIds, ct);
+
+            // 空查詢：無範圍篩選＝維持現狀回空結果；有範圍篩選＝「瀏覽模式」（回該範圍全部筆記、依更新時間排序）。
+            if (!hasQuery && !hasScopeFilter)
             {
                 return Results.Ok(
                     ApiResponse<List<SearchResultDto>>.Ok(
                         new List<SearchResultDto>()));
             }
 
-            // 子字串、大小寫不敏感搜尋：改用 PostgreSQL 的 ILIKE（搭配 pg_trgm GIN 索引）。
-            // 使用者輸入中的 LIKE 萬用字元（% _ \）必須轉義，否則會被當成萬用字元而比對到非預期結果。
-            var term = q.Trim();
-            var pattern = $"%{EscapeLikePattern(term)}%";
-            // 片段擷取仍以小寫關鍵字在內容中定位（純顯示用，與查詢條件無關）。
-            var keywordLower = term.ToLowerInvariant();
-
             // 解析 types 篩選：只保留合法值；空集合＝不篩選（涵蓋「未帶」與「全為未知值」兩種情況）。
             var activeTypes = ParseTypeFilter(types);
             var noFilter = activeTypes.Count == 0;
-            // 某型別是否要被搜尋：未篩選時全部要，篩選時只搜命中的型別。
-            bool Want(string typeKey) => noFilter || activeTypes.Contains(typeKey);
+            // 某型別是否要被搜尋：
+            // - 一般模式：未篩選時全部要，篩選時只搜命中的型別。
+            // - 範圍篩選模式：只搜筆記（note-title / note-content）；若使用者另指定該子集則尊重，否則兩者皆搜。
+            bool Want(string typeKey)
+            {
+                if (hasScopeFilter)
+                {
+                    if (typeKey != TypeFilterNoteTitle && typeKey != TypeFilterNoteContent) return false;
+                    var noteSubset = activeTypes.Contains(TypeFilterNoteTitle) || activeTypes.Contains(TypeFilterNoteContent);
+                    return !noteSubset || activeTypes.Contains(typeKey);
+                }
+                return noFilter || activeTypes.Contains(typeKey);
+            }
 
             // 各類型查詢：以 ILIKE 過濾（走 GIN 索引），以 trigram similarity 排序取相關性最高者。
             // 為避免 EF 把 ExtractSnippet 等 C# 方法誤帶入 SQL 轉譯，一律「先把可轉譯的欄位＋相似度撈回記憶體，
@@ -118,21 +144,33 @@ public static class SearchEndpoints
             IEnumerable<ScoredSearchResult> noteScored = Enumerable.Empty<ScoredSearchResult>();
             if (includeNoteTitle || includeNoteContent)
             {
-                // 依篩選動態組 WHERE：只勾標題→只比對 Title；只勾內文→只比對 ContentRaw；兩者→ Title OR ContentRaw。
                 var noteQuery = db.Note.Where(n => n.ValidFlag);
-                if (includeNoteTitle && includeNoteContent)
+
+                // 範圍篩選（categoryId / tags）：把候選限定在已算出的筆記 id 集合內。
+                if (scopedNoteIds is not null)
                 {
-                    noteQuery = noteQuery.Where(n =>
-                        EF.Functions.ILike(n.Title, pattern, LikeEscapeChar) ||
-                        EF.Functions.ILike(n.ContentRaw, pattern, LikeEscapeChar));
+                    var scopedList = scopedNoteIds.ToList();
+                    noteQuery = noteQuery.Where(n => scopedList.Contains(n.Id));
                 }
-                else if (includeNoteTitle)
+
+                // 有關鍵字才加 ILIKE；瀏覽模式（空查詢＋範圍篩選）不加關鍵字條件，直接回範圍內全部筆記。
+                // 依篩選動態組 WHERE：只勾標題→只比對 Title；只勾內文→只比對 ContentRaw；兩者→ Title OR ContentRaw。
+                if (hasQuery)
                 {
-                    noteQuery = noteQuery.Where(n => EF.Functions.ILike(n.Title, pattern, LikeEscapeChar));
-                }
-                else
-                {
-                    noteQuery = noteQuery.Where(n => EF.Functions.ILike(n.ContentRaw, pattern, LikeEscapeChar));
+                    if (includeNoteTitle && includeNoteContent)
+                    {
+                        noteQuery = noteQuery.Where(n =>
+                            EF.Functions.ILike(n.Title, pattern, LikeEscapeChar) ||
+                            EF.Functions.ILike(n.ContentRaw, pattern, LikeEscapeChar));
+                    }
+                    else if (includeNoteTitle)
+                    {
+                        noteQuery = noteQuery.Where(n => EF.Functions.ILike(n.Title, pattern, LikeEscapeChar));
+                    }
+                    else
+                    {
+                        noteQuery = noteQuery.Where(n => EF.Functions.ILike(n.ContentRaw, pattern, LikeEscapeChar));
+                    }
                 }
 
                 var noteRows = await noteQuery
@@ -143,23 +181,30 @@ public static class SearchEndpoints
                         n.Title,
                         n.ContentRaw,
                         n.Slug,
+                        n.UpdatedDateTime,
+                        // 瀏覽模式 term 為空字串，similarity(x, '') 回 0（不影響——最終依更新時間排序）。
                         TitleSimilarity = EF.Functions.TrigramsSimilarity(n.Title, term),
                         ContentSimilarity = EF.Functions.TrigramsSimilarity(n.ContentRaw, term),
                     })
                     .ToListAsync(ct);
 
-                noteScored = noteRows
+                var scoredNotes = noteRows
                     .Select(row => new ScoredSearchResult(
                         new SearchResultDto(
                             TypeNote,
                             row.Id.ToString(),
                             row.Title,
                             ExtractSnippet(row.ContentRaw, keywordLower, SnippetMaxLength),
-                            $"/notes/{row.Slug}"),
+                            $"/notes/{row.Slug}",
+                            UpdatedAt: row.UpdatedDateTime),
                         CombineRelevance(row.TitleSimilarity, row.ContentSimilarity),
                         TypeRankNote))
-                    // 合併相關性分數算完之後才截斷，確保內文命中列有公平機會進入候選池。
-                    .OrderByDescending(scored => scored.Relevance)
+                    .ToList();
+
+                // 有查詢→依相關性截斷（合併分數算完才截，內文命中列才有公平機會）；瀏覽模式→依更新時間截斷。
+                noteScored = (hasQuery
+                        ? scoredNotes.OrderByDescending(scored => scored.Relevance)
+                        : scoredNotes.OrderByDescending(scored => scored.Result.UpdatedAt))
                     .Take(limit);
             }
 
@@ -177,6 +222,7 @@ public static class SearchEndpoints
                         t.Id,
                         t.Title,
                         t.Content,
+                        t.UpdatedDateTime,
                         TitleSimilarity = EF.Functions.TrigramsSimilarity(t.Title, term),
                         ContentSimilarity = EF.Functions.TrigramsSimilarity(t.Content, term),
                     })
@@ -189,7 +235,8 @@ public static class SearchEndpoints
                             row.Id.ToString(),
                             row.Title,
                             ExtractSnippet(row.Content, keywordLower, SnippetMaxLength),
-                            "/tasks"),
+                            "/tasks",
+                            UpdatedAt: row.UpdatedDateTime),
                         CombineRelevance(row.TitleSimilarity, row.ContentSimilarity),
                         TypeRankTask))
                     .OrderByDescending(scored => scored.Relevance)
@@ -210,6 +257,7 @@ public static class SearchEndpoints
                     {
                         c.Id,
                         c.Title,
+                        c.UpdatedDateTime,
                         TitleSimilarity = EF.Functions.TrigramsSimilarity(c.Title, term),
                     })
                     .ToListAsync(ct);
@@ -220,7 +268,8 @@ public static class SearchEndpoints
                         row.Id.ToString(),
                         row.Title,
                         null,
-                        $"/canvas?canvasId={row.Id}"),
+                        $"/canvas?canvasId={row.Id}",
+                        UpdatedAt: row.UpdatedDateTime),
                     row.TitleSimilarity,
                     TypeRankCanvas));
             }
@@ -246,6 +295,7 @@ public static class SearchEndpoints
                         n.Title,
                         n.Content,
                         n.CanvasId,
+                        n.UpdatedDateTime,
                         TitleSimilarity = EF.Functions.TrigramsSimilarity(n.Title, term),
                         ContentSimilarity = EF.Functions.TrigramsSimilarity(n.Content, term),
                     })
@@ -258,7 +308,8 @@ public static class SearchEndpoints
                             row.Id.ToString(),
                             string.IsNullOrEmpty(row.Title) ? "（無標題）" : row.Title,
                             ExtractSnippet(row.Content, keywordLower, SnippetMaxLength),
-                            $"/canvas?canvasId={row.CanvasId}&nodeId={row.Id}"),
+                            $"/canvas?canvasId={row.CanvasId}&nodeId={row.Id}",
+                            UpdatedAt: row.UpdatedDateTime),
                         CombineRelevance(row.TitleSimilarity, row.ContentSimilarity),
                         TypeRankNode))
                     .OrderByDescending(scored => scored.Relevance)
@@ -279,6 +330,7 @@ public static class SearchEndpoints
                     {
                         t.Id,
                         t.Name,
+                        t.UpdatedDateTime,
                         NameSimilarity = EF.Functions.TrigramsSimilarity(t.Name, term),
                     })
                     .ToListAsync(ct);
@@ -289,7 +341,8 @@ public static class SearchEndpoints
                         row.Id.ToString(),
                         row.Name,
                         null,
-                        $"/notes?tagId={row.Id}"),
+                        $"/notes?tagId={row.Id}",
+                        UpdatedAt: row.UpdatedDateTime),
                     row.NameSimilarity,
                     TypeRankTag));
             }
@@ -308,6 +361,7 @@ public static class SearchEndpoints
                     {
                         c.Id,
                         c.Name,
+                        c.UpdatedDateTime,
                         NameSimilarity = EF.Functions.TrigramsSimilarity(c.Name, term),
                     })
                     .ToListAsync(ct);
@@ -318,7 +372,8 @@ public static class SearchEndpoints
                         row.Id.ToString(),
                         row.Name,
                         null,
-                        $"/notes?categoryId={row.Id}"),
+                        $"/notes?categoryId={row.Id}",
+                        UpdatedAt: row.UpdatedDateTime),
                     row.NameSimilarity,
                     TypeRankCategory));
             }
@@ -337,6 +392,7 @@ public static class SearchEndpoints
                     {
                         c.Id,
                         c.RawContent,
+                        c.UpdatedDateTime,
                         ContentSimilarity = EF.Functions.TrigramsSimilarity(c.RawContent, term),
                     })
                     .ToListAsync(ct);
@@ -347,7 +403,8 @@ public static class SearchEndpoints
                         row.Id.ToString(),
                         BuildCaptureTitle(row.RawContent),
                         ExtractSnippet(row.RawContent, keywordLower, SnippetMaxLength),
-                        "/"),
+                        "/",
+                        UpdatedAt: row.UpdatedDateTime),
                     // 快速捕捉只有內容一個文字欄位，相關性直接採內容相似度（不再打折）。
                     row.ContentSimilarity,
                     TypeRankCapture));
@@ -373,6 +430,8 @@ public static class SearchEndpoints
                         o.Id,
                         o.Text,
                         n.Slug,
+                        n.Title,
+                        o.UpdatedDateTime,
                         TextSimilarity = EF.Functions.TrigramsSimilarity(o.Text!, term),
                     })
                     .AsNoTracking()
@@ -385,7 +444,9 @@ public static class SearchEndpoints
                             row.Id.ToString(),
                             NoteQuestionHelpers.DeriveOverlayTitle(OverlayKindText, row.Text, null, OverlayEmptyTitle),
                             ExtractSnippet(row.Text ?? string.Empty, keywordLower, SnippetMaxLength),
-                            $"/notes/{row.Slug}?overlay={row.Id}"),
+                            $"/notes/{row.Slug}?overlay={row.Id}",
+                            UpdatedAt: row.UpdatedDateTime,
+                            ParentTitle: row.Title),
                         row.TextSimilarity,
                         TypeRankOverlayText))
                     .OrderByDescending(scored => scored.Relevance)
@@ -413,6 +474,8 @@ public static class SearchEndpoints
                         o.Text,
                         o.DataJson,
                         n.Slug,
+                        n.Title,
+                        o.UpdatedDateTime,
                         TextSimilarity = EF.Functions.TrigramsSimilarity(o.Text ?? string.Empty, term),
                         DataSimilarity = EF.Functions.TrigramsSimilarity(o.DataJson ?? string.Empty, term),
                     })
@@ -426,7 +489,9 @@ public static class SearchEndpoints
                             row.Id.ToString(),
                             NoteQuestionHelpers.DeriveOverlayTitle(OverlayKindSticky, row.Text, row.DataJson, OverlayEmptyTitle),
                             ExtractSnippet(row.Text ?? string.Empty, keywordLower, SnippetMaxLength),
-                            $"/notes/{row.Slug}?overlay={row.Id}"),
+                            $"/notes/{row.Slug}?overlay={row.Id}",
+                            UpdatedAt: row.UpdatedDateTime,
+                            ParentTitle: row.Title),
                         // 相關性取「文字相似度」與「DataJson（含標題）相似度」較大者。
                         Math.Max(row.TextSimilarity, row.DataSimilarity),
                         TypeRankOverlaySticky))
@@ -434,8 +499,10 @@ public static class SearchEndpoints
                     .Take(limit);
             }
 
-            // 10. 跨類型合併：依相關性分數由高到低排序；分數相同時以類型優先序（TypeRank）穩定收斂。
-            var finalResults = noteScored
+            // 10. 跨類型合併並排序：
+            // - sort=updated（或瀏覽模式強制）：依更新時間新→舊，TypeRank 為 tie-break；
+            // - 其餘（含 sort=relevance 與未知值）：依相關性分數高→低，TypeRank 為 tie-break。
+            var merged = noteScored
                 .Concat(taskScored)
                 .Concat(canvasScored)
                 .Concat(nodeScored)
@@ -443,15 +510,197 @@ public static class SearchEndpoints
                 .Concat(categoryScored)
                 .Concat(captureScored)
                 .Concat(overlayTextScored)
-                .Concat(overlayStickyScored)
-                .OrderByDescending(scored => scored.Relevance)
-                .ThenBy(scored => scored.TypeRank)
+                .Concat(overlayStickyScored);
+
+            // 瀏覽模式（空查詢）沒有相關性可言，一律以更新時間排序。
+            var sortByUpdated = !hasQuery || string.Equals(sort, SortUpdated, StringComparison.OrdinalIgnoreCase);
+            var ordered = sortByUpdated
+                ? merged
+                    .OrderByDescending(scored => scored.Result.UpdatedAt ?? DateTime.MinValue)
+                    .ThenBy(scored => scored.TypeRank)
+                : merged
+                    .OrderByDescending(scored => scored.Relevance)
+                    .ThenBy(scored => scored.TypeRank);
+
+            var finalResults = ordered
                 .Take(limit)
                 .Select(scored => scored.Result)
                 .ToList();
 
+            // 為最終結果中的「筆記」補上分類完整路徑與標籤（只對回傳的前 N 筆做批次補齊，非全體候選）。
+            await EnrichNoteResultsAsync(db, userId, finalResults, ct);
+
             return Results.Ok(ApiResponse<List<SearchResultDto>>.Ok(finalResults));
         });
+    }
+
+    /// <summary>
+    /// 依 categoryId（含所有子孫分類）與 tags（任一標籤）算出「被限定的筆記 id 集合」。
+    /// 兩者皆給時取交集（筆記需同時落在分類範圍且擁有任一標籤）。回傳 null 表示無範圍篩選。
+    /// 所有查詢皆以 <paramref name="userId"/> 明確過濾，故他人／不存在的 categoryId・tagId 自然得到空集合（不外洩）。
+    /// </summary>
+    /// <param name="db">資料庫內容。</param>
+    /// <param name="userId">目前使用者。</param>
+    /// <param name="categoryId">分類篩選（含子孫；可空）。</param>
+    /// <param name="tagFilterIds">標籤篩選 Id（任一；可為空清單）。</param>
+    /// <param name="ct">取消權杖。</param>
+    /// <returns>被限定的筆記 id 集合；無範圍篩選時為 null。</returns>
+    private static async Task<HashSet<Guid>?> ComputeScopedNoteIdsAsync(
+        ZonWikiDbContext db,
+        Guid userId,
+        Guid? categoryId,
+        List<Guid> tagFilterIds,
+        CancellationToken ct)
+    {
+        HashSet<Guid>? scoped = null;
+
+        if (categoryId.HasValue)
+        {
+            // 載入本人有效分類 → 建階層 → 展開「該分類自身＋所有子孫」（cycle-safe）。
+            var categoryRows = await db.Category.AsNoTracking()
+                .Where(c => c.UserId == userId && c.ValidFlag)
+                .Select(c => new { c.Id, c.ParentId, c.Name })
+                .ToListAsync(ct);
+            var hierarchy = CategoryHierarchy.Build(categoryRows.Select(c => (c.Id, c.ParentId, c.Name)));
+            var scopeCategoryIds = hierarchy.DescendantsAndSelf(categoryId.Value).ToList();
+
+            var categoryNoteIds = await db.NoteCategory.AsNoTracking()
+                .Where(nc => nc.UserId == userId && nc.ValidFlag && scopeCategoryIds.Contains(nc.CategoryId))
+                .Select(nc => nc.NoteId)
+                .Distinct()
+                .ToListAsync(ct);
+            scoped = categoryNoteIds.ToHashSet();
+        }
+
+        if (tagFilterIds.Count > 0)
+        {
+            var tagNoteIds = await db.NoteTag.AsNoTracking()
+                .Where(nt => nt.UserId == userId && nt.ValidFlag && tagFilterIds.Contains(nt.TagId))
+                .Select(nt => nt.NoteId)
+                .Distinct()
+                .ToListAsync(ct);
+            var tagSet = tagNoteIds.ToHashSet();
+            scoped = scoped is null ? tagSet : scoped.Intersect(tagSet).ToHashSet();
+        }
+
+        return scoped;
+    }
+
+    /// <summary>
+    /// 為搜尋結果中的「筆記」批次補上分類完整路徑與標籤名稱（就地取代為帶欄位的新 DTO）。
+    /// 每個筆記結果一律得到「非 null」的 Categories／Tags（至少空陣列），供前端免 null 防禦。
+    /// 分類路徑以本人分類階層計算（cycle-safe），跨租戶的異常連結因分類不在本人階層而回空字串被濾除（不外洩）。
+    /// </summary>
+    /// <param name="db">資料庫內容。</param>
+    /// <param name="userId">目前使用者。</param>
+    /// <param name="results">最終結果清單（就地修改筆記項目）。</param>
+    /// <param name="ct">取消權杖。</param>
+    private static async Task EnrichNoteResultsAsync(
+        ZonWikiDbContext db,
+        Guid userId,
+        List<SearchResultDto> results,
+        CancellationToken ct)
+    {
+        var noteIds = new List<Guid>();
+        foreach (var r in results)
+        {
+            if (r.Type == TypeNote && Guid.TryParse(r.Id, out var noteId))
+            {
+                noteIds.Add(noteId);
+            }
+        }
+
+        if (noteIds.Count == 0)
+        {
+            return;
+        }
+
+        // 本人所有有效分類 → 階層（供拼路徑）。
+        var categoryRows = await db.Category.AsNoTracking()
+            .Where(c => c.UserId == userId && c.ValidFlag)
+            .Select(c => new { c.Id, c.ParentId, c.Name })
+            .ToListAsync(ct);
+        var hierarchy = CategoryHierarchy.Build(categoryRows.Select(c => (c.Id, c.ParentId, c.Name)));
+
+        // 這些筆記目前的分類關聯 → 依筆記分組成「路徑清單」。
+        var categoryLinks = await db.NoteCategory.AsNoTracking()
+            .Where(nc => nc.UserId == userId && nc.ValidFlag && noteIds.Contains(nc.NoteId))
+            .Select(nc => new { nc.NoteId, nc.CategoryId })
+            .ToListAsync(ct);
+        var categoriesByNote = categoryLinks
+            .GroupBy(link => link.NoteId)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyList<string>)group
+                    .Select(link => hierarchy.BuildPath(link.CategoryId))
+                    .Where(path => !string.IsNullOrEmpty(path))
+                    .ToList());
+
+        // 這些筆記目前的標籤（本人有效）→ 依筆記分組成「名稱清單」。
+        var tagLinks = await (
+            from nt in db.NoteTag.AsNoTracking()
+            join t in db.Tag.AsNoTracking() on nt.TagId equals t.Id
+            where nt.UserId == userId && nt.ValidFlag && noteIds.Contains(nt.NoteId)
+                && t.UserId == userId && t.ValidFlag
+            select new { nt.NoteId, t.Name })
+            .ToListAsync(ct);
+        var tagsByNote = tagLinks
+            .GroupBy(link => link.NoteId)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyList<string>)group.Select(link => link.Name).ToList());
+
+        for (var i = 0; i < results.Count; i++)
+        {
+            if (results[i].Type != TypeNote || !Guid.TryParse(results[i].Id, out var noteId))
+            {
+                continue;
+            }
+
+            results[i] = results[i] with
+            {
+                Categories = categoriesByNote.GetValueOrDefault(noteId, EmptyStrings),
+                Tags = tagsByNote.GetValueOrDefault(noteId, EmptyStrings),
+            };
+        }
+    }
+
+    /// <summary>共用的空字串唯讀清單（筆記無分類/標籤時回傳，避免每次配置）。</summary>
+    private static readonly IReadOnlyList<string> EmptyStrings = Array.Empty<string>();
+
+    /// <summary>結果數量預設值（未帶 limit 時）。</summary>
+    private const int DefaultLimit = 50;
+
+    /// <summary>結果數量上限（前端「載入更多」可遞增到此；超過一律夾住，防自傷型大查詢）。</summary>
+    private const int MaxLimit = 500;
+
+    /// <summary>排序參數值："updated"＝依更新時間新→舊；其餘（含未帶）＝依相關性。</summary>
+    private const string SortUpdated = "updated";
+
+    /// <summary>
+    /// 解析 CSV 形式的 GUID 清單（用於 tags 篩選）；非法／非 GUID 片段一律忽略。
+    /// </summary>
+    /// <param name="csv">逗號分隔的 GUID 字串（可為 null）。</param>
+    /// <returns>成功解析的 GUID 清單（可能為空）。</returns>
+    private static List<Guid> ParseGuidCsv(string? csv)
+    {
+        var result = new List<Guid>();
+        if (string.IsNullOrWhiteSpace(csv))
+        {
+            return result;
+        }
+
+        foreach (var raw in csv.Split(
+            ',',
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (Guid.TryParse(raw, out var id))
+            {
+                result.Add(id);
+            }
+        }
+
+        return result;
     }
 
     /// <summary>
