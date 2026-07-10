@@ -3767,6 +3767,40 @@ html[data-route="trash"] .sidebar-toggle {
   color: var(--text-tertiary);
   font-size: var(--text-sm);
 }
+/* 填滿模式（答題彈窗等「外層給定固定高度」的場景）：
+   編輯器撐滿外層剩餘高度，編輯區/預覽區各自內部捲動（不再由內容撐高）。 */
+.mde--fill {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.mde--fill .mde-toolbar {
+  flex-shrink: 0;
+}
+.mde--fill .mde-body {
+  flex: 1;
+  min-height: 0;
+}
+.mde--fill .mde-body:not(.mde-body--split) {
+  display: flex;
+  flex-direction: column;
+}
+.mde--fill .mde-body--split > * {
+  min-height: 0;
+  height: 100%;
+}
+.mde--fill .mde-textarea {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  overflow-y: auto;
+}
+.mde--fill .mde-preview {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
 
 /* ===================================================================== */
 /* 日期時間選擇器（可輸入 + 日曆/時間彈窗），前綴 .dtp-                   */

@@ -55,7 +55,7 @@ interface TextItem {
 export function DrawingTextBox({
   item, zoomRef, toFlow, selected, editing, interactive = true,
   onSelect, onStartEdit, onStopEdit, onChange, onCommit, onAdjustWheel, overlayId,
-  isQuestion, onToggleQuestion,
+  isQuestion, onToggleQuestion, hasAnswer, onOpenAnswer,
 }: {
   item: TextItem;
   /** 目前縮放（用 ref 取最新值，供拖曳換算）。筆記頁固定為 1。 */
@@ -91,6 +91,14 @@ export function DrawingTextBox({
    * 選擇性：切換「設為問題／移除問題」的回呼（僅筆記頁傳入；有傳才顯示 ❓ 切換鈕）。
    */
   onToggleQuestion?: () => void;
+  /**
+   * 選擇性：此問題是否已有回答（僅筆記頁使用；決定「答」鈕要不要上色標示）。
+   */
+  hasAnswer?: boolean;
+  /**
+   * 選擇性：開啟此問題的答題彈窗（僅筆記頁傳入；已標記為問題時才會在 ❓ 右側顯示「答」鈕）。
+   */
+  onOpenAnswer?: () => void;
 }) {
   const extra = parseTextExtra(item.dataJson);
   const fontColor = item.color || '#ef4444';
@@ -257,7 +265,9 @@ export function DrawingTextBox({
           style={{
             position: 'absolute', left: -10, top: -10, width: 20, height: 20, borderRadius: '50%',
             display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, lineHeight: 1,
-            cursor: 'pointer', pointerEvents: 'auto', zIndex: 3,
+            // 跟隨 interactive：繪圖模式（interactive=false）時不可點，
+            // 否則子元素的 auto 會覆寫根層的 none、吃掉經過的繪圖筆畫。
+            cursor: 'pointer', pointerEvents: interactive ? 'auto' : 'none', zIndex: 3,
             border: '1px solid var(--border-strong, #999)',
             background: isQuestion ? 'var(--action-primary-bg, #2563eb)' : 'var(--bg-surface, #fff)',
             color: isQuestion ? 'var(--action-primary-fg, #fff)' : 'var(--text-secondary, #555)',
@@ -281,6 +291,29 @@ export function DrawingTextBox({
             ❓
           </span>
         )
+      )}
+
+      {/* 「答」鈕（❓ 右側；僅「已標記為問題」的文字框顯示）：點擊開啟答題彈窗。
+          已有回答時比照 ❓ 上色標示（primary 色），尚無回答則維持原始配色（白底灰字）。 */}
+      {onOpenAnswer && isQuestion && !editing && (
+        <button
+          type="button"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); onOpenAnswer(); }}
+          title={hasAnswer ? '開啟答題彈窗（已作答）' : '開啟答題彈窗（尚未作答）'}
+          data-testid="anno-text-answer-open"
+          style={{
+            position: 'absolute', left: 12, top: -10, width: 20, height: 20, borderRadius: '50%',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, lineHeight: 1,
+            // 跟隨 interactive：繪圖模式時不可點（理由同 ❓ 鈕——避免吃掉繪圖 pointerdown）。
+            cursor: 'pointer', pointerEvents: interactive ? 'auto' : 'none', zIndex: 3,
+            border: '1px solid var(--border-strong, #999)',
+            background: hasAnswer ? 'var(--action-primary-bg, #2563eb)' : 'var(--bg-surface, #fff)',
+            color: hasAnswer ? 'var(--action-primary-fg, #fff)' : 'var(--text-secondary, #555)',
+          }}
+        >
+          答
+        </button>
       )}
 
       {selected && !editing && (

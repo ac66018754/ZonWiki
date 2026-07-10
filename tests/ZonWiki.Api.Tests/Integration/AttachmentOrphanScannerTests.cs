@@ -341,4 +341,87 @@ public sealed class AttachmentOrphanScannerTests(ZonWikiApiFactory factory)
         // Assert
         (await LoadAsync(id))!.ValidFlag.Should().BeTrue("浮層輪播引用也算引用");
     }
+
+    [Fact]
+    public async Task Scan_ReferencedByQuestionAnswerOnly_IsUntouched()
+    {
+        // Arrange：只被「問題的回答」（NoteOverlayItem.QuestionAnswer，Markdown 內容）引用——
+        // 答題彈窗的回答區用同一個 Markdown 編輯器，同樣能貼圖，故回答引用也必須算引用。
+        var userId = (await factory.SeedUserWithTokenAsync($"orphan-answer-{Guid.NewGuid():N}@test.local")).UserId;
+        var (id, _) = await SeedAttachmentAsync(userId);
+        var (scope, db) = factory.CreateDbScope();
+        using (scope)
+        {
+            var note = new Note
+            {
+                UserId = userId,
+                Title = "有問題便利貼的筆記",
+                Slug = $"answer-{Guid.NewGuid():N}",
+                ContentRaw = "內文無圖",
+                CreatedUser = "test",
+                UpdatedUser = "test",
+            };
+            db.Note.Add(note);
+            db.NoteOverlayItem.Add(new NoteOverlayItem
+            {
+                UserId = userId,
+                NoteId = note.Id,
+                Kind = "sticky",
+                Text = "這是一個問題？",
+                IsQuestion = true,
+                QuestionAnswer = $"回答內文\n\n![圖片](/api/attachments/{id:D})",
+                CreatedUser = "test",
+                UpdatedUser = "test",
+            });
+            await db.SaveChangesAsync();
+        }
+        await BackdateAsync(id, days: 3);
+
+        // Act
+        await ScanAsync();
+
+        // Assert
+        (await LoadAsync(id))!.ValidFlag.Should().BeTrue("問題回答引用也算引用（回答可貼圖）");
+    }
+
+    [Fact]
+    public async Task Scan_ReferencedByStickyTextOnly_IsUntouched()
+    {
+        // Arrange：只被「便利貼／文字框本文」（NoteOverlayItem.Text）引用——
+        // 本文以 Markdown 渲染（StickyBody 用 ReactMarkdown），使用者可手貼附件短網址正常顯圖，
+        // 故本文引用也必須算引用（對抗式復審 2026-07-10 指出的缺口）。
+        var userId = (await factory.SeedUserWithTokenAsync($"orphan-stickytext-{Guid.NewGuid():N}@test.local")).UserId;
+        var (id, _) = await SeedAttachmentAsync(userId);
+        var (scope, db) = factory.CreateDbScope();
+        using (scope)
+        {
+            var note = new Note
+            {
+                UserId = userId,
+                Title = "有貼圖便利貼的筆記",
+                Slug = $"stickytext-{Guid.NewGuid():N}",
+                ContentRaw = "內文無圖",
+                CreatedUser = "test",
+                UpdatedUser = "test",
+            };
+            db.Note.Add(note);
+            db.NoteOverlayItem.Add(new NoteOverlayItem
+            {
+                UserId = userId,
+                NoteId = note.Id,
+                Kind = "sticky",
+                Text = $"便利貼本文\n\n![圖片](/api/attachments/{id:D})",
+                CreatedUser = "test",
+                UpdatedUser = "test",
+            });
+            await db.SaveChangesAsync();
+        }
+        await BackdateAsync(id, days: 3);
+
+        // Act
+        await ScanAsync();
+
+        // Assert
+        (await LoadAsync(id))!.ValidFlag.Should().BeTrue("便利貼／文字框本文引用也算引用（本文以 Markdown 渲染可顯圖）");
+    }
 }

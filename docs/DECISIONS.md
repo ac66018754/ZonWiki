@@ -268,3 +268,18 @@
 - **色盤**：三組自訂色盤（畫筆/字色/底）預設值改為 **空陣列**（先前有種子色，使用者要求移除），由使用者用「＋」自己存；`CustomSwatches` 加「✎ 編輯」模式（每格右上 ✕ 移除、點格改成目前色，觸控可用）；「開色盤」鈕改成明顯膠囊（🎨＋▾）。
 - **行事曆兩段式**（`useRevealThenOpen`）：月/週視圖窄任務格「太窄看不出是啥」→ 點第一下若標題被截斷就先原地放大顯示完整標題、不開任務；點第二下（或本來就沒截斷）才開。套用月視圖橫條、週全天橫條、時間格任務塊。
 - **複製任務/筆記**：以既有 create API 於前端組合（`duplicateTask`＝createTaskCard＋assignTaskTags＋createSubTask；`duplicateNote`＝createNote 帶內容/分類/標籤），標題加「(副本)」。取捨：非後端原子端點、多次請求（個別失敗不影響主體）；副本刻意不帶父任務/首頁釘選。
+
+## 2026-07-10 ｜ 答題彈窗升級：回答＝共用 Markdown 編輯器（可貼圖）→ 孤兒附件掃描器必須納入 QuestionAnswer
+
+- **背景**：問題功能第二批 UX 需求——問題清單面板可拖曳、答題彈窗可整體縮放、「問題／回答」支援 Markdown（含預覽）、T 文字框 ❓ 旁加「答」鈕（已答上色）。
+- **考慮過的選項**：回答區自寫輕量 Markdown 輸入 vs 直接共用 `MarkdownEditor`；彈窗縮放用 CSS `resize: both` vs 自訂右下角握把。
+- **最終決定**：
+  - 回答區直接共用 **`MarkdownEditor`（withPreview）**——與筆記/任務/節點同一套工具列與編輯/並排/預覽行為，免重複造輪子；新增 `.mde--fill` 樣式（選配 class）讓編輯器在「外層固定高度」場景撐滿並內部捲動。「問題」區以 `ToggleAwareMarkdown` 唯讀渲染。
+  - 彈窗縮放用**自訂握把**（pointer events，MIN 320×360、夾在視窗內）——CSS resize 的原生握把不可控且跨瀏覽器不一致，也難與「初始高度自動」共存。
+  - 「Ctrl+Z 還原 AI 覆蓋」改掛在編輯器外層 `onKeyDownCapture`（capture 先於 textarea 原生 undo），行為與原版一致。
+  - 圖片上傳中停用「儲存／請 AI 回答」（接 `onUploadingChange`），比照筆記編輯器，避免把「〔圖片上傳中〕」佔位存進 DB。
+- **關鍵連動（易漏）**：回答（`NoteOverlayItem.QuestionAnswer`）從此可能引用附件短網址，**孤兒附件掃描器的引用判定必須加查 QuestionAnswer**（`AttachmentOrphanScanner`），否則只被回答引用的附件會在寬限期後被誤判孤兒軟刪除（圖片變死圖）。已以整合測試 `Scan_ReferencedByQuestionAnswerOnly_IsUntouched` 固定此不變式。日後若再有新的「存 Markdown 的欄位」，記得同步擴掃描器。
+- **對抗式復審追加（同日）**：
+  - 復審指出既有同類缺口——`NoteOverlayItem.Text`（便利貼／文字框**本文**）一直以 ReactMarkdown 渲染、手貼附件短網址即可顯圖，但掃描器從未查它。已一併補查＋測試 `Scan_ReferencedByStickyTextOnly_IsUntouched`（掃描器測試 11/11）。
+  - **顯式取捨**：開問啦畫布的 `CanvasAnnotation`（DataJson/Text）目前**不在掃描範圍**——前端畫布標註尚無任何貼圖上傳路徑，寫不進附件 id；日後若畫布標註接上附件上傳，必須同步擴掃描器（此處先記下來避免隱性遺漏）。
+  - 效能觀察：`DataJson`／`Text`／`QuestionAnswer` 三個 ILIKE 均無專用 trigram 索引（`Text` 有搜尋用 GIN），每日一輪、單人規模可接受（與 NoteRevision 不建索引的既有取捨一致）；若日後掃描明顯變慢，比照 `IX_Note_ContentRaw_Trgm` 補索引。
