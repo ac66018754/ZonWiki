@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using ZonWiki.Api.Auth;
 using ZonWiki.Api.Common;
 using ZonWiki.Api.Notes;
+using ZonWiki.Api.RateLimiting;
 using ZonWiki.Api.Services;
 using ZonWiki.Domain.Common;
 using ZonWiki.Domain.Dtos;
@@ -90,6 +91,19 @@ public static class NoteWriteEndpoints
         // 只回傳 AI 答案文字，由前端放進便利貼浮層（不另建答案筆記）。
         var askSelectionAnswer = app.MapPost("/api/notes/{id:guid}/ask-selection-answer", AskSelectionAnswerHandler);
 
+        // POST /api/notes/{id}/ask-question - 問題功能：以「整篇筆記內容」為脈絡請 AI 回答一則問題，
+        // 只回傳答案文字（不落地），由前端放進答題彈窗的「回答」框。
+        var askQuestion = app.MapPost("/api/notes/{id:guid}/ask-question", AskQuestionHandler);
+
+        // AI 端點（會真實觸發付費 LLM 呼叫）一律掛「每使用者限流」（AiPolicy）——
+        // 比照 /api/ai/ask（AiEndpoints）與精煉端點的既定政策（審查發現 #30/#58）：
+        // 防止無窮迴圈或被盜憑證灌爆付費 API 額度與這台 2GB VM 的背景工作數。
+        reformatNote.RequireRateLimiting(RateLimitingExtensions.AiPolicy);
+        beautifyNote.RequireRateLimiting(RateLimitingExtensions.AiPolicy);
+        askSelection.RequireRateLimiting(RateLimitingExtensions.AiPolicy);
+        askSelectionAnswer.RequireRateLimiting(RateLimitingExtensions.AiPolicy);
+        askQuestion.RequireRateLimiting(RateLimitingExtensions.AiPolicy);
+
         // 要求驗證的端點
         if (authConfigured)
         {
@@ -103,6 +117,7 @@ public static class NoteWriteEndpoints
             beautifyNote.RequireAuthorization();
             askSelection.RequireAuthorization();
             askSelectionAnswer.RequireAuthorization();
+            askQuestion.RequireAuthorization();
         }
     }
 
@@ -244,6 +259,87 @@ public static class NoteWriteEndpoints
 
         return Results.Accepted(value: ApiResponse<AiAsyncStartedDto>.Ok(new AiAsyncStartedDto(sessionId)));
     }
+
+    /// <summary>
+    /// 問題功能：以「整篇筆記內容」為脈絡請 AI 回答一則問題，只回傳答案文字（不建答案筆記、不落地）；
+    /// 由前端把答案放進答題彈窗的「回答」框。完全模仿 <see cref="AskSelectionAnswerHandler"/> 的非同步流程。
+    /// </summary>
+    private static async Task<IResult> AskQuestionHandler(
+        HttpContext http,
+        ZonWikiDbContext db,
+        AskQueueService queueService,
+        IServiceScopeFactory scopeFactory,
+        ILoggerFactory loggerFactory,
+        Guid id,
+        AskNoteQuestionRequest request,
+        CancellationToken ct)
+    {
+        var userId = ExtractUserId(http);
+        if (userId == Guid.Empty)
+        {
+            return Results.Json(
+                ApiResponse<AiAsyncStartedDto>.Fail("Invalid user identity", 401),
+                statusCode: StatusCodes.Status401Unauthorized);
+        }
+
+        var sourceNote = await db.Note
+            .FirstOrDefaultAsync(n => n.Id == id && n.ValidFlag && n.UserId == userId, ct);
+        if (sourceNote is null)
+        {
+            return Results.NotFound(ApiResponse<AiAsyncStartedDto>.Fail("Note not found", 404));
+        }
+
+        var question = (request.Question ?? "").Trim();
+        if (string.IsNullOrEmpty(question))
+        {
+            return Results.BadRequest(ApiResponse<AiAsyncStartedDto>.Fail("缺少問題", 400));
+        }
+
+        // 長度上限比照 NoteOverlayItem_Text 的 DB 上限——問題文字來自便利貼／文字框，超過即拒。
+        if (question.Length > MaxQuestionLength)
+        {
+            return Results.BadRequest(ApiResponse<AiAsyncStartedDto>.Fail($"問題過長（上限 {MaxQuestionLength} 字元）", 400));
+        }
+
+        // 把「整篇筆記內容」當成上下文（沿用 AskAboutAsync，不改 AI 介面）。
+        var context = $"【整篇筆記內容】\n{sourceNote.ContentRaw}";
+
+        // 非同步：同步建 Running session 立即回 sessionId；後援鏈在背景跑（避免 claude 冷啟動阻塞請求→502）。
+        // kind="notequestion"：與框選提問（floatingnote）區隔，讓「AI 處理佇列」正確標示為「筆記提問」。
+        var session = await queueService.CreateRunningNoteAiSessionAsync(userId, id, "notequestion", question, null, ct);
+        var sessionId = session.Id;
+
+        _ = Task.Run(async () =>
+        {
+            using var scope = scopeFactory.CreateScope();
+            var bgDb = scope.ServiceProvider.GetRequiredService<ZonWikiDbContext>();
+            bgDb.SetCurrentUserId(userId);
+            var bgQueue = scope.ServiceProvider.GetRequiredService<AskQueueService>();
+            var bgAi = scope.ServiceProvider.GetRequiredService<INoteAiService>();
+            var bgLogger = loggerFactory.CreateLogger("NoteAiBackground");
+            // 背景總預算 1800 秒（30 分）：讓後援鏈能真的逐棒 fallback。
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(1800));
+            try
+            {
+                await bgQueue.FinishNoteAiAsync(
+                    sessionId,
+                    userId,
+                    async (onStage, bgCt) => await bgAi.AskAboutAsync(context, question, bgCt, onStage),
+                    cts.Token);
+            }
+            catch (Exception ex)
+            {
+                bgLogger.LogError(ex, "筆記提問背景失敗（session={SessionId}）", sessionId);
+            }
+        });
+
+        return Results.Accepted(value: ApiResponse<AiAsyncStartedDto>.Ok(new AiAsyncStartedDto(sessionId)));
+    }
+
+    /// <summary>
+    /// 問題文字長度上限（字元）：與 NoteOverlayItem_Text 的 DB 上限共用同一常數（單一真相，避免魔術數字漂移）。
+    /// </summary>
+    private const int MaxQuestionLength = NoteOverlayItem.TextMaxLength;
 
     // ==================== Create Note ====================
 

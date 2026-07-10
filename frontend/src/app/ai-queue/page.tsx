@@ -31,6 +31,7 @@ const KIND_FILTERS: { value: AskQueueKind | "all"; label: string; icon: string }
   { value: "refine", label: "精煉成筆記", icon: "✨" },
   { value: "node", label: "開問啦提問", icon: "🎨" },
   { value: "floatingnote", label: "框選提問", icon: "✍️" },
+  { value: "notequestion", label: "筆記提問", icon: "❓" },
   { value: "beautify", label: "美化筆記", icon: "💅" },
   { value: "reformat", label: "整理排版", icon: "🧹" },
 ];

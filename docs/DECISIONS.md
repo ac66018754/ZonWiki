@@ -5,6 +5,30 @@
 
 ---
 
+## 2026-07-10 ｜筆記「問題功能」＋搜尋涵蓋浮層（feature/note-questions-and-search）
+
+- **背景**：使用者要能把便利貼／T 文字框標記為「問題」，集中在清單裡檢視、逐題作答（手寫或請 AI 回答），並在分類頁看到該分類（含所有子孫分類）的所有問題；同時搜尋要能搜到浮層文字並可依類型篩選。
+- **問題資料模型：用 `NoteOverlayItem` 加欄位，而非獨立「問題表」**
+  - **考慮過的選項**：①在 `NoteOverlayItem` 加 `IsQuestion`／`QuestionAnswer` 兩欄（採用）；②獨立 `NoteQuestion` 表，以 FK 指向浮層元件。
+  - **最終決定**：採 **①加欄位**。理由：問題本質上就是「浮層元件的一個屬性」，其生命週期完全跟隨 item（item 軟刪＝問題消失、拖曳/改文字都跟著走），獨立表只會多一層 join 與「兩邊同步／級聯軟刪」的負擔。migration `AddNoteOverlayQuestion`（`NoteOverlayItem_IsQuestion` bool 預設 false、`NoteOverlayItem_QuestionAnswer` text 可空）。
+  - **取捨**：回答內容與 item 綁死、且「一題一答」；未來若要「一題多答／多人協作答」再拆獨立表。
+- **回答「清空」語意（已釘死）**：PUT patch 沿用既有慣例「`!= null` 才套用（含空字串）」——`questionAnswer: ""` ＝清成空字串（未答）、`null` ＝不更動；`HasAnswer` 定義為 `!string.IsNullOrEmpty(QuestionAnswer)`（空字串與 null 都算未答）。
+- **AI 回答走既有非同步佇列、只回文字不落地**：新端點 `POST /api/notes/{id}/ask-question` 完全模仿 `ask-selection-answer`（同步建 Running session 立即回 sessionId → 背景後援鏈跑 → 前端輪詢佇列取 `resultText`），以「整篇筆記內容」為脈絡。**新增 AiSession kind `"notequestion"`**（而非複用 `floatingnote`）——語意不同（無框選），且讓「AI 處理佇列」正確標示為「筆記提問」；已同步加入後端 `validKinds` 與前端 `AskQueueKind`／佇列標籤。問題長度上限 **4000 字元**（比照 `NoteOverlayItem_Text` 的 DB 上限；`ask-selection` 本身無上限，刻意不抄）。
+- **`GET /api/questions` 的分類範圍**：帶 `categoryId` → 先驗證分類屬本人（全域過濾使非本人／不存在查不到 → **404**，比照 `CategoryEndpoints` 慣例）；再於記憶體端遞迴算「自己＋所有子孫分類」（分類量小），**用 visited set 防環狀 ParentId 卡死**（雖建立端已擋環，仍照多層防線風格防禦）。筆記多分類 → 以「先算 noteId 集合再篩 item」的方式天然**去重**（不把 NoteCategory join 進主查詢）。join Note 讓「所屬筆記被軟刪」的孤兒問題一併被過濾（`DeleteNoteHandler` 不級聯軟刪 overlay）。
+- **前端架構**：問題面板與答題彈窗由 `NoteOverlay` 渲染（它擁有 overlay items 與回答狀態，單一真相），頁面只持有「面板開關」與「問題數」；答題彈窗 `QuestionAnswerPopup` 為獨立可重用元件（筆記頁與分類問題清單頁共用），portal＋`position:fixed`＋標題列拖曳，z-index 2000（高於釘住便利貼 1100+、低於未存守門確認框 4000）。**Ctrl+Z 還原 AI 覆蓋**：只在「回答框現值 === AI 覆蓋結果」時攔截還原快照，否則放行交給原生 undo。捲動定位邏輯抽成共用 `scrollToOverlayItem`（與 Phase 2 的 `?overlay=` effect 共用同一份）。
+- **搜尋擴充（同分支 Phase 2）取捨**：`/api/search` 新增 `types` CSV 篩選（未帶／全未知值＝回退全部型別，**非空集合**）；浮層納入搜尋——`text` 比對 `Text`、`sticky` 比對 `Text OR DataJson`（**便利貼標題存於 `DataJson.title`，為求簡潔以「整欄 ILIKE」比對**，極少數 JSON 雜訊誤中可接受，不在 SQL 端解析 JSON；標題顯示則於 C# 記憶體端安全解析）；`drawing`／`slide` 不搜。
+- **對抗式復審（資安／C#／前端三路平行）修正**：
+  - 【資安 HIGH】5 個筆記 AI 端點（reformat／beautify／ask-selection／ask-selection-answer／新增的 ask-question）補掛 `AiPolicy` 每使用者限流——前四個是**既有漏掛**（審查發現 #30/#58 既定政策的補課，比照 `/api/ai/ask`），非本次新引入。
+  - 【C# HIGH】`QuestionEndpoints` 全部查詢補「**明確 UserId＋ValidFlag**」條件——縱深防禦，與 SearchEndpoints／NoteOverlayEndpoints 的雙保險慣例一致（過去 Node 實體曾因單靠一道過濾出過跨帳號外洩事故），不再單靠 EF 全域過濾。
+  - 【C# M】PUT overlay 寫入端補 Kind 守門（`drawing`／`slide` 設問題屬性 → 400）；回答內容加應用層上限 **100,000 字元**（DB 欄位 text 無上限，防單列重複 PUT 塞爆＝自傷型 DoS）；`Text` 的 4000 上限抽成 `NoteOverlayItem.TextMaxLength` 常數（DB 設定與 ask-question 驗證共用，消魔術數字）；標題推導合併為 `NoteQuestionHelpers.DeriveOverlayTitle`（搜尋與問題清單共用一份，消重複）。
+  - 【前端 HIGH】答題彈窗的未存關閉守門改「**彈窗內建確認 UI**」——全站單例 `ConfirmProvider` 只有一個 resolver，與「可多開彈窗」衝突（兩個未存彈窗先後關閉會劫持彼此的確認）；`GlobalSearch` 加**請求序號**防「舊回應覆蓋新回應」競態（篩選 chips 快速切換時結果與篩選狀態不一致）。
+- **已知取捨（記錄下來，將來別當 bug 追）**：
+  - 搜尋端點沿用既有「ILIKE 撈命中列→記憶體排序→取 limit」模式（同 #W8-1 的刻意取捨），本次多覆蓋兩個浮層型別；全域過濾把範圍鎖在單一使用者、屬自傷型成本，單人系統可接受——單帳號筆記量上千篇長文再考慮 SQL 端粗篩上限。
+  - `GET /api/questions` 無分頁：個人問題量級（十～百）可接受，量大再加。
+  - 答題彈窗開啟中若同一 item 在別處被刪，彈窗會直接消失（不經未存確認）——極小眾情境，暫不處理。
+
+---
+
 ## 2026-07-08 ｜ 筆記貼圖改「磁碟附件＋短網址」，廢除 base64 內嵌
 
 - **背景**：編輯器貼圖用 `FileReader.readAsDataURL` 把 base64 直接內嵌 Markdown（浮層圖片輪播同樣）。一張 1MB 截圖＝約 137 萬字元進內文：Note 的 `ContentRaw`＋`ContentHtml` 存兩份；`IX_Note_ContentRaw_Trgm`（GIN trigram）被高熵 base64 灌爆（trigram 幾乎全唯一，2GB e2-small 上是實際威脅）；筆記詳情 API 一次回兩份；AI 重排把 base64 整包餵 LLM 炸 token；編輯器游標/undo 卡頓。

@@ -137,7 +137,7 @@ public sealed class AskQueueService
         var filterByStatus = !string.IsNullOrWhiteSpace(status) && validStatuses.Contains(status);
 
         // 驗證 kind 值（忽略無效值）。
-        var validKinds = new[] { "node", "floatingnote", "beautify", "reformat", "refine" };
+        var validKinds = new[] { "node", "floatingnote", "beautify", "reformat", "refine", "notequestion" };
         var filterByKind = !string.IsNullOrWhiteSpace(kind) && validKinds.Contains(kind);
 
         // 建立查詢。

@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using ZonWiki.Infrastructure.Persistence;
@@ -11,9 +12,11 @@ using ZonWiki.Infrastructure.Persistence;
 namespace ZonWiki.Infrastructure.Migrations
 {
     [DbContext(typeof(ZonWikiDbContext))]
-    partial class ZonWikiDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260709215017_AddOverlaySearchTrigramIndex")]
+    partial class AddOverlaySearchTrigramIndex
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -2450,12 +2453,6 @@ namespace ZonWiki.Infrastructure.Migrations
                         .HasColumnType("double precision")
                         .HasColumnName("NoteOverlayItem_Height");
 
-                    b.Property<bool>("IsQuestion")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(false)
-                        .HasColumnName("NoteOverlayItem_IsQuestion");
-
                     b.Property<string>("Kind")
                         .IsRequired()
                         .HasMaxLength(16)
@@ -2469,10 +2466,6 @@ namespace ZonWiki.Infrastructure.Migrations
                     b.Property<DateTime?>("PurgedDateTime")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("NoteOverlayItem_PurgedDateTime");
-
-                    b.Property<string>("QuestionAnswer")
-                        .HasColumnType("text")
-                        .HasColumnName("NoteOverlayItem_QuestionAnswer");
 
                     b.Property<string>("Text")
                         .HasMaxLength(4000)

@@ -421,6 +421,26 @@ export async function askNoteSelectionAnswer(
 }
 
 /**
+ * 問題功能：以「整篇筆記內容」為脈絡向 AI 提問，只取回答案文字（不落地），
+ * 由前端放進答題彈窗的「回答」框。完全模仿 {@link askNoteSelectionAnswer} 的 POST→輪詢→回文字流程。
+ */
+export async function askNoteQuestion(
+  noteId: string,
+  question: string
+): Promise<string | null> {
+  return withAiQueueNotify(async () => {
+    const start = await fetchJson<{ sessionId: string }>(
+      `/api/notes/${encodeURIComponent(noteId)}/ask-question`,
+      { method: 'POST', body: JSON.stringify({ question }) }
+    );
+    const sessionId = start.data?.sessionId;
+    if (!sessionId) return null;
+    const detail = await pollAskQueueUntilDone(sessionId);
+    return detail.resultText ?? null;
+  });
+}
+
+/**
  * 通用 AI 提問（不綁定筆記/節點）：以呼叫端組好的 context + question 請 AI 回答。
  * 用於開問啦畫布便利貼的「繼續問」（沒有單一筆記脈絡）。
  */
@@ -491,6 +511,10 @@ export interface NoteOverlayItem {
   text?: string | null;
   /** 型別專屬資料 JSON：drawing→筆畫；slide→圖片網址陣列；text→{bg,fontSize,rotation} */
   dataJson?: string | null;
+  /** 是否被標記為「問題」（僅 sticky / text 適用）。 */
+  isQuestion?: boolean;
+  /** 問題的回答內容（可空；空字串／null 皆視為未作答）。 */
+  questionAnswer?: string | null;
 }
 
 /** 建立浮層元件的輸入。 */
@@ -540,6 +564,43 @@ export async function updateNoteOverlay(
 export async function deleteNoteOverlay(itemId: string): Promise<boolean> {
   const r = await fetchJson(`/api/notes/overlay/${encodeURIComponent(itemId)}`, { method: 'DELETE' });
   return r.success;
+}
+
+/**
+ * 問題清單項目（被標記為「問題」的浮層元件；供分類問題清單頁集中檢視）。
+ */
+export interface NoteQuestionListItem {
+  /** 浮層元件（問題）識別碼。 */
+  itemId: string;
+  /** 所屬筆記識別碼。 */
+  noteId: string;
+  /** 所屬筆記標題。 */
+  noteTitle: string;
+  /** 所屬筆記 slug（供導航 + ?overlay 定位）。 */
+  noteSlug: string;
+  /** 浮層型別："sticky"（便利貼）/ "text"（T 文字框）。 */
+  kind: 'sticky' | 'text';
+  /** 問題顯示標題。 */
+  questionTitle: string;
+  /** 問題完整文字。 */
+  questionText: string;
+  /** 問題回答內容（可空）。 */
+  questionAnswer?: string | null;
+  /** 是否已作答。 */
+  hasAnswer: boolean;
+  /** 所屬筆記的分類識別碼陣列（供前端分類篩選；空＝未分類）。 */
+  categoryIds: string[];
+  /** 問題建立時間（UTC ISO 字串）。 */
+  createdDateTime: string;
+}
+
+/**
+ * 列出問題清單：不帶 categoryId＝使用者全部問題；帶了＝該分類與其所有子孫分類的問題。
+ */
+export async function listQuestions(categoryId?: string | null): Promise<NoteQuestionListItem[]> {
+  const query = categoryId ? `?categoryId=${encodeURIComponent(categoryId)}` : '';
+  const r = await fetchJson<NoteQuestionListItem[]>(`/api/questions${query}`);
+  return r.data ?? [];
 }
 
 /**

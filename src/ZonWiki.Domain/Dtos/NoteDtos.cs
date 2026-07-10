@@ -441,6 +441,8 @@ public sealed record UpdateNoteMarkRequest(
 /// <param name="Color">便利貼底色（sticky 用）。</param>
 /// <param name="Text">便利貼文字（sticky 用）。</param>
 /// <param name="DataJson">型別專屬資料 JSON（drawing 筆畫 / slide 圖片網址）。</param>
+/// <param name="IsQuestion">是否被標記為「問題」（僅 sticky / text 適用）。</param>
+/// <param name="QuestionAnswer">問題的回答內容（可空；空字串／null 皆視為未作答）。</param>
 public sealed record NoteOverlayItemDto(
     Guid Id,
     string Kind,
@@ -451,7 +453,9 @@ public sealed record NoteOverlayItemDto(
     int ZIndex,
     string? Color,
     string? Text,
-    string? DataJson);
+    string? DataJson,
+    bool IsQuestion,
+    string? QuestionAnswer);
 
 /// <summary>
 /// 建立筆記浮層元件的請求。
@@ -469,6 +473,8 @@ public sealed record CreateNoteOverlayItemRequest(
 
 /// <summary>
 /// 更新筆記浮層元件的請求（欄位皆選擇性；null 表不改）。
+/// 註：<see cref="QuestionAnswer"/> 遵循 patch 慣例「!= null 才套用（含空字串）」，
+/// 故傳空字串代表「清空回答」，傳 null 代表「不更動回答」。
 /// </summary>
 public sealed record UpdateNoteOverlayItemRequest(
     double? X = null,
@@ -478,7 +484,42 @@ public sealed record UpdateNoteOverlayItemRequest(
     int? ZIndex = null,
     string? Color = null,
     string? Text = null,
-    string? DataJson = null);
+    string? DataJson = null,
+    bool? IsQuestion = null,
+    string? QuestionAnswer = null);
+
+/// <summary>
+/// 問題清單項目資料傳輸物件（供筆記頁與分類問題清單頁集中檢視「被標記為問題的浮層元件」）。
+/// </summary>
+/// <param name="ItemId">浮層元件（問題）識別碼。</param>
+/// <param name="NoteId">所屬筆記識別碼。</param>
+/// <param name="NoteTitle">所屬筆記標題。</param>
+/// <param name="NoteSlug">所屬筆記 slug（供前端導航到該筆記 + ?overlay 定位）。</param>
+/// <param name="Kind">浮層型別："sticky"（便利貼）/ "text"（T 文字框）。</param>
+/// <param name="QuestionTitle">問題顯示標題（sticky 優先取 DataJson.title；否則取文字前段；再無則預設字樣）。</param>
+/// <param name="QuestionText">問題完整文字（浮層的 Text）。</param>
+/// <param name="QuestionAnswer">問題的回答內容（可空）。</param>
+/// <param name="HasAnswer">是否已作答（回答非空字串且非 null）。</param>
+/// <param name="CategoryIds">所屬筆記的分類識別碼陣列（供前端做分類篩選；可為空＝未分類）。</param>
+/// <param name="CreatedDateTime">問題（浮層元件）建立時間（UTC）。</param>
+public sealed record NoteQuestionListItemDto(
+    Guid ItemId,
+    Guid NoteId,
+    string NoteTitle,
+    string NoteSlug,
+    string Kind,
+    string QuestionTitle,
+    string QuestionText,
+    string? QuestionAnswer,
+    bool HasAnswer,
+    IReadOnlyList<Guid> CategoryIds,
+    DateTime CreatedDateTime);
+
+/// <summary>
+/// 對「一則問題」請 AI 回答的請求（以整篇筆記內容為脈絡，只回文字不落地）。
+/// </summary>
+/// <param name="Question">問題文字（trim 後必填、長度上限 4000 字元）。</param>
+public sealed record AskNoteQuestionRequest(string Question);
 
 /// <summary>
 /// 筆記修訂（版本）資料傳輸物件。
@@ -560,9 +601,10 @@ public sealed record NoteTagDto(
 
 /// <summary>
 /// 全站搜尋結果資料傳輸物件。
-/// 支援搜尋筆記、任務卡片、畫布、節點、標籤、分類與快速捕捉。
+/// 支援搜尋筆記、任務卡片、畫布、節點、標籤、分類、快速捕捉，
+/// 以及筆記浮層的 T 文字框（overlay-text）與便利貼（overlay-sticky）。
 /// </summary>
-/// <param name="Type">結果類型（note / task / canvas / node / tag / category / capture）。</param>
+/// <param name="Type">結果類型（note / task / canvas / node / tag / category / capture / overlay-text / overlay-sticky）。</param>
 /// <param name="Id">結果識別碼。</param>
 /// <param name="Title">結果標題。</param>
 /// <param name="Snippet">結果內容摘要（搜尋片段、節點開頭部分，可空）。</param>
