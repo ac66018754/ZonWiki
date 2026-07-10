@@ -26,7 +26,8 @@ const TYPE_FILTERS: readonly { label: string; key: string }[] = [
   { label: '便利貼', key: 'overlay-sticky' },
 ];
 
-/** metadata chip 樣式（分類/標籤；亮暗主題皆達 AA：次要文字色 + 表面底 + 邊框）。 */
+/** metadata chip 樣式（分類/標籤；亮暗主題皆達 AA：次要文字色 + 表面底 + 邊框）。
+ *  分類路徑完整顯示（不截斷）；過長時在框內換行、不外溢。 */
 const META_CHIP_STYLE: React.CSSProperties = {
   fontSize: 'var(--text-xs)',
   color: 'var(--text-secondary)',
@@ -34,10 +35,8 @@ const META_CHIP_STYLE: React.CSSProperties = {
   border: '1px solid var(--border-default)',
   borderRadius: 'var(--radius-sm)',
   padding: '0 6px',
-  maxWidth: '280px',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
+  whiteSpace: 'normal',
+  wordBreak: 'break-word',
 };
 
 /** 結果型別 → emoji ＋ 中文標籤。 */
