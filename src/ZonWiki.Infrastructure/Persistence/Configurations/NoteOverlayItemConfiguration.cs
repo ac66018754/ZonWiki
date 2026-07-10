@@ -19,9 +19,13 @@ public sealed class NoteOverlayItemConfiguration : IEntityTypeConfiguration<Note
 
         builder.Property(e => e.Kind).IsRequired().HasMaxLength(16);
         builder.Property(e => e.Color).HasMaxLength(32);
-        builder.Property(e => e.Text).HasMaxLength(4000);
+        builder.Property(e => e.Text).HasMaxLength(NoteOverlayItem.TextMaxLength);
         // DataJson 不設長度（手繪筆畫可能較大），以 text 儲存。
         builder.Property(e => e.DataJson).HasColumnType("text");
+        // IsQuestion 預設 false（僅 sticky / text 會被標記為問題）。
+        builder.Property(e => e.IsQuestion).HasDefaultValue(false);
+        // QuestionAnswer 不設長度（AI 回答的 Markdown 可能較長），以 text 儲存。
+        builder.Property(e => e.QuestionAnswer).HasColumnType("text");
         builder.Property(e => e.CreatedUser).IsRequired().HasMaxLength(128);
         builder.Property(e => e.UpdatedUser).IsRequired().HasMaxLength(128);
 

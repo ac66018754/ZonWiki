@@ -39,6 +39,7 @@ import { LinkedEntitiesBar } from '@/components/LinkedEntitiesBar';
 import { TocPanel } from '@/components/TocPanel';
 import { ToggleAwareMarkdown } from '@/components/MarkdownPreview';
 import { buildToc } from '@/lib/toc';
+import { scrollToOverlayItem } from '@/lib/scrollToOverlayItem';
 import { resolveAttachmentUrls } from '@/lib/attachmentUrl';
 import { useUndoHotkeys, resetUndo } from '@/lib/undoManager';
 import { useConfirm } from '@/components/ConfirmProvider';
@@ -338,6 +339,11 @@ export default function NotesDetailPage() {
   // 章節目錄表（浮動、可拖曳、可關閉）：預設不開啟，點右下角工具列「📖 目錄」才打開（使用者裁示 2026-07-08）。
   const [tocOpen, setTocOpen] = useState(false);
 
+  // 問題清單：面板開關由本頁工具列鈕控制，面板本體由 NoteOverlay 渲染（需存取 overlay items）。
+  // 問題數由 NoteOverlay 透過 onQuestionsChange 回報，供工具列鈕顯示 "❓ 問題清單 (N)"。
+  const [questionPanelOpen, setQuestionPanelOpen] = useState(false);
+  const [questionCount, setQuestionCount] = useState(0);
+
   // 本頁捲動容器（.note-detail-page）：記住閱讀位置、下次打開自動捲回（N1）。
   const noteScrollRef = useRef<HTMLDivElement | null>(null);
   const scrollSaveRaf = useRef<number | null>(null);
@@ -634,6 +640,15 @@ export default function NotesDetailPage() {
 
     return () => clearTimeout(timer);
   }, [markId, previewHtml]);
+
+  // 讀取 ?overlay= 用來從搜尋結果 / 問題清單跳轉到某個浮層元件（便利貼 / T 文字框）位置。
+  const overlayId = searchParams.get('overlay');
+
+  // 捲動到浮層元件位置並短暫高亮（定位邏輯抽成共用 util，問題清單面板點列項目也複用同一份）。
+  useEffect(() => {
+    if (!overlayId) return;
+    return scrollToOverlayItem(overlayId);
+  }, [overlayId, previewHtml, note?.id]);
 
   // 載入筆記詳細（分類/標籤選項池與使用者已改由 SWR 供給，故此處只抓筆記本身）
   useEffect(() => {
@@ -1040,6 +1055,17 @@ export default function NotesDetailPage() {
           {/* 編輯中時隱藏「編輯 / 匯出 / 刪除」（避免與下方編輯區的取消/保存混淆）；編輯區自有取消/保存。 */}
           {!isEditing && (
             <div style={{ display: 'flex', gap: 'var(--spacing-2)', flexShrink: 0 }}>
+              {/* 問題清單（只在預覽分頁顯示，因浮層問題只在預覽渲染）：點擊開/關由 NoteOverlay 渲染的問題面板。 */}
+              {activeTab === 'preview' && (
+                <button
+                  onClick={() => setQuestionPanelOpen((v) => !v)}
+                  className="btn-secondary"
+                  title="檢視本篇所有問題（便利貼／T 文字框標記為問題者）"
+                  aria-pressed={questionPanelOpen}
+                >
+                  ❓ 問題清單 ({questionCount})
+                </button>
+              )}
               {/* 一鍵收合／展開整頁摺疊區塊（單鈕切換；只在預覽分頁、且內容真的有 toggle 時才出現）。
                   toggle 是後端渲染的原生 <details>，直接設 .open 即可。 */}
               {activeTab === 'preview' && previewHtml.includes('md-toggle') && (
@@ -1511,6 +1537,9 @@ export default function NotesDetailPage() {
                   containerRef={previewRef}
                   onToggleToc={() => setTocOpen((v) => !v)}
                   tocOpen={tocOpen}
+                  questionPanelOpen={questionPanelOpen}
+                  onQuestionPanelOpenChange={setQuestionPanelOpen}
+                  onQuestionsChange={(qs) => setQuestionCount(qs.length)}
                 />
                 {tocOpen && toc.length > 0 && (
                   <TocPanel noteId={note.id} toc={toc} onClose={() => setTocOpen(false)} />

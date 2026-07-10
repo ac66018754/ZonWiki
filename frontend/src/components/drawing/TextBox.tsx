@@ -54,7 +54,8 @@ interface TextItem {
  */
 export function DrawingTextBox({
   item, zoomRef, toFlow, selected, editing, interactive = true,
-  onSelect, onStartEdit, onStopEdit, onChange, onCommit, onAdjustWheel,
+  onSelect, onStartEdit, onStopEdit, onChange, onCommit, onAdjustWheel, overlayId,
+  isQuestion, onToggleQuestion,
 }: {
   item: TextItem;
   /** 目前縮放（用 ref 取最新值，供拖曳換算）。筆記頁固定為 1。 */
@@ -77,6 +78,19 @@ export function DrawingTextBox({
    * 未提供＝該端不支援，滾輪維持頁面捲動）。
    */
   onAdjustWheel?: (deltaY: number) => void;
+  /**
+   * 選擇性：標註（浮層）識別碼；提供時會標到根元素的 data-overlay-id，
+   * 供筆記頁 ?overlay= 捲動定位與高亮使用（開問啦畫布不需要，故為選擇性）。
+   */
+  overlayId?: string;
+  /**
+   * 選擇性：此文字框是否被標記為「問題」（僅筆記頁使用；開問啦畫布不傳＝零改變）。
+   */
+  isQuestion?: boolean;
+  /**
+   * 選擇性：切換「設為問題／移除問題」的回呼（僅筆記頁傳入；有傳才顯示 ❓ 切換鈕）。
+   */
+  onToggleQuestion?: () => void;
 }) {
   const extra = parseTextExtra(item.dataJson);
   const fontColor = item.color || '#ef4444';
@@ -208,6 +222,7 @@ export function DrawingTextBox({
         pointerEvents: interactive ? 'auto' : 'none',
       }}
       data-testid="anno-text"
+      data-overlay-id={overlayId}
       // 只有左鍵選取/拖曳（右鍵留給「取消模式」）。
       onPointerDown={(e) => { if (e.button !== 0) return; if (!editing) { onSelect(); startMove(e); } }}
       onDoubleClick={(e) => { e.stopPropagation(); onStartEdit(); }}
@@ -229,6 +244,44 @@ export function DrawingTextBox({
         }}
         data-testid="anno-text-input"
       />
+
+      {/* 問題標記（僅筆記頁傳入 onToggleQuestion / isQuestion 時顯示；開問啦畫布不傳＝不渲染）。
+          選取且非編輯中時顯示「可點擊的 ❓ 切換鈕」；否則若已是問題，顯示「持續可見的 ❓ 徽章」。 */}
+      {onToggleQuestion && selected && !editing ? (
+        <button
+          type="button"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); onToggleQuestion(); }}
+          title={isQuestion ? '移除問題標記' : '設為問題'}
+          data-testid="anno-text-question-toggle"
+          style={{
+            position: 'absolute', left: -10, top: -10, width: 20, height: 20, borderRadius: '50%',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, lineHeight: 1,
+            cursor: 'pointer', pointerEvents: 'auto', zIndex: 3,
+            border: '1px solid var(--border-strong, #999)',
+            background: isQuestion ? 'var(--action-primary-bg, #2563eb)' : 'var(--bg-surface, #fff)',
+            color: isQuestion ? 'var(--action-primary-fg, #fff)' : 'var(--text-secondary, #555)',
+          }}
+        >
+          ❓
+        </button>
+      ) : (
+        isQuestion && (
+          <span
+            aria-label="已標記為問題"
+            title="已標記為問題"
+            style={{
+              position: 'absolute', left: -8, top: -8, width: 18, height: 18, borderRadius: '50%',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, lineHeight: 1,
+              pointerEvents: 'none', zIndex: 3,
+              background: 'var(--action-primary-bg, #2563eb)', color: 'var(--action-primary-fg, #fff)',
+              border: '1px solid var(--bg-surface, #fff)',
+            }}
+          >
+            ❓
+          </span>
+        )
+      )}
 
       {selected && !editing && (
         <>

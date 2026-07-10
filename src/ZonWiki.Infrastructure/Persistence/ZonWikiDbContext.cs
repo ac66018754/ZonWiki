@@ -185,5 +185,9 @@ public sealed class ZonWikiDbContext(
 
         // 快速捕捉（Inbox 收件匣）：原始內容（全站搜尋 #20 納入快速捕捉範圍）
         Trigram<CaptureItem>(modelBuilder, capture => capture.RawContent, "IX_CaptureItem_RawContent_Trgm");
+
+        // 筆記浮層（T 文字框 / 便利貼）：文字內容（全站搜尋納入 overlay-text / overlay-sticky 範圍）。
+        // 只對 Text 建索引；便利貼標題存 DataJson.title、以整欄 ILIKE 比對（量小、可接受 seq scan，不另建索引）。
+        Trigram<NoteOverlayItem>(modelBuilder, item => item.Text, "IX_NoteOverlayItem_Text_Trgm");
     }
 }

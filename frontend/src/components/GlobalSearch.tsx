@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { searchAll, SearchResult } from "@/lib/api";
 import { logger } from "@/lib/logger";
@@ -63,6 +63,19 @@ function searchFeatures(query: string): SearchItem[] {
 }
 
 /**
+ * 搜尋類型篩選 chips（多選）。label＝顯示文字；key＝後端 /api/search 的 types 值。
+ * 「全部」不在此清單（另有專屬的清除鈕）。
+ */
+const TYPE_FILTERS: readonly { label: string; key: string }[] = [
+  { label: "筆記標題", key: "note-title" },
+  { label: "筆記內文", key: "note-content" },
+  { label: "任務", key: "task" },
+  { label: "T(文字)", key: "overlay-text" },
+  { label: "便利貼", key: "overlay-sticky" },
+  { label: "開問啦節點", key: "node" },
+];
+
+/**
  * 全域搜尋下拉組件
  * - 支援 Cmd/Ctrl+K 快捷鍵
  * - 搜尋筆記、任務、畫布、節點，以及個人頁/主功能等「功能項目」
@@ -77,49 +90,89 @@ export function GlobalSearch() {
   const [loading, setLoading] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const resultsRef = useRef<HTMLDivElement>(null);
-  const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   /**
-   * 執行搜尋（帶 debounce）
+   * 搜尋請求序號：每次搜尋 effect 執行遞增，回應 resolve 時比對「仍是最新序號」才套用結果。
+   * fetchJson 不支援 AbortController，故以序號比對丟棄過時（先送出、後 resolve）的回應，
+   * 避免慢請求覆蓋快請求造成畫面與 chips 狀態不符（對抗式復審 HIGH）。
    */
-  const handleSearch = useCallback((q: string) => {
-    setQuery(q);
-    setActiveIndex(0);
+  const requestSeqRef = useRef(0);
 
-    // 清除前一次的超時
-    if (searchTimeoutRef.current) {
-      clearTimeout(searchTimeoutRef.current);
-    }
+  /**
+   * 目前選取的「類型篩選」集合（後端 types 值）。空集合＝「全部」（不帶 types、並附上功能項目）。
+   */
+  const [selectedTypes, setSelectedTypes] = useState<Set<string>>(new Set());
+  const isAllTypes = selectedTypes.size === 0;
 
-    if (!q.trim()) {
+  /**
+   * 執行搜尋：帶 200ms debounce，隨查詢字串或篩選集合變動而重跑。
+   * - 「全部」模式（無篩選）才附上前端「功能/頁面」項目；篩選特定型別時只回後端內容結果。
+   */
+  useEffect(() => {
+    const q = query.trim();
+    if (!q) {
       setResults([]);
       setIsOpen(false);
+      setLoading(false);
       return;
     }
 
     setLoading(true);
-
-    // 200ms debounce
-    searchTimeoutRef.current = setTimeout(() => {
+    // 記住本次 effect 的序號；只有回應時仍是最新序號才套用結果（丟棄過時回應）。
+    const seq = ++requestSeqRef.current;
+    const timer = setTimeout(() => {
       (async () => {
-        // 前端功能索引：即使後端失敗也先放上功能項目，確保「搜尋頁面功能」永遠可用。
-        const features = searchFeatures(q);
+        // 只有「全部」模式顯示前端功能索引；篩選特定型別時不混入功能項目。
+        const features = isAllTypes ? searchFeatures(q) : [];
         try {
-          // 使用後端搜尋 API 同時搜尋筆記、任務、畫布、節點
-          const serverResults = await searchAll(q);
-          // 功能項目置前（使用者意圖找功能時優先），再接內容結果
+          // 篩選模式把選取集合轉成 types CSV 傳給後端；「全部」則不帶 types。
+          const serverResults = await searchAll(
+            q,
+            50,
+            isAllTypes ? undefined : Array.from(selectedTypes)
+          );
+          if (seq !== requestSeqRef.current) return; // 已有更新的查詢在後 → 丟棄本次過時回應
+          // 功能項目置前（使用者意圖找功能時優先），再接內容結果。
           setResults([...features, ...serverResults]);
           setIsOpen(true);
         } catch (err) {
+          if (seq !== requestSeqRef.current) return; // 過時回應的錯誤同樣忽略
           logger.error("Search failed:", err);
           setResults(features);
           setIsOpen(features.length > 0);
         } finally {
-          setLoading(false);
+          // 僅最新請求負責收尾 loading/選取重置，避免過時回應把狀態拉回舊值。
+          if (seq === requestSeqRef.current) {
+            setLoading(false);
+            setActiveIndex(0);
+          }
         }
       })();
     }, 200);
-  }, []);
+
+    return () => clearTimeout(timer);
+  }, [query, selectedTypes, isAllTypes]);
+
+  /**
+   * 切換某個類型篩選（多選）。切換後回焦輸入框，維持鍵盤上下選取。
+   */
+  const toggleFilter = (typeKey: string) => {
+    setSelectedTypes((prev) => {
+      const next = new Set(prev);
+      if (next.has(typeKey)) next.delete(typeKey);
+      else next.add(typeKey);
+      return next;
+    });
+    inputRef.current?.focus();
+  };
+
+  /**
+   * 回到「全部」（清空所有類型篩選）。
+   */
+  const clearFilters = () => {
+    setSelectedTypes(new Set());
+    inputRef.current?.focus();
+  };
 
   /**
    * 導航到選中結果。
@@ -213,6 +266,10 @@ export function GlobalSearch() {
         return { label: "快速捕捉", emoji: "📥" };
       case "quicklink":
         return { label: "連結", emoji: "🔗" };
+      case "overlay-text":
+        return { label: "T 文字", emoji: "🔤" };
+      case "overlay-sticky":
+        return { label: "便利貼", emoji: "🗒️" };
       case "function":
         return { label: "功能", emoji: "⚙️" };
       default:
@@ -227,7 +284,7 @@ export function GlobalSearch() {
         type="text"
         placeholder="搜尋筆記、任務、畫布、功能… (Cmd+K)"
         value={query}
-        onChange={(e) => handleSearch(e.target.value)}
+        onChange={(e) => setQuery(e.target.value)}
         onKeyDown={handleKeyDown}
         onFocus={() => {
           if (query.trim()) {
@@ -269,6 +326,50 @@ export function GlobalSearch() {
           }}
           role="listbox"
         >
+          {/* 類型篩選 chips（多選）：全部＝預設（含功能項目）；點具體 chip 進入篩選模式、可複選。
+              以 onMouseDown preventDefault 保住輸入框焦點，讓上下鍵仍可選結果。 */}
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: "var(--spacing-1)",
+              padding: "var(--spacing-2) var(--spacing-3)",
+              borderBottom: "1px solid var(--border-default)",
+              position: "sticky",
+              top: 0,
+              background: "var(--bg-elevated)",
+              zIndex: 1,
+            }}
+            role="group"
+            aria-label="搜尋類型篩選"
+          >
+            <button
+              type="button"
+              className={`tk-filter-chip${isAllTypes ? " tk-filter-chip--on" : ""}`}
+              style={{ cursor: "pointer" }}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={clearFilters}
+              aria-pressed={isAllTypes}
+            >
+              全部
+            </button>
+            {TYPE_FILTERS.map((f) => {
+              const on = selectedTypes.has(f.key);
+              return (
+                <button
+                  key={f.key}
+                  type="button"
+                  className={`tk-filter-chip${on ? " tk-filter-chip--on" : ""}`}
+                  style={{ cursor: "pointer" }}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => toggleFilter(f.key)}
+                  aria-pressed={on}
+                >
+                  {f.label}
+                </button>
+              );
+            })}
+          </div>
           {loading ? (
             <div
               style={{
