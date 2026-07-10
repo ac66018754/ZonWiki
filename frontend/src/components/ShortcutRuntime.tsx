@@ -11,6 +11,8 @@ import {
   SHORTCUTS_UPDATED_EVENT,
   SHORTCUT_ACTION_EVENT,
 } from "@/lib/shortcuts";
+import { confirmNavigation } from "@/lib/navigationGuard";
+import { getNotesNavTarget } from "@/lib/notesNavTarget";
 
 /**
  * 全域快捷鍵執行器（無 UI，回傳 null）。掛在已登入外殼中。
@@ -147,9 +149,15 @@ function runGlobalAction(id: string, router: ReturnType<typeof useRouter>): void
     case "openCanvas":
       router.push("/canvas");
       break;
-    case "openNotes":
-      router.push("/notes");
+    case "openNotes": {
+      // 與點擊 Header「筆記」完全一致：回到上次閱讀的筆記（若有記憶），且先過導頁守門
+      //（避免筆記編輯中未儲存變更被快捷鍵靜默丟失）。目的地計算與 Header 共用同一函式。
+      const target = getNotesNavTarget();
+      void confirmNavigation().then((canLeave) => {
+        if (canLeave) router.push(target);
+      });
       break;
+    }
     case "focusSearch": {
       const input = document.querySelector<HTMLInputElement>('input[aria-label="全域搜尋"]');
       input?.focus();
