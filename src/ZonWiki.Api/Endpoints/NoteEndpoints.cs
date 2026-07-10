@@ -83,7 +83,14 @@ public static class NoteEndpoints
             return Results.Ok(ApiResponse<List<NoteSummaryDto>>.Ok(items));
         });
 
-        // 標記筆記「最後打開時間」：前端開啟筆記詳情時呼叫。輕量、不寫版本、不動 UpdatedDateTime。
+        // 標記筆記「最後打開時間」：前端開啟筆記詳情時呼叫。輕量、不動 UpdatedDateTime。
+        //
+        // 併發權杖（xmin）注意（#4/#34；2026-07-10 修「開啟即假衝突」）：本端點直接 UPDATE 筆記那一列的
+        // Note_LastOpenedDateTime。PostgreSQL 的 xmin 是「整列」的系統欄——只要該列被 UPDATE，xmin 必然
+        // 改變，無法只更新某欄而不動它。若不回傳新版本，前端手上「載入時記下的 Version」會在標記打開後
+        // 立刻過期；使用者接著存檔（帶過期 baseVersion）便撲空、收到假的 409「此筆記已被其他來源修改」，
+        // 即使全程只有本人也沒真的改過別處。故此處於更新後回讀最新 xmin 一併回傳，讓前端把 baseVersion
+        // 同步成最新，消除「開啟即假衝突」。
         app.MapPost("/api/notes/{id:guid}/opened", async (
             ZonWikiDbContext db,
             HttpContext http,
@@ -101,9 +108,28 @@ public static class NoteEndpoints
                 .Where(n => n.Id == id && n.UserId == userGuid && n.ValidFlag)
                 .ExecuteUpdateAsync(s => s.SetProperty(n => n.LastOpenedDateTime, DateTime.UtcNow), ct);
 
-            return affected > 0
-                ? Results.Ok(ApiResponse<object>.Ok(new { id }))
-                : Results.NotFound(ApiResponse<object>.Fail("Note not found", 404));
+            if (affected == 0)
+            {
+                return Results.NotFound(ApiResponse<object>.Fail("Note not found", 404));
+            }
+
+            // 回讀更新後的最新 xmin（原生 xid→uint 讀出、不下推 SQL CAST，避免「42846: cannot cast type
+            // xid to bigint」；材質化後再於記憶體放大為 long），供前端把 baseVersion 同步成最新。
+            // 用 FirstOrDefaultAsync（非 FirstAsync）並帶 ValidFlag：極窄競態下——UPDATE 成功提交後、
+            // 回讀 SELECT 前，該列剛被別處（同帳號另一請求，如垃圾桶軟刪）軟刪除——回讀會撈不到列，
+            // FirstAsync 會對空序列丟未處理例外變成 500；改回 null → 視同筆記已不存在回 404（前端
+            // markNoteOpened 對非 200 靜默回 null、不影響閱讀）。投影成匿名型別以便用 null 判斷「無列」。
+            var row = await db.Note
+                .Where(n => n.Id == id && n.UserId == userGuid && n.ValidFlag)
+                .Select(n => new { Xmin = EF.Property<uint>(n, "xmin") })
+                .FirstOrDefaultAsync(ct);
+
+            if (row is null)
+            {
+                return Results.NotFound(ApiResponse<object>.Fail("Note not found", 404));
+            }
+
+            return Results.Ok(ApiResponse<object>.Ok(new { id, version = (long)row.Xmin }));
         }).RequireAuthorization();
 
         // 依 slug 取單篇筆記詳情。

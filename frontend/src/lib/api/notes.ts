@@ -160,13 +160,23 @@ export async function listNotes(params?: {
 
 /**
  * 標記筆記「最後打開時間」（開啟筆記詳情時呼叫；輕量、不影響編輯時間）。
- * 失敗時靜默忽略（純排序輔助，不應打斷閱讀）。
+ *
+ * 回傳「更新後的最新併發版本（xmin）」：標記打開會 UPDATE 該列 → xmin 必然前進，
+ * 使前端載入時記下的 Version 立刻過期。呼叫端應以此回傳值把 baseVersion 同步成最新，
+ * 否則存檔會撲空、收到假的 409「此筆記已被其他來源修改」（見後端 /opened 註解）。
+ *
+ * @param noteId 筆記識別碼。
+ * @returns 更新後的最新版本；失敗時回 null（純排序輔助，不應打斷閱讀，靜默忽略）。
  */
-export async function markNoteOpened(noteId: string): Promise<void> {
+export async function markNoteOpened(noteId: string): Promise<number | null> {
   try {
-    await fetchJson<{ id: string }>(`/api/notes/${noteId}/opened`, { method: "POST" });
+    const r = await fetchJson<{ id: string; version: number }>(
+      `/api/notes/${noteId}/opened`,
+      { method: "POST" }
+    );
+    return r.data?.version ?? null;
   } catch {
-    // 忽略
+    return null;
   }
 }
 

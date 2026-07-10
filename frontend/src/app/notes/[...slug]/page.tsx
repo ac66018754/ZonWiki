@@ -665,7 +665,23 @@ export default function NotesDetailPage() {
           setEditTagIds((noteData.tags ?? []).map((t) => t.id));
 
           // 記錄「最後打開時間」（供筆記清單依此排序；輕量、失敗靜默）。
-          markNoteOpened(noteData.id);
+          // 併發修正（#4/#34）：標記打開會 UPDATE 該列、使 xmin 前進，令上面剛記下的 note.version
+          // 立刻過期；後端會回傳更新後的最新版本，這裡據此把 note.version 同步成最新，避免「開啟後直接
+          // 編輯→存檔」撲空、收到假的 409「此筆記已被其他來源修改」。只覆寫 version 欄，並確認仍停在
+          // 同一篇（避免使用者已切走到別篇時誤蓋版本）。
+          markNoteOpened(noteData.id).then((openedVersion) => {
+            if (openedVersion != null) {
+              // 單調取大（防亂序覆寫）：xmin 隨該列每次更新遞增；同一筆記可能觸發多次 /opened
+              // （React StrictMode 雙掛載、快速切回同一篇、同篇開多分頁），其 HTTP 回應可能亂序抵達。
+              // 若無條件覆寫，較舊回應會把 note.version 蓋回過期值 → 存檔又撞假 409。故只在「新版本
+              // 較大（＝更新）」時採用、永不回退（存檔後更大的 xmin 也不會被較舊的 /opened 回應蓋掉）。
+              setNote((prev) =>
+                prev && prev.id === noteData.id
+                  ? { ...prev, version: Math.max(prev.version ?? 0, openedVersion) }
+                  : prev
+              );
+            }
+          });
 
           // 載入留言
           const commentsList = await listNoteComments(noteData.id);
