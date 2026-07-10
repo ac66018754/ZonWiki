@@ -3,12 +3,20 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { askNoteQuestion, updateNoteOverlay } from '@/lib/api/notes';
+import { MarkdownEditor } from '@/components/MarkdownEditor';
+import { ToggleAwareMarkdown } from '@/components/MarkdownPreview';
 
 /**
  * 模組層級的 z-index 計數器：讓「最後被點到的彈窗」浮到最上層（多開時的疊放順序）。
  * 起始 2000（高於釘住便利貼的 1100+，低於確認框的 4000，確保未存守門確認框永遠蓋在彈窗之上）。
  */
 let popupZCounter = 2000;
+
+/** 彈窗的預設尺寸與可縮放下限（px）。預設寬度取 460，讓 Markdown 工具列不至於折太多行。 */
+const DEFAULT_WIDTH = 460;
+const DEFAULT_HEIGHT = 560;
+const MIN_WIDTH = 320;
+const MIN_HEIGHT = 360;
 
 /**
  * 答題彈窗的屬性。
@@ -35,12 +43,13 @@ interface QuestionAnswerPopupProps {
 }
 
 /**
- * 答題彈窗：可拖曳的浮動小視窗（似便利貼但有關閉鈕；狀態只存 React、刷新即消失、可同時開多個）。
+ * 答題彈窗：可拖曳、可縮放的浮動小視窗（似便利貼但有關閉鈕；狀態只存 React、刷新即消失、可同時開多個）。
  *
- * 內含「問題」（唯讀）與「回答」（可編輯）兩區，支援：
+ * 內含「問題」（唯讀，以 Markdown 渲染）與「回答」（Markdown 編輯器：工具列＋編輯/並排/預覽）兩區，支援：
  * - 🤖 請 AI 回答：以整篇筆記為脈絡非同步提問，完成後「覆蓋」回答框內容；
  * - Ctrl+Z：還原「AI 覆蓋前」的內容（僅在值仍等於 AI 覆蓋結果時攔截，否則交給原生 undo）；
  * - 儲存：寫回浮層元件的 questionAnswer；
+ * - 右下角拖曳握把：縮放整個彈窗（問題區固定高、回答編輯器隨之伸縮）；
  * - 未存關閉守門：回答有未儲存變更時按 ✕ 會先在「本彈窗內部」跳一層確認（不走全站單例
  *   ConfirmProvider）——因本功能可同時開多個答題彈窗，共用單一 resolver 會互相覆蓋而卡死，
  *   故每個彈窗實例各自持有獨立的確認狀態。
@@ -64,6 +73,9 @@ export function QuestionAnswerPopup({
   const [errorText, setErrorText] = useState<string | null>(null);
   // 「未存離開」的本彈窗內部確認層是否顯示（各實例獨立，不共用全站單例）。
   const [confirmingClose, setConfirmingClose] = useState(false);
+  // 回答編輯器「圖片上傳進行中」數量：>0 時停用「儲存」與「請 AI 回答」，
+  // 避免把「〔圖片上傳中 #xxx〕」佔位文字永久存進 DB、或被 AI 覆寫掉插入點。
+  const [uploadingCount, setUploadingCount] = useState(0);
 
   // AI 覆蓋前的快照（用於 Ctrl+Z 還原）：{ before: 覆蓋前, after: 覆蓋後 }。
   const aiSnapshotRef = useRef<{ before: string; after: string } | null>(null);
@@ -82,8 +94,16 @@ export function QuestionAnswerPopup({
     const step = offsetIndex * 24;
     if (typeof window === 'undefined') return { x: 120 + step, y: 100 + step };
     return {
-      x: Math.max(12, window.innerWidth / 2 - 190 + step),
-      y: Math.max(12, 96 + step),
+      x: Math.max(12, window.innerWidth / 2 - DEFAULT_WIDTH / 2 + step),
+      y: Math.max(12, 72 + step),
+    };
+  });
+  // 彈窗尺寸（可用右下角握把縮放；初始值夾在視窗大小內）。
+  const [size, setSize] = useState(() => {
+    if (typeof window === 'undefined') return { w: DEFAULT_WIDTH, h: DEFAULT_HEIGHT };
+    return {
+      w: Math.max(MIN_WIDTH, Math.min(DEFAULT_WIDTH, window.innerWidth - 24)),
+      h: Math.max(MIN_HEIGHT, Math.min(DEFAULT_HEIGHT, window.innerHeight - 24)),
     };
   });
   const [z, setZ] = useState(() => ++popupZCounter);
@@ -93,10 +113,17 @@ export function QuestionAnswerPopup({
   /** 把此彈窗浮到最上層（點擊任一處時）。 */
   const bringToFront = () => setZ(++popupZCounter);
 
-  /** 標題列拖曳移動（視窗座標，夾在畫面內至少保留標題列可抓）。 */
+  /**
+   * 標題列拖曳移動（視窗座標，夾在畫面內至少保留標題列可抓）。
+   * 用 pointer capture 保證一定收得到 pointerup——「彈出預覽」可開出另一個原生視窗，
+   * 若在那個視窗上放開滑鼠、純 window 監聽會漏接 up 而卡在拖曳狀態（對抗式復審 MEDIUM）。
+   */
   const startDrag = (e: React.PointerEvent) => {
     e.preventDefault();
     bringToFront();
+    const target = e.currentTarget as HTMLElement;
+    try { target.setPointerCapture(e.pointerId); } catch { /* 不支援時退回純 window 監聽 */ }
+    const pointerId = e.pointerId;
     const sx = e.clientX;
     const sy = e.clientY;
     const ox = pos.x;
@@ -110,11 +137,43 @@ export function QuestionAnswerPopup({
       });
     };
     const onUp = () => {
+      try { target.releasePointerCapture(pointerId); } catch { /* 已釋放 */ }
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  };
+
+  /** 右下角握把拖曳縮放整個彈窗（夾在最小尺寸與視窗大小之間；同樣用 pointer capture）。 */
+  const startResize = (e: React.PointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    bringToFront();
+    const target = e.currentTarget as HTMLElement;
+    try { target.setPointerCapture(e.pointerId); } catch { /* 不支援時退回純 window 監聽 */ }
+    const pointerId = e.pointerId;
+    const sx = e.clientX;
+    const sy = e.clientY;
+    const ow = size.w;
+    const oh = size.h;
+    const onMove = (ev: PointerEvent) => {
+      setSize({
+        w: Math.min(window.innerWidth - 24, Math.max(MIN_WIDTH, ow + (ev.clientX - sx))),
+        h: Math.min(window.innerHeight - 24, Math.max(MIN_HEIGHT, oh + (ev.clientY - sy))),
+      });
+    };
+    const onUp = () => {
+      try { target.releasePointerCapture(pointerId); } catch { /* 已釋放 */ }
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
   };
 
   /** 請 AI 回答：完成後「覆蓋」回答框並記錄 undo 快照；失敗顯示錯誤、不覆蓋。 */
@@ -138,8 +197,13 @@ export function QuestionAnswerPopup({
     }
   };
 
-  /** 回答框 Ctrl+Z：只在「值仍等於 AI 覆蓋結果」時還原覆蓋前內容，否則交給原生 undo。 */
-  const handleAnswerKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+  /**
+   * Ctrl+Z 還原「AI 覆蓋」（capture 掛在彈窗根節點）：只在「值仍等於 AI 覆蓋結果」時還原
+   * 覆蓋前內容，否則不攔截、交給 textarea 原生 undo。
+   * 掛根節點而非只包編輯器：點完「🤖 請 AI 回答」焦點還在按鈕上、或切到預覽模式時，
+   * 直接按 Ctrl+Z 也要有效（對抗式復審 MEDIUM——只包編輯器會漏掉這兩條最直覺的路徑）。
+   */
+  const handleAnswerKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const isUndo = (e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z';
     if (!isUndo) return;
     const snap = aiSnapshotRef.current;
@@ -182,19 +246,22 @@ export function QuestionAnswerPopup({
   // 彈窗僅在使用者按「答」後（客戶端）渲染，不會出現在 SSR 初始 HTML，故可直接 portal 到 body。
   if (typeof document === 'undefined') return null;
 
-  const busy = saving || aiLoading;
+  const busy = saving || aiLoading || uploadingCount > 0;
 
   return createPortal(
     <div
       role="dialog"
       aria-label="問題答題彈窗"
       onPointerDown={bringToFront}
+      onKeyDownCapture={handleAnswerKeyDown}
       style={{
         position: 'fixed',
         left: pos.x,
         top: pos.y,
-        width: 380,
+        width: size.w,
+        height: size.h,
         maxWidth: 'calc(100vw - 24px)',
+        maxHeight: 'calc(100vh - 12px)',
         zIndex: z,
         display: 'flex',
         flexDirection: 'column',
@@ -244,12 +311,14 @@ export function QuestionAnswerPopup({
         </button>
       </div>
 
-      {/* 內容 */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--spacing-2)', padding: 'var(--spacing-3)' }}>
-        {/* 問題（唯讀） */}
-        <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>問題</label>
+      {/* 內容（撐滿彈窗剩餘高度；回答編輯器隨彈窗縮放伸縮） */}
+      <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: 'var(--spacing-2)', padding: 'var(--spacing-3)' }}>
+        {/* 問題（唯讀，以 Markdown 渲染——與便利貼／筆記內容同一套語法） */}
+        <label style={{ flexShrink: 0, fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>問題</label>
         <div
+          className="md-preview"
           style={{
+            flexShrink: 0,
             fontSize: 'var(--text-sm)',
             color: 'var(--text-primary)',
             background: 'var(--bg-subtle, var(--bg-muted, rgba(0,0,0,0.03)))',
@@ -258,7 +327,6 @@ export function QuestionAnswerPopup({
             padding: 'var(--spacing-2)',
             maxHeight: 140,
             overflowY: 'auto',
-            whiteSpace: 'pre-wrap',
             wordBreak: 'break-word',
             lineHeight: 1.7,
           }}
@@ -266,12 +334,12 @@ export function QuestionAnswerPopup({
           {kind === 'sticky' && questionTitle && questionTitle !== questionText && (
             <div style={{ fontWeight: 600, marginBottom: 4 }}>{questionTitle}</div>
           )}
-          {questionText || '(無內容)'}
+          {questionText.trim() ? <ToggleAwareMarkdown value={questionText} /> : '(無內容)'}
         </div>
 
-        {/* 回答（可編輯） */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <label htmlFor={`answer-${itemId}`} style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>回答</label>
+        {/* 回答（Markdown 編輯器：工具列＋編輯/並排/預覽） */}
+        <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>回答</span>
           <button
             type="button"
             onClick={handleAskAi}
@@ -283,44 +351,62 @@ export function QuestionAnswerPopup({
             {aiLoading ? '⏳ AI 回答中…' : '🤖 請 AI 回答'}
           </button>
         </div>
-        <textarea
-          id={`answer-${itemId}`}
-          value={answer}
-          onChange={(e) => setAnswer(e.target.value)}
-          onKeyDown={handleAnswerKeyDown}
-          placeholder="在這裡手寫回答，或按「🤖 請 AI 回答」…"
-          rows={6}
-          style={{
-            width: '100%',
-            boxSizing: 'border-box',
-            resize: 'vertical',
-            fontSize: 'var(--text-sm)',
-            lineHeight: 1.7,
-            color: 'var(--text-primary)',
-            background: 'var(--bg-surface)',
-            border: '1px solid var(--border-default)',
-            borderRadius: 'var(--radius-md)',
-            padding: 'var(--spacing-2)',
-            fontFamily: 'inherit',
-          }}
-        />
+        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+          <MarkdownEditor
+            value={answer}
+            onChange={setAnswer}
+            withPreview
+            minHeight={0}
+            className="mde--fill"
+            ariaLabel="問題回答編輯器"
+            placeholder="在這裡手寫回答（支援 Markdown），或按「🤖 請 AI 回答」…"
+            onUploadingChange={setUploadingCount}
+          />
+        </div>
 
         {errorText && (
-          <div role="alert" style={{ fontSize: 'var(--text-xs)', color: 'var(--action-danger-fg, var(--color-danger, #dc2626))' }}>
+          <div role="alert" style={{ flexShrink: 0, fontSize: 'var(--text-xs)', color: 'var(--action-danger-fg, var(--color-danger, #dc2626))' }}>
             {errorText}
           </div>
         )}
 
         {/* 動作列 */}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--spacing-2)', marginTop: 'var(--spacing-1)' }}>
+        <div style={{ flexShrink: 0, display: 'flex', justifyContent: 'flex-end', gap: 'var(--spacing-2)', marginTop: 'var(--spacing-1)' }}>
           <button type="button" onClick={handleClose} className="btn-secondary" style={{ minHeight: 0 }}>
             關閉
           </button>
-          <button type="button" onClick={handleSave} disabled={busy || !dirty} className="btn-primary" style={{ minHeight: 0 }}>
-            {saving ? '儲存中…' : '儲存'}
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={busy || !dirty}
+            className="btn-primary"
+            style={{ minHeight: 0 }}
+            title={uploadingCount > 0 ? '圖片上傳中，完成後才能儲存' : undefined}
+          >
+            {saving ? '儲存中…' : uploadingCount > 0 ? '圖片上傳中…' : '儲存'}
           </button>
         </div>
       </div>
+
+      {/* 右下角縮放握把（拖曳調整彈窗大小） */}
+      <div
+        onPointerDown={startResize}
+        title="拖曳調整彈窗大小"
+        aria-hidden
+        data-testid="qa-popup-resize"
+        style={{
+          position: 'absolute',
+          right: 0,
+          bottom: 0,
+          width: 18,
+          height: 18,
+          cursor: 'nwse-resize',
+          zIndex: 5,
+          // 右下角的兩道斜紋（慣用的可縮放視覺提示）。
+          background:
+            'linear-gradient(135deg, transparent 0 55%, var(--border-strong, #999) 55% 62%, transparent 62% 72%, var(--border-strong, #999) 72% 79%, transparent 79%)',
+        }}
+      />
 
       {/* 未存離開確認層（本彈窗內部、覆蓋整個彈窗；各實例獨立，不共用全站單例 ConfirmProvider）。 */}
       {confirmingClose && (

@@ -9,7 +9,9 @@ namespace ZonWiki.Api.Attachments;
 ///
 /// 引用判定（保守設計，寧可留著也不誤殺）：附件 Id 字串出現在「同一位使用者」的
 /// Note.ContentRaw、NoteRevision.ContentRaw（編輯歷史可還原）、NoteOverlayItem.DataJson
-/// （圖片輪播）、TaskCard.Content、Node.Content 或 NodeRevision.Content（任務與畫布節點
+/// （圖片輪播）、NoteOverlayItem.Text（便利貼／文字框本文，以 Markdown 渲染可手貼附件網址顯圖）、
+/// NoteOverlayItem.QuestionAnswer（問題的回答，答題彈窗同樣能貼圖）、
+/// TaskCard.Content、Node.Content 或 NodeRevision.Content（任務與畫布節點
 /// 共用同一個 Markdown 編輯器，同樣能貼圖）任一處即算被引用；比對含軟刪除列
 /// （垃圾桶內仍可還原）並用 ILIKE（大小寫不敏感，防使用者手動貼大寫 GUID 網址）。
 ///
@@ -67,7 +69,10 @@ public sealed class AttachmentOrphanScanner(
                 || await db.NoteRevision.IgnoreQueryFilters()
                     .AnyAsync(r => r.UserId == userId && EF.Functions.ILike(r.ContentRaw, pattern), ct)
                 || await db.NoteOverlayItem.IgnoreQueryFilters()
-                    .AnyAsync(o => o.UserId == userId && o.DataJson != null && EF.Functions.ILike(o.DataJson, pattern), ct)
+                    .AnyAsync(o => o.UserId == userId
+                        && ((o.DataJson != null && EF.Functions.ILike(o.DataJson, pattern))
+                            || (o.Text != null && EF.Functions.ILike(o.Text, pattern))
+                            || (o.QuestionAnswer != null && EF.Functions.ILike(o.QuestionAnswer, pattern))), ct)
                 || await db.TaskCard.IgnoreQueryFilters()
                     .AnyAsync(t => t.UserId == userId && EF.Functions.ILike(t.Content, pattern), ct)
                 || await db.Node.IgnoreQueryFilters()

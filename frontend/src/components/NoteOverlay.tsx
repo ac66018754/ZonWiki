@@ -1632,6 +1632,8 @@ export function NoteOverlay({
             onAdjustWheel={(deltaY) => adjustTextByWheel(item.id, deltaY)}
             isQuestion={item.isQuestion}
             onToggleQuestion={() => toggleQuestion(item)}
+            hasAnswer={(item.questionAnswer ?? '') !== ''}
+            onOpenAnswer={() => openAnswerPopup(item.id)}
           />
         ))}
       </div>

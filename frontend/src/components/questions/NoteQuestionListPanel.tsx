@@ -1,8 +1,12 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { NoteOverlayItem } from '@/lib/api/notes';
 import { deriveQuestionTitle } from '@/lib/questionTitle';
+
+/** 面板寬度（px）——初始位置換算（靠右）與樣式共用。 */
+const PANEL_WIDTH = 320;
 
 /**
  * 筆記頁「問題清單」面板的屬性。
@@ -30,9 +34,57 @@ function hasAnswer(item: NoteOverlayItem): boolean {
 
 /**
  * 筆記頁「問題清單」面板：列出本篇所有問題（便利貼標題 / T 文字前段），
- * 點列項目→捲動定位＋高亮；每列最右「答」鈕→開答題彈窗。右側浮動面板（portal 到 body）。
+ * 點列項目→捲動定位＋高亮；每列最右「答」鈕→開答題彈窗。
+ * 浮動面板（portal 到 body），標題列可拖曳移動到畫面任意位置。
  */
 export function NoteQuestionListPanel({ questions, onLocate, onAnswer, onClose }: NoteQuestionListPanelProps) {
+  // 面板位置（fixed，視窗座標）；初始靠右上（對應原本 top:96 / right:24 的位置）。
+  const [pos, setPos] = useState(() => {
+    if (typeof window === 'undefined') return { x: 24, y: 96 };
+    return { x: Math.max(12, window.innerWidth - PANEL_WIDTH - 24), y: 96 };
+  });
+
+  /** 把座標夾進目前視窗（至少保留標題列可抓——拖曳與視窗 resize 共用同一套夾限）。 */
+  const clampToViewport = (p: { x: number; y: number }) => ({
+    x: Math.min(window.innerWidth - 60, Math.max(0, p.x)),
+    y: Math.min(window.innerHeight - 32, Math.max(0, p.y)),
+  });
+
+  // 視窗縮放時重新夾限：改成 JS 固定 left/top 後失去 CSS right 的自動貼齊，
+  // 不夾限的話「先在寬螢幕開面板、再縮小視窗」會讓面板整片留在畫面外拿不回來（對抗式復審 MEDIUM）。
+  useEffect(() => {
+    const onResize = () => setPos((p) => clampToViewport(p));
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  /**
+   * 標題列拖曳移動（視窗座標）。用 pointer capture 保證收得到 pointerup
+   * （游標移出本視窗、在別的原生視窗放開時，純 window 監聽會漏接而卡在拖曳狀態）。
+   */
+  const startDrag = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const target = e.currentTarget as HTMLElement;
+    try { target.setPointerCapture(e.pointerId); } catch { /* 不支援時退回純 window 監聽 */ }
+    const pointerId = e.pointerId;
+    const sx = e.clientX;
+    const sy = e.clientY;
+    const ox = pos.x;
+    const oy = pos.y;
+    const onMove = (ev: PointerEvent) => {
+      setPos(clampToViewport({ x: ox + (ev.clientX - sx), y: oy + (ev.clientY - sy) }));
+    };
+    const onUp = () => {
+      try { target.releasePointerCapture(pointerId); } catch { /* 已釋放 */ }
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  };
+
   // 面板僅在使用者開啟後（客戶端）渲染，不會出現在 SSR 初始 HTML，故可直接 portal 到 body。
   if (typeof document === 'undefined') return null;
 
@@ -42,9 +94,9 @@ export function NoteQuestionListPanel({ questions, onLocate, onAnswer, onClose }
       aria-label="問題清單"
       style={{
         position: 'fixed',
-        top: 96,
-        right: 24,
-        width: 320,
+        top: pos.y,
+        left: pos.x,
+        width: PANEL_WIDTH,
         maxWidth: 'calc(100vw - 24px)',
         maxHeight: 'calc(100vh - 140px)',
         zIndex: 1600,
@@ -57,15 +109,18 @@ export function NoteQuestionListPanel({ questions, onLocate, onAnswer, onClose }
         overflow: 'hidden',
       }}
     >
-      {/* 標題列 */}
+      {/* 標題列（可拖曳） */}
       <div
+        onPointerDown={startDrag}
         style={{
           display: 'flex',
           alignItems: 'center',
           gap: 'var(--spacing-2)',
           padding: 'var(--spacing-2) var(--spacing-3)',
+          cursor: 'move',
           background: 'var(--action-secondary-bg, rgba(0,0,0,0.06))',
           color: 'var(--action-secondary-fg, var(--text-primary))',
+          userSelect: 'none',
           flexShrink: 0,
         }}
       >
@@ -75,6 +130,7 @@ export function NoteQuestionListPanel({ questions, onLocate, onAnswer, onClose }
         <button
           type="button"
           onClick={onClose}
+          onPointerDown={(e) => e.stopPropagation()}
           title="關閉"
           aria-label="關閉"
           style={{
