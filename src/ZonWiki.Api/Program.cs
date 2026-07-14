@@ -223,6 +223,7 @@ app.MapNoteOverlayEndpoints(); // 筆記浮層：便利貼/塗鴉/圖片輪播
 app.MapAttachmentEndpoints(); // 筆記附件：貼上/上傳圖片存磁碟，內文只放短網址
 app.MapQuickLinkEndpoints();
 app.MapCaptureItemEndpoints();
+app.MapTimeEntryEndpoints(); // 時間追蹤：記錄每天把時間花在什麼上面（支援 iOS 捷徑 PAT 呼叫）
 app.MapCalendarEndpoints();
 app.MapHomePageEndpoints();
 

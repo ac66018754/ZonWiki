@@ -35,6 +35,9 @@ public static class TrashTypeRegistry
         { "QuickLink", typeof(QuickLink) },
         { "CaptureItem", typeof(CaptureItem) },
 
+        // --- 時間追蹤 ---
+        { "TimeEntry", typeof(TimeEntry) },
+
         // --- 開問啦相關（IUserOwned 的實體） ---
         { "Canvas", typeof(Canvas) },
         { "SystemPrompt", typeof(SystemPrompt) },
@@ -80,6 +83,9 @@ public static class TrashTypeRegistry
             // --- 首頁相關 ---
             QuickLink ql => ql.Title,
             CaptureItem ci => ci.RawContent.Length > 50 ? ci.RawContent[..50] + "..." : ci.RawContent,
+
+            // --- 時間追蹤 ---
+            TimeEntry te => te.Title,
 
             // --- 開問啦相關 ---
             Canvas canvas => canvas.Title,
