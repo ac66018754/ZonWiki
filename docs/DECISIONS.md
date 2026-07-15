@@ -5,6 +5,22 @@
 
 ---
 
+## 2026-07-15 ｜時間追蹤（TimeEntry）：首頁計時面板＋iOS 捷徑主畫面操作（feature/time-tracking）
+
+- **背景**：使用者要記錄「每天把時間花在什麼上面」：首頁按鈕輸入名稱＋可選分類＝開始計時、回來按結束算時間差、時間可事後編輯、日/週/月/年分組檢視、整塊可收合；且希望 **iPhone 16 主畫面就能開始/結束，不開 ZonWiki**。完整設計與測試計畫在 [docs/design/時間追蹤-設計與測試計畫.md](./design/時間追蹤-設計與測試計畫.md)。
+- **資料模型**：新表 `TimeEntry`（`AuditableEntity`＋`IUserOwned`）：Title(200)/Category(128, 自由文字)/StartedDateTime/EndedDateTime(null=計時中)；**時長不落欄位**（DTO 即時算 durationSeconds，免「改時間忘同步時長」）；分類抄 QuickLink 的輕量 `string?`（要升級共用 Tag/Category 樹再另案）。
+- **iPhone 主畫面**：**iOS 捷徑＋PAT Bearer**（iOS Safari 不支援 manifest shortcuts，捷徑＝零 App 開發的原生體驗）；既有 SmartAuth 讓端點對 Cookie/PAT 無感、零新認證機制。另設 `POST /api/time-entries/stop-latest`（一鍵結束「最近開始」的進行中項目）讓捷徑免先列清單。教學見 [docs/iOS捷徑-時間追蹤.md](./iOS捷徑-時間追蹤.md)。
+- **測試計畫先經 sub-agent 對抗式審查**（鐵則 #15），揪出 3 個 CRITICAL 並全數採納入設計：
+  - **stop-latest 平局 tie-break**：`ORDER BY Started DESC` 平局時 PostgreSQL 不保證穩定 → 補 `CreatedDateTime DESC, Id DESC` 次排序（同秒連按兩次捷徑行為固定）。
+  - **ActivityLog 時間欄位「只列欄名、不附值」**：既有 `FormatValue` 對 DateTime 只印 `yyyy-MM-dd`，「同日改時分」會記成「相同→相同」白紀錄、且值是 UTC 易生時區混淆 → Started/Ended 歸入 LongTextFields。
+  - **限流共桶取捨（經實查非假設）**：`PatPolicy` 以 `user:{userId}` 分區，**Cookie 與 PAT 共桶**（TokenBucket 30、每分鐘補 15）→ 接受（單人手動操作到不了 30 burst；PAT 外洩時同樣受限），寫入端點皆掛、burst 測試鎖 429。
+- **其他決策**：入參 DateTime 一律 `NormalizeToUtc`（Utc 原樣／Local→轉 UTC／Unspecified→視為 UTC）——iOS 捷徑是第一個會送「非 Z 尾碼」時間的用戶端；**技術債留痕：既有 `TaskEndpoints` 對 DueDateTime 等無同款正規化**（靠前端一律送 Z 的不變式撐著，本次不修）。併發採 **last-write-wins**（不加 xmin；單人低頻、損失可編輯救回，以測試鎖語意）。`TimeEntry` 註冊進統一垃圾桶（列表/還原/永久刪除三處＋前端分區「⏱️ 時間追蹤」）。允許多項同時計時。PUT 可對進行中項目補結束時間、不可把結束清回 null。
+- **前端**：`TimeTrackingSection`（首頁、可收合記 localStorage）；期間邊界以「使用者時區牆上 00:00」`fromLocalInputValue` 換算 UTC，歸日用 `toLocalInputValue`（**不用** `.split("T")[0]`）；編輯用共用 `DateTimePicker`（UTC 進出）。
+- **對抗式復審（兩路平行，鐵則 #14）**：C# 路 Approve（0 必修）但挖到**「FieldLabels 全域字串鍵碰撞」**——加 `"Category"` 讓 QuickLink 分類編輯也開始進活動摘要（範圍外連帶行為變更）→ 明確接受＋回歸測試鎖住＋警示註解（日後同名屬性不該外洩時改複合鍵）；GET 補 `AsNoTracking()`。前端路 3 HIGH 全修：刪除失敗訊息被彈窗遮罩蓋住（改彈窗內顯示）、期間切換無競態守衛（加請求世代號）、單檔 1028 行超標（拆三檔：`lib/timeTracking/period.ts`＋`TimeEntryEditModal.tsx`＋主面板）；MEDIUM 也修（anchor 隨 tz 校正、統計即時併入進行中項目並標示）。完整清單見設計文件 §7.10。
+- **驗證**：TDD——51 個 HTTP 整合測試先 RED（51 失敗）→ 實作後 GREEN，復審後含回歸測試共 52 案通過，全套件零回歸；前端 tsc/eslint（基準比對零新增）/next build 過；本地部署（後端 5009＋前端 3000 換新 build）＋ Playwright 實測（亮/暗主題、375px/1280px、開始→計時→結束→編輯全流程、console 零錯誤）。
+
+---
+
 ## 2026-07-11 ｜搜尋結果附分類/標籤脈絡＋獨立進階搜尋頁＋活動明細記「改了什麼」（feature/search-and-activity-ux）
 
 - **背景（兩個痛點）**：①使用者有多篇同名「README」筆記，Header 搜尋下拉只顯示標題＋一段來源不明的內文片段，**無法分辨是哪一篇**（希望顯示分類/標籤等脈絡），且沒有可做進階篩選的獨立搜尋頁；②個人頁「活動明細」只記到「編輯 筆記 README」這種標題級資訊，**看不出改了什麼**（改標題？調分類？），多篇同名筆記也分不出是哪篇。

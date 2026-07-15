@@ -13,6 +13,7 @@ import {
 import { useCurrentUser, useHomePage, useTaskCards, useTaskGroups } from "@/lib/swr";
 import { QuickLinksSection } from "@/components/QuickLinksSection";
 import { AiActivitySection } from "@/components/AiActivitySection";
+import { TimeTrackingSection } from "@/components/TimeTrackingSection";
 import { RefineInputSection } from "@/components/RefineInputSection";
 import { CaptureFilingModal } from "@/components/CaptureFilingModal";
 import { TaskListView } from "@/app/tasks/components/TaskListView";
@@ -761,6 +762,9 @@ export function HomePageClient({ user }: HomePageClientProps) {
             </div>
           </section>
         )}
+
+        {/* 時間追蹤：記錄每天把時間花在什麼上面（可收合；iOS 捷徑亦可操作同一批資料） */}
+        <TimeTrackingSection />
 
         {/* 常用連結卡（分類 + 共用標籤） */}
         <QuickLinksSection links={data.quickLinks} onChanged={reloadHome} />

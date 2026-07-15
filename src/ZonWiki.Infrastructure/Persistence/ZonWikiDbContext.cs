@@ -92,6 +92,9 @@ public sealed class ZonWikiDbContext(
     public DbSet<CaptureItem> CaptureItem => Set<CaptureItem>();
     public DbSet<CaptureLink> CaptureLink => Set<CaptureLink>();
 
+    // --- 時間追蹤（記錄每天把時間花在什麼上面；EndedDateTime 為 null = 計時中）-------
+    public DbSet<TimeEntry> TimeEntry => Set<TimeEntry>();
+
     // --- AI 設定（金鑰入 DB）--------------------------------------------------
     public DbSet<AiModel> AiModel => Set<AiModel>();
 

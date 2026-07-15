@@ -374,6 +374,7 @@ public sealed class ActivityLogInterceptor : SaveChangesInterceptor
         CaptureItem c => ("capture", FirstLine(c.RawContent)),
         QuickLink q => ("quicklink", q.Title),
         SystemPrompt p => ("prompt", p.Title),
+        TimeEntry te => ("timeentry", te.Title),
         _ => null,
     };
 
@@ -664,14 +665,27 @@ public sealed class ActivityLogInterceptor : SaveChangesInterceptor
         [nameof(TaskCard.RecurrenceRule)] = "重複規則",
         // 快速捕捉
         [nameof(CaptureItem.RawContent)] = "內容",
+        // 時間追蹤（Title 已由上方「標題」涵蓋；時間欄位見 LongTextFields 的說明）
+        // ⚠️ 此字典的鍵是「屬性名稱字串」（全域、不分實體型別）：加新條目前必須 grep
+        //    其他實體是否有同名屬性——例如這裡的 "Category" 也會讓 QuickLink.Category 的
+        //    變更開始出現在活動摘要（已評估為合理行為並以測試鎖住；見設計文件 2026-07-15）。
+        [nameof(TimeEntry.Category)] = "分類",
+        [nameof(TimeEntry.StartedDateTime)] = "開始時間",
+        [nameof(TimeEntry.EndedDateTime)] = "結束時間",
     };
 
-    /// <summary>長文欄位：摘要中只列名稱、不附完整前後內容（避免膨脹與外洩）。</summary>
+    /// <summary>
+    /// 長文欄位：摘要中只列名稱、不附完整前後內容（避免膨脹與外洩）。
+    /// 時間追蹤的開始/結束時間也歸此類——FormatValue 對 DateTime 只印日期（yyyy-MM-dd），
+    /// 「同日只改時分」會記成「相同→相同」的白紀錄且值為 UTC 易生時區混淆，故只列欄名。
+    /// </summary>
     private static readonly HashSet<string> LongTextFields = new(StringComparer.Ordinal)
     {
         nameof(Note.ContentRaw),
         nameof(TaskCard.Content),
         nameof(CaptureItem.RawContent),
+        nameof(TimeEntry.StartedDateTime),
+        nameof(TimeEntry.EndedDateTime),
     };
 
     /// <summary>連結變更動作。</summary>
