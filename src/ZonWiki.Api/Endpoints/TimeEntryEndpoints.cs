@@ -31,6 +31,15 @@ public static class TimeEntryEndpoints
     /// <summary>分類長度上限（與 TimeEntryConfiguration 的 HasMaxLength 一致）。</summary>
     private const int CategoryMaxLength = 128;
 
+    /// <summary>備註長度上限（與 TimeEntryConfiguration 的 HasMaxLength 一致）。</summary>
+    private const int NoteMaxLength = 1000;
+
+    /// <summary>「既有項目」範本清單回傳上限（避免 iOS 捷徑選單過長）。</summary>
+    private const int RecentItemsLimit = 50;
+
+    /// <summary>未分類項目在彙總「依分類」中的顯示名稱。</summary>
+    private const string UncategorizedLabel = "未分類";
+
     /// <summary>
     /// 註冊時間追蹤相關的 HTTP 端點。
     /// </summary>
@@ -130,6 +139,146 @@ public static class TimeEntryEndpoints
         });
 
         /// <summary>
+        /// 列出「既有項目」範本：本人歷史用過的 distinct「名稱＋分類」組合，最近用過的排前面。
+        /// 供 iOS 捷徑「選既有」快速帶入（例如挑「打LOL／休閒娛樂」直接開始）。
+        /// GET /api/time-entries/recent-items
+        /// </summary>
+        app.MapGet("/api/time-entries/recent-items", async (
+            ZonWikiDbContext db,
+            HttpContext httpContext,
+            CancellationToken ct) =>
+        {
+            var userId = httpContext.User.FindFirst(AuthExtensions.UserIdClaimType)?.Value;
+            if (string.IsNullOrEmpty(userId) || !Guid.TryParse(userId, out var userGuid))
+            {
+                return Results.Unauthorized();
+            }
+
+            // 依「名稱＋分類」去重，取每組最後一次開始時間為新近度、逆序，取前 N 筆。
+            var rows = await db.TimeEntry
+                .AsNoTracking()
+                .Where(t => t.UserId == userGuid && t.ValidFlag)
+                .GroupBy(t => new { t.Title, t.Category })
+                .Select(g => new
+                {
+                    g.Key.Title,
+                    g.Key.Category,
+                    LastStarted = g.Max(x => x.StartedDateTime),
+                })
+                .OrderByDescending(x => x.LastStarted)
+                .Take(RecentItemsLimit)
+                .ToListAsync(ct);
+
+            var items = rows
+                .Select(x => new TimeEntryTemplateDto(x.Title, x.Category))
+                .ToList();
+
+            return Results.Ok(ApiResponse<List<TimeEntryTemplateDto>>.Ok(items));
+        });
+
+        /// <summary>
+        /// 今日／本週彙總（供 iOS 主畫面小工具顯示「做了哪些、各花多少、進行中、依分類」）。
+        /// 範圍邊界依「使用者時區」歸日/週（週一為週首）；進行中項目以「查詢當下已經過時間」即時併入。
+        /// GET /api/time-entries/summary?scope=day|week（未帶＝day）
+        /// </summary>
+        app.MapGet("/api/time-entries/summary", async (
+            string? scope,
+            ZonWikiDbContext db,
+            HttpContext httpContext,
+            CancellationToken ct) =>
+        {
+            var userId = httpContext.User.FindFirst(AuthExtensions.UserIdClaimType)?.Value;
+            if (string.IsNullOrEmpty(userId) || !Guid.TryParse(userId, out var userGuid))
+            {
+                return Results.Unauthorized();
+            }
+
+            var normalizedScope = string.IsNullOrWhiteSpace(scope) ? "day" : scope.Trim().ToLowerInvariant();
+            if (normalizedScope is not ("day" or "week"))
+            {
+                return Results.BadRequest(ApiResponse<object>.Fail("scope 僅接受 day 或 week", 400));
+            }
+
+            // 使用者時區（存 UTC、依時區歸日/週）。
+            var timeZoneId = await db.User
+                .Where(u => u.Id == userGuid)
+                .Select(u => u.TimeZone)
+                .FirstOrDefaultAsync(ct);
+
+            var now = DateTime.UtcNow;
+            var (fromUtc, toUtc) = ComputeScopeRangeUtc(normalizedScope, timeZoneId, now);
+
+            var entries = await db.TimeEntry
+                .AsNoTracking()
+                .Where(t => t.UserId == userGuid && t.ValidFlag
+                    && t.StartedDateTime >= fromUtc && t.StartedDateTime < toUtc)
+                .OrderByDescending(t => t.StartedDateTime)
+                .ThenByDescending(t => t.CreatedDateTime)
+                .ToListAsync(ct);
+
+            // 進行中項目以「查詢當下已經過時間」計（clamp 非負），與網頁面板同款「含進行中」語意。
+            long SecondsOf(TimeEntry entry) => entry.EndedDateTime.HasValue
+                ? (long)Math.Round((entry.EndedDateTime.Value - entry.StartedDateTime).TotalSeconds)
+                : (long)Math.Max(0, Math.Round((now - entry.StartedDateTime).TotalSeconds));
+
+            var items = entries
+                .Select(entry => new TimeEntrySummaryItemDto(
+                    entry.Id,
+                    entry.Title,
+                    entry.Category,
+                    SecondsOf(entry),
+                    !entry.EndedDateTime.HasValue))
+                .ToList();
+
+            var byCategory = entries
+                .GroupBy(entry => entry.Category ?? UncategorizedLabel)
+                .Select(group => new TimeEntryCategoryTotalDto(
+                    group.Key,
+                    group.Sum(SecondsOf),
+                    group.Count(entry => !entry.EndedDateTime.HasValue)))
+                .OrderByDescending(category => category.Seconds)
+                .ToList();
+
+            var summary = new TimeEntrySummaryDto(
+                normalizedScope,
+                fromUtc,
+                toUtc,
+                items.Sum(item => item.Seconds),
+                items.Count(item => item.Running),
+                items,
+                byCategory);
+
+            return Results.Ok(ApiResponse<TimeEntrySummaryDto>.Ok(summary));
+        });
+
+        /// <summary>
+        /// 取得單一項目詳情（供 iOS「結束計時（確認）」捷徑帶入 id 後查名稱做二次確認顯示）。
+        /// GET /api/time-entries/{id}
+        /// </summary>
+        app.MapGet("/api/time-entries/{id:guid}", async (
+            Guid id,
+            ZonWikiDbContext db,
+            HttpContext httpContext,
+            CancellationToken ct) =>
+        {
+            var userId = httpContext.User.FindFirst(AuthExtensions.UserIdClaimType)?.Value;
+            if (string.IsNullOrEmpty(userId) || !Guid.TryParse(userId, out var userGuid))
+            {
+                return Results.Unauthorized();
+            }
+
+            var entry = await db.TimeEntry
+                .AsNoTracking()
+                .FirstOrDefaultAsync(t => t.Id == id && t.UserId == userGuid && t.ValidFlag, ct);
+            if (entry is null)
+            {
+                return Results.NotFound(ApiResponse<TimeEntryDto>.Fail("找不到該計時項目", 404));
+            }
+
+            return Results.Ok(ApiResponse<TimeEntryDto>.Ok(MapTimeEntry(entry)));
+        });
+
+        /// <summary>
         /// 建立新項目（＝開始計時）。開始時間未帶＝伺服器當下（UTC）。
         /// POST /api/time-entries
         /// Body: { title, category?, startedDateTime? }
@@ -147,7 +296,7 @@ public static class TimeEntryEndpoints
             }
 
             var title = request.Title?.Trim();
-            var validationError = ValidateTitleAndCategory(title, request.Category, titleRequired: true);
+            var validationError = ValidateFields(title, request.Category, request.Note, titleRequired: true);
             if (validationError is not null)
             {
                 return validationError;
@@ -160,6 +309,8 @@ public static class TimeEntryEndpoints
                 Title = title!,
                 // 空字串／純空白視為未分類（存 null），與 QuickLink 同款語意。
                 Category = string.IsNullOrWhiteSpace(request.Category) ? null : request.Category.Trim(),
+                // 空字串／純空白視為無備註（存 null）。
+                Note = string.IsNullOrWhiteSpace(request.Note) ? null : request.Note.Trim(),
                 StartedDateTime = request.StartedDateTime.HasValue
                     ? NormalizeToUtc(request.StartedDateTime.Value)
                     : DateTime.UtcNow,
@@ -285,12 +436,12 @@ public static class TimeEntryEndpoints
                 return Results.NotFound(ApiResponse<object>.Fail("找不到該計時項目", 404));
             }
 
-            // 名稱：null = 不改；帶了但空白 = 400（名稱不可清空）。
+            // 名稱：null = 不改；帶了但空白 = 400（名稱不可清空）。分類/備註長度一併驗。
             string? newTitle = null;
             if (request.Title != null)
             {
                 newTitle = request.Title.Trim();
-                var validationError = ValidateTitleAndCategory(newTitle, request.Category, titleRequired: true);
+                var validationError = ValidateFields(newTitle, request.Category, request.Note, titleRequired: true);
                 if (validationError is not null)
                 {
                     return validationError;
@@ -298,7 +449,7 @@ public static class TimeEntryEndpoints
             }
             else
             {
-                var validationError = ValidateTitleAndCategory(title: null, request.Category, titleRequired: false);
+                var validationError = ValidateFields(title: null, request.Category, request.Note, titleRequired: false);
                 if (validationError is not null)
                 {
                     return validationError;
@@ -329,6 +480,14 @@ public static class TimeEntryEndpoints
                 entry.Category = string.IsNullOrWhiteSpace(request.Category)
                     ? null
                     : request.Category.Trim();
+            }
+
+            // 備註：null = 不更新；空字串/純空白 = 清為無備註；否則設定（去前後空白）。
+            if (request.Note != null)
+            {
+                entry.Note = string.IsNullOrWhiteSpace(request.Note)
+                    ? null
+                    : request.Note.Trim();
             }
 
             entry.StartedDateTime = effectiveStart;
@@ -374,13 +533,14 @@ public static class TimeEntryEndpoints
     }
 
     /// <summary>
-    /// 驗證名稱與分類的必填/長度規則；通過回 null，未通過回 400 結果。
+    /// 驗證名稱／分類／備註的必填與長度規則；通過回 null，未通過回 400 結果。
     /// </summary>
     /// <param name="title">已修剪的名稱（titleRequired 為 false 時可為 null＝不驗證名稱）。</param>
     /// <param name="category">分類原始值（未修剪；只驗長度，空白語意由呼叫端處理）。</param>
+    /// <param name="note">備註原始值（未修剪；只驗長度，空白語意由呼叫端處理）。</param>
     /// <param name="titleRequired">是否要求名稱非空白。</param>
     /// <returns>驗證失敗的 400 結果，或 null（通過）。</returns>
-    private static IResult? ValidateTitleAndCategory(string? title, string? category, bool titleRequired)
+    private static IResult? ValidateFields(string? title, string? category, string? note, bool titleRequired)
     {
         if (titleRequired && string.IsNullOrWhiteSpace(title))
         {
@@ -395,6 +555,11 @@ public static class TimeEntryEndpoints
         if (category is not null && category.Trim().Length > CategoryMaxLength)
         {
             return Results.BadRequest(ApiResponse<object>.Fail($"分類不可超過 {CategoryMaxLength} 字", 400));
+        }
+
+        if (note is not null && note.Trim().Length > NoteMaxLength)
+        {
+            return Results.BadRequest(ApiResponse<object>.Fail($"備註不可超過 {NoteMaxLength} 字", 400));
         }
 
         return null;
@@ -415,6 +580,75 @@ public static class TimeEntryEndpoints
     };
 
     /// <summary>
+    /// 依「使用者時區」計算某範圍（day/week）的 UTC 半開區間 [from, to)。
+    /// day＝當地當天 00:00～隔天 00:00；week＝當地本週一 00:00～下週一 00:00（週一為週首）。
+    /// 時區解析失敗退回 Asia/Taipei（與全站其他端點一致）。
+    /// </summary>
+    /// <param name="scope">範圍："day" 或 "week"。</param>
+    /// <param name="timeZoneId">使用者 IANA 時區（可空）。</param>
+    /// <param name="nowUtc">目前 UTC 時刻。</param>
+    /// <returns>UTC 半開區間（起含、迄不含）。</returns>
+    internal static (DateTime FromUtc, DateTime ToUtc) ComputeScopeRangeUtc(
+        string scope,
+        string? timeZoneId,
+        DateTime nowUtc)
+    {
+        TimeZoneInfo timeZone;
+        try
+        {
+            timeZone = TimeZoneInfo.FindSystemTimeZoneById(
+                string.IsNullOrWhiteSpace(timeZoneId) ? "Asia/Taipei" : timeZoneId);
+        }
+        catch (Exception) // TimeZoneNotFound／InvalidTimeZone／損毀 id 皆退回台北（比照 ProfileEndpoints 的全捕 fallback）
+        {
+            timeZone = TimeZoneInfo.FindSystemTimeZoneById("Asia/Taipei");
+        }
+
+        // 當地「今天」的午夜（ConvertTimeFromUtc 回傳 Kind=Unspecified，直接取 .Date）。
+        var localNow = TimeZoneInfo.ConvertTimeFromUtc(nowUtc, timeZone);
+        var localDate = localNow.Date;
+
+        DateTime localStart;
+        DateTime localEnd; // 不含
+        if (scope == "week")
+        {
+            // 週一為週首：DayOfWeek 週日=0…週六=6，換算成「距離週一幾天」。
+            var daysSinceMonday = ((int)localDate.DayOfWeek + 6) % 7;
+            localStart = localDate.AddDays(-daysSinceMonday);
+            localEnd = localStart.AddDays(7);
+        }
+        else
+        {
+            localStart = localDate;
+            localEnd = localDate.AddDays(1);
+        }
+
+        return (LocalWallToUtc(localStart, timeZone), LocalWallToUtc(localEnd, timeZone));
+    }
+
+    /// <summary>
+    /// 把「當地牆上時間」安全轉成 UTC——處理 DST 春進間隙：部分時區把 DST 轉換點設在午夜
+    /// （如 America/Santiago），此時「當地 00:00」是不存在的無效時刻，直接 ConvertTimeToUtc 會丟
+    /// ArgumentException → 裸 500。遇無效時刻就往後推進到間隙結束（該當地日的第一個有效瞬間）。
+    /// </summary>
+    /// <param name="localWall">當地牆上時間（將以 Unspecified Kind 處理）。</param>
+    /// <param name="timeZone">目標時區。</param>
+    /// <returns>對應的 UTC 時刻。</returns>
+    private static DateTime LocalWallToUtc(DateTime localWall, TimeZoneInfo timeZone)
+    {
+        var wall = DateTime.SpecifyKind(localWall, DateTimeKind.Unspecified);
+
+        // 無效時刻（春進間隙）→ 逐步推進到有效瞬間；上限 16×15 分＝4 小時，涵蓋任何真實 DST 間隙。
+        var guard = 0;
+        while (timeZone.IsInvalidTime(wall) && guard++ < 16)
+        {
+            wall = wall.AddMinutes(15);
+        }
+
+        return TimeZoneInfo.ConvertTimeToUtc(wall, timeZone);
+    }
+
+    /// <summary>
     /// 將時間追蹤實體投影為 DTO；時長（秒）＝結束－開始（計時中為 null），即時計算、不落欄位。
     /// </summary>
     /// <param name="entry">時間追蹤實體。</param>
@@ -424,6 +658,7 @@ public static class TimeEntryEndpoints
             entry.Id,
             entry.Title,
             entry.Category,
+            entry.Note,
             entry.StartedDateTime,
             entry.EndedDateTime,
             entry.EndedDateTime.HasValue

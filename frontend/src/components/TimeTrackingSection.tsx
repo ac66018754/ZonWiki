@@ -463,6 +463,20 @@ export function TimeTrackingSection() {
                   >
                     ✎
                   </button>
+                  {entry.note && (
+                    <div
+                      style={{
+                        flexBasis: "100%",
+                        fontSize: "var(--text-sm)",
+                        color: "var(--text-secondary)",
+                        lineHeight: 1.6,
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-word",
+                      }}
+                    >
+                      📝 {entry.note}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -655,6 +669,20 @@ export function TimeTrackingSection() {
                         >
                           ✎
                         </button>
+                        {entry.note && (
+                          <div
+                            style={{
+                              flexBasis: "100%",
+                              fontSize: "var(--text-sm)",
+                              color: "var(--text-secondary)",
+                              lineHeight: 1.6,
+                              whiteSpace: "pre-wrap",
+                              wordBreak: "break-word",
+                            }}
+                          >
+                            📝 {entry.note}
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>

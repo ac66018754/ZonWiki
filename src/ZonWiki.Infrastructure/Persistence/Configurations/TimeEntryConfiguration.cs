@@ -25,6 +25,9 @@ public sealed class TimeEntryConfiguration : IEntityTypeConfiguration<TimeEntry>
         // 自由文字分類：可空、最長 128 字（與 QuickLink.Category 同款）。
         builder.Property(t => t.Category).HasMaxLength(128);
 
+        // 備註：可空、最長 1000 字。
+        builder.Property(t => t.Note).HasMaxLength(1000);
+
         builder.Property(t => t.CreatedUser).IsRequired().HasMaxLength(128);
         builder.Property(t => t.UpdatedUser).IsRequired().HasMaxLength(128);
 

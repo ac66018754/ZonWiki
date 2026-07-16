@@ -27,6 +27,12 @@ public class TimeEntry : AuditableEntity, IUserOwned
     public string? Category { get; set; }
 
     /// <summary>
+    /// 備註（這段時間實際做了什麼的補充，例如「玩隨機單中一場」），可空，最長 1000 字；
+    /// 空白視為無備註（存 null）。
+    /// </summary>
+    public string? Note { get; set; }
+
+    /// <summary>
     /// 開始時間（UTC）。建立時未指定則取伺服器當下時間。
     /// </summary>
     public DateTime StartedDateTime { get; set; }
