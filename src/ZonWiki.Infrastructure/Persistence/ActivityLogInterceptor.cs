@@ -670,6 +670,7 @@ public sealed class ActivityLogInterceptor : SaveChangesInterceptor
         //    其他實體是否有同名屬性——例如這裡的 "Category" 也會讓 QuickLink.Category 的
         //    變更開始出現在活動摘要（已評估為合理行為並以測試鎖住；見設計文件 2026-07-15）。
         [nameof(TimeEntry.Category)] = "分類",
+        [nameof(TimeEntry.Note)] = "備註",
         [nameof(TimeEntry.StartedDateTime)] = "開始時間",
         [nameof(TimeEntry.EndedDateTime)] = "結束時間",
     };
@@ -684,6 +685,7 @@ public sealed class ActivityLogInterceptor : SaveChangesInterceptor
         nameof(Note.ContentRaw),
         nameof(TaskCard.Content),
         nameof(CaptureItem.RawContent),
+        nameof(TimeEntry.Note),
         nameof(TimeEntry.StartedDateTime),
         nameof(TimeEntry.EndedDateTime),
     };

@@ -5,6 +5,17 @@
 
 ---
 
+## 2026-07-16 ｜時間追蹤 Phase 2/3：備註＋既有項目/彙總端點＋iOS 捷徑×Scriptable 小工具（feature/time-tracking-widgets）
+
+- **背景**：使用者要在 iPhone 主畫面（不開網頁）完成 4 個場景：①開始（新增 or 選既有＋可選備註）②結束（看進行中清單挑一個、防手誤）③今日統計（做了哪些、各花多少、進行中、依分類）④本週統計。承接已合併的時間追蹤 v1（PR #43）。完整設計見 [docs/design/時間追蹤-設計與測試計畫.md](./design/時間追蹤-設計與測試計畫.md) §7.11、教學見 [docs/iOS捷徑-時間追蹤.md](./iOS捷徑-時間追蹤.md)。
+- **後端**：TimeEntry 加 `Note`（可空 max 1000，migration `AddTimeEntryNote`）；新增 `GET /recent-items`（歷史 distinct 名稱+分類、最近在前）、`GET /summary?scope=day|week`（依使用者時區歸日/週、進行中即時併入）、`GET /{id}`（單筆，供確認捷徑查名）。**決策：不做正式範本表**（YAGNI，動態撈 distinct）。
+- **防手誤走「二次確認」不做 30 秒待定狀態機**（使用者裁示）：小工具點列→跳捷徑確認框→確定才結束；狀態機要放後端且 widget 快照回饋有延遲，不划算。
+- **iOS 兩條路**：捷徑（觸發動作，打 HTTP API）＋ Scriptable（被動顯示 widget，因 Apple 捷徑 widget 只顯示按鈕不顯示資料）。腳本 [docs/ios-widgets/](./ios-widgets/) 內嵌 PAT（個人自用可接受，文件提醒勿上傳公開 repo）。
+- **對抗式復審（兩路）修正**：【HIGH】`ComputeScopeRangeUtc` 對「DST 春進間隙設在午夜」的時區（如 America/Santiago）在轉換日算「當地 00:00」會丟 `ArgumentException`→裸 500（無全域例外兜底）→ 抽 `LocalWallToUtc`＋`IsInvalidTime` 推進到有效瞬間，加 internal 單元測試鎖住；【HIGH】文件引用不存在的 `GET /{id}`→補該端點；【MEDIUM】時區 catch 過窄改全捕、彙總測試改錨定「當地正午」消 1.4% flaky、「未分類」聚合標籤碰撞記錄取捨。
+- **驗證**：TDD——後端 70 個 TimeEntry 測試（含 DST/GET{id}/summary/recent-items/note），全套件 Api 379＋Infra 66 零回歸；前端 tsc/eslint/build 過；本地部署 Playwright 實測備註 新增→顯示（亮/暗/暖紙×1280/375、console 零錯、375 無橫捲）。
+
+---
+
 ## 2026-07-15 ｜時間追蹤（TimeEntry）：首頁計時面板＋iOS 捷徑主畫面操作（feature/time-tracking）
 
 - **背景**：使用者要記錄「每天把時間花在什麼上面」：首頁按鈕輸入名稱＋可選分類＝開始計時、回來按結束算時間差、時間可事後編輯、日/週/月/年分組檢視、整塊可收合；且希望 **iPhone 16 主畫面就能開始/結束，不開 ZonWiki**。完整設計與測試計畫在 [docs/design/時間追蹤-設計與測試計畫.md](./design/時間追蹤-設計與測試計畫.md)。

@@ -35,6 +35,7 @@ export function TimeEntryEditModal({
 }) {
   const [title, setTitle] = useState(entry.title);
   const [category, setCategory] = useState(entry.category ?? "");
+  const [note, setNote] = useState(entry.note ?? "");
   const [startIso, setStartIso] = useState<string | null>(entry.startedDateTime);
   const [endIso, setEndIso] = useState<string | null>(entry.endedDateTime);
   const [saving, setSaving] = useState(false);
@@ -67,6 +68,7 @@ export function TimeEntryEditModal({
       const updated = await updateTimeEntry(entry.id, {
         title: title.trim(),
         category: category.trim(), // 空字串＝清為未分類（後端同款語意）
+        note: note.trim(), // 空字串＝清為無備註（後端同款語意）
         startedDateTime: startIso!,
         ...(endIso ? { endedDateTime: endIso } : {}),
       });
@@ -200,6 +202,27 @@ export function TimeEntryEditModal({
             maxLength={128}
             list="time-tracking-categories"
             style={inputStyle}
+          />
+        </div>
+
+        <div>
+          <label style={fieldLabelStyle} htmlFor={`te-edit-note-${entry.id}`}>
+            備註（留空＝無備註）
+          </label>
+          <textarea
+            id={`te-edit-note-${entry.id}`}
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            maxLength={1000}
+            rows={2}
+            placeholder="這段時間實際做了什麼…"
+            style={{
+              ...inputStyle,
+              minHeight: 56,
+              resize: "vertical",
+              lineHeight: 1.6,
+              fontFamily: "var(--font-body)",
+            }}
           />
         </div>
 

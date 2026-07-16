@@ -969,7 +969,374 @@ public sealed class TimeEntryEndpointsHttpTests
         log!.ActionType.Should().Be("deleted");
     }
 
+    // ══════════════════════════ 7.11 備註（Note，Phase 1） ══════════════════════════
+
+    /// <summary>
+    /// 帶備註建立 → 201 且回傳的 note 為修剪後的內容。
+    /// </summary>
+    [Fact]
+    public async Task Create_WithNote_StoresAndReturnsNote()
+    {
+        var (client, _) = await NewClientAsync("te-note-create");
+
+        var response = await client.PostAsJsonAsync("/api/time-entries",
+            new { title = "打LOL", category = "休閒娛樂", note = "  玩隨機單中一場  " });
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+        (await response.ReadJsonAsync())["data"]!["note"]!.GetValue<string>().Should().Be("玩隨機單中一場");
+    }
+
+    /// <summary>
+    /// 備註為純空白 → 存 null（無備註）。
+    /// </summary>
+    [Fact]
+    public async Task Create_BlankNote_StoredAsNull()
+    {
+        var (client, _) = await NewClientAsync("te-note-blank");
+
+        var response = await client.PostAsJsonAsync("/api/time-entries",
+            new { title = "無備註", note = "   " });
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+        (await response.ReadJsonAsync())["data"]!["note"].Should().BeNull();
+    }
+
+    /// <summary>
+    /// 備註超過 1000 字 → 400。
+    /// </summary>
+    [Fact]
+    public async Task Create_NoteOver1000_Returns400()
+    {
+        var (client, _) = await NewClientAsync("te-note-long");
+
+        var response = await client.PostAsJsonAsync("/api/time-entries",
+            new { title = "備註過長", note = new string('備', 1001) });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    /// <summary>
+    /// 編輯備註：帶新值更新、帶空白清為 null；帶 null（不帶欄位）不動既有備註。
+    /// </summary>
+    [Fact]
+    public async Task Update_Note_SetClearAndUnchanged()
+    {
+        var (client, _) = await NewClientAsync("te-note-update");
+        var id = await StartEntryAsync(client, "備註編輯", note: "原始備註");
+
+        // 帶新值。
+        var setResp = await client.PutAsJsonAsync($"/api/time-entries/{id}", new { note = "新備註" });
+        setResp.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await setResp.ReadJsonAsync())["data"]!["note"]!.GetValue<string>().Should().Be("新備註");
+
+        // 只改標題、不帶 note → 備註不變。
+        var otherResp = await client.PutAsJsonAsync($"/api/time-entries/{id}", new { title = "改名不改備註" });
+        (await otherResp.ReadJsonAsync())["data"]!["note"]!.GetValue<string>().Should().Be("新備註");
+
+        // 帶空白 → 清為 null。
+        var clearResp = await client.PutAsJsonAsync($"/api/time-entries/{id}", new { note = "   " });
+        clearResp.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await clearResp.ReadJsonAsync())["data"]!["note"].Should().BeNull();
+    }
+
+    /// <summary>
+    /// 編輯備註超過 1000 字 → 400。
+    /// </summary>
+    [Fact]
+    public async Task Update_NoteOver1000_Returns400()
+    {
+        var (client, _) = await NewClientAsync("te-note-updlong");
+        var id = await StartEntryAsync(client, "備註過長編輯");
+
+        var response = await client.PutAsJsonAsync($"/api/time-entries/{id}",
+            new { note = new string('備', 1001) });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    /// <summary>
+    /// 編輯備註 → ActivityLog 記 updated，Detail 只列欄名「備註」、不附備註內容（LongTextFields，避免外洩/膨脹）。
+    /// </summary>
+    [Fact]
+    public async Task UpdateNote_DetailListsFieldNameWithoutContent()
+    {
+        var (client, userId) = await NewClientAsync("te-note-act");
+        var id = await StartEntryAsync(client, "備註活動");
+
+        (await client.PutAsJsonAsync($"/api/time-entries/{id}",
+            new { note = "這是一段不該出現在活動摘要的私密備註內容" })).EnsureSuccessStatusCode();
+
+        var log = await GetLatestActivityAsync(userId, id);
+        log.Should().NotBeNull();
+        log!.ActionType.Should().Be("updated");
+        log.Detail.Should().Contain("備註");
+        log.Detail.Should().NotContain("私密備註內容", "長文欄位只列欄名、不附內容");
+    }
+
+    /// <summary>
+    /// GET /api/time-entries/{id}：本人項目回 200 與完整 DTO（含 note）。
+    /// </summary>
+    [Fact]
+    public async Task GetById_ReturnsOwnEntry()
+    {
+        var (client, _) = await NewClientAsync("te-getid");
+        var id = await StartEntryAsync(client, "單筆查詢", category: "測試", note: "備註內容");
+
+        var response = await client.GetAsync($"/api/time-entries/{id}");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var data = (await response.ReadJsonAsync())["data"]!;
+        data["title"]!.GetValue<string>().Should().Be("單筆查詢");
+        data["note"]!.GetValue<string>().Should().Be("備註內容");
+    }
+
+    /// <summary>
+    /// GET /api/time-entries/{id}：不存在 → 404；跨使用者（A 查 B 的）→ 404（隔離）。
+    /// </summary>
+    [Fact]
+    public async Task GetById_NotFoundOrOtherUser_Returns404()
+    {
+        var (clientA, _) = await NewClientAsync("te-getid-isoA");
+        var (clientB, _) = await NewClientAsync("te-getid-isoB");
+        var idB = await StartEntryAsync(clientB, "B 的項目");
+
+        (await clientA.GetAsync($"/api/time-entries/{Guid.NewGuid()}"))
+            .StatusCode.Should().Be(HttpStatusCode.NotFound);
+        (await clientA.GetAsync($"/api/time-entries/{idB}"))
+            .StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    // ══════════════════════════ 7.12 既有項目範本（recent-items，Phase 1） ══════════════════════════
+
+    /// <summary>
+    /// /recent-items 回本人 distinct「名稱＋分類」組合，依最後一次開始時間逆序（最近用過在前）。
+    /// </summary>
+    [Fact]
+    public async Task RecentItems_ReturnsDistinctCombos_MostRecentFirst()
+    {
+        var (client, _) = await NewClientAsync("te-recent");
+        await StartEntryAsync(client, "打LOL", category: "休閒娛樂", startedIso: "2026-01-01T00:00:00Z");
+        await StartEntryAsync(client, "讀書", category: "學習", startedIso: "2026-02-01T00:00:00Z");
+        await StartEntryAsync(client, "打LOL", category: "休閒娛樂", startedIso: "2026-03-01T00:00:00Z"); // 同組、更晚
+
+        var response = await client.GetAsync("/api/time-entries/recent-items");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var items = ((JsonArray)(await response.ReadJsonAsync())["data"]!)
+            .Select(n => (Title: n!["title"]!.GetValue<string>(),
+                Category: n["category"]?.GetValue<string>()))
+            .ToList();
+        items.Should().HaveCount(2, "同名同分類只算一組");
+        items[0].Should().Be(("打LOL", "休閒娛樂"), "最近用過（2026-03）排最前");
+        items[1].Should().Be(("讀書", "學習"));
+    }
+
+    /// <summary>
+    /// /recent-items 只回本人的組合（跨使用者隔離）。
+    /// </summary>
+    [Fact]
+    public async Task RecentItems_OnlyOwnEntries()
+    {
+        var (clientA, _) = await NewClientAsync("te-recent-isoA");
+        var (clientB, _) = await NewClientAsync("te-recent-isoB");
+        await StartEntryAsync(clientA, "A 的項目", category: "A類");
+        await StartEntryAsync(clientB, "B 的項目", category: "B類");
+
+        var titles = ((JsonArray)(await (await clientA.GetAsync("/api/time-entries/recent-items")).ReadJsonAsync())["data"]!)
+            .Select(n => n!["title"]!.GetValue<string>())
+            .ToList();
+
+        titles.Should().Contain("A 的項目").And.NotContain("B 的項目");
+    }
+
+    // ══════════════════════════ 7.13 彙總（summary，Phase 1） ══════════════════════════
+
+    /// <summary>
+    /// scope 非 day/week → 400。
+    /// </summary>
+    [Fact]
+    public async Task Summary_InvalidScope_Returns400()
+    {
+        var (client, _) = await NewClientAsync("te-sum-badscope");
+
+        (await client.GetAsync("/api/time-entries/summary?scope=month"))
+            .StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    /// <summary>
+    /// day 範圍恰 24 小時、week 範圍恰 7 天（使用者時區 Asia/Taipei 無 DST，邊界精確）。
+    /// </summary>
+    [Fact]
+    public async Task Summary_DayRangeSpans24Hours_WeekSpans7Days()
+    {
+        var (client, userId) = await NewClientAsync("te-sum-range");
+        await SetUserTimeZoneAsync(userId, "Asia/Taipei");
+
+        var day = await (await client.GetAsync("/api/time-entries/summary?scope=day")).ReadJsonAsync();
+        var week = await (await client.GetAsync("/api/time-entries/summary?scope=week")).ReadJsonAsync();
+
+        SpanHours(day["data"]!).Should().Be(24);
+        SpanHours(week["data"]!).Should().Be(168);
+
+        static double SpanHours(JsonNode data) =>
+            (DateTimeOffset.Parse(data["to"]!.GetValue<string>())
+                - DateTimeOffset.Parse(data["from"]!.GetValue<string>())).TotalHours;
+    }
+
+    /// <summary>
+    /// day 彙總：已結束項目計入總計與分類小計（含「未分類」），數字精確；不含進行中時 runningCount=0。
+    /// 三筆皆錨定在「當地正午」附近（距任一午夜 ±12 小時），與 UtcNow 是否接近午夜無關 → 零 flaky。
+    /// </summary>
+    [Fact]
+    public async Task Summary_ComputesTotalsAndByCategory()
+    {
+        var (client, userId) = await NewClientAsync("te-sum-totals");
+        await SetUserTimeZoneAsync(userId, "Asia/Taipei");
+        var noon = LocalNoonTodayUtc("Asia/Taipei");
+
+        // 三筆已結束項目，時長精確：工作 360s、運動 300s、未分類 120s。
+        await StartAndStopAsync(client, "工作項", "工作", noon, noon.AddSeconds(360)); // 360s
+        await StartAndStopAsync(client, "運動項", "運動", noon.AddSeconds(400), noon.AddSeconds(700)); // 300s
+        await StartAndStopAsync(client, "雜項", null, noon.AddSeconds(800), noon.AddSeconds(920)); // 120s
+
+        var data = (await (await client.GetAsync("/api/time-entries/summary?scope=day")).ReadJsonAsync())["data"]!;
+
+        data["totalSeconds"]!.GetValue<long>().Should().Be(780);
+        data["runningCount"]!.GetValue<int>().Should().Be(0);
+        var byCat = ((JsonArray)data["byCategory"]!)
+            .ToDictionary(n => n!["category"]!.GetValue<string>(), n => n!["seconds"]!.GetValue<long>());
+        byCat["工作"].Should().Be(360);
+        byCat["運動"].Should().Be(300);
+        byCat["未分類"].Should().Be(120);
+    }
+
+    /// <summary>
+    /// 進行中項目也計入 day 彙總：runningCount=1、該項 running=true、seconds 非負且與總計一致。
+    /// 錨定在當地正午（確定落在今天範圍內、零 flaky）；不斷言精確經過秒數（依執行時刻而定，改由
+    /// 已結束項目的精確時長測試覆蓋「時長計算正確」）。
+    /// </summary>
+    [Fact]
+    public async Task Summary_RunningItemCounted()
+    {
+        var (client, userId) = await NewClientAsync("te-sum-running");
+        await SetUserTimeZoneAsync(userId, "Asia/Taipei");
+        var id = await StartEntryAsync(client, "進行中項目",
+            startedIso: LocalNoonTodayUtc("Asia/Taipei").ToString("o"));
+
+        var data = (await (await client.GetAsync("/api/time-entries/summary?scope=day")).ReadJsonAsync())["data"]!;
+
+        data["runningCount"]!.GetValue<int>().Should().Be(1);
+        var item = ((JsonArray)data["items"]!)
+            .First(n => Guid.Parse(n!["id"]!.GetValue<string>()) == id);
+        item["running"]!.GetValue<bool>().Should().BeTrue();
+        item["seconds"]!.GetValue<long>().Should().BeGreaterThanOrEqualTo(0);
+        // 只有這一筆 → 總計等於該項時長（驗證進行中項目確實計入總計）。
+        data["totalSeconds"]!.GetValue<long>().Should().Be(item["seconds"]!.GetValue<long>());
+    }
+
+    /// <summary>
+    /// 彙總只算本人的項目（跨使用者隔離）。
+    /// </summary>
+    [Fact]
+    public async Task Summary_OnlyOwnEntries()
+    {
+        var (clientA, _) = await NewClientAsync("te-sum-isoA");
+        var (clientB, userIdB) = await NewClientAsync("te-sum-isoB");
+        await SetUserTimeZoneAsync(userIdB, "Asia/Taipei");
+        var noon = LocalNoonTodayUtc("Asia/Taipei");
+        await StartAndStopAsync(clientA, "A 的近期項目", "A類", noon, noon.AddSeconds(300));
+
+        var data = (await (await clientB.GetAsync("/api/time-entries/summary?scope=day")).ReadJsonAsync())["data"]!;
+
+        data["totalSeconds"]!.GetValue<long>().Should().Be(0);
+        ((JsonArray)data["items"]!).Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// DST 春進間隙防護（回歸鎖住審查 HIGH）：對「把 DST 轉換設在午夜」的時區（America/Santiago），
+    /// 直接單元測試邊界計算——在轉換日「當地 00:00」為不存在的無效時刻時，不得丟例外，且 from&lt;to。
+    /// 直呼 ComputeScopeRangeUtc（internal）比端點測試可靠：能精準指定 nowUtc 落在轉換日。
+    /// </summary>
+    [Theory]
+    [InlineData("2025-09-07T04:00:00Z")] // 智利 2025 夏令時開始日（當地午夜跳 00:00→01:00）
+    [InlineData("2024-09-08T04:00:00Z")] // 智利 2024 夏令時開始日
+    public void ComputeScopeRangeUtc_DstMidnightGap_DoesNotThrow(string nowUtcIso)
+    {
+        var nowUtc = DateTimeOffset.Parse(nowUtcIso).UtcDateTime;
+
+        var day = () => Api.Endpoints.TimeEntryEndpoints.ComputeScopeRangeUtc("day", "America/Santiago", nowUtc);
+        var week = () => Api.Endpoints.TimeEntryEndpoints.ComputeScopeRangeUtc("week", "America/Santiago", nowUtc);
+
+        day.Should().NotThrow();
+        week.Should().NotThrow();
+        day().FromUtc.Should().BeBefore(day().ToUtc);
+        week().FromUtc.Should().BeBefore(week().ToUtc);
+    }
+
+    /// <summary>
+    /// 損毀/亂字串時區退回 Asia/Taipei，不丟例外（day 範圍恰 24 小時）。
+    /// </summary>
+    [Fact]
+    public void ComputeScopeRangeUtc_GarbageTimeZone_FallsBackWithoutThrow()
+    {
+        var nowUtc = DateTimeOffset.Parse("2026-07-16T04:00:00Z").UtcDateTime;
+
+        var act = () => Api.Endpoints.TimeEntryEndpoints.ComputeScopeRangeUtc("day", "Not/AReal_Zone!!", nowUtc);
+
+        act.Should().NotThrow();
+        var (from, to) = act();
+        (to - from).TotalHours.Should().Be(24);
+    }
+
     // ══════════════════════════ 共用 helper ══════════════════════════
+
+    /// <summary>
+    /// 取「使用者時區今天正午」對應的 UTC 時刻（距任一午夜 ±12 小時，供彙總測試錨定、避免午夜邊界 flaky）。
+    /// </summary>
+    /// <param name="timeZoneId">IANA 時區（無 DST 者，如 Asia/Taipei）。</param>
+    /// <returns>今天當地 12:00 的 UTC 時刻。</returns>
+    private static DateTime LocalNoonTodayUtc(string timeZoneId)
+    {
+        var tz = TimeZoneInfo.FindSystemTimeZoneById(timeZoneId);
+        var localNoon = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, tz).Date.AddHours(12);
+        return TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(localNoon, DateTimeKind.Unspecified), tz);
+    }
+
+    /// <summary>
+    /// 以明確 UTC 起訖建立一筆「已結束」項目（供彙總精確時長測試）。
+    /// </summary>
+    /// <param name="client">已帶 Bearer 權杖的用戶端。</param>
+    /// <param name="title">項目名稱。</param>
+    /// <param name="category">分類（可空）。</param>
+    /// <param name="startUtc">開始時間（UTC）。</param>
+    /// <param name="endUtc">結束時間（UTC）。</param>
+    private static async Task StartAndStopAsync(
+        HttpClient client,
+        string title,
+        string? category,
+        DateTime startUtc,
+        DateTime endUtc)
+    {
+        var id = await StartEntryAsync(client, title, category: category, startedIso: startUtc.ToString("o"));
+        (await client.PostAsJsonAsync($"/api/time-entries/{id}/stop",
+            new { endedDateTime = endUtc.ToString("o") })).EnsureSuccessStatusCode();
+    }
+
+    /// <summary>
+    /// 直接於資料庫設定某使用者的顯示時區（供彙總的日/週邊界測試取得確定性）。
+    /// </summary>
+    /// <param name="userId">使用者 Id。</param>
+    /// <param name="timeZone">IANA 時區。</param>
+    private async Task SetUserTimeZoneAsync(Guid userId, string timeZone)
+    {
+        var (scope, db) = _factory.CreateDbScope();
+        using (scope)
+        {
+            await db.User.IgnoreQueryFilters()
+                .Where(u => u.Id == userId)
+                .ExecuteUpdateAsync(s => s.SetProperty(u => u.TimeZone, timeZone));
+        }
+    }
 
     /// <summary>
     /// 建立一位獨立使用者（獨立 GUID email）與其 PAT，回傳已帶 Bearer 的用戶端與使用者 Id。
@@ -991,15 +1358,17 @@ public sealed class TimeEntryEndpointsHttpTests
     /// <param name="title">項目名稱。</param>
     /// <param name="category">分類（可空）。</param>
     /// <param name="startedIso">開始時間 ISO 字串（可空＝伺服器預設 now）。</param>
+    /// <param name="note">備註（可空）。</param>
     /// <returns>新項目 Id。</returns>
     private static async Task<Guid> StartEntryAsync(
         HttpClient client,
         string title,
         string? category = null,
-        string? startedIso = null)
+        string? startedIso = null,
+        string? note = null)
     {
         var response = await client.PostAsJsonAsync("/api/time-entries",
-            new { title, category, startedDateTime = startedIso });
+            new { title, category, note, startedDateTime = startedIso });
         response.EnsureSuccessStatusCode();
         return Guid.Parse((await response.ReadJsonAsync())["data"]!["id"]!.GetValue<string>());
     }

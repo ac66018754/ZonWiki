@@ -12,6 +12,8 @@ export interface TimeEntry {
   id: string;
   title: string;
   category: string | null;
+  /** 備註（無備註為 null）。 */
+  note: string | null;
   startedDateTime: string;
   endedDateTime: string | null;
   /** 時長（秒）＝結束－開始；計時中為 null（由後端即時計算）。 */
@@ -56,6 +58,7 @@ export async function listTimeEntryCategories(): Promise<string[]> {
 export async function startTimeEntry(payload: {
   title: string;
   category?: string;
+  note?: string;
   startedDateTime?: string;
 }): Promise<TimeEntry | null> {
   const r = await fetchJson<TimeEntry>("/api/time-entries", {
@@ -87,6 +90,7 @@ export async function updateTimeEntry(
   payload: {
     title?: string;
     category?: string;
+    note?: string;
     startedDateTime?: string;
     endedDateTime?: string;
   }
