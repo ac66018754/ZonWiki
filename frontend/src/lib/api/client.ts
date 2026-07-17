@@ -94,6 +94,14 @@ export async function fetchJson<T>(
     throw new Error(`API ${path} failed with ${res.status}`);
   }
 
+  // 204/205（成功但無回應主體）：部分 DELETE 端點回 NoContent（如 time-entries、
+  // quick-links、captures、trash），沒有 JSON 可解析——不能落到下面的 res.json()
+  // 失敗分支被誤判成 { success: false }（否則會出現「實際已刪除、前端卻報失敗」）。
+  // 205 目前後端未使用，屬防禦性涵蓋。
+  if (res.status === 204 || res.status === 205) {
+    return { success: true, statusCode: res.status };
+  }
+
   try {
     return (await res.json()) as ApiResponse<T>;
   } catch {

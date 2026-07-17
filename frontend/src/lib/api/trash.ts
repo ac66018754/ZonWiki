@@ -46,9 +46,9 @@ export async function restoreTrashItem(type: string, id: string): Promise<boolea
 }
 
 /**
- * 永久刪除垃圾桶項目（不可復原）。
- * 後端成功回 204（無 body）；fetchJson 在真正錯誤時會丟例外，故未丟例外即視為成功
- * （不可用回傳的 success——204 無 body 會被解析為 success=false）。
+ * 永久刪除垃圾桶項目（不可復原；後端實為軟刪除進垃圾桶流程的最終清除）。
+ * 後端成功回 204（無 body）。fetchJson 現已把 204 正確回成 { success: true }
+ * （見 client.ts）；此處維持「未丟例外即視為成功」的既有行為，僅為不擴大修復範圍。
  */
 export async function purgeTrashItem(type: string, id: string): Promise<boolean> {
   await fetchJson(
