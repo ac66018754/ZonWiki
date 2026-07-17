@@ -7,7 +7,8 @@ import type { Metadata } from "next";
  */
 export const metadata: Metadata = {
   title: "時間 — ZonWiki",
-  description: "今日／本週時間追蹤儀表板（獨立極簡頁，適合加到手機主畫面）。",
+  description:
+    "今日／本週時間追蹤＋行程儀表板（獨立極簡頁，適合加到手機主畫面）。",
 };
 
 /**

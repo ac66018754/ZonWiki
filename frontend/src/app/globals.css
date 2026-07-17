@@ -388,6 +388,36 @@ html[data-route="time"] .header {
   display: none;
 }
 
+/* /time 儀表板圖表色盤（dataviz 驗證器四主題實測通過：4 個分類槽＋「其他」灰）。
+   亮色組（warmpaper/light 用）與暗色組（dark/night 用）是同色相在不同表面上各自選階，
+   不是亮色直接反轉。變更前先跑 dataviz skill 的 validate_palette.js 重新驗證。 */
+.time-dash-viz {
+  --viz-1: #2a78d6;
+  --viz-2: #008300;
+  --viz-3: #e87ba4;
+  --viz-4: #eda100;
+  --viz-other: #898781;
+}
+:root[data-theme="dark"] .time-dash-viz,
+:root[data-theme="night"] .time-dash-viz {
+  --viz-1: #3987e5;
+  --viz-2: #008300;
+  --viz-3: #d55181;
+  --viz-4: #c98500;
+  --viz-other: #898781;
+}
+/* ⚠️ 錨定規則（勿刪）：上面的 --viz-* 只被 React inline style／SVG 引用，
+   CSS 最佳化器（lightningcss）看不到那些引用，會把「無 var() 引用的自訂屬性
+   定義」整段搖掉（2026-07-17 位元組級實測：鄰近規則都在、唯獨變數區塊消失）。
+   此規則在 CSS 內引用每個變數讓定義存活；不需要掛在任何元素上。 */
+.time-dash-viz-anchor {
+  color: var(--viz-1);
+  background: var(--viz-2);
+  border-color: var(--viz-3);
+  outline-color: var(--viz-4);
+  caret-color: var(--viz-other);
+}
+
 /* /time 進行中指示點的呼吸動畫（尊重減少動態偏好） */
 @keyframes timeDashPulse {
   0%,
