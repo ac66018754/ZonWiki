@@ -376,8 +376,35 @@ a:hover {
 html[data-route="home"] .main-content,
 html[data-route="canvas"] .main-content,
 html[data-route="trash"] .main-content,
-html[data-route="login"] .main-content {
+html[data-route="login"] .main-content,
+html[data-route="time"] .main-content {
   margin-left: 0;
+}
+
+/* 時間儀表板（/time）：獨立極簡頁——連頂部標題列也整個隱藏。
+   此頁定位為「加到手機主畫面、點開即看」的儀表板，刻意沒有任何站內導覽
+   （本頁不連到其他頁、其他頁也不連到本頁）。 */
+html[data-route="time"] .header {
+  display: none;
+}
+
+/* /time 進行中指示點的呼吸動畫（尊重減少動態偏好） */
+@keyframes timeDashPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.time-dash-livedot {
+  animation: timeDashPulse 1.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .time-dash-livedot {
+    animation: none;
+  }
 }
 
 /* 行動導覽（手機側欄抽屜）— 桌機預設隱藏的元件 */
@@ -2560,10 +2587,12 @@ html[data-route="home"] .sidebar-resizer,
 html[data-route="canvas"] .sidebar-resizer,
 html[data-route="login"] .sidebar-resizer,
 html[data-route="trash"] .sidebar-resizer,
+html[data-route="time"] .sidebar-resizer,
 html[data-route="home"] .sidebar-toggle,
 html[data-route="canvas"] .sidebar-toggle,
 html[data-route="login"] .sidebar-toggle,
-html[data-route="trash"] .sidebar-toggle {
+html[data-route="trash"] .sidebar-toggle,
+html[data-route="time"] .sidebar-toggle {
   display: none;
 }
 

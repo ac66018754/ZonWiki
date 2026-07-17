@@ -76,6 +76,14 @@ export function ShortcutRuntime() {
       const action = keymapRef.current.get(key);
       if (!action) return;
 
+      // /time（時間儀表板）是「無站內導覽」的獨立頁：除切換主題外，
+      // 其餘全域快捷鍵（導覽／聚焦搜尋）一律不生效——此頁沒有輸入框，
+      // 鍵盤誤觸 h/t/q/n 會把頁面靜默導走，違反本頁設計承諾。
+      const path = pathRef.current ?? "";
+      if ((path === "/time" || path.startsWith("/time/")) && action.id !== "cycleTheme") {
+        return;
+      }
+
       if (action.scope === "global") {
         event.preventDefault();
         runGlobalAction(action.id, routerRef.current);
