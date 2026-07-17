@@ -171,7 +171,9 @@ export async function createCapture(payload: {
  */
 export async function deleteCapture(id: string): Promise<boolean> {
   await fetchJson(`/api/captures/${encodeURIComponent(id)}`, { method: "DELETE" });
-  return true; // 204 無 body：未丟例外即視為成功
+  // 註：fetchJson 現已把 204 正確回成 { success: true }（見 client.ts），
+  // 此處維持「未丟例外即視為成功」的既有行為，僅為不擴大本次修復範圍。
+  return true;
 }
 
 /**
