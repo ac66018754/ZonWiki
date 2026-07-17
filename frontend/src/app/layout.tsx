@@ -81,6 +81,22 @@ const sidebarInitScript = `
 })();
 `;
 
+/**
+ * 路由屬性初始化腳本（在 paint 前套用）
+ * - 與 RouteAttr 元件同一套邏輯（取路徑第一段寫入 <html data-route>），
+ *   但 RouteAttr 是 useEffect（hydration 後才跑），冷載入時「無外殼頁」
+ *   （如 /time 時間儀表板）會先閃一下標題列/側欄才消失。
+ *   此腳本讓 data-route 在第一次 paint 前就定案；後續的 client 端導覽仍由 RouteAttr 更新。
+ */
+const routeInitScript = `
+(function(){
+  try{
+    var seg = location.pathname.split('/')[1] || 'home';
+    document.documentElement.setAttribute('data-route', seg);
+  }catch(e){}
+})();
+`;
+
 export default async function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
@@ -97,6 +113,7 @@ export default async function RootLayout({
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
         <script dangerouslySetInnerHTML={{ __html: sidebarInitScript }} />
+        <script dangerouslySetInnerHTML={{ __html: routeInitScript }} />
       </head>
       <body>
         {/* 客戶端資料快取：切走再切回某頁直接吃快取、瞬間顯示，背景再靜默重抓 */}

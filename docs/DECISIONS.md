@@ -5,6 +5,17 @@
 
 ---
 
+## 2026-07-17 ｜/time 獨立時間儀表板頁：無外殼、加 iPhone 主畫面即點即看（feature/time-dashboard）
+
+- **背景**：Scriptable 小工具是被動快照（iOS 自行排程刷新、點列要跳去捷徑），使用者提出：「反正都要點一下才看得到全貌，不如做一頁**專屬統計頁**——無任何站內導覽、加到主畫面點開即看、之後圖表與操作可自由自訂，不被小工具框架綁死」。
+- **考慮過的選項**：①繼續強化 Scriptable widget（受 iOS 硬限制：非即時、互動要跳捷徑）；②原生 App（成本完全不成比例）；③**站內獨立極簡頁（kiosk 模式，採用）**——與小工具互補：widget 管「不點就瞄一眼」，此頁管「點一下看全貌＋操作」。
+- **作法**：`/time` 頁直接吃既有 `GET /api/time-entries/summary?scope=day|week`（與 iOS 小工具同端點、同「帳號時區」歸日週口徑）；隱藏外殼沿用既有 `data-route` CSS 慣例（比照 home/canvas/trash），另在 `<head>` 加 `routeInitScript` 讓 `data-route` 於**首次 paint 前**就定案（原本 RouteAttr 是 useEffect，冷載入會閃一下標題列；此改良全站無殼路由都受益）。進行中秒數＝後端快照＋前端補算（now−fetchedAt），聚焦/切回分頁/每 60 秒自動更新。
+- **刻意不加 standalone PWA meta**（`apple-mobile-web-app-capable`）：standalone 視窗有**獨立 cookie 空間**，而登入頁登入後一律導回 `/`、`/time` 又無站內入口，會把使用者困在首頁出不來。以一般 Safari 分頁開啟＝共用既有登入態、零摩擦。日後要「更像 App」需先做登入 returnTo 回跳，再回頭開 standalone。
+- **對抗式復審修正（2 HIGH 全修）**：【HIGH】全域快捷鍵洩漏導覽——本頁無輸入框，實體鍵盤誤觸 h/t/q/n 會被靜默導走 → `ShortcutRuntime` 對 `/time` 停用除 cycleTheme 外的全域快捷鍵；【HIGH】切「今日/本週」顯示舊範圍資料＋快速連切競態 → 請求世代號（只採納最新回應）＋切換時以載入骨架蓋住舊資料；【MEDIUM】偏好「本週」者開頁多打一次 day API → scope 以 null 起始、偏好還原後才首抓；【MEDIUM】ConfirmProvider 全站單例、兩顆結束鈕重疊呼叫會吞掉第一個確認 → 結束流程（含確認框等待期）鎖住全部結束鈕；【MEDIUM】長分類（可到 128 字）chip 溢出撐爆 375px → max-width＋ellipsis。「結束」加確認框與首頁面板「點即停」**刻意不同**：儀表板是快速瀏覽情境更怕手滑、且結束不可逆（不能清回進行中），面板屬主要工作流維持零摩擦。
+- **驗證**：對比度 4 主題×22 組配對全過 WCAG AA（contrast-check 實測）；tsc／eslint（新檔零錯，ShortcutRuntime 既有 2 條 react-hooks/refs 為 main 上原有噪音未動）；Playwright E2E（亮暗×375/1280、無外殼、頁面零連結、按 h 不被導走、結束流程含確認框並即時消失、60 字分類無橫捲、console 僅首頁面板既有噪音）。
+
+---
+
 ## 2026-07-16 ｜時間追蹤 Phase 2/3：備註＋既有項目/彙總端點＋iOS 捷徑×Scriptable 小工具（feature/time-tracking-widgets）
 
 - **背景**：使用者要在 iPhone 主畫面（不開網頁）完成 4 個場景：①開始（新增 or 選既有＋可選備註）②結束（看進行中清單挑一個、防手誤）③今日統計（做了哪些、各花多少、進行中、依分類）④本週統計。承接已合併的時間追蹤 v1（PR #43）。完整設計見 [docs/design/時間追蹤-設計與測試計畫.md](./design/時間追蹤-設計與測試計畫.md) §7.11、教學見 [docs/iOS捷徑-時間追蹤.md](./iOS捷徑-時間追蹤.md)。

@@ -111,3 +111,58 @@ export async function deleteTimeEntry(id: string): Promise<boolean> {
   });
   return r.success;
 }
+
+// ============================================================================
+// 型別 — 今日／本週彙總（後端 TimeEntrySummaryDto 的鏡像；/time 儀表板頁使用）
+// ============================================================================
+
+/** 彙總範圍：day＝今日、week＝本週（歸日／週依「帳號時區」由後端計算）。 */
+export type TimeEntrySummaryScope = "day" | "week";
+
+/**
+ * 彙總中的單一項目。
+ * seconds 為後端「查詢當下」的快照；進行中項目的即時跳動由前端以取得時間差補算。
+ */
+export interface TimeEntrySummaryItem {
+  id: string;
+  title: string;
+  /** 分類（未分類為 null）。 */
+  category: string | null;
+  /** 此項目時長（秒；進行中＝查詢當下已經過時間）。 */
+  seconds: number;
+  /** 是否進行中。 */
+  running: boolean;
+}
+
+/** 依分類的時長彙總（未分類由後端以「未分類」標籤呈現）。 */
+export interface TimeEntrySummaryCategory {
+  category: string;
+  seconds: number;
+  /** 該分類進行中的項目數。 */
+  runningCount: number;
+}
+
+/** 今日／本週彙總（總時長、進行中數、項目明細、依分類小計）。 */
+export interface TimeEntrySummary {
+  scope: string;
+  /** 區間起（UTC ISO，含）。 */
+  from: string;
+  /** 區間迄（UTC ISO，不含）。 */
+  to: string;
+  totalSeconds: number;
+  runningCount: number;
+  items: TimeEntrySummaryItem[];
+  byCategory: TimeEntrySummaryCategory[];
+}
+
+/**
+ * 取得今日／本週彙總（進行中項目以查詢當下已經過時間即時併入）。
+ */
+export async function getTimeEntrySummary(
+  scope: TimeEntrySummaryScope
+): Promise<TimeEntrySummary | null> {
+  const r = await fetchJson<TimeEntrySummary>(
+    `/api/time-entries/summary?scope=${scope}`
+  );
+  return r.data ?? null;
+}
