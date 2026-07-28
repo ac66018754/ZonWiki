@@ -1,0 +1,296 @@
+/* ZonWiki 時間追蹤 — 桌面置頂小工具樣式。
+   語意色票 + 亮/暗雙主題（prefers-color-scheme）；所有文字/背景組合皆達 WCAG AA。 */
+
+:root {
+  --bg: #f4f4f5;
+  --surface: #ffffff;
+  --surface-2: #ececef;
+  --text: #1a1a1a;
+  --text-2: #55555c; /* 於 #ffffff 上 7.0:1、於 #f4f4f5 上 6.5:1 */
+  --border: #d4d4d8;
+  --border-strong: #b4b4bb;
+  --accent: #1d4ed8; /* 於白底 7.0:1 */
+  --accent-fg: #ffffff;
+  --done: #15803d; /* 綠，於白底 4.9:1 */
+  --done-fg: #ffffff;
+  --danger: #b91c1c;
+  --radius: 8px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1b1b1f;
+    --surface: #26262b;
+    --surface-2: #303036;
+    --text: #f4f4f5;
+    --text-2: #adadb5; /* 於 #26262b 上 6.3:1 */
+    --border: #3a3a42;
+    --border-strong: #4a4a54;
+    --accent: #60a5fa; /* 於深底 7.4:1 */
+    --accent-fg: #0b0b0d;
+    --done: #4ade80; /* 於深底 9.8:1 */
+    --done-fg: #0b0b0d;
+    --danger: #f87171;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* hidden 屬性必須勝過下方各元素的 display 規則（否則 .settings-overlay 的 display:flex 會蓋掉它）。 */
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  font-family: "Segoe UI", "Microsoft JhengHei", system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+  background: var(--bg);
+  user-select: none;
+  overflow: hidden;
+}
+
+/* ── 標頭 ── */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.brand {
+  font-weight: 700;
+  font-size: 14px;
+}
+.spacer {
+  flex: 1;
+}
+.badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+.icon-btn {
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 15px;
+  cursor: pointer;
+}
+.icon-btn:hover {
+  border-color: var(--border-strong);
+}
+.icon-btn:focus-visible,
+.input:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ── 錯誤列 ── */
+.error {
+  margin: 8px 10px 0;
+  padding: 6px 10px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+  color: var(--danger);
+  font-size: 12px;
+}
+
+/* ── 新增列 ── */
+.new-row {
+  display: flex;
+  gap: 6px;
+  padding: 10px;
+}
+.input {
+  min-height: 34px;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+}
+.input::placeholder {
+  color: var(--text-2);
+}
+.input.grow {
+  flex: 2 1 auto;
+  min-width: 0;
+}
+.input.cat {
+  flex: 1 1 90px;
+  min-width: 0;
+}
+
+.btn-primary,
+.btn-secondary,
+.btn-done {
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+.btn-primary {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-fg);
+  white-space: nowrap;
+}
+.btn-primary:hover {
+  filter: brightness(1.06);
+}
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.btn-secondary {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+/* ── 表格 ── */
+.table-wrap {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 10px 10px;
+}
+.entries {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.entries thead th {
+  position: sticky;
+  top: 0;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-2);
+  padding: 4px 6px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+.entries th.dur,
+.col-dur {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.entries th.act,
+.col-act {
+  text-align: right;
+  width: 64px;
+}
+.entries tbody td {
+  padding: 7px 6px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.col-title {
+  font-weight: 600;
+}
+.col-start {
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.col-dur {
+  font-weight: 700;
+}
+.chip {
+  display: inline-block;
+  margin-left: 6px;
+  font-size: 11px;
+  font-weight: 400;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+}
+.btn-done {
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--done);
+  background: var(--done);
+  color: var(--done-fg);
+}
+.btn-done:hover {
+  filter: brightness(1.06);
+}
+
+.empty {
+  color: var(--text-2);
+  font-size: 12px;
+  padding: 16px 6px;
+  text-align: center;
+}
+
+/* ── 設定面板 ── */
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+.settings-card {
+  width: 100%;
+  max-width: 380px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+.settings-card h2 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+.settings-card label {
+  display: block;
+  font-size: 12px;
+  color: var(--text-2);
+  margin: 8px 0 4px;
+}
+.settings-card .input {
+  width: 100%;
+}
+.hint {
+  font-size: 11px;
+  color: var(--text-2);
+  margin: 8px 0 0;
+}
+.settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
