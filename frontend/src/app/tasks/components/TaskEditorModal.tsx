@@ -26,6 +26,7 @@ import {
   STATUS_ORDER,
   STATUS_META,
   PRIORITY_META,
+  formatDisplay,
 } from "../taskUtils";
 import {
   type RecurrenceState,
@@ -819,6 +820,22 @@ export function TaskEditorModal({
                 <div className="tk-field">
                   <label className="tk-field-label">關聯</label>
                   <LinkedEntitiesBar type="taskcard" id={taskId} sourceTitle={title} label="🔗" />
+                </div>
+
+                {/* 建立日期（唯讀）：後端 CreatedDateTime（UTC 儲存），依使用者時區顯示、含年份。
+                    走共用 formatDisplay（含空值/NaN 防呆）；缺值顯示「—」（與 SubtaskViewerModal 一致）。 */}
+                <div className="tk-field">
+                  <label className="tk-field-label">建立日期</label>
+                  <p
+                    style={{
+                      margin: 0,
+                      fontSize: "var(--text-sm)",
+                      color: "var(--text-secondary)",
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    {card?.createdDateTime ? formatDisplay(card.createdDateTime, tz, true, true) : "—"}
+                  </p>
                 </div>
               </div>
 

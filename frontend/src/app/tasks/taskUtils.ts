@@ -89,12 +89,15 @@ function wallParts(date: Date, tz: string) {
 export function formatDisplay(
   iso: string | null | undefined,
   tz: string,
-  withTime = true
+  withTime = true,
+  /** 是否包含年份（預設否，維持既有呼叫端行為）；建立日期這類跨年資訊建議帶年份。 */
+  withYear = false
 ): string {
   if (!iso) return "";
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "";
   return new Intl.DateTimeFormat("zh-Hant", {
+    ...(withYear ? { year: "numeric" as const } : {}),
     month: "2-digit",
     day: "2-digit",
     ...(withTime ? { hour: "2-digit", minute: "2-digit", hour12: false } : {}),
