@@ -68,7 +68,8 @@ public static class HomePageEndpoints
                     t.TargetDateTime,
                     t.TargetGranularity,
                     t.IsPinnedToHome,
-                    t.HomeSortOrder))
+                    t.HomeSortOrder,
+                    t.IsPinnedToTodo))
                 .ToListAsync(ct);
 
             var weeklyJournals = await db.Note
@@ -120,7 +121,8 @@ public static class HomePageEndpoints
                     t.TargetDateTime,
                     t.TargetGranularity,
                     t.IsPinnedToHome,
-                    t.HomeSortOrder))
+                    t.HomeSortOrder,
+                    t.IsPinnedToTodo))
                 .ToListAsync(ct);
 
             // 3. 常用連結卡（依排序序號）

@@ -51,6 +51,8 @@ export function QuickCreateTaskModal({
   const [groupId, setGroupId] = useState("");
   // 釘選到首頁 / 長期任務（需求 #6：首頁「＋待辦」也要有這些功能）。
   const [isPinnedToHome, setIsPinnedToHome] = useState(false);
+  // 置頂於 Todo 頁側欄「置頂的任務」分頁（與首頁釘選獨立）。
+  const [isPinnedToTodo, setIsPinnedToTodo] = useState(false);
   const [isLongTerm, setIsLongTerm] = useState(false);
   const [targetGranularity, setTargetGranularity] = useState("");
   const [targetIso, setTargetIso] = useState<string | null>(null);
@@ -84,6 +86,7 @@ export function QuickCreateTaskModal({
     setPriority(0);
     setGroupId("");
     setIsPinnedToHome(false);
+    setIsPinnedToTodo(false);
     setIsLongTerm(false);
     setTargetGranularity("");
     setTargetIso(null);
@@ -121,6 +124,7 @@ export function QuickCreateTaskModal({
         plannedDateTime: planned,
         dueDateTime: due,
         isPinnedToHome,
+        isPinnedToTodo,
         isLongTerm,
         // 目標期只在「長期 + 有選粒度」時帶入（與完整編輯器一致）。
         targetGranularity: isLongTerm && targetGranularity ? targetGranularity : undefined,
@@ -132,6 +136,8 @@ export function QuickCreateTaskModal({
           await assignTaskTags(created.id, selectedTagIds);
         }
         showToast("任務已建立", { type: "success" });
+        // 通知其他掛在視窗上的任務清單（例如 Todo 側欄「置頂的任務」）重新載入。
+        window.dispatchEvent(new CustomEvent("zonwiki:tasks-changed"));
         onCreated();
         onClose();
       }
@@ -206,6 +212,8 @@ export function QuickCreateTaskModal({
         <TaskScheduleFields
           isPinnedToHome={isPinnedToHome}
           onPinnedChange={setIsPinnedToHome}
+          isPinnedToTodo={isPinnedToTodo}
+          onPinnedTodoChange={setIsPinnedToTodo}
           isLongTerm={isLongTerm}
           onLongTermChange={setIsLongTerm}
           targetGranularity={targetGranularity}

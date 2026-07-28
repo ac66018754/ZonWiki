@@ -351,3 +351,14 @@
   - 復審指出既有同類缺口——`NoteOverlayItem.Text`（便利貼／文字框**本文**）一直以 ReactMarkdown 渲染、手貼附件短網址即可顯圖，但掃描器從未查它。已一併補查＋測試 `Scan_ReferencedByStickyTextOnly_IsUntouched`（掃描器測試 11/11）。
   - **顯式取捨**：開問啦畫布的 `CanvasAnnotation`（DataJson/Text）目前**不在掃描範圍**——前端畫布標註尚無任何貼圖上傳路徑，寫不進附件 id；日後若畫布標註接上附件上傳，必須同步擴掃描器（此處先記下來避免隱性遺漏）。
   - 效能觀察：`DataJson`／`Text`／`QuestionAnswer` 三個 ILIKE 均無專用 trigram 索引（`Text` 有搜尋用 GIN），每日一輪、單人規模可接受（與 NoteRevision 不建索引的既有取捨一致）；若日後掃描明顯變慢，比照 `IX_Note_ContentRaw_Trgm` 補索引。
+
+## 2026-07-28 ｜ Todo 側欄「置頂的任務」分頁：獨立旗標（不重用首頁釘選）＋僅 list 視圖過濾；順修 A 鍵同鍵覆蓋 bug
+
+- **背景**：使用者要 Todo 頁左側欄新增與「快捷鍵介紹」平行的分頁「置頂的任務」（預設顯示），任務可設「置頂」後出現在該分頁。
+- **考慮過的選項**：
+  1. 重用既有 `IsPinnedToHome`（首頁釘選）當資料來源——側欄與首頁「我的任務」顯示同一組。
+  2. 新增獨立欄位 `TaskCard_IsPinnedToTodo`。
+- **最終決定**：選 2（獨立欄位）。使用者說「新增一個功能」且兩者語意不同（首頁儀表板 vs Todo 工作側欄）；混用會讓「想釘首頁但不想佔側欄」做不到。刻意**不加排序欄位**（YAGNI，清單依建立時間排）、**無自動排序副作用**（與 IsPinnedToHome 的 HomeSortOrder 自動指派不同），並以整合測試鎖住兩旗標互不影響。
+- **查詢參數範圍裁示**：`GET /api/tasks?pinnedToTodo=true` **僅 list 視圖生效**，board/calendar 忽略（TDD 計畫審查裁示，測試 `ListTasks_BoardView_IgnoresPinnedToTodoParam` 鎖住）——避免過濾誤套到共用基礎查詢、無聲改變其他視圖行為。
+- **側欄刷新機制**：沿用既有 `zonwiki:tasks-changed` 視窗事件（原只有 SubtaskViewerModal 派發），TaskEditorModal 儲存/刪除與 QuickCreateTaskModal 建立後也派發；TasksPinnedList 監聽即時重載。點側欄項目走既有 `zonwiki:open-task` 開編輯器（免逐層傳 callback）。
+- **順帶修復（驗證時發現的既有 bug）**：ShortcutRuntime 的 keymap 是 `Map<鍵, 單一動作>`，而 `newTodo`（Todo 頁）與 `newNote`（筆記頁）預設鍵都是 `a` → 後註冊者覆蓋，**Todo 頁 `A` 快捷鍵自 newNote 加入後即靜默失效**（README 記載的功能）。改為 `Map<鍵, 動作[]>`＋依當前頁面 scope 解析（/tasks 挑 tasks、/notes 挑 notes、否則 global）；「同鍵不同 scope」從此為合法組合。/time 頁守門與 global 行為不變，Playwright 實測 a 鍵於 /tasks 開新增任務、n 鍵導覽照舊。

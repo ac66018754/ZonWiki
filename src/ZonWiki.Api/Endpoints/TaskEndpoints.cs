@@ -28,7 +28,7 @@ public static class TaskEndpoints
     {
         /// <summary>
         /// 查詢當前使用者的任務卡片（支援多視圖與排序）。
-        /// GET /api/tasks?view=list|board|calendar&sort=plannedDate|dueDate|createdDate|priority&from={date}&to={date}
+        /// GET /api/tasks?view=list|board|calendar&sort=plannedDate|dueDate|createdDate|priority&from={date}&to={date}&pinnedToTodo=true
         /// </summary>
         app.MapGet("/api/tasks", async (
             ZonWikiDbContext db,
@@ -41,6 +41,9 @@ public static class TaskEndpoints
             // 確保現有前端呼叫相容。board / calendar 視圖不分頁（其資料量本身有界）。
             int? limit = null,
             int? offset = null,
+            // 置頂過濾（Todo 側欄「置頂的任務」分頁用）：true＝只回 IsPinnedToTodo 的卡片。
+            // 設計裁示（TDD 計畫審查）：僅 list 視圖生效；board / calendar 忽略此參數、維持既有行為。
+            bool? pinnedToTodo = null,
             CancellationToken ct = default) =>
         {
             var userId = httpContext.User.FindFirst(AuthExtensions.UserIdClaimType)?.Value;
@@ -56,12 +59,12 @@ public static class TaskEndpoints
                     .ThenInclude(tt => tt.Tag)
                 .Where(t => t.UserId == userGuid && t.ValidFlag);
 
-            // 依視圖類型處理
+            // 依視圖類型處理（pinnedToTodo 僅傳入 list 視圖——board/calendar 刻意不吃此參數）
             return view.ToLower() switch
             {
                 "board" => await GetBoardView(db, query, ct),
                 "calendar" => await GetCalendarView(db, query, from, to, ct),
-                _ => await GetListView(db, query, sort, limit, offset, ct) // 預設 list
+                _ => await GetListView(db, query, sort, limit, offset, pinnedToTodo, ct) // 預設 list
             };
         });
 
@@ -125,6 +128,8 @@ public static class TaskEndpoints
                 TargetGranularity = request.TargetGranularity,
                 IsPinnedToHome = request.IsPinnedToHome,
                 HomeSortOrder = homeSortOrder,
+                // Todo 側欄置頂：單純旗標，與首頁釘選獨立、無排序欄位。
+                IsPinnedToTodo = request.IsPinnedToTodo,
                 CreatedDateTime = DateTime.UtcNow,
                 UpdatedDateTime = DateTime.UtcNow,
                 CreatedUser = userId,
@@ -275,6 +280,10 @@ public static class TaskEndpoints
             }
             if (request.HomeSortOrder.HasValue)
                 card.HomeSortOrder = request.HomeSortOrder.Value;
+            // IsPinnedToTodo（Todo 側欄置頂）：傳值＝更新；與 IsPinnedToHome 完全獨立，
+            // 刻意「沒有」自動排序副作用（置頂清單依建立時間排序即可）。
+            if (request.IsPinnedToTodo.HasValue)
+                card.IsPinnedToTodo = request.IsPinnedToTodo.Value;
 
             card.UpdatedDateTime = DateTime.UtcNow;
             card.UpdatedUser = userId;
@@ -437,6 +446,7 @@ public static class TaskEndpoints
     /// 可選的單頁筆數上限；為 null 時回全部（維持相容），提供時夾在 1~2000 之間。
     /// </param>
     /// <param name="offset">可選的位移量；為 null 或非正值時不位移。</param>
+    /// <param name="pinnedToTodo">true＝只回「置頂（Todo 側欄）」的卡片；null／false＝不過濾。</param>
     /// <param name="ct">取消權杖。</param>
     private static async Task<IResult> GetListView(
         ZonWikiDbContext db,
@@ -444,8 +454,15 @@ public static class TaskEndpoints
         string sort,
         int? limit,
         int? offset,
+        bool? pinnedToTodo,
         CancellationToken ct)
     {
+        // 置頂過濾（僅 list 視圖）：true 時只留 IsPinnedToTodo 的卡片；false 與未帶同義（不過濾）。
+        if (pinnedToTodo == true)
+        {
+            query = query.Where(t => t.IsPinnedToTodo);
+        }
+
         // 先依排序鍵建立穩定排序的查詢（分頁前提），再套用可選的 Skip/Take。
         IQueryable<TaskCard> orderedQuery = sort.ToLower() switch
         {
@@ -586,7 +603,8 @@ public static class TaskEndpoints
             card.TargetDateTime,
             card.TargetGranularity,
             card.IsPinnedToHome,
-            card.HomeSortOrder);
+            card.HomeSortOrder,
+            card.IsPinnedToTodo);
     }
 
     /// <summary>
@@ -619,6 +637,7 @@ public static class TaskEndpoints
             card.TargetGranularity,
             card.IsPinnedToHome,
             card.HomeSortOrder,
+            card.IsPinnedToTodo,
             version);
     }
 }

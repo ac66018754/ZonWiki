@@ -128,6 +128,8 @@ export function TaskEditorModal({
   const [targetIso, setTargetIso] = useState<string | null>(null);
   // 釘選到首頁（#2）。
   const [isPinnedToHome, setIsPinnedToHome] = useState(false);
+  // 置頂於 Todo 頁側欄「置頂的任務」分頁（與首頁釘選獨立）。
+  const [isPinnedToTodo, setIsPinnedToTodo] = useState(false);
   const [subTasks, setSubTasks] = useState<SubTask[]>([]);
   // 父任務（任務之間可有父子關係）。"" = 頂層任務。
   const [parentId, setParentId] = useState<string>("");
@@ -173,6 +175,7 @@ export function TaskEditorModal({
     setTargetGranularity(c.targetGranularity || "");
     setTargetIso(c.targetDateTime ?? null);
     setIsPinnedToHome(!!c.isPinnedToHome);
+    setIsPinnedToTodo(!!c.isPinnedToTodo);
     setSubTasks(c.subTasks || []);
     setSelectedTagIds((c.tags || []).map((t) => t.id));
     setParentId(c.parentId || "");
@@ -240,9 +243,10 @@ export function TaskEditorModal({
     else payload.clearParentId = true;
     // 重複規則（#17）：組成 RRULE；不重複時送空字串＝清為 null（停止重複）。
     payload.recurrenceRule = buildRrule(recurrence) ?? "";
-    // 長期任務 + 釘選到首頁（皆送目前值；後端 null＝不更新，故一律明送布林）。
+    // 長期任務 + 釘選到首頁 + Todo 側欄置頂（皆送目前值；後端 null＝不更新，故一律明送布林）。
     payload.isLongTerm = isLongTerm;
     payload.isPinnedToHome = isPinnedToHome;
+    payload.isPinnedToTodo = isPinnedToTodo;
     // 粗粒度目標期：只有「長期 + 有選粒度」才寫入，否則清空。
     if (isLongTerm && targetGranularity) {
       payload.targetGranularity = targetGranularity;
@@ -255,7 +259,7 @@ export function TaskEditorModal({
     return payload;
   }, [
     title, content, status, priority, plannedIso, dueIso, groupId, parentId,
-    isLongTerm, isPinnedToHome, targetGranularity, targetIso, recurrence,
+    isLongTerm, isPinnedToHome, isPinnedToTodo, targetGranularity, targetIso, recurrence,
   ]);
 
   /**
@@ -317,6 +321,8 @@ export function TaskEditorModal({
     await assignTaskTags(taskId, selectedTagIds);
     await flushSubtasks(card?.subTasks ?? [], subTasks, taskId);
     dirtyRef.current = false;
+    // 通知其他掛在視窗上的任務清單（例如 Todo 側欄「置頂的任務」）重新載入。
+    window.dispatchEvent(new CustomEvent("zonwiki:tasks-changed"));
     onSaved();
   }, [taskId, title, buildPayload, selectedTagIds, flushSubtasks, card, subTasks, onSaved]);
 
@@ -430,6 +436,8 @@ export function TaskEditorModal({
     setSaving(true);
     try {
       await deleteTaskCard(taskId);
+      // 通知其他任務清單（例如 Todo 側欄「置頂的任務」）同步移除。
+      window.dispatchEvent(new CustomEvent("zonwiki:tasks-changed"));
       onDeleted();
       onClose(); // 刪除後直接關閉（不存檔）
     } finally {
@@ -535,6 +543,8 @@ export function TaskEditorModal({
                 <TaskScheduleFields
                   isPinnedToHome={isPinnedToHome}
                   onPinnedChange={(v) => { setIsPinnedToHome(v); markDirty(); }}
+                  isPinnedToTodo={isPinnedToTodo}
+                  onPinnedTodoChange={(v) => { setIsPinnedToTodo(v); markDirty(); }}
                   isLongTerm={isLongTerm}
                   onLongTermChange={(v) => { setIsLongTerm(v); markDirty(); }}
                   targetGranularity={targetGranularity}

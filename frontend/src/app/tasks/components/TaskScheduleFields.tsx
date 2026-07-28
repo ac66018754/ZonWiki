@@ -3,7 +3,7 @@
 import type React from "react";
 
 /**
- * 共用的「首頁釘選 ｜ 長期任務（＋粗粒度目標期）」欄位群組。
+ * 共用的「首頁釘選 ｜ Todo 側欄置頂 ｜ 長期任務（＋粗粒度目標期）」欄位群組。
  *
  * 由完整任務編輯器（TaskEditorModal）與快速新增（QuickCreateTaskModal）共用，
  * 讓「首頁的＋待辦」也能設定釘選到首頁與長期任務（需求 #6），避免兩處各寫一份走樣。
@@ -13,6 +13,8 @@ import type React from "react";
 export function TaskScheduleFields({
   isPinnedToHome,
   onPinnedChange,
+  isPinnedToTodo,
+  onPinnedTodoChange,
   isLongTerm,
   onLongTermChange,
   targetGranularity,
@@ -23,6 +25,9 @@ export function TaskScheduleFields({
   /** 是否釘選到首頁。 */
   isPinnedToHome: boolean;
   onPinnedChange: (value: boolean) => void;
+  /** 是否置頂於 Todo 頁側欄「置頂的任務」分頁（與首頁釘選獨立）。 */
+  isPinnedToTodo: boolean;
+  onPinnedTodoChange: (value: boolean) => void;
   /** 是否為長期任務。 */
   isLongTerm: boolean;
   onLongTermChange: (value: boolean) => void;
@@ -62,6 +67,14 @@ export function TaskScheduleFields({
             onChange={(e) => onPinnedChange(e.target.checked)}
           />
           📌 釘選到首頁
+        </label>
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: "var(--text-sm)", cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={isPinnedToTodo}
+            onChange={(e) => onPinnedTodoChange(e.target.checked)}
+          />
+          📍 置頂（Todo 側欄）
         </label>
         <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: "var(--text-sm)", cursor: "pointer" }}>
           <input

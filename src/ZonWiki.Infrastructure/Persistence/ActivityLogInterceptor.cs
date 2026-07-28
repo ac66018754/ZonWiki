@@ -661,6 +661,7 @@ public sealed class ActivityLogInterceptor : SaveChangesInterceptor
         [nameof(TaskCard.ParentId)] = "父任務",
         [nameof(TaskCard.IsLongTerm)] = "長期任務",
         [nameof(TaskCard.IsPinnedToHome)] = "首頁釘選",
+        [nameof(TaskCard.IsPinnedToTodo)] = "Todo 置頂",
         [nameof(TaskCard.TargetDateTime)] = "目標日",
         [nameof(TaskCard.RecurrenceRule)] = "重複規則",
         // 快速捕捉
