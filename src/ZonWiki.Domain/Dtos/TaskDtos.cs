@@ -33,6 +33,7 @@ public sealed record TaskGroupDto(
 /// <param name="TargetGranularity">目標期粒度："month" | "quarter" | "year"；null＝未設粗粒度目標。</param>
 /// <param name="IsPinnedToHome">是否釘選到首頁「我的任務」區塊。</param>
 /// <param name="HomeSortOrder">首頁釘選區的排序序號（越小越前）。</param>
+/// <param name="IsPinnedToTodo">是否置頂於 Todo 頁側欄「置頂的任務」分頁（與首頁釘選獨立）。</param>
 public sealed record TaskCardSummaryDto(
     Guid Id,
     string Title,
@@ -52,7 +53,8 @@ public sealed record TaskCardSummaryDto(
     DateTime? TargetDateTime = null,
     string? TargetGranularity = null,
     bool IsPinnedToHome = false,
-    int HomeSortOrder = 0);
+    int HomeSortOrder = 0,
+    bool IsPinnedToTodo = false);
 
 /// <summary>
 /// 子任務（檢核清單項目）資料傳輸物件。
@@ -120,6 +122,7 @@ public sealed record ReorderSubTasksRequest(
 /// <param name="TargetGranularity">目標期粒度："month" | "quarter" | "year"；null＝未設粗粒度目標。</param>
 /// <param name="IsPinnedToHome">是否釘選到首頁「我的任務」區塊。</param>
 /// <param name="HomeSortOrder">首頁釘選區的排序序號（越小越前）。</param>
+/// <param name="IsPinnedToTodo">是否置頂於 Todo 頁側欄「置頂的任務」分頁（與首頁釘選獨立）。</param>
 /// <param name="Version">樂觀鎖併發權杖（PostgreSQL xmin，#4/#34）；前端保存時原封帶回為 baseVersion。0＝未知。</param>
 public sealed record TaskCardDetailDto(
     Guid Id,
@@ -142,6 +145,7 @@ public sealed record TaskCardDetailDto(
     string? TargetGranularity = null,
     bool IsPinnedToHome = false,
     int HomeSortOrder = 0,
+    bool IsPinnedToTodo = false,
     long Version = 0);
 
 /// <summary>
@@ -160,6 +164,7 @@ public sealed record TaskCardDetailDto(
 /// <param name="TargetDateTime">粗粒度目標期的代表日（UTC，可空）。</param>
 /// <param name="TargetGranularity">目標期粒度："month" | "quarter" | "year"；null＝未設粗粒度目標（預設 null）。</param>
 /// <param name="IsPinnedToHome">是否釘選到首頁「我的任務」區塊（預設 false；建立時不收 HomeSortOrder，由後端指派）。</param>
+/// <param name="IsPinnedToTodo">是否置頂於 Todo 頁側欄「置頂的任務」分頁（預設 false；與首頁釘選獨立）。</param>
 public sealed record CreateTaskCardRequest(
     string Title,
     string Content = "",
@@ -174,7 +179,8 @@ public sealed record CreateTaskCardRequest(
     bool IsLongTerm = false,
     DateTime? TargetDateTime = null,
     string? TargetGranularity = null,
-    bool IsPinnedToHome = false);
+    bool IsPinnedToHome = false,
+    bool IsPinnedToTodo = false);
 
 /// <summary>
 /// 更新任務卡片的請求內容（所有欄位皆選擇性）。
@@ -196,6 +202,7 @@ public sealed record CreateTaskCardRequest(
 /// <param name="TargetGranularity">目標期粒度："month" | "quarter" | "year"；null＝不更新；非 null 時更新（可空值＝清空目標粒度）。</param>
 /// <param name="IsPinnedToHome">是否釘選到首頁（null = 不更新）。</param>
 /// <param name="HomeSortOrder">首頁釘選區的排序序號（null = 不更新；當 IsPinnedToHome 由 false 變 true 時，若未同時指定則後端自動指派為目前最大 + 1）。</param>
+/// <param name="IsPinnedToTodo">是否置頂於 Todo 頁側欄「置頂的任務」分頁（null = 不更新；與首頁釘選獨立、無排序副作用）。</param>
 /// <param name="ClearTargetDateTime">是否清除粗粒度目標期日期（true 時把 TargetDateTime 設為 null）。</param>
 /// <param name="ClearTargetGranularity">是否清除粗粒度目標期粒度（true 時把 TargetGranularity 設為 null）。</param>
 /// <param name="BaseVersion">樂觀鎖 baseVersion（#4/#34）；帶值時後端比對 xmin，衝突回 409；null＝不檢查。</param>
@@ -219,6 +226,7 @@ public sealed record UpdateTaskCardRequest(
     string? TargetGranularity = null,
     bool? IsPinnedToHome = null,
     int? HomeSortOrder = null,
+    bool? IsPinnedToTodo = null,
     bool ClearTargetDateTime = false,
     bool ClearTargetGranularity = false,
     long? BaseVersion = null);

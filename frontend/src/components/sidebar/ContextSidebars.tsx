@@ -1,11 +1,12 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { CurrentUser } from "@/lib/api";
 import { MobileSectionNav } from "../MobileSectionNav";
 import { TasksShortcutHints } from "../TasksShortcutHints";
+import { TasksPinnedList } from "../TasksPinnedList";
 
 /**
  * 個人頁面（/profile）子頁導覽項目。各子頁各自載入自己的資料。
@@ -20,21 +21,69 @@ const PROFILE_NAV: { href: string; label: string; icon: string; desc: string }[]
 ];
 
 /**
- * 日程規劃（/tasks）的情境側欄：標題＋鍵盤快捷鍵清單。
- * 由原 Sidebar 抽出（審查 finding #22 拆檔），行為與樣式一致。
+ * 日程規劃（/tasks）的情境側欄：標題＋分頁切換（置頂的任務 / 快捷鍵介紹）。
+ * 由原 Sidebar 抽出（審查 finding #22 拆檔）。
+ * 最上方為兩個平行分頁的切換鈕，**預設顯示「置頂的任務」**，點擊切換鈕才換到「快捷鍵介紹」。
  */
 export function TasksSidebar(): React.ReactElement {
+  // 側欄分頁："pinned"＝置頂的任務（預設）｜"shortcuts"＝快捷鍵介紹。
+  const [tab, setTab] = useState<"pinned" | "shortcuts">("pinned");
+
   return (
     <aside id="app-sidebar" className="sidebar" role="complementary">
       <MobileSectionNav />
       <div className="ctx-head">
         <h2 className="ctx-title">日程規劃 (Todo &amp; Planning)</h2>
       </div>
-      {/* 原先的純文字提示改為「鍵盤快捷鍵」清單（可在個人頁自訂） */}
-      <TasksShortcutHints />
+
+      {/* 分頁切換：置頂的任務（預設） / 快捷鍵介紹。
+          依 WAI-ARIA Tabs 模式：tab 以 aria-controls 連到 tabpanel、支援 ←→ 方向鍵切換。 */}
+      <div
+        className="ctx-tabs"
+        role="tablist"
+        aria-label="側欄分頁"
+        onKeyDown={(e) => {
+          if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+            e.preventDefault();
+            setTab((prev) => (prev === "pinned" ? "shortcuts" : "pinned"));
+          }
+        }}
+      >
+        <button
+          type="button"
+          role="tab"
+          id="tasks-sidebar-tab-pinned"
+          aria-controls="tasks-sidebar-panel"
+          aria-selected={tab === "pinned"}
+          className={`ctx-tab ${tab === "pinned" ? "ctx-tab--on" : ""}`}
+          onClick={() => setTab("pinned")}
+        >
+          📍 置頂的任務
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="tasks-sidebar-tab-shortcuts"
+          aria-controls="tasks-sidebar-panel"
+          aria-selected={tab === "shortcuts"}
+          className={`ctx-tab ${tab === "shortcuts" ? "ctx-tab--on" : ""}`}
+          onClick={() => setTab("shortcuts")}
+        >
+          ⌨️ 快捷鍵介紹
+        </button>
+      </div>
+
+      <div
+        id="tasks-sidebar-panel"
+        role="tabpanel"
+        aria-labelledby={tab === "pinned" ? "tasks-sidebar-tab-pinned" : "tasks-sidebar-tab-shortcuts"}
+      >
+        {tab === "pinned" ? <TasksPinnedList /> : <TasksShortcutHints />}
+      </div>
+
       <style jsx>{`
         .ctx-head {
-          margin-bottom: var(--spacing-4);
+          margin-bottom: var(--spacing-3);
           padding-bottom: var(--spacing-3);
           border-bottom: 1px solid var(--border-default);
         }
@@ -45,6 +94,40 @@ export function TasksSidebar(): React.ReactElement {
           color: var(--text-secondary);
           text-transform: uppercase;
           letter-spacing: 0.05em;
+        }
+        .ctx-tabs {
+          display: flex;
+          gap: var(--spacing-1);
+          margin-bottom: var(--spacing-4);
+          padding: 3px;
+          border: 1px solid var(--border-default);
+          border-radius: var(--radius-md);
+          background: var(--bg-default);
+        }
+        .ctx-tab {
+          flex: 1;
+          min-width: 0;
+          padding: var(--spacing-1) var(--spacing-2);
+          border: none;
+          border-radius: var(--radius-sm);
+          background: transparent;
+          color: var(--text-secondary);
+          font-size: var(--text-sm);
+          white-space: nowrap;
+          cursor: pointer;
+          transition: background 0.15s ease, color 0.15s ease;
+        }
+        .ctx-tab:hover {
+          color: var(--text-primary);
+        }
+        .ctx-tab:focus-visible {
+          outline: 2px solid var(--action-secondary-fg);
+          outline-offset: 1px;
+        }
+        .ctx-tab--on {
+          background: var(--action-secondary-bg);
+          color: var(--action-secondary-fg);
+          font-weight: 600;
         }
       `}</style>
     </aside>

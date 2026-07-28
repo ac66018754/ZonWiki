@@ -55,6 +55,8 @@ export interface TaskCard {
   isPinnedToHome?: boolean;
   /** 首頁釘選區排序序號（越小越前） */
   homeSortOrder?: number;
+  /** 是否置頂於 Todo 頁側欄「置頂的任務」分頁（與首頁釘選獨立） */
+  isPinnedToTodo?: boolean;
   /** 建立時間 (UTC) */
   createdDateTime: string;
   /** 更新時間 (UTC) */
@@ -170,6 +172,15 @@ export async function listTaskCards(params?: {
 }
 
 /**
+ * 列出「置頂（Todo 側欄）」的任務卡片（isPinnedToTodo=true）。
+ * 供 Todo 頁左側欄「置頂的任務」分頁使用；後端依建立時間排序回傳。
+ */
+export async function listPinnedTodoTasks(): Promise<TaskCard[]> {
+  const r = await fetchJson<TaskCard[]>("/api/tasks?view=list&pinnedToTodo=true");
+  return r.data ?? [];
+}
+
+/**
  * 取得單張任務卡片詳情（含內容與子任務清單）。
  */
 export async function getTaskCard(id: string): Promise<TaskCard | null> {
@@ -200,6 +211,8 @@ export async function createTaskCard(payload: {
   targetGranularity?: string | null;
   /** 是否釘選到首頁 */
   isPinnedToHome?: boolean;
+  /** 是否置頂於 Todo 頁側欄（與首頁釘選獨立） */
+  isPinnedToTodo?: boolean;
 }): Promise<TaskCard | null> {
   const r = await fetchJson<TaskCard>("/api/tasks", {
     method: "POST",
@@ -276,6 +289,8 @@ export interface UpdateTaskCardPayload {
   isPinnedToHome?: boolean;
   /** 首頁排序序號（未傳＝不更新） */
   homeSortOrder?: number;
+  /** 是否置頂於 Todo 頁側欄（未傳＝不更新；與首頁釘選獨立） */
+  isPinnedToTodo?: boolean;
   clearPlannedDateTime?: boolean;
   clearDueDateTime?: boolean;
   clearGroupId?: boolean;

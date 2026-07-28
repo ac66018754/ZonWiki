@@ -37,13 +37,20 @@ export function ShortcutRuntime() {
   pathRef.current = pathname;
   const routerRef = useRef(router);
   routerRef.current = router;
-  const keymapRef = useRef<Map<string, ShortcutAction>>(new Map());
+  const keymapRef = useRef<Map<string, ShortcutAction[]>>(new Map());
 
-  // 依覆寫重建 key→action 對應表。
+  // 依覆寫重建 key→actions 對應表。
+  // 注意是「一鍵對多動作」：不同頁面範圍（scope）的動作可以合法共用同一鍵——
+  // 例如預設 `a` 同時是 Todo 頁「新增任務」與筆記頁「新增筆記」。
+  // 舊版用 Map<key, action> 單值覆蓋，導致後註冊的 newNote 蓋掉 newTodo，
+  // Todo 頁的 A 快捷鍵靜默失效（2026-07-28 驗證置頂功能時發現並修復）。
   const rebuild = (overrides: ShortcutOverrides) => {
-    const map = new Map<string, ShortcutAction>();
+    const map = new Map<string, ShortcutAction[]>();
     for (const action of SHORTCUT_ACTIONS) {
-      map.set(effectiveKey(action, overrides), action);
+      const key = effectiveKey(action, overrides);
+      const list = map.get(key) ?? [];
+      list.push(action);
+      map.set(key, list);
     }
     keymapRef.current = map;
   };
@@ -73,13 +80,23 @@ export function ShortcutRuntime() {
       const key = event.key.length === 1 ? event.key.toLowerCase() : "";
       if (!key) return;
 
-      const action = keymapRef.current.get(key);
+      const candidates = keymapRef.current.get(key);
+      if (!candidates || candidates.length === 0) return;
+
+      // 同一鍵可能綁多個不同範圍的動作（如 a＝Todo 新增任務、筆記 新增筆記）：
+      // 優先挑「與當前頁面範圍相符」的動作，沒有才退回 global 動作。
+      const path = pathRef.current ?? "";
+      const scoped = candidates.find(
+        (a) =>
+          (a.scope === "tasks" && path.startsWith("/tasks")) ||
+          (a.scope === "notes" && path.startsWith("/notes"))
+      );
+      const action = scoped ?? candidates.find((a) => a.scope === "global");
       if (!action) return;
 
       // /time（時間儀表板）是「無站內導覽」的獨立頁：除切換主題外，
       // 其餘全域快捷鍵（導覽／聚焦搜尋）一律不生效——此頁沒有輸入框，
       // 鍵盤誤觸 h/t/q/n 會把頁面靜默導走，違反本頁設計承諾。
-      const path = pathRef.current ?? "";
       if ((path === "/time" || path.startsWith("/time/")) && action.id !== "cycleTheme") {
         return;
       }
