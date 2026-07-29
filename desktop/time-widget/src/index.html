@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ZonWiki 時間追蹤</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script type="module" src="/app.js" defer></script>
+  </head>
+  <body>
+    <!-- 標頭列 -->
+    <header class="topbar">
+      <span class="brand">⏱ 時間追蹤</span>
+      <span id="running-badge" class="badge" hidden></span>
+      <span class="spacer"></span>
+      <button id="refresh-btn" class="icon-btn" title="重新整理" aria-label="重新整理">⟳</button>
+      <button id="settings-btn" class="icon-btn" title="設定" aria-label="設定">⚙</button>
+    </header>
+
+    <!-- 錯誤/狀態列 -->
+    <div id="error" class="error" role="alert" hidden></div>
+
+    <!-- 新增項目列 -->
+    <section class="new-row">
+      <input id="new-title" class="input grow" type="text" maxlength="200"
+        placeholder="做什麼？（項目名稱）" aria-label="項目名稱" />
+      <input id="new-category" class="input cat" type="text" maxlength="128"
+        placeholder="分類（可選）" aria-label="分類" />
+      <button id="start-btn" class="btn-primary" aria-label="開始">▶ 開始</button>
+    </section>
+
+    <!-- 進行中表格 -->
+    <main class="table-wrap">
+      <table class="entries">
+        <thead>
+          <tr>
+            <th>目前項目</th>
+            <th>開始時間</th>
+            <th class="dur">持續時間</th>
+            <th class="act"></th>
+          </tr>
+        </thead>
+        <tbody id="entries-body"></tbody>
+      </table>
+      <p id="empty" class="empty" hidden>
+        目前沒有進行中的項目。上方輸入名稱按「▶ 開始」即可開始計時。
+      </p>
+    </main>
+
+    <!-- 設定面板（首次啟動或按 ⚙ 開啟） -->
+    <div id="settings" class="settings-overlay" hidden>
+      <div class="settings-card">
+        <h2>設定</h2>
+        <label for="cfg-base">ZonWiki 網址</label>
+        <input id="cfg-base" class="input" type="text" placeholder="https://zonwiki.pee-yang.com" />
+        <label for="cfg-token">API 權杖（PAT）</label>
+        <input id="cfg-token" class="input" type="password" placeholder="zwk_..." />
+        <p class="hint">於「個人頁 → API 權杖」產生。僅存於本機設定檔，不會外傳。</p>
+        <div class="settings-actions">
+          <button id="cfg-cancel" class="btn-secondary">取消</button>
+          <button id="cfg-save" class="btn-primary">儲存</button>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
