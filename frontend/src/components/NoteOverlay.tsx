@@ -32,7 +32,14 @@ import { STICKY_COLORS, parseSlideData } from '@/components/overlay/overlayShare
 import { DrawingTextBox, parseTextExtra, type TextExtra } from '@/components/drawing/TextBox';
 import { DrawingToolbar } from '@/components/drawing/DrawingToolbar';
 import { TextPropsPanel } from '@/components/drawing/TextPropsPanel';
-import { computeAnchorAt, locateAnchor, isOverlayAnchor, type OverlayAnchor } from '@/lib/overlayAnchor';
+import {
+  computeAnchorAt,
+  locateAnchor,
+  isOverlayAnchor,
+  openAncestorDetails,
+  revealAnchor,
+  type OverlayAnchor,
+} from '@/lib/overlayAnchor';
 import { NoteQuestionListPanel } from '@/components/questions/NoteQuestionListPanel';
 import { QuestionAnswerPopup } from '@/components/questions/QuestionAnswerPopup';
 import { deriveQuestionTitle } from '@/lib/questionTitle';
@@ -57,6 +64,29 @@ function sameStringSet(a: Set<string>, b: Set<string>): boolean {
   for (const v of a) if (!b.has(v)) return false;
   return true;
 }
+
+// ── dataJson 純函式（模組層級：不依賴元件狀態，供 useCallback 引用而不進相依陣列）──
+/**
+ * 讀取項目 dataJson 的「物件形式」並保留所有欄位；舊的純陣列（圖片板）視為 `{ images }`。
+ * 供泛用地讀/寫共同欄位（如 pinned），不會把便利貼的 highlights 或圖片板的 images 弄丟。
+ */
+const rawDataObj = (item: NoteOverlayItem): Record<string, unknown> => {
+  try {
+    const parsed = JSON.parse(item.dataJson || '');
+    if (Array.isArray(parsed)) return { images: parsed };
+    if (parsed && typeof parsed === 'object') return parsed as Record<string, unknown>;
+  } catch { /* 空/壞 → {} */ }
+  return {};
+};
+
+/** 項目是否「釘住浮動」（position:fixed、不貼內文；旗標存於 dataJson.pinned）。 */
+const isPinned = (item: NoteOverlayItem): boolean => rawDataObj(item).pinned === true;
+
+/** 讀取項目的持久化內容錨點（無/壞 → null＝走舊點錨定回退）。 */
+const itemAnchor = (item: NoteOverlayItem): OverlayAnchor | null => {
+  const a = rawDataObj(item).anchor;
+  return isOverlayAnchor(a) ? a : null;
+};
 
 /** 便利貼/圖片板標題列上的小圖示按鈕樣式（－ 收合、🗑 刪除）。 */
 const chromeBtnStyle: React.CSSProperties = {
@@ -88,6 +118,12 @@ interface Props {
   onQuestionPanelOpenChange?: (open: boolean) => void;
   /** 本篇問題項目變動時回呼（供頁面工具列鈕顯示問題數）。 */
   onQuestionsChange?: (questions: NoteOverlayItem[]) => void;
+  /**
+   * 要求定位的浮層項目 id（來自 ?overlay= 深連結——搜尋結果／問題清單頁跳轉）。
+   * 由本元件承接（而非頁面直接呼叫 scrollToOverlayItem）的原因：定位前需讀取該項目的
+   * 錨點資料做「循著階層展開收合 toggle」，而 overlay items 只存在於本元件的狀態裡。
+   */
+  locateOverlayId?: string | null;
 }
 
 /**
@@ -110,9 +146,12 @@ export function NoteOverlay({
   questionPanelOpen,
   onQuestionPanelOpenChange,
   onQuestionsChange,
+  locateOverlayId,
 }: Props) {
   const confirm = useConfirm();
   const [items, setItems] = useState<NoteOverlayItem[]>([]);
+  // 浮層清單是否已載入完成（?overlay= 深連結定位要等資料到齊才能讀錨點做展開）。
+  const [itemsLoaded, setItemsLoaded] = useState(false);
   // 目前開著答題彈窗的問題 item id 清單（可多開；只存 React state，刷新即消失）。
   const [openAnswerItemIds, setOpenAnswerItemIds] = useState<string[]>([]);
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
@@ -204,9 +243,11 @@ export function NoteOverlay({
 
   useEffect(() => {
     let alive = true;
+    setItemsLoaded(false); // 換筆記時重置，避免深連結定位讀到上一篇的載入旗標
     listNoteOverlay(noteId).then((list) => {
       if (!alive) return;
       setItems(list);
+      setItemsLoaded(true);
       // 便利貼/圖片板預設「收合」（只顯示標題列）——每次打開筆記都全收合，不記憶展開狀態。
       setCollapsedIds(new Set(list.filter((i) => i.kind === 'sticky' || i.kind === 'slide').map((i) => i.id)));
     });
@@ -361,18 +402,6 @@ export function NoteOverlay({
   const onAnswerSaved = (itemId: string, answer: string) => {
     patchLocal(itemId, { questionAnswer: answer });
   };
-
-  // scrollToOverlayItem 會回傳清理函式（取消尚未完成的重試與高亮計時器）。保存最近一次，
-  // 下次定位前先執行上一次的清理、元件卸載時也清理，避免遺留計時器（對抗式復審 MEDIUM）。
-  const locateCleanupRef = useRef<(() => void) | null>(null);
-  const handleLocateQuestion = useCallback((itemId: string) => {
-    onQuestionPanelOpenChange?.(false);
-    locateCleanupRef.current?.();
-    locateCleanupRef.current = scrollToOverlayItem(itemId);
-  }, [onQuestionPanelOpenChange]);
-  useEffect(() => () => {
-    locateCleanupRef.current?.();
-  }, []);
 
   // ── 新增便利貼 / 輪播 ──
   // 新元件預設「跟著內文捲動」（pinned=false、相對內文座標），出現在內文左上、稍微階梯錯開避免完全重疊；
@@ -612,18 +641,7 @@ export function NoteOverlay({
   };
 
   // ── 圖片板 dataJson 結構 { title?, images, pinned? }：各欄共存，改一欄不動其他欄 ──
-  /**
-   * 讀取項目 dataJson 的「物件形式」並保留所有欄位；舊的純陣列（圖片板）視為 `{ images }`。
-   * 供泛用地讀/寫共同欄位（如 pinned），不會把便利貼的 highlights 或圖片板的 images 弄丟。
-   */
-  const rawDataObj = (item: NoteOverlayItem): Record<string, unknown> => {
-    try {
-      const parsed = JSON.parse(item.dataJson || '');
-      if (Array.isArray(parsed)) return { images: parsed };
-      if (parsed && typeof parsed === 'object') return parsed as Record<string, unknown>;
-    } catch { /* 空/壞 → {} */ }
-    return {};
-  };
+  // （rawDataObj / isPinned / itemAnchor 為模組層級純函式，見檔案上方。）
   /** 讀圖片板標題（相容舊的純陣列格式，見 parseSlideData）。 */
   const slideTitle = (item: NoteOverlayItem): string => parseSlideData(item.dataJson).title;
   /** 合併寫入圖片板 dataJson（保留既有所有欄位——含 pinned；並把舊的純陣列格式一併升級為物件格式）。 */
@@ -652,7 +670,6 @@ export function NoteOverlay({
   // pinned=true：position:fixed、portal 到 body、可拖到整個畫面（含側欄），但不隨內文捲動（像章節目錄表）。
   // pinned=false（預設）：position:absolute 疊在內文上，隨內文捲動、被內文區裁切（原本的便利貼行為）。
   // x/y 的意義隨 pinned 改變（fixed＝視窗座標、absolute＝相對內文座標），切換時換算座標讓它停在原地。
-  const isPinned = (item: NoteOverlayItem): boolean => rawDataObj(item).pinned === true;
   const togglePin = (item: NoteOverlayItem) => {
     const pinned = !isPinned(item);
     const rect = containerRef.current?.getBoundingClientRect();
@@ -733,11 +750,6 @@ export function NoteOverlay({
       }
     }, 800);
   }, [persist]);
-  /** 讀取項目的持久化內容錨點（無/壞 → null＝走舊點錨定回退）。 */
-  const itemAnchor = (item: NoteOverlayItem): OverlayAnchor | null => {
-    const a = rawDataObj(item).anchor;
-    return isOverlayAnchor(a) ? a : null;
-  };
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -919,6 +931,83 @@ export function NoteOverlay({
     return () => window.clearTimeout(id);
   }, [items]);
 
+  // ── 定位到某個浮層項目（問題清單面板點列項目 / ?overlay= 深連結共用）──
+  // scrollToOverlayItem 會回傳清理函式（取消尚未完成的重試與高亮計時器）。保存最近一次，
+  // 下次定位前先執行上一次的清理、元件卸載時也清理，避免遺留計時器（對抗式復審 MEDIUM）。
+  const locateCleanupRef = useRef<(() => void) | null>(null);
+  const handleLocateQuestion = useCallback((itemId: string) => {
+    // 定位前先「循著階層展開」（比照目錄 TocPanel.scrollToHeading）：
+    // 問題的錨定文字若位於收合的 :::toggle 內，該項目此刻整個未被渲染（collapsedByToggle 過濾），
+    // scrollToOverlayItem 會找不到 DOM 而靜默失敗。先展開祖先 details 後，details 的 toggle 事件
+    // 觸發既有 recompute → 項目恢復渲染 → scrollToOverlayItem 的重試迴圈接手捲動與高亮。
+    // 釘住（pinned）者不貼著文字、永遠可見 → 不需要也不應替使用者展開任何 toggle。
+    // 注意：面板保持開啟（先前版本會在此關閉面板，經使用者裁示改為不關——連續定位多個問題更順）。
+    const container = containerRef.current;
+    const item = itemsRef.current.find((i) => i.id === itemId);
+    if (container && item && !isPinned(item)) {
+      const anchor = itemAnchor(item);
+      if (anchor) {
+        // 錨點文字已被編輯掉（revealAnchor 回 false）時，項目以絕對座標渲染、永遠可見，
+        // 不需展開；無論結果都繼續往下捲動定位。
+        revealAnchor(container, anchor);
+      } else {
+        // 舊資料（無持久化錨點）：session 點錨定表記著它壓住的內容元素，展開其收合祖先。
+        // （整頁載入時就收合的舊項目沒有可靠錨點、也不會被隱藏，走預設定位即可。）
+        const el = stickyAnchorRef.current.get(itemId);
+        if (el && el.isConnected) openAncestorDetails(container, el);
+      }
+    }
+    locateCleanupRef.current?.();
+    locateCleanupRef.current = scrollToOverlayItem(itemId);
+  }, [containerRef]);
+  useEffect(() => () => {
+    locateCleanupRef.current?.();
+  }, []);
+
+  // ?overlay= 深連結定位（搜尋結果／問題清單頁跳轉進來）：等浮層資料載入後，
+  // 走與問題清單面板相同的「展開收合祖先 → 捲動定位」路徑。每個 overlayId 只處理一次
+  // （items 後續變動不重新定位，避免使用者捲走後又被拉回去）。
+  //
+  // ⚠️ 隱性依賴（對抗式復審 MEDIUM，勿悄悄破壞）：「單次防護 ref＋itemsLoaded 不會殘留舊筆記狀態」
+  // 的正確性，依賴筆記頁換 slug 時 page.tsx 的 loading 閘門會把整棵子樹（含本元件）完整卸載重掛
+  // ——若日後為了避免換頁閃爍而改成「保留舊內容不卸載」，這裡要改成以 noteId 一併重置
+  // handledLocateIdRef，否則深連結定位會拿舊筆記的 items 找新 id、標成已處理後永不重試。
+  const handledLocateIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!locateOverlayId) {
+      handledLocateIdRef.current = null;
+      return;
+    }
+    if (!itemsLoaded || handledLocateIdRef.current === locateOverlayId) return;
+    handledLocateIdRef.current = locateOverlayId;
+
+    // 內文（previewHtml）與浮層清單是並行載入——內文尚未渲染時 reveal 找不到錨定文字。
+    // 有錨點者以短輪詢等「錨定文字出現在內文」再定位（上限與 scrollToOverlayItem 同級的 5 秒，
+    // 逾時仍定位一次作兜底）；無錨點／釘住者直接定位。
+    const item = itemsRef.current.find((i) => i.id === locateOverlayId);
+    const anchor = item && !isPinned(item) ? itemAnchor(item) : null;
+    if (!anchor) {
+      handleLocateQuestion(locateOverlayId);
+      return;
+    }
+    let attempts = 0;
+    let timer: number | null = null;
+    const tryLocate = () => {
+      timer = null;
+      const text = containerRef.current?.textContent ?? '';
+      if (text.includes(anchor.text) || attempts >= 20) {
+        handleLocateQuestion(locateOverlayId);
+        return;
+      }
+      attempts += 1;
+      timer = window.setTimeout(tryLocate, 250);
+    };
+    tryLocate();
+    return () => {
+      if (timer != null) window.clearTimeout(timer);
+    };
+  }, [locateOverlayId, itemsLoaded, handleLocateQuestion, containerRef]);
+
   // ── 拖曳 / 縮放 ──
   // 拖曳中的項目 id：rebase 不得動它（避免背景重算與使用者手動拖曳互相覆寫，對抗式復審 MEDIUM）。
   const draggingItemIdRef = useRef<string | null>(null);
@@ -952,7 +1041,10 @@ export function NoteOverlay({
         next = { x: nx, y: ny, width: ow, height: oh };
         patchLocal(item.id, { x: next.x, y: next.y });
       } else {
-        next = { x: ox, y: oy, width: Math.max(120, ow + dx), height: Math.max(80, oh + dy) };
+        // 最小寬：問題便利貼的標題列多兩顆常駐鈕（❓ 上色＋「答」膠囊），120px 會讓按鈕溢出裁切，
+        // 提高到 150；其餘維持原本 120。
+        const minW = item.kind === 'sticky' && item.isQuestion ? 150 : 120;
+        next = { x: ox, y: oy, width: Math.max(minW, ow + dx), height: Math.max(80, oh + dy) };
         patchLocal(item.id, { width: next.width, height: next.height });
       }
     };
@@ -1500,6 +1592,35 @@ export function NoteOverlay({
               }}
             >
               ❓
+            </button>
+          )}
+          {/* 答 開啟答題彈窗（僅已標記為問題的便利貼；比照 T 文字框的「答」鈕語言＝小膠囊）：
+              未作答＝白底深字、已作答＝主色底白字。顏色刻意用固定值而非主題變數——
+              便利貼標題列永遠是「淺色便利貼底＋6% 黑」，暗色主題的淺灰前景放上去對比會掉到 3:1 以下
+              （視覺稽核實測 dark 2.75），固定深字/白字在四主題與任意便利貼色上都 ≥4.5:1。 */}
+          {isSticky && item.isQuestion && (
+            <button
+              onClick={() => openAnswerPopup(item.id)}
+              onPointerDown={(e) => e.stopPropagation()}
+              title={(item.questionAnswer ?? '') !== '' ? '開啟答題彈窗（已作答）' : '開啟答題彈窗（尚未作答）'}
+              data-testid="overlay-item-answer-open"
+              style={{
+                ...chromeBtnStyle,
+                fontSize: 'var(--text-xs)',
+                fontWeight: 700,
+                lineHeight: 1.3,
+                padding: '0 4px',
+                borderRadius: 'var(--radius-sm, 4px)',
+                border: '1px solid rgba(0,0,0,0.28)',
+                background: (item.questionAnswer ?? '') !== ''
+                  ? 'var(--action-primary-bg, #2563eb)'
+                  : 'rgba(255,255,255,0.88)',
+                color: (item.questionAnswer ?? '') !== ''
+                  ? 'var(--action-primary-fg, #fff)'
+                  : 'rgba(0,0,0,0.78)',
+              }}
+            >
+              答
             </button>
           )}
           {/* 📌 釘住浮動 / 跟著內文 切換（便利貼、圖片板皆可） */}

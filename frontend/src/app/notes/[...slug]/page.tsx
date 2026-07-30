@@ -40,7 +40,6 @@ import { LinkedEntitiesBar } from '@/components/LinkedEntitiesBar';
 import { TocPanel } from '@/components/TocPanel';
 import { ToggleAwareMarkdown } from '@/components/MarkdownPreview';
 import { buildToc } from '@/lib/toc';
-import { scrollToOverlayItem } from '@/lib/scrollToOverlayItem';
 import { resolveAttachmentUrls } from '@/lib/attachmentUrl';
 import { useUndoHotkeys, resetUndo } from '@/lib/undoManager';
 import { useConfirm } from '@/components/ConfirmProvider';
@@ -643,13 +642,9 @@ export default function NotesDetailPage() {
   }, [markId, previewHtml]);
 
   // 讀取 ?overlay= 用來從搜尋結果 / 問題清單跳轉到某個浮層元件（便利貼 / T 文字框）位置。
+  // 定位本身交給 NoteOverlay（prop：locateOverlayId）——它握有浮層項目的錨點資料，
+  // 能在捲動前先「循著階層展開」收合的 :::toggle（否則被收合隱藏的項目根本不會渲染、定位必失敗）。
   const overlayId = searchParams.get('overlay');
-
-  // 捲動到浮層元件位置並短暫高亮（定位邏輯抽成共用 util，問題清單面板點列項目也複用同一份）。
-  useEffect(() => {
-    if (!overlayId) return;
-    return scrollToOverlayItem(overlayId);
-  }, [overlayId, previewHtml, note?.id]);
 
   // 載入筆記詳細（分類/標籤選項池與使用者已改由 SWR 供給，故此處只抓筆記本身）
   useEffect(() => {
@@ -1660,6 +1655,7 @@ export default function NotesDetailPage() {
                   questionPanelOpen={questionPanelOpen}
                   onQuestionPanelOpenChange={setQuestionPanelOpen}
                   onQuestionsChange={(qs) => setQuestionCount(qs.length)}
+                  locateOverlayId={overlayId}
                 />
                 {tocOpen && toc.length > 0 && (
                   <TocPanel noteId={note.id} toc={toc} onClose={() => setTocOpen(false)} />

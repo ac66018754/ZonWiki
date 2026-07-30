@@ -5,6 +5,18 @@
 
 ---
 
+## 2026-07-31 ｜問題清單定位改「循著階層展開」＋定位不關面板＋便利貼答鈕（fix/question-list-ux）
+
+- **背景**：使用者回報三個問題：①筆記頁點「問題清單」面板列項目後，面板會被自動關閉（連續定位多個問題要一直重開）；②問題（便利貼）的錨定文字位於收合的 :::toggle 內時，點定位完全沒反應——因為被收合隱藏的浮層項目**整個不會渲染**（collapsedByToggle 過濾），scrollToOverlayItem 的重試迴圈找不到 DOM 而靜默失敗，應比照「目錄」先循著階層展開；③便利貼有 ❓ 可標記問題、T 文字框有「答」鈕，但便利貼本體沒有「答」鈕（只能從問題清單開答題彈窗）。
+- **考慮過的選項（②的修法）**：(a) 被收合的項目改成「照渲染但隱藏」讓定位找得到——會破壞既有「跟著 toggle 收合」的整套語意與效能假設；(b) **定位前先展開錨定文字的收合祖先 details（採用）**——與目錄 TocPanel.scrollToHeading 同一行為模式，展開觸發既有 toggle→recompute 鏈路，項目自然恢復渲染，scrollToOverlayItem 的重試機制無縫接手。
+- **實作**：`overlayAnchor.ts` 新增 `openAncestorDetails`（祖先鏈展開、止步 container、旁支不動）與 `revealAnchor`（reAnchor 文字重定位→展開；**刻意純 DOM 判定、零幾何量測**，jsdom 可測）。`NoteOverlay.handleLocateQuestion` 定位前先 reveal（釘住者不做；舊資料走 stickyAnchorRef 元素回退；錨文字被編輯掉時 reveal 失敗**仍照常定位**——此時項目以絕對座標渲染、永遠可見）。
+- **連帶範圍決策（計畫復審 HIGH）**：`?overlay=` 深連結（全域問題清單頁/搜尋跳轉）有同樣症狀，且 page.tsx 拿不到浮層錨點資料無從展開——**深連結定位改由 NoteOverlay 承接**（新 prop `locateOverlayId`＋等 itemsLoaded、短輪詢錨定文字出現再定位），page.tsx 移除舊的 scrollToOverlayItem effect。行為差異：舊版 previewHtml 每次變動都重新定位、新版每個 overlayId 只定位一次（使用者捲走後不會被拉回去，視為改善）。
+- **測試基礎設施決策**：vitest 設定（package.json test script／vitest.config.mts／jsdom）在 main 尚不存在、只存在於未合併的 feature/backlinks-union——本分支**自帶一份同構設定**（版本/內容對齊，另補 `resolve.alias` 的 @→src 對應），日後兩分支合併時內容相同、無痛去重。jsdom 用 **26**（30 的相依 html-encoding-sniffer@6 是純 ESM，Node 20.12 的 CJS require 會炸）。
+- **驗證**：TDD——單元 9 條（reveal/展開邊界，先 RED 後 GREEN）＋Playwright E2E 11 場景（面板不關、雙層展開、深連結、錨點失效兜底、答鈕含 pinned/已答上色、✕ 回歸、亮暗截圖、console 零錯誤）對未修復基線 8/11 紅、修復後 11/11 綠；截圖存 zonwiki-ui-tests/2026-07-31-question-list-ux/。
+- **對抗式復審後補強**：①（HIGH）補 Testing Library 元件測試鎖住面板契約（點列項目只觸發 onLocate、絕不觸發 onClose）；②（MEDIUM）深連結單次防護的正確性依賴「page.tsx loading 閘門換筆記時整棵卸載」——已在 handledLocateIdRef 旁註解文件化；③（視覺稽核實測）答鈕原用 --text-tertiary 在暗主題的淺黃便利貼標題列上對比僅 2.75 → 改「膠囊」樣式（未答白底深字 20.5:1／已答主色底白字 4.63–9.25，四主題全 ≥AA），且問題便利貼縮放下限 120→150（五顆鈕在 120px 會溢出裁切；API 舊資料若仍 <150 僅輕微裁切、拖寬即復原）。
+
+---
+
 ## 2026-07-30（第三批）｜浮層錨點「行級細化」：跨螢幕寬度跟著文字走（feature/note-revision-interceptor）
 
 - **背景**：使用者回報「不同螢幕尺寸下畫筆等顯示位置會不同」。實查發現既有 overlayAnchor 機制（2026-07-08 為解 toggle 收合位移而建）已把浮層/筆畫錨定到文字並以 rebase 平移跟隨——但錨定粒度是**元素級**（錨在段落開頭）：容器寬度改變時段落左上角幾乎不動（rebase 差量≈0），段內文字卻全部重新折行，畫在第 N 行的東西便對不上原本的字。
