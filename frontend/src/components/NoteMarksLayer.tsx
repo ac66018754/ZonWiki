@@ -18,6 +18,7 @@ import {
 import { ColorPickerInline, resolveColor } from '@/components/ColorPicker';
 import { pushUndo } from '@/lib/undoManager';
 import { showToast } from '@/lib/toast';
+import { noteHref } from '@/lib/noteHref';
 import { NOTE_ASK_STICKY_EVENT } from '@/components/NoteOverlay';
 
 /** 目標型別 → 中文標籤（hover 浮窗顯示）。 */
@@ -283,7 +284,7 @@ export function NoteMarksLayer({ noteId, containerRef, contentHtml, active }: Pr
 
   const navigate = (m: NoteMark) => {
     if (m.targetType === 'note' && m.targetSlug) {
-      router.push(`/notes/${m.targetSlug.split('/').map(encodeURIComponent).join('/')}`);
+      router.push(noteHref(m.targetSlug));
     } else if (m.targetType === 'taskcard') {
       // 在筆記頁就地開任務彈窗（不離開頁面）；筆記頁有監聽 zonwiki:open-task。
       if (m.targetId) {

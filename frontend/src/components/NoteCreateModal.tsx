@@ -12,6 +12,7 @@ import {
   createNoteTag,
 } from "@/lib/api";
 import { logger } from "@/lib/logger";
+import { noteHref } from "@/lib/noteHref";
 import { SearchableMultiSelect } from "./SearchableMultiSelect";
 import { MarkdownEditor } from "./MarkdownEditor";
 
@@ -86,8 +87,8 @@ export function NoteCreateModal({ open, onClose, onCreated, presetCategoryIds }:
       });
       onCreated?.();
       if (note?.slug) {
-        const encoded = note.slug.split("/").map(encodeURIComponent).join("/");
-        router.push(`/notes/${encoded}`);
+        // 逐段編碼收斂到 noteHref（行為與原本手寫的 split/encode/join 一致）。
+        router.push(noteHref(note.slug));
       }
       onClose();
     } catch (err) {

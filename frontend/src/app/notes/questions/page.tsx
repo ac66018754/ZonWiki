@@ -10,6 +10,7 @@ import {
 } from '@/lib/api/notes';
 import { useNoteCategories } from '@/lib/swr';
 import { type NoteCategory } from '@/lib/api/categories';
+import { noteHref } from '@/lib/noteHref';
 import { QuestionAnswerPopup } from '@/components/questions/QuestionAnswerPopup';
 
 /** 「(未分類)」篩選項的識別哨符（對應 categoryIds 為空的問題）。 */
@@ -225,7 +226,7 @@ function NoteQuestionsPageInner() {
               >
                 {/* 列身：導航到該筆記並定位到此問題 */}
                 <Link
-                  href={`/notes/${encodeURIComponent(q.noteSlug)}?overlay=${encodeURIComponent(q.itemId)}`}
+                  href={`${noteHref(q.noteSlug)}?overlay=${encodeURIComponent(q.itemId)}`}
                   title="開啟所屬筆記並定位到此問題"
                   style={{
                     flex: 1,

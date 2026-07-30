@@ -35,6 +35,7 @@ import { NoteEditHistory } from '@/components/NoteEditHistory';
 import { NoteBacklinks } from '@/components/NoteBacklinks';
 import { SearchableMultiSelect } from '@/components/SearchableMultiSelect';
 import { recordNoteNav, getNoteBackTarget } from '@/lib/noteNav';
+import { noteHref } from '@/lib/noteHref';
 import { LinkedEntitiesBar } from '@/components/LinkedEntitiesBar';
 import { TocPanel } from '@/components/TocPanel';
 import { ToggleAwareMarkdown } from '@/components/MarkdownPreview';
@@ -933,7 +934,7 @@ export default function NotesDetailPage() {
     setDuplicatingNote(true);
     try {
       const dup = await duplicateNote(note);
-      if (dup?.slug) router.push(`/notes/${encodeURIComponent(dup.slug)}`);
+      if (dup?.slug) router.push(noteHref(dup.slug));
       else setError('無法複製筆記，請稍後重試。');
     } catch {
       setError('無法複製筆記，請稍後重試。');

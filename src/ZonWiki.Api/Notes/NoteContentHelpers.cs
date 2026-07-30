@@ -207,6 +207,22 @@ internal static class NoteContentHelpers
     }
 
     /// <summary>
+    /// 把筆記 slug 逐段編碼成可安全放進 URL 路徑的字串（段與段之間的「/」保留為層級分隔）。
+    ///
+    /// 為什麼要「逐段 Uri.EscapeDataString、以 / 接回」而非整串編碼、也不是裸串：
+    /// 舊檔案匯入時代的 slug 可含「#」（prod 實例：programming/c#/f）。若後端把裸串 slug 直接組進
+    /// 「/notes/{slug}」交給前端，前端 href 內含未編碼的「#」，瀏覽器會把其後整段當 URL fragment 丟棄，
+    /// 導頁變成「筆記不存在」。逐段編碼會把「#」編成 %23（fragment 陷阱消失），同時保留「/」層級分隔
+    /// （整串 Uri.EscapeDataString 會連「/」一起編成 %2F，破壞層級、也與前端 noteHref 組出的路徑形狀不一致）。
+    /// </summary>
+    /// <param name="slug">筆記 slug（可含「/」層級與「#」等 URL 特殊字元）。</param>
+    /// <returns>逐段編碼後、以「/」接回的路徑片段（不含 /notes 前綴）。</returns>
+    public static string EncodeSlugForUrl(string slug)
+    {
+        return string.Join('/', slug.Split('/').Select(Uri.EscapeDataString));
+    }
+
+    /// <summary>
     /// 計算筆記內容雜湊（SHA-256）。
     /// </summary>
     /// <param name="content">筆記內容（Markdown 原文）。</param>

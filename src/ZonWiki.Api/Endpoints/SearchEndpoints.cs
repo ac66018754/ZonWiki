@@ -195,7 +195,7 @@ public static class SearchEndpoints
                             row.Id.ToString(),
                             row.Title,
                             ExtractSnippet(row.ContentRaw, keywordLower, SnippetMaxLength),
-                            $"/notes/{row.Slug}",
+                            $"/notes/{NoteContentHelpers.EncodeSlugForUrl(row.Slug)}",
                             UpdatedAt: row.UpdatedDateTime),
                         CombineRelevance(row.TitleSimilarity, row.ContentSimilarity),
                         TypeRankNote))
@@ -444,7 +444,7 @@ public static class SearchEndpoints
                             row.Id.ToString(),
                             NoteQuestionHelpers.DeriveOverlayTitle(OverlayKindText, row.Text, null, OverlayEmptyTitle),
                             ExtractSnippet(row.Text ?? string.Empty, keywordLower, SnippetMaxLength),
-                            $"/notes/{row.Slug}?overlay={row.Id}",
+                            $"/notes/{NoteContentHelpers.EncodeSlugForUrl(row.Slug)}?overlay={row.Id}",
                             UpdatedAt: row.UpdatedDateTime,
                             ParentTitle: row.Title),
                         row.TextSimilarity,
@@ -489,7 +489,7 @@ public static class SearchEndpoints
                             row.Id.ToString(),
                             NoteQuestionHelpers.DeriveOverlayTitle(OverlayKindSticky, row.Text, row.DataJson, OverlayEmptyTitle),
                             ExtractSnippet(row.Text ?? string.Empty, keywordLower, SnippetMaxLength),
-                            $"/notes/{row.Slug}?overlay={row.Id}",
+                            $"/notes/{NoteContentHelpers.EncodeSlugForUrl(row.Slug)}?overlay={row.Id}",
                             UpdatedAt: row.UpdatedDateTime,
                             ParentTitle: row.Title),
                         // 相關性取「文字相似度」與「DataJson（含標題）相似度」較大者。

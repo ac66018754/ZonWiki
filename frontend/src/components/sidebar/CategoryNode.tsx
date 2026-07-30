@@ -4,6 +4,7 @@ import React from "react";
 import Link from "next/link";
 import type { NoteCategory } from "@/lib/api";
 import { NOTE_DND_MIME } from "@/lib/constants";
+import { noteHref } from "@/lib/noteHref";
 import type { CatDrop, CatEditorState, SidebarTreeHandlers } from "./types";
 import { NoteRow } from "./NoteRow";
 import { CategoryEditor } from "./CategoryEditor";
@@ -327,7 +328,10 @@ function CategoryNodeImpl(props: CategoryNodeProps): React.ReactElement {
               key={`note-${note.id}`}
               note={note}
               depth={depth + 1}
-              isActive={currentNotePath === `/notes/${note.slug}`}
+              // currentNotePath 是 decodeURIComponent(pathname)（見 Sidebar.tsx:696）；
+              // decode∘encode 恆等，故此寫法與原本的「/notes/{slug} 裸串」語意完全相同，
+              // 差別只在改走 noteHref helper，讓靜態守衛測試也能驗證此呼叫點確實用了共用編碼。
+              isActive={currentNotePath === decodeURIComponent(noteHref(note.slug))}
             />
           ))}
         </>

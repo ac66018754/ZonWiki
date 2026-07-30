@@ -1,3 +1,5 @@
+import { noteHref } from "./noteHref";
+
 /**
  * 計算「進入筆記頁」的導航目標（Header「筆記」連結與快捷鍵 N 共用）。
  *
@@ -15,7 +17,8 @@ export function getNotesNavTarget(): string {
   try {
     const slug = localStorage.getItem("zonwiki:last-note-slug");
     if (slug) {
-      return `/notes/${slug.split("/").map(encodeURIComponent).join("/")}`;
+      // 逐段編碼由 noteHref 統一負責（見其 JSDoc：# fragment 陷阱／保留 / 層級）。
+      return noteHref(slug);
     }
   } catch {
     /* localStorage 不可用 → 進清單 */

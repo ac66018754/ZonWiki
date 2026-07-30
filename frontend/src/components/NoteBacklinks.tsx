@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { getNoteBacklinks, type Backlink } from '@/lib/api';
+import { noteHref } from '@/lib/noteHref';
 
 interface NoteBacklinksProps {
   /** 筆記 ID */
@@ -94,7 +95,7 @@ interface BacklinkItemProps {
 function BacklinkItem({ backlink }: BacklinkItemProps) {
   return (
     <Link
-      href={`/notes/${backlink.sourceNoteSlug}`}
+      href={noteHref(backlink.sourceNoteSlug)}
       style={{
         display: 'block',
         padding: 'var(--spacing-3) var(--spacing-4)',

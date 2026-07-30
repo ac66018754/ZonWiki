@@ -18,6 +18,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
+import { encodeSlugPath } from './slugPath.js'
 
 const API_BASE = process.env.ZONWIKI_API_BASE ?? 'http://localhost:5009'
 const API_COOKIE = process.env.ZONWIKI_API_COOKIE
@@ -129,7 +130,7 @@ server.tool(
   },
   async ({ slug }: { slug: string }) => {
     try {
-      return ok(await call('GET', `/api/notes/${slug}`))
+      return ok(await call('GET', `/api/notes/${encodeSlugPath(slug)}`))
     } catch (e) {
       return fail(e)
     }

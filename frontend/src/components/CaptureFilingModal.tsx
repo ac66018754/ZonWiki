@@ -11,6 +11,7 @@ import {
   deleteCapture,
 } from "@/lib/api";
 import { logger } from "@/lib/logger";
+import { noteHref } from "@/lib/noteHref";
 import { useConfirm } from "@/components/ConfirmProvider";
 
 /**
@@ -172,7 +173,7 @@ export function CaptureFilingModal({
                     </div>
                   );
                 }
-                const href = l.targetType === "note" && l.slug ? `/notes/${l.slug}` : "/tasks";
+                const href = l.targetType === "note" && l.slug ? noteHref(l.slug) : "/tasks";
                 return (
                   <Link key={l.id} href={href} className="cfm-link" onClick={onClose}>
                     {inner}

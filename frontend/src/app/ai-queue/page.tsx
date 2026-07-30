@@ -14,6 +14,7 @@ import { useCurrentUser } from "@/lib/swr";
 import { formatDateTime } from "@/lib/formatters";
 import { DEFAULT_TIMEZONE } from "@/lib/constants";
 import { logger } from "@/lib/logger";
+import { noteHref } from "@/lib/noteHref";
 
 /**
  * AI 處理佇列頁面（/ai-queue）。
@@ -165,7 +166,7 @@ function AiQueueInner() {
       router.push("/canvas");
     } else if (d.noteSlug) {
       router.push(
-        `/notes/${encodeURIComponent(d.noteSlug)}${d.markId ? `?mark=${encodeURIComponent(d.markId)}` : ""}`,
+        `${noteHref(d.noteSlug)}${d.markId ? `?mark=${encodeURIComponent(d.markId)}` : ""}`,
       );
     }
   };
@@ -376,7 +377,7 @@ function AiQueueInner() {
               onRefresh={() => selectedId && fetchDetail(selectedId)}
               onGoToSource={() => goToSource(detail)}
               onGoToAnswer={() =>
-                detail.answerNoteSlug && router.push(`/notes/${encodeURIComponent(detail.answerNoteSlug)}`)
+                detail.answerNoteSlug && router.push(noteHref(detail.answerNoteSlug))
               }
             />
           ) : null}
