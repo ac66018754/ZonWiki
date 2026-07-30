@@ -96,8 +96,100 @@ function rangeFromOffsets(container: HTMLElement, start: number, end: number): R
 }
 
 /**
+ * 在目標元素內，把錨定位置細化到「點所在（或最近）的那一行文字」的行首字元位移。
+ *
+ * 【為什麼需要】元素級錨定（錨在段落開頭）只能補償「整段被推移」：容器寬度改變時，
+ * 段落左上角幾乎不動（rebase 差量≈0），但段內文字全部重新折行——畫在第 N 行的浮層/筆畫
+ * 便對不上原本的字。細化到「行」之後，錨定的是那一行開頭的字，折行時 reAnchor 會找到
+ * 那些字的新位置，rebase 差量＝那些字的位移，浮層就跨寬度跟著字走。
+ *
+ * 【做法】不用 caretRangeFromPoint——它以「最上層元素」做 hit-test，點被浮層/繪圖 SVG
+ * 蓋住時打不到內容；改在（elementsFromPoint 過濾鏈已選出的）內容元素內，用 Range 幾何：
+ *   1. 走訪元素內全部文字節點，蒐集每個節點的逐行矩形（getClientRects＝每個 line box 一個）；
+ *   2. 取「垂直距離點最近」的行矩形；
+ *   3. 在該文字節點內二分搜尋「第一個落在該行」的字元位移（同一文字節點內，
+ *      字元位移 → 行 top 單調不減，二分成立）。
+ *
+ * @param container 內文容器。
+ * @param target 內容元素（elementsFromPoint 過濾後的結果）。
+ * @param clientY 螢幕座標 Y（畫記代表點）。
+ * @returns 「target 子樹內、落在該行的第一個字元」在容器純文字中的位移
+ * （target 為行內元素時即其自身文字的行內起點，非整個視覺行的行首——對 rebase
+ * 差量計算無影響，只要是穩定的文字位置即可）；元素內無可用文字行時回 null（退回元素級）。
+ */
+function refineStartOffsetToLine(
+  container: HTMLElement,
+  target: Element,
+  clientY: number
+): number | null {
+  // 1) 蒐集候選：每個文字節點的每個 line box。
+  const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT);
+  let bestNode: Text | null = null;
+  let bestRect: DOMRect | null = null;
+  let bestDist = Number.POSITIVE_INFINITY;
+  for (;;) {
+    const n = walker.nextNode() as Text | null;
+    if (!n) break;
+    if (!n.data.trim()) continue;
+    const r = document.createRange();
+    r.selectNodeContents(n);
+    for (const rect of Array.from(r.getClientRects())) {
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      // 垂直距離：點在行內＝0；否則取到行緣的距離。
+      const dist = clientY < rect.top ? rect.top - clientY : clientY > rect.bottom ? clientY - rect.bottom : 0;
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestNode = n;
+        bestRect = rect;
+      }
+    }
+  }
+  if (!bestNode || !bestRect) return null;
+
+  // 2) 二分搜尋該文字節點內「第一個落在該行」的字元位移。
+  const caretTop = (offset: number): number => {
+    const r = document.createRange();
+    r.setStart(bestNode!, offset);
+    r.collapse(true);
+    const rect = r.getBoundingClientRect();
+    // 摺疊 Range 於少數瀏覽器情境回零矩形 → 以「行首之前」處理（不影響單調性）。
+    return rect.height > 0 || rect.top !== 0 ? rect.top : Number.NEGATIVE_INFINITY;
+  };
+  let lo = 0;
+  let hi = bestNode.data.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    // 該位移的插入點仍在目標行上緣之前 → 行首在更後面。
+    if (caretTop(mid) < bestRect.top - 1) lo = mid + 1;
+    else hi = mid;
+  }
+  // 防呆①：整個節點的插入點矩形都退化（caretTop 恆 -∞）時，二分會收斂到節點尾端
+  // ——那不是行首而是「跳過整行」，視為細化失敗、退回元素級。
+  if (lo >= bestNode.data.length || caretTop(lo) === Number.NEGATIVE_INFINITY) return null;
+  // 防呆②：不可切在 emoji 等 astral 字元的代理對（surrogate pair）中間——
+  // 孤立代理經 JSON/UTF-8 序列化會變 U+FFFD，存下的錨定文字與 DOM 永久不一致。
+  const prev = bestNode.data.charCodeAt(lo - 1);
+  const curr = bestNode.data.charCodeAt(lo);
+  if (lo > 0 && prev >= 0xd800 && prev <= 0xdbff && curr >= 0xdc00 && curr <= 0xdfff) {
+    lo -= 1; // 對齊回該字元的起點
+  }
+
+  // 3) 節點內位移 → 容器純文字位移。
+  const pre = document.createRange();
+  pre.selectNodeContents(container);
+  try {
+    pre.setEnd(bestNode, lo);
+  } catch {
+    return null;
+  }
+  return pre.toString().length;
+}
+
+/**
  * 依「螢幕座標點」建立內容錨點：找點下方（容器內、非 summary 的）內容元素，
- * 取其文字片段＋容器內位移＋前後文窗，並以「重定位同一片段」的方式取得基準位置 (ex, ey)
+ * 並細化到「點所在的那一行文字」（見 {@link refineStartOffsetToLine}——跨容器寬度
+ * 折行重排時，行級錨點才能讓浮層跟著它壓住的字走；細化失敗退回元素級），
+ * 取文字片段＋容器內位移＋前後文窗，並以「重定位同一片段」的方式取得基準位置 (ex, ey)
  * ——基準位置與日後 rebase 用同一套定位流程，保證差量計算不含系統性偏差。
  * @param container 內文容器（.markdown-prose）。
  * @param clientX 螢幕座標 X（畫記代表點）。
@@ -117,15 +209,31 @@ export function computeAnchorAt(container: HTMLElement, clientX: number, clientY
   const elText = (target.textContent ?? '').replace(/\s+$/g, '');
   if (!elText.trim()) return null;
 
+  const containerText = container.textContent ?? '';
+
   // 元素文字在容器純文字中的起始位移：Range(容器開頭 → 元素前) 的字數。
   const pre = document.createRange();
   pre.selectNodeContents(container);
   pre.setEnd(target, 0);
   // setEnd(target, 0) 對元素節點＝其第一個子節點之前；用 toString 取得前置文字長度。
-  const start = pre.toString().length;
+  const elementStart = pre.toString().length;
 
-  const containerText = container.textContent ?? '';
-  const text = elText.slice(0, ANCHOR_TEXT_MAX);
+  // 行級細化：錨定「點所在那一行（於目標元素子樹內）的第一個字元」（跨寬度折行的關鍵）；
+  // 失敗退回元素級。
+  const refinedStart = refineStartOffsetToLine(container, target, clientY);
+  let start = refinedStart ?? elementStart;
+  // 文字視窗封頂在「目標元素自身的文字範圍」內——若無界地從容器純文字往後切，
+  // 短段落/標題會把下一個元素的字吃進錨定文字；之後只要下游內容被編輯，
+  // reAnchor 的精確比對就永遠找不到，錨點靜默失效（對抗復審 HIGH）。
+  const targetEnd = elementStart + (target.textContent ?? '').length;
+  let text = containerText
+    .slice(start, Math.min(start + ANCHOR_TEXT_MAX, targetEnd))
+    .replace(/\s+$/g, '');
+  if (!text.trim()) {
+    // 細化位移落在（行尾/段末的）空白上 → 退回元素級錨定。
+    start = elementStart;
+    text = elText.slice(0, ANCHOR_TEXT_MAX);
+  }
   const prefix = containerText.slice(Math.max(0, start - CONTEXT_WINDOW), start);
   const suffix = containerText.slice(start + text.length, start + text.length + CONTEXT_WINDOW);
 
