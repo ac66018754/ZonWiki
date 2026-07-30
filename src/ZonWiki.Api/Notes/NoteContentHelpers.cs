@@ -214,12 +214,27 @@ internal static class NoteContentHelpers
     /// 「/notes/{slug}」交給前端，前端 href 內含未編碼的「#」，瀏覽器會把其後整段當 URL fragment 丟棄，
     /// 導頁變成「筆記不存在」。逐段編碼會把「#」編成 %23（fragment 陷阱消失），同時保留「/」層級分隔
     /// （整串 Uri.EscapeDataString 會連「/」一起編成 %2F，破壞層級、也與前端 noteHref 組出的路徑形狀不一致）。
+    ///
+    /// 對齊 JS encodeURIComponent 語意（對抗式復審 MEDIUM #1）：.NET 的 Uri.EscapeDataString 依 RFC 3986
+    /// 會把「! * ' ( )」這五個 sub-delims 也編成百分號（%21 %2A %27 %28 %29），但前端與 MCP 用的
+    /// encodeURIComponent 不編碼它們。若不對齊，同一 slug 前後端會組出「逐位元組不同」的 URL 字串，
+    /// 筆記頁的「返回堆疊」等字面比對會誤判成不同筆記。故編碼後把這五個 sub-delims 的百分號編碼還原成原字元。
+    /// （此還原絕無誤傷：Uri.EscapeDataString 的輸出是三元組對齊的，%2A 等序列只可能來自對應原字元的編碼，
+    /// 不會由其他編碼序列拼接而成；原文中的「%」本身已先被編成 %25。）
     /// </summary>
     /// <param name="slug">筆記 slug（可含「/」層級與「#」等 URL 特殊字元）。</param>
-    /// <returns>逐段編碼後、以「/」接回的路徑片段（不含 /notes 前綴）。</returns>
+    /// <returns>逐段編碼後、以「/」接回的路徑片段（不含 /notes 前綴）；輸出與前端 encodeURIComponent 逐位元組一致。</returns>
     public static string EncodeSlugForUrl(string slug)
     {
-        return string.Join('/', slug.Split('/').Select(Uri.EscapeDataString));
+        var encoded = string.Join('/', slug.Split('/').Select(Uri.EscapeDataString));
+
+        // 把 encodeURIComponent 不編碼的五個 sub-delims 還原（見上方 summary 的「對齊 JS 語意」）。
+        return encoded
+            .Replace("%21", "!")
+            .Replace("%2A", "*")
+            .Replace("%27", "'")
+            .Replace("%28", "(")
+            .Replace("%29", ")");
     }
 
     /// <summary>

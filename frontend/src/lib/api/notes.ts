@@ -7,6 +7,7 @@
 
 import { withAiQueueNotify } from "../aiQueue";
 import { ConflictError } from "../errors";
+import { encodeSlugPath } from "../noteHref";
 import { fetchJson } from "./client";
 import { pollAskQueueUntilDone } from "./askQueue";
 import type { NoteCategory } from "./categories";
@@ -184,13 +185,10 @@ export async function markNoteOpened(noteId: string): Promise<number | null> {
  * 取得單一筆記詳細資訊
  */
 export async function getNote(slug: string): Promise<NoteDetail | null> {
-  // slug 可能含「/」（對應子資料夾層級）。逐段 encode、保留「/」當路徑分隔，
-  // 對應後端 catch-all 路由 GET /api/notes/{*slug}（整段 slash 視為 slug 的一部分）。
-  const encodedSlug = slug
-    .split('/')
-    .map((segment) => encodeURIComponent(segment))
-    .join('/');
-  const r = await fetchJson<NoteDetail>(`/api/notes/${encodedSlug}`);
+  // slug 可能含「/」（對應子資料夾層級）。逐段 encode、保留「/」當路徑分隔（含 # fragment 陷阱與
+  // 畸形 Unicode 防禦），對應後端 catch-all 路由 GET /api/notes/{*slug}（整段 slash 視為 slug 的一部分）。
+  // 編碼邏輯與頁面連結共用 noteHref 的 encodeSlugPath，避免同一套規則兩處各寫一次而漂移（收斂 DRY）。
+  const r = await fetchJson<NoteDetail>(`/api/notes/${encodeSlugPath(slug)}`);
   return r.data ?? null;
 }
 
