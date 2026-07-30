@@ -134,6 +134,47 @@ public sealed record NoteDetailDto(
     long Version = 0);
 
 /// <summary>
+/// 依 slug 解析筆記的結果（GET /api/notes/{slug} 的統一回應形狀）。
+///
+/// slug 連動標題後，同一個 slug 可能對應「唯一一篇」（活 slug 或別名命中）或「多篇」（名字被取用過、產生歧義）：
+/// - kind = "note"：<see cref="Note"/> 有值、<see cref="MatchedByAlias"/> 表示是否經舊 slug（別名）命中；
+/// - kind = "ambiguous"：<see cref="Candidates"/> 列出所有候選，<see cref="RequestedSlug"/> 為使用者輸入的 slug。
+/// </summary>
+/// <param name="Kind">解析種類："note"（唯一命中）或 "ambiguous"（多篇候選）。</param>
+/// <param name="MatchedByAlias">
+/// 僅 kind="note" 有意義：命中來源是「舊 slug（別名）」而非「目前活著的 slug」時為 true
+/// （供前端顯示「你是從舊網址進來的」橫幅）。kind="ambiguous" 時為 null。
+/// </param>
+/// <param name="Note">命中的筆記完整詳情（kind="note"）；kind="ambiguous" 時為 null。</param>
+/// <param name="RequestedSlug">使用者輸入、產生歧義的 slug（kind="ambiguous"）；kind="note" 時為 null。</param>
+/// <param name="Candidates">歧義候選清單（kind="ambiguous"）；kind="note" 時為 null。</param>
+public sealed record NoteResolutionDto(
+    string Kind,
+    bool? MatchedByAlias,
+    NoteDetailDto? Note,
+    string? RequestedSlug,
+    IReadOnlyList<SlugCandidateDto>? Candidates);
+
+/// <summary>
+/// 消歧異候選：某個 slug 目前可能指向的一篇筆記（供前端消歧異頁與 MCP 文字化）。
+/// </summary>
+/// <param name="Id">筆記識別碼（前端以此 GUID 直達，永不再歧義）。</param>
+/// <param name="Title">筆記目前的標題。</param>
+/// <param name="Slug">筆記目前的（活著的）slug。</param>
+/// <param name="IsCurrentHolder">是否為「現在正用這個名字」的那一篇（true＝活 slug 命中、false＝僅別名命中）。</param>
+/// <param name="OriginalTitle">
+/// 別名命中者：讓出此 slug 當下的標題（「曾用此名（現名《…》）」的辨識用）；現用者為 null。
+/// </param>
+/// <param name="UpdatedAt">筆記最後更新時間（UTC，候選排序用：現用者優先、再依此新→舊）。</param>
+public sealed record SlugCandidateDto(
+    Guid Id,
+    string Title,
+    string Slug,
+    bool IsCurrentHolder,
+    string? OriginalTitle,
+    DateTime UpdatedAt);
+
+/// <summary>
 /// 留言資料傳輸物件。
 /// </summary>
 /// <param name="Id">留言識別碼。</param>

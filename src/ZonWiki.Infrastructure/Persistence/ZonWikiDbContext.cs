@@ -126,6 +126,7 @@ public sealed class ZonWikiDbContext(
     public DbSet<CategoryTag> CategoryTag => Set<CategoryTag>();
     public DbSet<NoteLink> NoteLink => Set<NoteLink>();
     public DbSet<NoteRevision> NoteRevision => Set<NoteRevision>();
+    public DbSet<NoteSlugAlias> NoteSlugAlias => Set<NoteSlugAlias>();
     public DbSet<NoteOverlaySnapshot> NoteOverlaySnapshot => Set<NoteOverlaySnapshot>();
     public DbSet<Comment> Comment => Set<Comment>();
 

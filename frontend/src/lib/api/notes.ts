@@ -83,6 +83,33 @@ export interface NoteDetail {
   filePath?: string;
 }
 
+/**
+ * 消歧異候選：某個 slug 目前可能指向的一篇筆記（對應後端 SlugCandidateDto）。
+ */
+export interface SlugCandidate {
+  /** 筆記識別碼（前端以此 GUID 直達，永不再歧義）。 */
+  id: string;
+  /** 筆記目前的標題。 */
+  title: string;
+  /** 筆記目前的（活著的）slug。 */
+  slug: string;
+  /** 是否為「現在正用這個名字」的那一篇（true＝活 slug 命中、false＝僅舊 slug 別名命中）。 */
+  isCurrentHolder: boolean;
+  /** 別名命中者：讓出此 slug 當下的標題（「曾用此名（現名《…》）」辨識用）；現用者為 null。 */
+  originalTitle: string | null;
+  /** 最後更新時間（UTC ISO 字串；候選排序用）。 */
+  updatedAt: string;
+}
+
+/**
+ * 依 slug 解析筆記的結果（GET /api/notes/{slug} 的統一回應形狀）。
+ * - kind="note"：<code>note</code> 有值、<code>matchedByAlias</code> 表示是否經舊 slug（別名）命中；
+ * - kind="ambiguous"：<code>candidates</code> 列出所有候選、<code>requestedSlug</code> 為輸入的 slug。
+ */
+export type NoteResolution =
+  | { kind: 'note'; matchedByAlias: boolean; note: NoteDetail }
+  | { kind: 'ambiguous'; requestedSlug: string; candidates: SlugCandidate[] };
+
 // ============================================================================
 // API 方法 — 筆記與標籤的關聯（標籤庫本身的 CRUD 見 tags.ts）
 // ============================================================================
@@ -182,14 +209,30 @@ export async function markNoteOpened(noteId: string): Promise<number | null> {
 }
 
 /**
- * 取得單一筆記詳細資訊
+ * 依 slug 解析單篇筆記（slug 連動標題 + 舊 slug 別名 + 消歧異）。
+ *
+ * 回傳統一的 {@link NoteResolution}：唯一命中→kind="note"（含 matchedByAlias）；
+ * 名字被多篇取用過→kind="ambiguous"（含 candidates）；404→null。
+ *
+ * slug 可能含「/」（對應子資料夾層級）。逐段 encode、保留「/」當路徑分隔（含 # fragment 陷阱與
+ * 畸形 Unicode 防禦），對應後端 catch-all 路由 GET /api/notes/{*slug}（整段 slash 視為 slug 的一部分）。
+ * 編碼邏輯與頁面連結共用 noteHref 的 encodeSlugPath，避免同一套規則兩處各寫一次而漂移（收斂 DRY）。
  */
-export async function getNote(slug: string): Promise<NoteDetail | null> {
-  // slug 可能含「/」（對應子資料夾層級）。逐段 encode、保留「/」當路徑分隔（含 # fragment 陷阱與
-  // 畸形 Unicode 防禦），對應後端 catch-all 路由 GET /api/notes/{*slug}（整段 slash 視為 slug 的一部分）。
-  // 編碼邏輯與頁面連結共用 noteHref 的 encodeSlugPath，避免同一套規則兩處各寫一次而漂移（收斂 DRY）。
-  const r = await fetchJson<NoteDetail>(`/api/notes/${encodeSlugPath(slug)}`);
+export async function getNote(slug: string): Promise<NoteResolution | null> {
+  const r = await fetchJson<NoteResolution>(`/api/notes/${encodeSlugPath(slug)}`);
   return r.data ?? null;
+}
+
+/**
+ * 以筆記 id（GUID）直達取得筆記詳情。
+ *
+ * 後端 slug 解析支援「把 GUID 當 slug」的錨點路徑，且 GUID 直達永不歧義（只會命中本人那一篇），
+ * 故本函式只在 kind="note" 時回 note、其餘（理論上不會發生的 ambiguous / 查無）回 null。
+ * 供「已知 id 的重抓」——存檔成功重抓、409 衝突重載、編輯彈窗存檔重抓——避免落入消歧異頁。
+ */
+export async function getNoteById(id: string): Promise<NoteDetail | null> {
+  const resolution = await getNote(id);
+  return resolution && resolution.kind === 'note' ? resolution.note : null;
 }
 
 /**

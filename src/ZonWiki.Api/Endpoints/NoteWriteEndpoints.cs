@@ -372,21 +372,9 @@ public static class NoteWriteEndpoints
 
         try
         {
-            // 產生 Slug（去除特殊字元、轉小寫、用連字號分隔）；全被濾掉就以 "note" 墊底。
-            var baseSlug = NoteContentHelpers.GenerateSlug(request.Title);
-            if (string.IsNullOrEmpty(baseSlug))
-            {
-                baseSlug = "note";
-            }
-
-            // 同使用者內 slug 若重複，自動加序號（-2, -3 …）而非報錯——避免「同標題就建不了筆記」。
-            var slug = baseSlug;
-            for (var i = 2;
-                 await db.Note.AnyAsync(n => n.UserId == userId && n.Slug == slug && n.ValidFlag, ct);
-                 i++)
-            {
-                slug = $"{baseSlug}-{i}";
-            }
+            // 產生「本使用者活筆記內唯一」的 slug（撞活 slug 加序號、撞別名不加——見 GenerateUniqueSlugAsync）。
+            // 建立情境不排除任何筆記（傳 null）。
+            var slug = await GenerateUniqueSlugAsync(db, userId, request.Title, excludeNoteId: null, ct);
 
             // 內容允許為空（先建立、再編輯）；null 一律轉空字串避免後續 NPE。
             var contentRaw = request.ContentRaw ?? string.Empty;
@@ -501,7 +489,27 @@ public static class NoteWriteEndpoints
                         ApiResponse<NoteDetailDto>.Fail("標題不可為空", 400),
                         statusCode: StatusCodes.Status400BadRequest);
                 }
-                note.Title = trimmedTitle;
+
+                // slug 連動標題（見 DECISIONS「筆記 URL 改版」）：只在標題「真的變了」時處理。
+                if (trimmedTitle != note.Title)
+                {
+                    // 先記住「改名前」的 slug 與標題：舊 slug 要落成別名、別名記讓出當下的標題（消歧異顯示用）。
+                    var oldSlug = note.Slug;
+                    var oldTitle = note.Title;
+                    note.Title = trimmedTitle;
+
+                    // 以新標題重產 slug：撞「活著的 slug」加序號（排除自己，否則僅改大小寫也會誤加序號）；
+                    // 撞「別名」不加序號（名字可重用，歧義交由消歧異頁）。
+                    var newSlug = await GenerateUniqueSlugAsync(db, userId, trimmedTitle, note.Id, ct);
+
+                    // slug 真的變了才動別名（例：標題只加驚嘆號被 GenerateSlug 濾掉 → newSlug==oldSlug → 不留噪音別名）。
+                    if (newSlug != oldSlug)
+                    {
+                        await RecordSlugAliasAsync(db, userId, note.Id, oldSlug, oldTitle, ct);
+                        await CollapseSelfAliasAsync(db, userId, note.Id, newSlug, ct);
+                        note.Slug = newSlug;
+                    }
+                }
             }
 
             // 更新內容：同樣以 is not null 判斷有無傳入。
@@ -1382,6 +1390,129 @@ public static class NoteWriteEndpoints
             return "Kind must be 'note' or 'journal'";
 
         return null;
+    }
+
+    /// <summary>
+    /// 從標題產生一個「在本使用者的『活著的』筆記中唯一」的 slug（建立與改名共用，收斂 DRY）。
+    /// 規則：GenerateSlug 去特殊字元/轉小寫 → 空字串以 "note" 墊底 → 撞「活著的 slug」自動加序號（-2, -3…）。
+    /// 刻意只比對「活 slug」、不看別名——名字可重用（見 DECISIONS「筆記 URL 改版」）：撞別名照拿、歧義交消歧異頁。
+    /// </summary>
+    /// <param name="db">資料庫內容。</param>
+    /// <param name="userId">使用者識別碼。</param>
+    /// <param name="title">來源標題。</param>
+    /// <param name="excludeNoteId">
+    /// 取號時要排除的筆記 Id：改名情境傳「本篇自己」的 Id——否則「僅調整標題大小寫、slug 不變」時
+    /// 會把自己算成撞名而誤加序號。建立情境傳 null（不排除任何筆記）。
+    /// </param>
+    /// <param name="ct">取消權杖。</param>
+    /// <returns>唯一的 slug。</returns>
+    private static async Task<string> GenerateUniqueSlugAsync(
+        ZonWikiDbContext db,
+        Guid userId,
+        string title,
+        Guid? excludeNoteId,
+        CancellationToken ct)
+    {
+        var baseSlug = NoteContentHelpers.GenerateSlug(title);
+        if (string.IsNullOrEmpty(baseSlug))
+        {
+            baseSlug = "note";
+        }
+
+        // 以 Guid.Empty 當「不排除」哨兵：沒有任何筆記的 Id 會是 Guid.Empty，故 n.Id != exclude 恆為 true，
+        // 等同建立情境的「不排除」；改名情境則排除本篇自己。單一 SQL 判斷，避免 nullable 進運算式的轉譯風險。
+        var exclude = excludeNoteId ?? Guid.Empty;
+
+        var slug = baseSlug;
+        for (var i = 2;
+             await db.Note.AnyAsync(
+                 n => n.UserId == userId && n.Slug == slug && n.ValidFlag && n.Id != exclude,
+                 ct);
+             i++)
+        {
+            slug = $"{baseSlug}-{i}";
+        }
+
+        return slug;
+    }
+
+    /// <summary>
+    /// 把「讓出的舊 slug」記成一筆 NoteSlugAlias（供舊網址永久解析回本篇）。
+    /// 查 (UserId, Slug=舊slug, NoteId=本篇) 含軟刪列（IgnoreQueryFilters 須手動補 UserId 過濾以維持跨租戶隔離）：
+    /// 有活列 → 更新 OriginalTitle 為「讓出當下的標題」；有軟刪列 → 復活＋更新；無 → 新增。
+    /// 「復活軟刪列」是反覆改名（S→S2→S…）不撞 (UserId,Slug,NoteId) 唯一索引的關鍵（同 NoteRevision 取號教訓）。
+    /// </summary>
+    /// <param name="db">資料庫內容。</param>
+    /// <param name="userId">使用者識別碼。</param>
+    /// <param name="noteId">讓出 slug 的筆記識別碼。</param>
+    /// <param name="oldSlug">讓出的舊 slug。</param>
+    /// <param name="oldTitle">讓出當下該筆記的標題（消歧異顯示用）。</param>
+    /// <param name="ct">取消權杖。</param>
+    private static async Task RecordSlugAliasAsync(
+        ZonWikiDbContext db,
+        Guid userId,
+        Guid noteId,
+        string oldSlug,
+        string oldTitle,
+        CancellationToken ct)
+    {
+        var existing = await db.NoteSlugAlias
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(
+                a => a.UserId == userId && a.Slug == oldSlug && a.NoteId == noteId,
+                ct);
+
+        if (existing is null)
+        {
+            db.NoteSlugAlias.Add(new NoteSlugAlias
+            {
+                UserId = userId,
+                NoteId = noteId,
+                Slug = oldSlug,
+                OriginalTitle = oldTitle,
+                CreatedUser = userId.ToString(),
+                UpdatedUser = userId.ToString(),
+            });
+        }
+        else
+        {
+            // 復活（若曾被軟刪）並把 OriginalTitle 更新成「這一次」讓出當下的標題。
+            existing.ValidFlag = true;
+            existing.DeletedDateTime = null;
+            existing.OriginalTitle = oldTitle;
+            existing.UpdatedUser = userId.ToString();
+            existing.UpdatedDateTime = DateTime.UtcNow;
+        }
+    }
+
+    /// <summary>
+    /// 自我收斂：本篇「重新取用」某個名字（newSlug）時，把本篇先前對這個 slug 的「有效別名」軟刪，
+    /// 避免「活 slug 與自我別名」同時命中造成假歧義（見測試「改回舊名的自我收斂」）。只動本篇自己的別名，
+    /// 不影響別篇對同一 slug 的別名（那正是真正的歧義，須保留）。
+    /// </summary>
+    /// <param name="db">資料庫內容。</param>
+    /// <param name="userId">使用者識別碼。</param>
+    /// <param name="noteId">重新取用名字的筆記識別碼。</param>
+    /// <param name="newSlug">本篇新取用的 slug。</param>
+    /// <param name="ct">取消權杖。</param>
+    private static async Task CollapseSelfAliasAsync(
+        ZonWikiDbContext db,
+        Guid userId,
+        Guid noteId,
+        string newSlug,
+        CancellationToken ct)
+    {
+        var selfAlias = await db.NoteSlugAlias
+            .FirstOrDefaultAsync(
+                a => a.UserId == userId && a.Slug == newSlug && a.NoteId == noteId && a.ValidFlag,
+                ct);
+        if (selfAlias is not null)
+        {
+            selfAlias.ValidFlag = false;
+            selfAlias.DeletedDateTime = DateTime.UtcNow;
+            selfAlias.UpdatedUser = userId.ToString();
+            selfAlias.UpdatedDateTime = DateTime.UtcNow;
+        }
     }
 
 

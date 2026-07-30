@@ -153,8 +153,9 @@ public sealed class NoteEndpointsHttpTests
         var slug = created["slug"]!.GetValue<string>();
 
         // 載入筆記詳情，記下當下的 Version（前端就是在此刻把 Version 記進 note.version）。
+        // 2026-07-31 feature/slug-alias：GET 回應改為 { kind, matchedByAlias, note } 巢狀形狀。
         var loadedVersion = (await (await client.GetAsync($"/api/notes/{slug}")).ReadJsonAsync())
-            ["data"]!["version"]!.GetValue<long>();
+            ["data"]!["note"]!["version"]!.GetValue<long>();
         loadedVersion.Should().BeGreaterThan(0L, "載入時應回傳非 0 的 xmin 版本");
 
         // Act：標記筆記打開——這會 UPDATE 該列（推進 xmin），並應回傳更新後的最新 Version。
@@ -188,8 +189,9 @@ public sealed class NoteEndpointsHttpTests
             new { title = "併發保護仍生效", contentRaw = "內容" })).ReadJsonAsync())["data"]!;
         var noteId = Guid.Parse(created["id"]!.GetValue<string>());
         var slug = created["slug"]!.GetValue<string>();
+        // 2026-07-31 feature/slug-alias：GET 回應改為 { kind, matchedByAlias, note } 巢狀形狀。
         var preOpenVersion = (await (await client.GetAsync($"/api/notes/{slug}")).ReadJsonAsync())
-            ["data"]!["version"]!.GetValue<long>();
+            ["data"]!["note"]!["version"]!.GetValue<long>();
 
         // Act：先標記打開（推進 xmin，使 preOpenVersion 過期），再以「打開前」的版本存檔。
         (await client.PostAsync($"/api/notes/{noteId}/opened", content: null))

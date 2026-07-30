@@ -132,55 +132,154 @@ public static class NoteEndpoints
             return Results.Ok(ApiResponse<object>.Ok(new { id, version = (long)row.Xmin }));
         }).RequireAuthorization();
 
-        // 依 slug 取單篇筆記詳情。
+        // 依 slug 解析單篇筆記（slug 連動標題 + 舊 slug 別名 + 消歧異）。
+        //
+        // 回應形狀改為統一的 NoteResolutionDto（見其 summary）：
+        //   { kind:"note", matchedByAlias, note }  或  { kind:"ambiguous", requestedSlug, candidates }
+        // 解析順序（見 docs/DECISIONS.md「筆記 URL 改版」）：
+        //   0. slug 可解析為 GUID → 以 Id 查本人活筆記（永不歧義的錨點）；未命中照常往下（最終 404）；
+        //   1. 「活 slug 命中的筆記」∪「別名命中的筆記」，以 NoteId 去重（活優先）：
+        //      恰 1 → kind=note（matchedByAlias＝命中來源是別名而非活 slug）；≥2 → kind=ambiguous；0 → 404。
+        // 使用者隔離、軟刪連動：全域查詢過濾已把 Note / NoteSlugAlias 都鎖在「本使用者的有效列」，
+        // 且別名 join 活筆記會自動排除「所屬筆記已軟刪」的別名（斷了的別名不produce候選）。
         app.MapGet("/api/notes/{*slug}", async (
             ZonWikiDbContext db,
             string slug,
             CancellationToken ct) =>
         {
-            // 樂觀鎖版本（#4/#34）：xmin 是 PostgreSQL 的 xid 系統欄。若在投影裡直接寫
-            // (long)EF.Property<uint>(n, "xmin")，EF 會把 (long) 轉型下推成 SQL 的
-            // CAST(xmin AS bigint)——但 PostgreSQL 不允許 xid→bigint 轉型，執行期會丟
-            // 「42846: cannot cast type xid to bigint」，導致筆記載入 500。
-            // 因此改以「原生 xid→uint 讀出（不加任何轉型）」，材質化後再於記憶體放大為 long 回填。
-            var noteRow = await db.Note
-                .Where(n => n.ValidFlag && n.Slug == slug)
-                .Select(n => new
-                {
-                    Dto = new NoteDetailDto(
-                        n.Id,
-                        n.Title,
-                        n.Slug,
-                        n.ContentHtml,
-                        n.ContentRaw,
-                        n.Kind,
-                        n.IsDraft,
-                        n.CreatedDateTime,
-                        n.UpdatedDateTime,
-                        n.Comments.Count(c => c.ValidFlag),
-                        // 編輯時用以預選：此筆記目前的分類與標籤（分類/標籤被軟刪除時排除）。
-                        n.NoteCategories
-                            .Where(nc => nc.ValidFlag && nc.Category != null && nc.Category.ValidFlag)
-                            .Select(nc => new TagRefDto(nc.Category!.Id, nc.Category.Name))
-                            .ToList(),
-                        n.NoteTags
-                            .Where(nt => nt.ValidFlag && nt.Tag != null && nt.Tag.ValidFlag)
-                            .Select(nt => new TagRefDto(nt.Tag!.Id, nt.Tag.Name))
-                            .ToList(),
-                        // 版本先以 0 佔位，材質化後再回填（見上方註解）。
-                        0L),
-                    Version = EF.Property<uint>(n, "xmin"),
-                })
-                .FirstOrDefaultAsync(ct);
-
-            if (noteRow is null)
+            // 0. GUID 直達錨點：slug 可被解析為 GUID → 以 Id 查本人活筆記；未命中就照常往下走。
+            if (Guid.TryParse(slug, out var directId))
             {
-                return Results.NotFound(ApiResponse<NoteDetailDto>.Fail("Note not found", 404));
+                var direct = await LoadNoteDetailByIdAsync(db, directId, ct);
+                if (direct is not null)
+                {
+                    return Results.Ok(ApiResponse<NoteResolutionDto>.Ok(
+                        new NoteResolutionDto("note", false, direct, null, null)));
+                }
             }
 
-            var note = noteRow.Dto with { Version = (long)noteRow.Version };
+            // 1a. 活 slug 命中：目前正用這個 slug 的筆記（至多一篇——(UserId,Slug) 活筆記唯一索引）。
+            var activeHolder = await db.Note
+                .Where(n => n.ValidFlag && n.Slug == slug)
+                .Select(n => new { n.Id, n.Title, n.Slug, n.UpdatedDateTime })
+                .FirstOrDefaultAsync(ct);
 
-            return Results.Ok(ApiResponse<NoteDetailDto>.Ok(note));
+            // 1b. 別名命中：曾讓出這個 slug 的別名，join 到「仍活著」的筆記（軟刪筆記的別名自動被排除）。
+            var aliasHits = await db.NoteSlugAlias
+                .Where(a => a.ValidFlag && a.Slug == slug)
+                .Join(
+                    db.Note.Where(n => n.ValidFlag),
+                    a => a.NoteId,
+                    n => n.Id,
+                    (a, n) => new { n.Id, n.Title, n.Slug, n.UpdatedDateTime, a.OriginalTitle })
+                .ToListAsync(ct);
+
+            // 以 NoteId 去重（活優先）組出候選。
+            var candidates = new List<SlugCandidateDto>();
+            var seen = new HashSet<Guid>();
+            if (activeHolder is not null)
+            {
+                candidates.Add(new SlugCandidateDto(
+                    activeHolder.Id,
+                    activeHolder.Title,
+                    activeHolder.Slug,
+                    IsCurrentHolder: true,
+                    OriginalTitle: null,
+                    activeHolder.UpdatedDateTime));
+                seen.Add(activeHolder.Id);
+            }
+            foreach (var hit in aliasHits)
+            {
+                // 同一篇既是活 slug 又有自我別名（理論上已被自我收斂消掉，這裡再保險去重）→ 活優先。
+                if (!seen.Add(hit.Id))
+                {
+                    continue;
+                }
+                candidates.Add(new SlugCandidateDto(
+                    hit.Id,
+                    hit.Title,
+                    hit.Slug,
+                    IsCurrentHolder: false,
+                    hit.OriginalTitle,
+                    hit.UpdatedDateTime));
+            }
+
+            // 2. 依候選數決定回應。
+            if (candidates.Count == 0)
+            {
+                return Results.NotFound(ApiResponse<NoteResolutionDto>.Fail("Note not found", 404));
+            }
+
+            if (candidates.Count == 1)
+            {
+                var only = candidates[0];
+                var detail = await LoadNoteDetailByIdAsync(db, only.Id, ct);
+                if (detail is null)
+                {
+                    // 極窄競態：候選確認後、載入前該筆記剛被軟刪 → 視同不存在。
+                    return Results.NotFound(ApiResponse<NoteResolutionDto>.Fail("Note not found", 404));
+                }
+                // matchedByAlias＝命中來源不是「目前活著的 slug」（即經舊 slug 別名命中）。
+                return Results.Ok(ApiResponse<NoteResolutionDto>.Ok(
+                    new NoteResolutionDto("note", !only.IsCurrentHolder, detail, null, null)));
+            }
+
+            // ≥2 → 消歧異：現用者優先、再依 UpdatedAt 新→舊（記憶體排序，無 SQL 轉譯風險）。
+            var ordered = candidates
+                .OrderByDescending(c => c.IsCurrentHolder)
+                .ThenByDescending(c => c.UpdatedAt)
+                .ToList();
+            return Results.Ok(ApiResponse<NoteResolutionDto>.Ok(
+                new NoteResolutionDto("ambiguous", null, null, slug, ordered)));
         });
+    }
+
+    /// <summary>
+    /// 依 NoteId 載入單篇筆記的完整 <see cref="NoteDetailDto"/>（含分類/標籤/留言數/樂觀鎖版本）。
+    /// slug 解析的三條路徑（GUID 直達 / 活 slug / 別名）共用同一份投影，避免欄位遺漏或前後漂移。
+    /// 全域查詢過濾已把範圍鎖在「本使用者的有效筆記」，故僅以 Id 比對即安全（跨使用者/軟刪列不會命中）。
+    /// </summary>
+    /// <param name="db">資料庫內容。</param>
+    /// <param name="noteId">筆記識別碼。</param>
+    /// <param name="ct">取消權杖。</param>
+    /// <returns>筆記詳情；查無（不存在/非本人/已軟刪）時為 null。</returns>
+    private static async Task<NoteDetailDto?> LoadNoteDetailByIdAsync(
+        ZonWikiDbContext db,
+        Guid noteId,
+        CancellationToken ct)
+    {
+        // 樂觀鎖版本（#4/#34）：xmin 為 PostgreSQL xid 系統欄。直接 (long)EF.Property<uint>(...) 會被下推成
+        // SQL CAST(xid AS bigint)（PostgreSQL 丟 42846），故原生 xid→uint 讀出、材質化後於記憶體放大為 long。
+        var row = await db.Note
+            .Where(n => n.ValidFlag && n.Id == noteId)
+            .Select(n => new
+            {
+                Dto = new NoteDetailDto(
+                    n.Id,
+                    n.Title,
+                    n.Slug,
+                    n.ContentHtml,
+                    n.ContentRaw,
+                    n.Kind,
+                    n.IsDraft,
+                    n.CreatedDateTime,
+                    n.UpdatedDateTime,
+                    n.Comments.Count(c => c.ValidFlag),
+                    // 編輯時用以預選：此筆記目前的分類與標籤（分類/標籤被軟刪除時排除）。
+                    n.NoteCategories
+                        .Where(nc => nc.ValidFlag && nc.Category != null && nc.Category.ValidFlag)
+                        .Select(nc => new TagRefDto(nc.Category!.Id, nc.Category.Name))
+                        .ToList(),
+                    n.NoteTags
+                        .Where(nt => nt.ValidFlag && nt.Tag != null && nt.Tag.ValidFlag)
+                        .Select(nt => new TagRefDto(nt.Tag!.Id, nt.Tag.Name))
+                        .ToList(),
+                    // 版本先以 0 佔位，材質化後再回填（見上方註解）。
+                    0L),
+                Version = EF.Property<uint>(n, "xmin"),
+            })
+            .FirstOrDefaultAsync(ct);
+
+        return row is null ? null : row.Dto with { Version = (long)row.Version };
     }
 }

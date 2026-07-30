@@ -10,6 +10,7 @@ import { setFenceMetaAtLine } from '@/lib/codeBlockMeta';
 import { showToast } from '@/lib/toast';
 import {
   getNote,
+  getNoteById,
   markNoteOpened,
   updateNote,
   deleteNote,
@@ -22,6 +23,7 @@ import {
   type NoteDetail,
   type NoteCategory,
   type NoteTag,
+  type SlugCandidate,
   type Comment,
   type TaskGroup,
 } from '@/lib/api';
@@ -33,6 +35,7 @@ import { SkeletonCard } from '@/components/Skeleton';
 import { NoteAiActions } from '@/components/NoteAiActions';
 import { NoteEditHistory } from '@/components/NoteEditHistory';
 import { NoteBacklinks } from '@/components/NoteBacklinks';
+import { NoteDisambiguation } from '@/components/NoteDisambiguation';
 import { SearchableMultiSelect } from '@/components/SearchableMultiSelect';
 import { recordNoteNav, getNoteBackTarget } from '@/lib/noteNav';
 import { noteHref } from '@/lib/noteHref';
@@ -156,6 +159,20 @@ export default function NotesDetailPage() {
   const [comments, setComments] = useState<Comment[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // slug 連動標題後的「三態解析」（見 lib/api getNote → NoteResolution）：
+  // - 經「舊 slug 別名」進來（matchedByAlias）→ 內容頂部顯示「你從舊網址進來」資訊橫幅（本次瀏覽可關閉）；
+  // - slug 歧義（多篇曾用此名）→ 就地渲染消歧異頁（note 維持 null、candidates 有值，不跑 markNoteOpened/捲動還原）。
+  const [matchedByAlias, setMatchedByAlias] = useState(false);
+  // 進入時的 requested slug（＝命中別名的舊網址；橫幅顯示用，非 URL 參數以免之後被 replace 影響）。
+  const [aliasRequestedSlug, setAliasRequestedSlug] = useState<string | null>(null);
+  const [aliasBannerDismissed, setAliasBannerDismissed] = useState(false);
+  // 消歧異候選（null＝非歧義）與其 requested slug。
+  const [candidates, setCandidates] = useState<SlugCandidate[] | null>(null);
+  const [ambiguousRequestedSlug, setAmbiguousRequestedSlug] = useState('');
+  // 改名存檔就地換 URL 後，讓 [slug] 載入 effect「跳過該次重抓」的標記（值＝要跳過的新 slug）——
+  // 避免 URL 一換就以新 slug 重抓、可能落入消歧異或多一次無謂往返（改名的重抓改走 id 直達）。
+  const skipNextSlugLoadRef = useRef<string | null>(null);
 
   // 編輯狀態
   const [isEditing, setIsEditing] = useState(false);
@@ -610,6 +627,11 @@ export default function NotesDetailPage() {
   // 讀取查詢參數（?mark= 用來從提問佇列跳轉到框選位置）
   const searchParams = useSearchParams();
   const markId = searchParams.get('mark');
+  // 以 ref 持有最新 searchParams，供主載入 effect 讀 ?expect（複製筆記直達）而不必列入其相依——
+  // ?expect 只在「複製後隨新 URL 一起抵達」時有意義（slug 也同時變、effect 會重跑），
+  // 若把 searchParams 列入相依，反而會在 ?mark=/?overlay= 變動時無謂重抓整篇筆記。
+  const searchParamsRef = useRef(searchParams);
+  searchParamsRef.current = searchParams;
 
   // 滾動到標記位置（當標記 ID 有效且預覽容器已掛載時觸發）
   // 這部分在預覽 HTML 與標記層載入後執行，以確保 DOM 已準備好
@@ -651,45 +673,83 @@ export default function NotesDetailPage() {
     return scrollToOverlayItem(overlayId);
   }, [overlayId, previewHtml, note?.id]);
 
-  // 載入筆記詳細（分類/標籤選項池與使用者已改由 SWR 供給，故此處只抓筆記本身）
+  // 載入筆記詳細（分類/標籤選項池與使用者已改由 SWR 供給，故此處只抓筆記本身）。
+  // slug 連動標題後改吃 NoteResolution 三態：kind=note（含 matchedByAlias）／kind=ambiguous（候選）／404。
   useEffect(() => {
+    // 改名存檔就地換 URL 造成的這次 slug 變更：handleSave/edit-saved 已就地 setNote，跳過本次重抓
+    //（避免以新 slug 重抓而落入消歧異、或多一次無謂往返）。
+    if (skipNextSlugLoadRef.current === slug) {
+      skipNextSlugLoadRef.current = null;
+      setLoading(false);
+      return;
+    }
+
+    // 套用「kind=note」的載入結果（正常命中 or ?expect 直達共用）：設 note、編輯基準、標記打開、載入留言。
+    const applyLoadedNote = async (noteData: NoteDetail, viaAlias: boolean) => {
+      setCandidates(null);
+      setNote(noteData);
+      setEditTitle(noteData.title);
+      setEditContent(noteData.contentRaw);
+      setEditCatIds((noteData.categories ?? []).map((c) => c.id));
+      setEditTagIds((noteData.tags ?? []).map((t) => t.id));
+      // 別名橫幅狀態：經舊 slug 進來才顯示；requested slug 記進入時的 URL slug（之後不被 replace 影響）。
+      setMatchedByAlias(viaAlias);
+      setAliasRequestedSlug(viaAlias ? slug : null);
+      setAliasBannerDismissed(false);
+
+      // 記錄「最後打開時間」（供筆記清單依此排序；輕量、失敗靜默）。
+      // 併發修正（#4/#34）：標記打開會 UPDATE 該列、使 xmin 前進，令上面剛記下的 note.version 立刻過期；
+      // 後端會回傳更新後的最新版本，這裡據此把 note.version 同步成最新，避免「開啟後直接編輯→存檔」撲空、
+      // 收到假的 409。只覆寫 version 欄，並確認仍停在同一篇（避免使用者已切走到別篇時誤蓋版本）。
+      markNoteOpened(noteData.id).then((openedVersion) => {
+        if (openedVersion != null) {
+          // 單調取大（防亂序覆寫）：xmin 隨該列每次更新遞增；同一筆記可能觸發多次 /opened，回應可能亂序抵達。
+          setNote((prev) =>
+            prev && prev.id === noteData.id
+              ? { ...prev, version: Math.max(prev.version ?? 0, openedVersion) }
+              : prev
+          );
+        }
+      });
+
+      const commentsList = await listNoteComments(noteData.id);
+      setComments(commentsList);
+    };
+
     const load = async () => {
       try {
         setLoading(true);
-        const noteData = await getNote(slug);
+        const resolution = await getNote(slug);
 
-        if (noteData) {
-          setNote(noteData);
-          setEditTitle(noteData.title);
-          setEditContent(noteData.contentRaw);
-          setEditCatIds((noteData.categories ?? []).map((c) => c.id));
-          setEditTagIds((noteData.tags ?? []).map((t) => t.id));
-
-          // 記錄「最後打開時間」（供筆記清單依此排序；輕量、失敗靜默）。
-          // 併發修正（#4/#34）：標記打開會 UPDATE 該列、使 xmin 前進，令上面剛記下的 note.version
-          // 立刻過期；後端會回傳更新後的最新版本，這裡據此把 note.version 同步成最新，避免「開啟後直接
-          // 編輯→存檔」撲空、收到假的 409「此筆記已被其他來源修改」。只覆寫 version 欄，並確認仍停在
-          // 同一篇（避免使用者已切走到別篇時誤蓋版本）。
-          markNoteOpened(noteData.id).then((openedVersion) => {
-            if (openedVersion != null) {
-              // 單調取大（防亂序覆寫）：xmin 隨該列每次更新遞增；同一筆記可能觸發多次 /opened
-              // （React StrictMode 雙掛載、快速切回同一篇、同篇開多分頁），其 HTTP 回應可能亂序抵達。
-              // 若無條件覆寫，較舊回應會把 note.version 蓋回過期值 → 存檔又撞假 409。故只在「新版本
-              // 較大（＝更新）」時採用、永不回退（存檔後更大的 xmin 也不會被較舊的 /opened 回應蓋掉）。
-              setNote((prev) =>
-                prev && prev.id === noteData.id
-                  ? { ...prev, version: Math.max(prev.version ?? 0, openedVersion) }
-                  : prev
-              );
-            }
-          });
-
-          // 載入留言
-          const commentsList = await listNoteComments(noteData.id);
-          setComments(commentsList);
-        } else {
+        if (!resolution) {
+          // 404：筆記不存在。清掉可能殘留的別名/消歧異狀態。
+          setNote(null);
+          setCandidates(null);
+          setMatchedByAlias(false);
           setError('筆記不存在');
+          return;
         }
+
+        if (resolution.kind === 'ambiguous') {
+          // 若帶 ?expect=<id> 且該 id 在候選中（複製筆記剛導過來）→ 以 id 直達渲染、URL 不動、不落消歧異。
+          const expectId = searchParamsRef.current.get('expect');
+          if (expectId && resolution.candidates.some((c) => c.id === expectId)) {
+            const direct = await getNoteById(expectId);
+            if (direct) {
+              await applyLoadedNote(direct, false);
+              return;
+            }
+          }
+          // 真歧義：顯示消歧異頁（note 維持 null；不跑 markNoteOpened/捲動還原/留言）。
+          setNote(null);
+          setMatchedByAlias(false);
+          setAmbiguousRequestedSlug(resolution.requestedSlug);
+          setCandidates(resolution.candidates);
+          return;
+        }
+
+        // kind === 'note'
+        await applyLoadedNote(resolution.note, resolution.matchedByAlias);
       } catch {
         setError('無法載入筆記，請稍後重試。');
       } finally {
@@ -743,7 +803,8 @@ export default function NotesDetailPage() {
               '按「取消」以您目前的內容覆蓋。',
           });
           if (reload) {
-            const latest = await getNote(slug);
+            // 以 id 直達重載（GUID 直達永不歧義；不以 slug 重載，避免改名後落入消歧異）。
+            const latest = await getNoteById(note.id);
             if (latest) {
               setNote(latest);
               setEditTitle(latest.title);
@@ -768,14 +829,29 @@ export default function NotesDetailPage() {
         return;
       }
 
-      // 重新載入
-      const updated = await getNote(slug);
-      if (updated) {
-        setNote(updated);
-        setEditCatIds((updated.categories ?? []).map((c) => c.id));
-        setEditTagIds((updated.tags ?? []).map((t) => t.id));
-        setIsEditing(false);
-        setError(null);
+      // 存檔成功：以 PUT 回應（saved）判斷是否改名（比較基準＝存檔前已載入的 note.slug，不是 URL 參數）。
+      const previousSlug = note.slug;
+      if (saved.slug !== previousSlug) {
+        // slug 隨新標題變了：URL 就地換成新 slug，並標記略過該次 [slug] 載入 effect 的重抓
+        //（避免以新 slug 重抓落入消歧異、或多一次往返）；同步更新「最後看的筆記」slug。
+        skipNextSlugLoadRef.current = saved.slug;
+        try { localStorage.setItem('zonwiki:last-note-slug', saved.slug); } catch { /* ignore */ }
+        router.replace(noteHref(saved.slug));
+      }
+
+      // 先以 saved 立即更新（即時回饋），再以 id 直達補齊分類/標籤（PUT 回應不含 categories/tags；
+      // GUID 直達永不歧義、不落消歧異）。存檔後即停在現行 slug，撤掉別名橫幅。
+      setNote(saved);
+      setMatchedByAlias(false);
+      setAliasRequestedSlug(null);
+      setIsEditing(false);
+      setError(null);
+
+      const fresh = await getNoteById(note.id);
+      if (fresh) {
+        setNote(fresh);
+        setEditCatIds((fresh.categories ?? []).map((c) => c.id));
+        setEditTagIds((fresh.tags ?? []).map((t) => t.id));
       }
     } catch {
       setError('無法保存筆記，請稍後重試。');
@@ -834,7 +910,17 @@ export default function NotesDetailPage() {
           setEditPopoutContent(d.content);
         }
       } else if (d?.type === 'edit-saved') {
-        getNote(slug).then((updated) => { if (updated) setNote(updated); }).catch(() => {});
+        // 編輯彈窗存檔：以 id 直達重抓（不以 slug，避免改名後落入消歧異）；若 slug 變了同樣就地換 URL。
+        getNoteById(note.id).then((updated) => {
+          if (!updated) return;
+          const previousSlug = note.slug;
+          setNote(updated);
+          if (updated.slug !== previousSlug) {
+            skipNextSlugLoadRef.current = updated.slug;
+            try { localStorage.setItem('zonwiki:last-note-slug', updated.slug); } catch { /* ignore */ }
+            router.replace(noteHref(updated.slug));
+          }
+        }).catch(() => {});
       } else if (d?.type === 'edit-closing') {
         closeEditPopout();
       }
@@ -855,7 +941,7 @@ export default function NotesDetailPage() {
     editPopupRef.current = popup;
     setEditContent(note.contentRaw);
     setEditPopoutContent(note.contentRaw); // 起始即時預覽＝目前存檔內容
-  }, [note, slug, editPopoutContent, closeEditPopout]);
+  }, [note, slug, editPopoutContent, closeEditPopout, router]);
 
   // 偵測編輯彈窗被關閉（使用者直接關視窗）→ 筆記頁回存檔版。
   // 注意：彈窗初次載入（尤其 dev 首次編譯 /notes/edit-popout 路由）可能數秒後才 attach，
@@ -934,7 +1020,9 @@ export default function NotesDetailPage() {
     setDuplicatingNote(true);
     try {
       const dup = await duplicateNote(note);
-      if (dup?.slug) router.push(noteHref(dup.slug));
+      // 副本標題與來源相同（只加「(副本)」），其 slug 可能撞到來源已讓出的別名而變歧義；
+      // 帶 ?expect=<新id> 讓目的頁在遇到消歧異時，以該 id 直達渲染副本本身（URL 不動），不逼使用者消歧異。
+      if (dup?.slug) router.push(noteHref(dup.slug) + '?expect=' + dup.id);
       else setError('無法複製筆記，請稍後重試。');
     } catch {
       setError('無法複製筆記，請稍後重試。');
@@ -985,6 +1073,11 @@ export default function NotesDetailPage() {
         </div>
       </div>
     );
+  }
+
+  // 消歧異：slug 指向多篇筆記時，就地渲染候選頁（須在「筆記不存在」之前判斷）。
+  if (!note && candidates) {
+    return <NoteDisambiguation requestedSlug={ambiguousRequestedSlug} candidates={candidates} />;
   }
 
   if (!note) {
@@ -1194,6 +1287,57 @@ export default function NotesDetailPage() {
             role="alert"
           >
             {error}
+          </div>
+        )}
+
+        {/* 舊網址（別名）進入橫幅：經舊 slug 命中本篇時提示「你從舊網址進來」＋現行網址＋複製鈕（本次瀏覽可關閉）。 */}
+        {matchedByAlias && !aliasBannerDismissed && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 'var(--spacing-2)',
+              flexWrap: 'wrap',
+              padding: '10px 14px',
+              marginBottom: 'var(--spacing-5)',
+              background: 'var(--status-info-bg, var(--bg-surface-secondary))',
+              color: 'var(--status-info-fg, var(--text-primary))',
+              border: '1px solid var(--border-default)',
+              borderRadius: 'var(--radius-md)',
+              fontSize: 'var(--text-sm)',
+              lineHeight: 1.6,
+            }}
+            role="status"
+          >
+            <span style={{ flex: 1, minWidth: 220 }}>
+              ℹ️ 你是從舊網址進來的（<code>/notes/{aliasRequestedSlug ?? slug}</code>）。
+              本篇現在的網址是 <code>/notes/{note.slug}</code>。
+            </span>
+            <button
+              className="btn-secondary"
+              style={{ fontSize: 'var(--text-xs)', minHeight: 32, flexShrink: 0 }}
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(
+                    window.location.origin + noteHref(note.slug),
+                  );
+                  showToast('已複製新網址', { type: 'success' });
+                } catch {
+                  showToast('複製失敗，請手動複製網址', { type: 'error' });
+                }
+              }}
+            >
+              複製新網址
+            </button>
+            <button
+              className="btn-secondary"
+              style={{ fontSize: 'var(--text-xs)', minHeight: 32, flexShrink: 0 }}
+              title="關閉此提示（本次瀏覽）"
+              aria-label="關閉提示"
+              onClick={() => setAliasBannerDismissed(true)}
+            >
+              ✕
+            </button>
           </div>
         )}
 
