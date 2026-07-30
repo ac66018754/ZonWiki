@@ -1818,8 +1818,10 @@ export default function NotesDetailPage() {
                   }}
                 >
                   <strong style={{ color: 'var(--text-primary)' }}>🔗 反向連結</strong>
-                  ＝系統<strong>自動</strong>偵測「哪些<strong>其他筆記</strong>用 <code>[[本篇標題]]</code> 連到這篇」。
-                  你不用手動建立——只要在別的筆記內文寫 <code>[[{note.title}]]</code>，那篇就會出現在這裡。
+                  ＝系統<strong>自動</strong>彙整「誰指向這篇」的三種來源：
+                  在別的筆記內文寫 <code>[[{note.title}]]</code>（🔗 wiki 連結）、
+                  在別的筆記<strong>框選段落</strong>建立關聯指到這篇（✂️ 段落關聯，可點擊跳回來源段落）、
+                  以及「關聯」分頁建立的整篇關聯（🧩）。三種都不用在這裡手動維護。
                 </div>
                 <div
                   style={{
