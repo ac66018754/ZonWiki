@@ -58,6 +58,17 @@ describe("encodeSlugPath", () => {
     }
   });
 
+  it("RFC 3986 sub-delims（! * ' 圓括號）不編碼——與前端/後端輸出位元組一致", () => {
+    expect(encodeSlugPath("movie(2024)!/x*'y")).toBe("movie(2024)!/x*'y");
+  });
+
+  it("畸形 Unicode（孤立 surrogate）不拋例外，改以 U+FFFD 取代後編碼", () => {
+    expect(() => encodeSlugPath("a\uD800b/c")).not.toThrow();
+    expect(encodeSlugPath("a\uD800b/c")).toBe(
+      `${encodeURIComponent("a�b")}/c`
+    );
+  });
+
   it("輸出永不含未編碼的 # 與 ?（fragment / query 不可能被意外引入）", () => {
     for (const slug of ["programming/c#/f", "a?b/c&d", "x#y?z"]) {
       const encoded = encodeSlugPath(slug);

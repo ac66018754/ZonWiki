@@ -142,6 +142,29 @@ public sealed class NoteUrlEncodingHttpTests
         url.Should().Be(expected);
     }
 
+    // ── 測試 5：RFC 3986 sub-delims 與前端 encodeURIComponent 語意對齊 ────────────────
+
+    /// <summary>
+    /// slug 含「! * ' ( )」時，url 不得編碼這五個字元——JS 的 encodeURIComponent
+    /// 不編碼它們，後端必須輸出與前端逐位元組相同的 URL，否則「後端組的連結」與
+    /// 「前端組的連結」對同一篇筆記會是兩個不同字串，返回堆疊等字面比對會誤判
+    /// （對抗式復審 MEDIUM #1；期望字面值與前端 noteHref.test.ts 同組互相釘死）。
+    /// </summary>
+    [Fact]
+    public async Task Search_SubDelimsSlug_MatchesFrontendEncodeUriComponentSemantics()
+    {
+        var (_, token) = await _factory.SeedUserWithTokenAsync(UniqueEmail("urlenc-subdelims"));
+        var client = _factory.CreateClientWithToken(token);
+
+        var needle = Token();
+        var (noteId, _) = await CreateNoteAsync(client, $"符號筆記 {needle}", "內文");
+        await OverwriteSlugAsync(noteId, "movie(2024)!/x*'y");
+
+        var url = await SearchUrlOfAsync(client, needle, "note", noteId.ToString());
+
+        url.Should().Be("/notes/movie(2024)!/x*'y");
+    }
+
     // ═══════════════════════════ 測試輔助方法 ═══════════════════════════
 
     /// <summary>產生每次唯一、可全文搜尋到的 token。</summary>

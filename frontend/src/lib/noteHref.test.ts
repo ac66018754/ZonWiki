@@ -64,6 +64,22 @@ describe("noteHref", () => {
     }
   });
 
+  it("RFC 3986 sub-delims（! * ' 圓括號）不編碼——與後端 EncodeSlugForUrl 輸出位元組一致", () => {
+    // encodeURIComponent 不編碼這五個字元、.NET Uri.EscapeDataString 會編碼——
+    // 後端已對齊 JS 語意（對抗式復審 MEDIUM #1），此測試與後端
+    // NoteUrlEncodingHttpTests 的 sub-delims 案例使用同一組期望字面值互相釘死。
+    expect(noteHref("movie(2024)!/x*'y")).toBe("/notes/movie(2024)!/x*'y");
+  });
+
+  it("畸形 Unicode（孤立 surrogate）不拋例外，改以 U+FFFD 取代後編碼", () => {
+    // 舊匯入資料可能含畸形字串；encodeURIComponent 對孤立 surrogate 會丟 URIError，
+    // 若不防禦，側欄逐筆渲染 <Link> 時一顆壞 slug 會炸掉整個清單（復審 MEDIUM #2）。
+    expect(() => noteHref("a\uD800b/c")).not.toThrow();
+    expect(noteHref("a\uD800b/c")).toBe(
+      `/notes/${encodeURIComponent("a�b")}/c`
+    );
+  });
+
   it("輸出永不含未編碼的 # 與 ?（fragment / query 不可能被意外引入）", () => {
     const slugs = ["programming/c#/f", "a?b/c&d", "x#y?z"];
     for (const slug of slugs) {
