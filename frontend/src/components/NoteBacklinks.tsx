@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { getNoteBacklinks, type Backlink } from '@/lib/api';
-import { noteHref } from '@/lib/noteHref';
+import { backlinkHref } from '@/lib/backlinkHref';
 
 interface NoteBacklinksProps {
   /** 筆記 ID */
@@ -75,7 +75,7 @@ export function NoteBacklinks({ noteId }: NoteBacklinksProps) {
           marginBottom: 'var(--spacing-2)',
         }}
       >
-        {backlinks.length} 篇筆記連到這裡
+        {backlinks.length} 則連結指向這裡
       </div>
 
       {backlinks.map((backlink) => (
@@ -86,6 +86,16 @@ export function NoteBacklinks({ noteId }: NoteBacklinksProps) {
 }
 
 /**
+ * 各來源型別對應的圖標（顏色不是唯一資訊載體：圖示＋下方文字說明並存，色盲友善）。
+ * wiki＝內文 [[X]]；mark＝框選段落關聯；entity＝整篇關聯。
+ */
+const KIND_ICON: Record<string, string> = {
+  wiki: '🔗',
+  mark: '✂️',
+  entity: '🧩',
+};
+
+/**
  * 單個反向連結項目
  */
 interface BacklinkItemProps {
@@ -93,9 +103,12 @@ interface BacklinkItemProps {
 }
 
 function BacklinkItem({ backlink }: BacklinkItemProps) {
+  // 舊資料（kind 缺失）一律當 wiki 顯示，維持既有行為。
+  const kind = backlink.kind ?? 'wiki';
+
   return (
     <Link
-      href={noteHref(backlink.sourceNoteSlug)}
+      href={backlinkHref(backlink)}
       style={{
         display: 'block',
         padding: 'var(--spacing-3) var(--spacing-4)',
@@ -126,8 +139,10 @@ function BacklinkItem({ backlink }: BacklinkItemProps) {
           gap: 'var(--spacing-3)',
         }}
       >
-        {/* 圖標 */}
-        <span style={{ fontSize: 'var(--text-lg)', flexShrink: 0 }}>🔗</span>
+        {/* 圖標（依來源型別切換） */}
+        <span style={{ fontSize: 'var(--text-lg)', flexShrink: 0 }}>
+          {KIND_ICON[kind] ?? KIND_ICON.wiki}
+        </span>
 
         {/* 內容 */}
         <div style={{ flex: 1, minWidth: 0 }}>
@@ -144,26 +159,7 @@ function BacklinkItem({ backlink }: BacklinkItemProps) {
             {backlink.sourceNoteTitle}
           </h4>
 
-          {/* 連結文字 (anchor text) */}
-          <div
-            style={{
-              marginTop: 'var(--spacing-1)',
-              fontSize: 'var(--text-xs)',
-              color: 'var(--text-tertiary)',
-              background: 'var(--code-bg)',
-              padding: '4px 8px',
-              borderRadius: 'var(--radius-sm)',
-              display: 'inline-block',
-              fontFamily: 'var(--font-mono)',
-              maxWidth: '100%',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-            }}
-            title={`引用文字: [[${backlink.anchorText}]]`}
-          >
-            [[{backlink.anchorText}]]
-          </div>
+          <BacklinkBody kind={kind} anchorText={backlink.anchorText} />
         </div>
 
         {/* 箭頭 */}
@@ -178,5 +174,89 @@ function BacklinkItem({ backlink }: BacklinkItemProps) {
         </span>
       </div>
     </Link>
+  );
+}
+
+/**
+ * 依來源型別呈現不同的內容區塊：
+ * - wiki  ：程式碼樣式的 [[錨文字]]（既有呈現）。
+ * - mark  ：框選段落文字用「引用樣式」（左邊框＋斜體）＋小字說明可跳回來源段落。
+ * - entity：整篇關聯，不顯示錨文字區塊，只給一行小字說明。
+ * 全部使用語意化 CSS 變數（--text-*／--code-bg／--border-*），亮暗主題皆由變數保證對比。
+ */
+function BacklinkBody({
+  kind,
+  anchorText,
+}: {
+  kind: string;
+  anchorText: string;
+}) {
+  if (kind === 'mark') {
+    return (
+      <div style={{ marginTop: 'var(--spacing-1)' }}>
+        {/* 框選段落：引用樣式（左邊框＋斜體），不用 [[ ]]（那是 wiki 的語彙） */}
+        <blockquote
+          style={{
+            margin: 0,
+            paddingLeft: 'var(--spacing-2)',
+            borderLeft: '3px solid var(--border-strong)',
+            fontStyle: 'italic',
+            fontSize: 'var(--text-sm)',
+            color: 'var(--text-secondary)',
+            wordBreak: 'break-word',
+          }}
+          title={anchorText}
+        >
+          {anchorText}
+        </blockquote>
+        <div
+          style={{
+            marginTop: 'var(--spacing-1)',
+            fontSize: 'var(--text-xs)',
+            color: 'var(--text-tertiary)',
+          }}
+        >
+          段落關聯・點擊跳至來源段落
+        </div>
+      </div>
+    );
+  }
+
+  if (kind === 'entity') {
+    // 整篇關聯：無錨文字，只提示這是整篇層級的關聯。
+    return (
+      <div
+        style={{
+          marginTop: 'var(--spacing-1)',
+          fontSize: 'var(--text-xs)',
+          color: 'var(--text-tertiary)',
+        }}
+      >
+        整篇關聯
+      </div>
+    );
+  }
+
+  // wiki（預設）：程式碼樣式的 [[錨文字]]，維持既有呈現。
+  return (
+    <div
+      style={{
+        marginTop: 'var(--spacing-1)',
+        fontSize: 'var(--text-xs)',
+        color: 'var(--text-tertiary)',
+        background: 'var(--code-bg)',
+        padding: '4px 8px',
+        borderRadius: 'var(--radius-sm)',
+        display: 'inline-block',
+        fontFamily: 'var(--font-mono)',
+        maxWidth: '100%',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+      }}
+      title={`引用文字: [[${anchorText}]]`}
+    >
+      [[{anchorText}]]
+    </div>
   );
 }

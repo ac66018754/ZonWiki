@@ -571,19 +571,31 @@ public sealed record NoteOverlaySnapshotListItemDto(
     DateTime CreatedDateTime);
 
 /// <summary>
-/// 反向連結資料傳輸物件。
+/// 反向連結資料傳輸物件。聯集三套互不相通的連結來源（見 <paramref name="Kind"/>）。
 /// </summary>
-/// <param name="Id">連結識別碼。</param>
-/// <param name="SourceNoteId">來源筆記識別碼。</param>
+/// <param name="Id">
+/// 連結識別碼。依來源不同取不同表的主鍵（wiki=NoteLink.Id、mark=NoteMark.Id、entity=EntityLink.Id），
+/// 三來源合併後仍需唯一（供前端 React key 使用）。
+/// </param>
+/// <param name="SourceNoteId">來源筆記識別碼（entity 來源時為「關聯的另一端」筆記）。</param>
 /// <param name="SourceNoteTitle">來源筆記標題。</param>
 /// <param name="SourceNoteSlug">來源筆記 slug。</param>
-/// <param name="AnchorText">連結文字。</param>
+/// <param name="AnchorText">
+/// 錨點文字：wiki=[[X]] 內的 X；mark=框選的段落文字；entity=空字串（整篇關聯無錨點）。
+/// </param>
+/// <param name="Kind">
+/// 來源型別："wiki"（內文 [[X]] → NoteLink）｜"mark"（框選段落關聯 → NoteMark）｜
+/// "entity"（整篇關聯 → EntityLink）。放在最後並給預設值，維持既有 5 參數建構的相容性。
+/// </param>
+/// <param name="MarkId">mark 來源的標註識別碼（供前端組 ?mark= 深連結跳回段落）；其餘來源為 null。</param>
 public sealed record BacklinkDto(
     Guid Id,
     Guid SourceNoteId,
     string SourceNoteTitle,
     string SourceNoteSlug,
-    string AnchorText);
+    string AnchorText,
+    string Kind = "wiki",
+    Guid? MarkId = null);
 
 /// <summary>
 /// 知識圖譜節點資料傳輸物件。

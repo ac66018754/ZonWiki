@@ -1053,24 +1053,107 @@ public static class NoteWriteEndpoints
             return Results.NotFound(ApiResponse<List<BacklinkDto>>.Fail("Note not found", 404));
         }
 
-        // 先以真實欄位 n.Title 排序、再投影成 DTO。
-        // 不可在 Join 投影成 BacklinkDto「之後」再 OrderBy(b => b.SourceNoteTitle)——
-        // EF Core 會試圖在 SQL ORDER BY 內重建 BacklinkDto 而無法轉譯（造成 500）。
-        var backlinks = await db.NoteLink
-            .Where(nl => nl.TargetNoteId == id && nl.ValidFlag)
+        // 反向連結聯集三套互不相通的來源（保持三個獨立查詢、記憶體合併排序即可，量級小不需 SQL UNION）：
+        //   wiki   ＝ 內文 [[X]] 解析成的 NoteLink；
+        //   mark   ＝ 框選段落建立的關聯（NoteMark，Kind=link / TargetType=note）；
+        //   entity ＝「關聯」分頁的整篇雙向關聯（EntityLink）。
+        // 三張表都是 IUserOwned：全域查詢過濾（UserId + ValidFlag）自動生效；
+        // 且 join db.Note 取來源標題/slug 時，Note 的全域過濾會一併擋掉「已軟刪除／跨使用者」的來源筆記，
+        // 因此三個查詢都「不需要」IgnoreQueryFilters——跨使用者隔離與軟刪連動由框架保證。
+
+        // ── 來源1（wiki）：內文 [[X]] → NoteLink，指向本篇者 ──
+        // 加 SourceNoteId != id 排除「[[自己]]」的自我參照。
+        var wikiRows = await db.NoteLink
+            .Where(nl => nl.TargetNoteId == id && nl.ValidFlag && nl.SourceNoteId != id)
             .Join(
                 db.Note,
                 nl => nl.SourceNoteId,
                 n => n.Id,
-                (nl, n) => new { nl, n })
-            .OrderBy(x => x.n.Title)
-            .Select(x => new BacklinkDto(
-                x.nl.Id,
-                x.nl.SourceNoteId,
-                x.n.Title,
-                x.n.Slug,
-                x.nl.AnchorText))
+                (nl, n) => new BacklinkDto(
+                    nl.Id,
+                    nl.SourceNoteId,
+                    n.Title,
+                    n.Slug,
+                    nl.AnchorText,
+                    "wiki",
+                    null))
             .ToListAsync(ct);
+
+        // ── 來源2（mark）：框選段落關聯 → NoteMark（Kind=link / TargetType=note）指向本篇者 ──
+        // TargetType 在建立端（NoteMarkEndpoints.cs:131）存的是「原始請求值」未做正規化，
+        // 但前端一律送小寫 "note"（NoteMarksLayer 與 links API 皆然），與 EntityLink 的正規化小寫一致，
+        // 故直接用 == "note" 比對即可、且能轉譯成 SQL。
+        // Detached 刻意「不」過濾：關聯本身沒失效、只是內文定位失效（斷錨的降級顯示屬包4），此處先保證不消失。
+        // NoteId != id 排除「自己框選段落又指向自己」的自我參照。
+        var markRows = await db.NoteMark
+            .Where(m => m.Kind == "link"
+                && m.TargetType == "note"
+                && m.TargetId == id
+                && m.ValidFlag
+                && m.NoteId != id)
+            .Join(
+                db.Note,
+                m => m.NoteId,
+                n => n.Id,
+                (m, n) => new BacklinkDto(
+                    m.Id,
+                    m.NoteId,
+                    n.Title,
+                    n.Slug,
+                    m.AnchorText,
+                    "mark",
+                    m.Id))
+            .ToListAsync(ct);
+
+        // ── 來源3（entity）：整篇雙向關聯 → EntityLink ──
+        // EntityLink 一筆代表雙向：哪端是 Source 只是「建立當下開著哪頁」的巧合，
+        // 因此兩個方向都要撈（只撈單向會重演「從本篇建立、卻在本篇看不見」的原始 bug），顯示的一律是「另一端」。
+        // 拆成兩個方向查詢再記憶體合併，避免「條件式計算另一端後再 Where/Join」的 EF 轉譯風險：
+        //   方向A：本篇是 Source（SourceId==id）→ 另一端＝Target；
+        //   方向B：本篇是 Target（TargetId==id）→ 另一端＝Source。
+        // 兩側都排除「另一端==本篇」（TargetId!=id／SourceId!=id）以濾掉自我參照；
+        // 唯一可能同時命中兩方向的情況正是「SourceId==TargetId==id」的自我參照，已被排除，故不會重複計。
+        var entityAsSource = await db.EntityLink
+            .Where(l => l.ValidFlag
+                && l.SourceType == "note" && l.SourceId == id
+                && l.TargetType == "note" && l.TargetId != id)
+            .Join(
+                db.Note,
+                l => l.TargetId,
+                n => n.Id,
+                (l, n) => new BacklinkDto(l.Id, n.Id, n.Title, n.Slug, "", "entity", null))
+            .ToListAsync(ct);
+
+        var entityAsTarget = await db.EntityLink
+            .Where(l => l.ValidFlag
+                && l.TargetType == "note" && l.TargetId == id
+                && l.SourceType == "note" && l.SourceId != id)
+            .Join(
+                db.Note,
+                l => l.SourceId,
+                n => n.Id,
+                (l, n) => new BacklinkDto(l.Id, n.Id, n.Title, n.Slug, "", "entity", null))
+            .ToListAsync(ct);
+
+        // ── 記憶體合併＋排序 ──
+        // 排序權重表（Kind 權重）：wiki=0 → mark=1 → entity=2；同權重內再依來源筆記標題。
+        // 在記憶體排序（LINQ-to-Objects）而非 SQL：三來源已各自 ToListAsync 拉回，
+        // 因此不會踩到原本「投影成 DTO 後、EF 在 SQL ORDER BY 內重建 DTO 無法轉譯（造成 500）」的陷阱。
+        static int KindWeight(string kind) => kind switch
+        {
+            "wiki" => 0,
+            "mark" => 1,
+            "entity" => 2,
+            _ => 3,
+        };
+
+        var backlinks = wikiRows
+            .Concat(markRows)
+            .Concat(entityAsSource)
+            .Concat(entityAsTarget)
+            .OrderBy(b => KindWeight(b.Kind))
+            .ThenBy(b => b.SourceNoteTitle)
+            .ToList();
 
         return Results.Ok(ApiResponse<List<BacklinkDto>>.Ok(backlinks));
     }

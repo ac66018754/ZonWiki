@@ -300,8 +300,12 @@ export interface Backlink {
   sourceNoteTitle: string;
   /** 來源筆記 slug */
   sourceNoteSlug: string;
-  /** 連結文字 (anchor text，來自 [[X]] 中的 X) */
+  /** 連結文字 (anchor text)：wiki=[[X]] 中的 X；mark=框選段落；entity=空字串 */
   anchorText: string;
+  /** 來源型別：wiki（內文 [[X]]）｜mark（框選段落關聯）｜entity（整篇關聯）；舊資料相容故可選 */
+  kind?: "wiki" | "mark" | "entity";
+  /** mark 來源的標註 ID（供組 ?mark= 深連結跳回段落）；其餘來源為 null */
+  markId?: string | null;
 }
 
 /**
