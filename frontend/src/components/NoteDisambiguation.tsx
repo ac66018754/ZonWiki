@@ -91,7 +91,9 @@ export function NoteDisambiguation({
                   <span style={{ fontWeight: 600, fontSize: 'var(--text-base)', wordBreak: 'break-word' }}>
                     {candidate.title}
                   </span>
-                  {/* 徽章：現用此名（實心 info 底）／曾用此名（弱化底）；用文字＋底色雙載體，非只靠顏色。 */}
+                  {/* 徽章：現用此名（success 底色，非只靠顏色——同時有文字）／曾用此名（弱化底）。
+                      曾用者顯示 originalTitle（讓出此名當下的標題，該欄位存在的唯一目的）＋現名對照，
+                      幫使用者辨識「這篇當年就是我要找的那個名字」。originalTitle 缺值時退回無引號文案。 */}
                   <span
                     style={{
                       flexShrink: 0,
@@ -99,17 +101,19 @@ export function NoteDisambiguation({
                       padding: '2px 8px',
                       borderRadius: 'var(--radius-sm)',
                       background: candidate.isCurrentHolder
-                        ? 'var(--status-info-bg, var(--bg-surface-secondary))'
+                        ? 'var(--status-success-bg)'
                         : 'var(--bg-surface-secondary)',
                       color: candidate.isCurrentHolder
-                        ? 'var(--status-info-fg, var(--text-primary))'
+                        ? 'var(--status-success-fg)'
                         : 'var(--text-secondary)',
                       border: '1px solid var(--border-default)',
                     }}
                   >
                     {candidate.isCurrentHolder
                       ? '現用此名'
-                      : `曾用此名（現名《${candidate.title}》）`}
+                      : candidate.originalTitle
+                        ? `曾用此名「${candidate.originalTitle}」（現名《${candidate.title}》）`
+                        : `曾用此名（現名《${candidate.title}》）`}
                   </span>
                 </div>
                 <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>

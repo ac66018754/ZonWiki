@@ -36,6 +36,7 @@ import { NoteAiActions } from '@/components/NoteAiActions';
 import { NoteEditHistory } from '@/components/NoteEditHistory';
 import { NoteBacklinks } from '@/components/NoteBacklinks';
 import { NoteDisambiguation } from '@/components/NoteDisambiguation';
+import { resolveExpectedCandidate } from '@/lib/resolveExpectedCandidate';
 import { SearchableMultiSelect } from '@/components/SearchableMultiSelect';
 import { recordNoteNav, getNoteBackTarget } from '@/lib/noteNav';
 import { noteHref } from '@/lib/noteHref';
@@ -170,9 +171,6 @@ export default function NotesDetailPage() {
   // 消歧異候選（null＝非歧義）與其 requested slug。
   const [candidates, setCandidates] = useState<SlugCandidate[] | null>(null);
   const [ambiguousRequestedSlug, setAmbiguousRequestedSlug] = useState('');
-  // 改名存檔就地換 URL 後，讓 [slug] 載入 effect「跳過該次重抓」的標記（值＝要跳過的新 slug）——
-  // 避免 URL 一換就以新 slug 重抓、可能落入消歧異或多一次無謂往返（改名的重抓改走 id 直達）。
-  const skipNextSlugLoadRef = useRef<string | null>(null);
 
   // 編輯狀態
   const [isEditing, setIsEditing] = useState(false);
@@ -676,14 +674,6 @@ export default function NotesDetailPage() {
   // 載入筆記詳細（分類/標籤選項池與使用者已改由 SWR 供給，故此處只抓筆記本身）。
   // slug 連動標題後改吃 NoteResolution 三態：kind=note（含 matchedByAlias）／kind=ambiguous（候選）／404。
   useEffect(() => {
-    // 改名存檔就地換 URL 造成的這次 slug 變更：handleSave/edit-saved 已就地 setNote，跳過本次重抓
-    //（避免以新 slug 重抓而落入消歧異、或多一次無謂往返）。
-    if (skipNextSlugLoadRef.current === slug) {
-      skipNextSlugLoadRef.current = null;
-      setLoading(false);
-      return;
-    }
-
     // 套用「kind=note」的載入結果（正常命中 or ?expect 直達共用）：設 note、編輯基準、標記打開、載入留言。
     const applyLoadedNote = async (noteData: NoteDetail, viaAlias: boolean) => {
       setCandidates(null);
@@ -731,10 +721,14 @@ export default function NotesDetailPage() {
         }
 
         if (resolution.kind === 'ambiguous') {
-          // 若帶 ?expect=<id> 且該 id 在候選中（複製筆記剛導過來）→ 以 id 直達渲染、URL 不動、不落消歧異。
+          // 若帶 ?expect=<id> 且該 id 在候選中（複製筆記／改名存檔後導來）→ 以 id 直達渲染、不落消歧異。
+          // 走 getNoteById → applyLoadedNote（與一般直達完全相同的 kind=note 流程：markNoteOpened、
+          // matchedByAlias=false、載入留言…）。此路徑刻意「保留 ?expect」——它是歧義 slug 的持久選擇器，
+          // 重新整理也能再度直達本篇（不因清掉 expect 而回退到消歧異頁）。
           const expectId = searchParamsRef.current.get('expect');
-          if (expectId && resolution.candidates.some((c) => c.id === expectId)) {
-            const direct = await getNoteById(expectId);
+          const expected = resolveExpectedCandidate(resolution.candidates, expectId);
+          if (expected) {
+            const direct = await getNoteById(expected.id);
             if (direct) {
               await applyLoadedNote(direct, false);
               return;
@@ -750,6 +744,11 @@ export default function NotesDetailPage() {
 
         // kind === 'note'
         await applyLoadedNote(resolution.note, resolution.matchedByAlias);
+        // 若網址還帶著 ?expect（改名後導來、但新 slug 其實無歧義）→ 清掉保持乾淨。
+        // 這是「query-only」的 replace（path 不變）：不會讓本 effect（相依 [slug]）重跑、也不重掛。
+        if (searchParamsRef.current.get('expect')) {
+          router.replace(noteHref(slug));
+        }
       } catch {
         setError('無法載入筆記，請稍後重試。');
       } finally {
@@ -758,7 +757,7 @@ export default function NotesDetailPage() {
     };
 
     load();
-  }, [slug]);
+  }, [slug, router]);
 
   // 保存編輯
   const handleSave = async () => {
@@ -830,17 +829,20 @@ export default function NotesDetailPage() {
       }
 
       // 存檔成功：以 PUT 回應（saved）判斷是否改名（比較基準＝存檔前已載入的 note.slug，不是 URL 參數）。
-      const previousSlug = note.slug;
-      if (saved.slug !== previousSlug) {
-        // slug 隨新標題變了：URL 就地換成新 slug，並標記略過該次 [slug] 載入 effect 的重抓
-        //（避免以新 slug 重抓落入消歧異、或多一次往返）；同步更新「最後看的筆記」slug。
-        skipNextSlugLoadRef.current = saved.slug;
+      if (saved.slug !== note.slug) {
+        // slug 隨新標題變了：以 remount-safe 的 ?expect=<本篇id> 換 URL。
+        // 為何用 ?expect 而非「跳過重抓的 ref」：router.replace 會讓 [...slug] 頁「整個卸載重掛」（實測），
+        // ref 在新實例讀到 null → 以新 slug 重抓；而新 slug 可能撞到別篇的歷史 alias 變成歧義 → 使用者
+        // 剛存完檔卻被導進消歧異頁（對抗式復審 CRITICAL #2）。改帶 ?expect 讓重掛後的載入 effect 直達本篇。
+        setIsEditing(false);
+        setError(null);
         try { localStorage.setItem('zonwiki:last-note-slug', saved.slug); } catch { /* ignore */ }
-        router.replace(noteHref(saved.slug));
+        router.replace(noteHref(saved.slug) + '?expect=' + note.id);
+        return; // 重掛後由載入 effect（透過 ?expect）接手渲染，本處不再重抓
       }
 
-      // 先以 saved 立即更新（即時回饋），再以 id 直達補齊分類/標籤（PUT 回應不含 categories/tags；
-      // GUID 直達永不歧義、不落消歧異）。存檔後即停在現行 slug，撤掉別名橫幅。
+      // 未改名（含經 alias 進入只改內容）：就地更新（即時回饋）＋以 id 直達補齊分類/標籤
+      //（PUT 回應不含 categories/tags；GUID 直達永不歧義）。存檔後即停在現行 slug，撤掉別名橫幅。
       setNote(saved);
       setMatchedByAlias(false);
       setAliasRequestedSlug(null);
@@ -910,15 +912,14 @@ export default function NotesDetailPage() {
           setEditPopoutContent(d.content);
         }
       } else if (d?.type === 'edit-saved') {
-        // 編輯彈窗存檔：以 id 直達重抓（不以 slug，避免改名後落入消歧異）；若 slug 變了同樣就地換 URL。
+        // 編輯彈窗存檔：以 id 直達重抓（不以 slug，避免改名後落入消歧異）；若 slug 變了同樣以 ?expect 換 URL。
         getNoteById(note.id).then((updated) => {
           if (!updated) return;
-          const previousSlug = note.slug;
           setNote(updated);
-          if (updated.slug !== previousSlug) {
-            skipNextSlugLoadRef.current = updated.slug;
+          if (updated.slug !== note.slug) {
+            // 同 handleSave：以 remount-safe 的 ?expect=<本篇id> 換 URL，避免重掛後落入消歧異（CRITICAL #2）。
             try { localStorage.setItem('zonwiki:last-note-slug', updated.slug); } catch { /* ignore */ }
-            router.replace(noteHref(updated.slug));
+            router.replace(noteHref(updated.slug) + '?expect=' + note.id);
           }
         }).catch(() => {});
       } else if (d?.type === 'edit-closing') {
@@ -966,8 +967,10 @@ export default function NotesDetailPage() {
     return () => window.clearInterval(timer);
   }, [editPopoutContent, closeEditPopout]);
 
-  // 切換到不同筆記（App Router 重用本元件、只有 slug 變）或卸載時，關掉舊筆記的編輯彈窗與即時預覽，
-  // 避免舊筆記的預覽/頻道/視窗殘留到新筆記頁（cleanup 在 slug 改變前與卸載時各跑一次）。
+  // 切換到不同筆記或卸載時，關掉舊筆記的編輯彈窗與即時預覽，避免舊筆記的預覽/頻道/視窗殘留到新筆記頁。
+  // 註（對抗式復審 CRITICAL #2 更正）：實測本頁在 slug 變更時是「整個元件卸載重掛」（非只有 slug prop 變的
+  // 就地重用），故 state/ref 都會重置——這正是改名存檔改用 remount-safe 的 ?expect（而非跨重掛失效的 ref）
+  // 來保持「直達本篇」意圖的原因。此 cleanup 在 slug 改變（舊實例卸載）與整頁卸載時各跑一次。
   useEffect(() => {
     return () => { closeEditPopout(); };
   }, [slug, closeEditPopout]);
@@ -1300,9 +1303,10 @@ export default function NotesDetailPage() {
               flexWrap: 'wrap',
               padding: '10px 14px',
               marginBottom: 'var(--spacing-5)',
-              background: 'var(--status-info-bg, var(--bg-surface-secondary))',
-              color: 'var(--status-info-fg, var(--text-primary))',
+              background: 'var(--bg-surface-secondary)',
+              color: 'var(--text-primary)',
               border: '1px solid var(--border-default)',
+              borderLeft: '3px solid var(--status-warning-fg)',
               borderRadius: 'var(--radius-md)',
               fontSize: 'var(--text-sm)',
               lineHeight: 1.6,
