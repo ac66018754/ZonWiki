@@ -28,11 +28,13 @@
   "devDependencies": {
     "@tailwindcss/oxide-win32-x64-msvc": "^4.2.2",
     "@tailwindcss/postcss": "^4",
+    "@testing-library/react": "^16",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.3",
+    "jsdom": "^26.1.0",
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "^3.2.7"
