@@ -47,6 +47,65 @@ public sealed class ZonWikiDbContext(
     public void SetCurrentUserId(Guid userId) => _userIdOverride = userId;
 
     /// <summary>
+    /// 儲存變更（同步）——並把「版本快照序號唯一索引衝突」轉譯為併發衝突例外。
+    /// 兩個併發請求同時修改同一篇筆記時，雙方的 NoteRevisionInterceptor 會取到相同的
+    /// 下一個版本序號，敗方 INSERT 撞上 (NoteId, RevisionNo) 唯一索引丟 23505——
+    /// 這在語意上就是「同一筆記被併發修改」，統一轉為 <see cref="DbUpdateConcurrencyException"/>，
+    /// 讓各端點既有的 409 處理一體適用（而非外洩成裸 500）。
+    /// </summary>
+    /// <param name="acceptAllChangesOnSuccess">成功後是否接受所有變更。</param>
+    /// <returns>寫入的列數。</returns>
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        try
+        {
+            return base.SaveChanges(acceptAllChangesOnSuccess);
+        }
+        catch (DbUpdateException ex) when (IsRevisionNumberCollision(ex))
+        {
+            throw AsConcurrencyConflict(ex);
+        }
+    }
+
+    /// <summary>
+    /// 儲存變更（非同步）——同 <see cref="SaveChanges(bool)"/> 的唯一索引衝突轉譯。
+    /// </summary>
+    /// <param name="acceptAllChangesOnSuccess">成功後是否接受所有變更。</param>
+    /// <param name="cancellationToken">取消權杖。</param>
+    /// <returns>寫入的列數。</returns>
+    public override async Task<int> SaveChangesAsync(
+        bool acceptAllChangesOnSuccess,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            return await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+        }
+        catch (DbUpdateException ex) when (IsRevisionNumberCollision(ex))
+        {
+            throw AsConcurrencyConflict(ex);
+        }
+    }
+
+    /// <summary>
+    /// 判定例外是否為「版本快照序號」唯一索引衝突（PostgreSQL 23505 且撞的是該索引）。
+    /// </summary>
+    /// <param name="ex">EF 儲存例外。</param>
+    /// <returns>是否為版本序號衝突。</returns>
+    private static bool IsRevisionNumberCollision(DbUpdateException ex) =>
+        ex.InnerException is Npgsql.PostgresException pg
+        && pg.SqlState == Npgsql.PostgresErrorCodes.UniqueViolation
+        && pg.ConstraintName == "UX_NoteRevision_NoteId_RevisionNo";
+
+    /// <summary>
+    /// 把版本序號唯一索引衝突包裝成併發衝突例外（保留原例外供診斷）。
+    /// </summary>
+    /// <param name="ex">原始儲存例外。</param>
+    /// <returns>可被各端點 409 處理接住的併發衝突例外。</returns>
+    private static DbUpdateConcurrencyException AsConcurrencyConflict(DbUpdateException ex) =>
+        new("此筆記已被其他來源同時修改（版本快照序號衝突）。", ex);
+
+    /// <summary>
     /// 若需忽略全域查詢過濾（例如管理員/匯入端點）：
     /// 使用 EF Core 內建的 DbSet.IgnoreQueryFilters() 方法。
     /// 範例：var allNotes = await db.Note.IgnoreQueryFilters().ToListAsync();

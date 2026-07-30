@@ -406,23 +406,10 @@ public static class NoteWriteEndpoints
             };
 
             db.Note.Add(note);
-            // 注意：不在此先 SaveChanges。Id 於實體建構時即以 Guid.NewGuid() 產生，版本/分類/標籤/連結
+            // 注意：不在此先 SaveChanges。Id 於實體建構時即以 Guid.NewGuid() 產生，分類/標籤/連結
             // 都可直接引用 note.Id，全部併入「單一 SaveChanges」原子寫入。這樣「建立即帶分類」只會產生
             // 一筆 created 活動——若拆成「先存筆記→再存分類」兩段式，活動攔截器會記成 created + updated 兩筆。
-
-            // 建立版本紀錄（ChangeKind = "create"）
-            var revision = new NoteRevision
-            {
-                UserId = userId,
-                NoteId = note.Id,
-                RevisionNo = 1,
-                ChangeKind = "create",
-                Title = note.Title,
-                ContentRaw = note.ContentRaw,
-                CreatedUser = userId.ToString(),
-                UpdatedUser = userId.ToString(),
-            };
-            db.NoteRevision.Add(revision);
+            // 版本快照（ChangeKind="create"）由 NoteRevisionInterceptor 於 SaveChanges 時自動寫入。
 
             // 指派分類（若傳入）
             if (request.CategoryIds?.Count > 0)
@@ -531,26 +518,8 @@ public static class NoteWriteEndpoints
 
             note.UpdatedUser = userId.ToString();
 
-            // 記錄版本
-            var latestRevision = await db.NoteRevision
-                .Where(r => r.NoteId == id)
-                .OrderByDescending(r => r.RevisionNo)
-                .FirstOrDefaultAsync(ct);
-
-            var nextRevisionNo = (latestRevision?.RevisionNo ?? 0) + 1;
-
-            var revision = new NoteRevision
-            {
-                UserId = userId,
-                NoteId = note.Id,
-                RevisionNo = nextRevisionNo,
-                ChangeKind = "update",
-                Title = note.Title,
-                ContentRaw = note.ContentRaw,
-                CreatedUser = userId.ToString(),
-                UpdatedUser = userId.ToString(),
-            };
-            db.NoteRevision.Add(revision);
+            // 版本快照（ChangeKind="update"）由 NoteRevisionInterceptor 於 SaveChanges 時自動寫入——
+            // 且只在標題/內容確有變更時才寫（純分類/標籤/草稿旗標變更不產生噪音版本）。
 
             // 更新分類（整組取代；reconcile 會復活軟刪除列，避免唯一索引衝突）
             if (request.CategoryIds != null)
@@ -645,30 +614,20 @@ public static class NoteWriteEndpoints
             note.DeletedDateTime = DateTime.UtcNow;
             note.UpdatedUser = userId.ToString();
 
-            // 記錄版本（ChangeKind = "delete"）
-            var latestRevision = await db.NoteRevision
-                .Where(r => r.NoteId == id)
-                .OrderByDescending(r => r.RevisionNo)
-                .FirstOrDefaultAsync(ct);
-
-            var nextRevisionNo = (latestRevision?.RevisionNo ?? 0) + 1;
-
-            var revision = new NoteRevision
-            {
-                UserId = userId,
-                NoteId = note.Id,
-                RevisionNo = nextRevisionNo,
-                ChangeKind = "delete",
-                Title = note.Title,
-                ContentRaw = note.ContentRaw,
-                CreatedUser = userId.ToString(),
-                UpdatedUser = userId.ToString(),
-            };
-            db.NoteRevision.Add(revision);
+            // 版本快照（ChangeKind="delete"，保留刪除當下全文）由 NoteRevisionInterceptor
+            // 偵測 ValidFlag true→false 自動寫入。
 
             await db.SaveChangesAsync(ct);
 
             return Results.Ok(ApiResponse<object>.Ok(new { id = note.Id }));
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // 併發競賽（連點刪除、或刪除與更新同時發生）：xmin 不符或版本序號撞唯一索引
+            //（後者由 ZonWikiDbContext 統一轉譯為本例外）→ 回 409，不外洩裸 500。
+            return Results.Json(
+                ApiResponse<object>.Fail("此筆記已被其他請求同時修改或刪除", 409),
+                statusCode: StatusCodes.Status409Conflict);
         }
         catch (Exception ex)
         {

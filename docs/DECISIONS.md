@@ -5,6 +5,27 @@
 
 ---
 
+## 2026-07-30 ｜筆記版本快照改為 EF 攔截器唯一寫入點（feature/note-revision-interceptor）
+
+- **背景**：使用者發現「從任務建立並連結筆記」（`POST /api/links/note-from`）建立的筆記完全沒有版本快照，並裁示：「任何方式改變了筆記的內容，都要被保存成一個版本，不論是建立還是修改皆是」——系統仍在測試階段、可能有未知的覆寫問題，完整版本紀錄是防止重要筆記遺失的最後防線。
+- **考慮過的選項**：①逐點補漏（在 note-from 加上顯式寫入）——但原本 8 個顯式寫入點就是這樣長出來的，未來新端點還是會忘；②**EF `SaveChangesInterceptor` 唯一寫入點（採用）**——防線設在所有寫入的唯一瓶頸（SaveChanges），任何現在與未來的路徑（端點/背景服務/MCP）自動涵蓋。
+- **最終決定**：新增 `NoteRevisionInterceptor`（仿既有 `ActivityLogInterceptor` 前例）：Added→create、Title/ContentRaw 確有變更→update、ValidFlag true→false→delete（保留刪除當下全文快照）；還原（false→true）、純中繼資料變更（分類/標籤/草稿旗標）、同值重送**不寫**（消除噪音版本——舊行為是每次 PUT 都寫一版，即使只改分類）。移除全部 8 個顯式寫入點。
+- **關鍵眉角（都有測試鎖住）**：
+  1. **攔截器順序與自行蓋章**：必須註冊在 `AuditingSaveChangesInterceptor` 之後，且快照列的 Id/時間/使用者欄位全部自行設定——稽核攔截器先跑、不會回頭補章，漏蓋會存出 0001-01-01。
+  2. **取號無視查詢過濾器**：(NoteId, RevisionNo) 唯一索引不分 ValidFlag；舊程式取號只看有效列，版本列一旦被軟刪（垃圾桶），下一次存檔就撞唯一索引整批 500（潛在 bug，本次一併修掉）。
+  3. **併發衝突統一 409**：兩個併發請求對同一筆記取到同一序號時，敗方撞唯一索引丟的是 `DbUpdateException`（23505）而非併發例外→裸 500。於 `ZonWikiDbContext.SaveChanges` 集中將「該唯一索引的 23505」轉譯為 `DbUpdateConcurrencyException`，各端點既有 409 處理一體適用。
+  4. **快照歸屬取 note.UserId**：背景服務（AI 精煉/框選提問）無 HTTP 脈絡、CurrentUserId 為空，快照仍須歸屬筆記擁有者，否則查詢過濾器會讓歷史隱形。
+  5. **⚠️ 結構性禁令**：`ExecuteUpdate/ExecuteDelete` 不走 SaveChanges、不觸發攔截器——日後嚴禁用它改 Title/ContentRaw（目前唯一使用處是 LastOpenedDateTime，無內容變更、安全）。
+- **行為變更**：純分類/標籤/草稿旗標變更不再產生版本（舊行為每次 PUT 必寫一版噪音）。內容未變＝快照與上一版完全相同＝無資料損失，且歷史更乾淨、真正的救援點不被淹沒。
+- **驗證**：TDD——14 條新整合測試（真 Postgres + 真 HTTP，含真併發 Task.WhenAll 實測）先 RED（6 敗證明漏洞存在）後 GREEN；全套測試零回歸；本機部署（新 build 換掉 3000 實例）＋Playwright 實測（亮暗×1280/375、console 零錯誤）。
+- **同批 UI**：筆記頁查看模式 header 下方常駐顯示「分類：/標籤：」兩列（📁 完整路徑 chip 可點往分類清單、🏷 標籤；空狀態顯示「未分類/無標籤」；超長名稱 240px 截斷＋title 提示完整文字）。
+- **對抗式復審修正（1 HIGH 後端＋1 HIGH 前端已修）**：
+  - 【HIGH·後端】DeleteNoteHandler 原本沒接 `DbUpdateConcurrencyException`，併發刪除的敗方會把 409 轉譯又吞成裸 500 → 補 catch＋併發 DELETE 整合測試（敗方允許 409 或 404、絕不 500、不留孤兒快照）。
+  - 【HIGH·前端】`note.categories` 實際是後端 `TagRefDto{id,name}`、**沒有 parentId**（前端型別宣告與 API 契約不一致的既有技術債），直接用 `c.parentId` 組完整路徑 100% 失效 → 改以 SWR 分類選項池（含 parentId）反查組路徑，池未載入前退回葉名。
+  - 【MEDIUM】chip 加 240px 截斷防 375px 爆版；分類 chip 補 hover 態。已知既有技術債（不擋合併）：`LinkedEntitiesBar` 的 chip 同樣缺 hover 態；分類/標籤名稱後端無長度上限。
+
+---
+
 ## 2026-07-17 ｜/time 獨立時間儀表板頁：無外殼、加 iPhone 主畫面即點即看（feature/time-dashboard）
 
 - **背景**：Scriptable 小工具是被動快照（iOS 自行排程刷新、點列要跳去捷徑），使用者提出：「反正都要點一下才看得到全貌，不如做一頁**專屬統計頁**——無任何站內導覽、加到主畫面點開即看、之後圖表與操作可自由自訂，不被小工具框架綁死」。
