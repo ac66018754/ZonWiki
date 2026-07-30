@@ -72,6 +72,10 @@ public static class NoteWriteEndpoints
         // GET /api/notes/{id}/revisions - 查詢筆記編輯歷史
         var getRevisions = app.MapGet("/api/notes/{id:guid}/revisions", GetRevisionsHandler);
 
+        // GET /api/notes/{id}/activities - 查詢「這篇筆記」的完整活動紀錄
+        // （建立/編輯/刪除/還原/分類/標籤/關聯，供歷史分頁合併時間軸）
+        var getActivities = app.MapGet("/api/notes/{id:guid}/activities", GetActivitiesHandler);
+
         // GET /api/notes/{id}/backlinks - 查詢反向連結（有哪些筆記指向此筆記）
         var getBacklinks = app.MapGet("/api/notes/{id:guid}/backlinks", GetBacklinksHandler);
 
@@ -992,6 +996,46 @@ public static class NoteWriteEndpoints
             .ToListAsync(ct);
 
         return Results.Ok(ApiResponse<List<NoteRevisionDto>>.Ok(revisions));
+    }
+
+    // ==================== Get Activities ====================
+
+    /// <summary>
+    /// 查詢「這篇筆記」的完整活動紀錄（供歷史分頁合併時間軸）。
+    /// 涵蓋建立/編輯（含分類、標籤、關聯的變更明細）/刪除/還原；依時間倒序、上限 200 筆。
+    /// 垃圾桶內的筆記比照 revisions 慣例回 404（須先還原）。
+    /// </summary>
+    /// <param name="db">資料庫內容。</param>
+    /// <param name="id">筆記 Id。</param>
+    /// <param name="ct">取消權杖。</param>
+    /// <returns>活動清單。</returns>
+    private static async Task<IResult> GetActivitiesHandler(
+        ZonWikiDbContext db,
+        Guid id,
+        CancellationToken ct)
+    {
+        var noteExists = await db.Note
+            .AnyAsync(n => n.Id == id && n.ValidFlag, ct);
+
+        if (!noteExists)
+        {
+            return Results.NotFound(ApiResponse<List<NoteActivityDto>>.Fail("Note not found", 404));
+        }
+
+        var activities = await db.ActivityLog
+            .Where(a => a.EntityType == "note" && a.EntityId == id)
+            .OrderByDescending(a => a.CreatedDateTime)
+            .Take(200)
+            .Select(a => new NoteActivityDto(
+                a.Id,
+                a.ActionType,
+                a.Title,
+                a.Detail,
+                a.Source,
+                a.CreatedDateTime))
+            .ToListAsync(ct);
+
+        return Results.Ok(ApiResponse<List<NoteActivityDto>>.Ok(activities));
     }
 
     // ==================== Get Backlinks ====================

@@ -70,6 +70,9 @@ public sealed class ActivityLogInterceptor : SaveChangesInterceptor
         }
 
         var scan = context.Scan;
+        // 多租戶邊界：下方查詢用 IgnoreQueryFilters 繞過 ValidFlag（軟刪實體仍要有標題），
+        // 但 UserId 隔離必須顯式保留——防未來新增的關聯路徑漏做擁有權驗證時跨租戶洩漏標題。
+        var currentUserId = context.UserId;
 
         // 補齊摘要所需名稱（分類 / 標籤 / 未被追蹤的筆記標題）。
         var categoryNames = scan.NeededCategoryIds.Count == 0
@@ -89,11 +92,39 @@ public sealed class ActivityLogInterceptor : SaveChangesInterceptor
         var noteTitles = scan.NeededNoteTitleIds.Count == 0
             ? EmptyNames
             : await db.Note.AsNoTracking()
-                .Where(n => scan.NeededNoteTitleIds.Contains(n.Id))
+                .IgnoreQueryFilters()
+                .Where(n => n.UserId == currentUserId && scan.NeededNoteTitleIds.Contains(n.Id))
                 .Select(n => new { n.Id, n.Title })
                 .ToDictionaryAsync(x => x.Id, x => x.Title, ct);
 
-        AssembleAndAdd(db, context, categoryNames, tagNames, noteTitles);
+        // 關聯活動需要的對端標題（任務／子任務／節點）。IgnoreQueryFilters：
+        // 對端可能已被軟刪（移除關聯常伴隨刪除），仍應以其標題入摘要而非顯示「（不明）」。
+        var taskTitles = scan.NeededTaskTitleIds.Count == 0
+            ? EmptyNames
+            : await db.TaskCard.AsNoTracking()
+                .IgnoreQueryFilters()
+                .Where(t => t.UserId == currentUserId && scan.NeededTaskTitleIds.Contains(t.Id))
+                .Select(t => new { t.Id, t.Title })
+                .ToDictionaryAsync(x => x.Id, x => x.Title, ct);
+
+        var subTaskTitles = scan.NeededSubTaskTitleIds.Count == 0
+            ? EmptyNames
+            : await db.SubTask.AsNoTracking()
+                .IgnoreQueryFilters()
+                .Where(s => s.UserId == currentUserId && scan.NeededSubTaskTitleIds.Contains(s.Id))
+                .Select(s => new { s.Id, s.Title })
+                .ToDictionaryAsync(x => x.Id, x => x.Title, ct);
+
+        var nodeContents = scan.NeededNodeTitleIds.Count == 0
+            ? EmptyNames
+            : (await db.Node.AsNoTracking()
+                .IgnoreQueryFilters()
+                .Where(n => n.UserId == currentUserId && scan.NeededNodeTitleIds.Contains(n.Id))
+                .Select(n => new { n.Id, n.Content })
+                .ToListAsync(ct))
+                .ToDictionary(x => x.Id, x => FirstLine(x.Content));
+
+        AssembleAndAdd(db, context, categoryNames, tagNames, noteTitles, taskTitles, subTaskTitles, nodeContents);
     }
 
     /// <summary>
@@ -109,6 +140,8 @@ public sealed class ActivityLogInterceptor : SaveChangesInterceptor
         }
 
         var scan = context.Scan;
+        // 同非同步路徑：ValidFlag 可繞、UserId 隔離必須顯式保留。
+        var currentUserId = context.UserId;
 
         var categoryNames = scan.NeededCategoryIds.Count == 0
             ? EmptyNames
@@ -127,11 +160,38 @@ public sealed class ActivityLogInterceptor : SaveChangesInterceptor
         var noteTitles = scan.NeededNoteTitleIds.Count == 0
             ? EmptyNames
             : db.Note.AsNoTracking()
-                .Where(n => scan.NeededNoteTitleIds.Contains(n.Id))
+                .IgnoreQueryFilters()
+                .Where(n => n.UserId == currentUserId && scan.NeededNoteTitleIds.Contains(n.Id))
                 .Select(n => new { n.Id, n.Title })
                 .ToDictionary(x => x.Id, x => x.Title);
 
-        AssembleAndAdd(db, context, categoryNames, tagNames, noteTitles);
+        // 與非同步路徑一致：關聯活動的對端標題（任務／子任務／節點）。
+        var taskTitles = scan.NeededTaskTitleIds.Count == 0
+            ? EmptyNames
+            : db.TaskCard.AsNoTracking()
+                .IgnoreQueryFilters()
+                .Where(t => t.UserId == currentUserId && scan.NeededTaskTitleIds.Contains(t.Id))
+                .Select(t => new { t.Id, t.Title })
+                .ToDictionary(x => x.Id, x => x.Title);
+
+        var subTaskTitles = scan.NeededSubTaskTitleIds.Count == 0
+            ? EmptyNames
+            : db.SubTask.AsNoTracking()
+                .IgnoreQueryFilters()
+                .Where(s => s.UserId == currentUserId && scan.NeededSubTaskTitleIds.Contains(s.Id))
+                .Select(s => new { s.Id, s.Title })
+                .ToDictionary(x => x.Id, x => x.Title);
+
+        var nodeContents = scan.NeededNodeTitleIds.Count == 0
+            ? EmptyNames
+            : db.Node.AsNoTracking()
+                .IgnoreQueryFilters()
+                .Where(n => n.UserId == currentUserId && scan.NeededNodeTitleIds.Contains(n.Id))
+                .Select(n => new { n.Id, n.Content })
+                .AsEnumerable()
+                .ToDictionary(x => x.Id, x => FirstLine(x.Content));
+
+        AssembleAndAdd(db, context, categoryNames, tagNames, noteTitles, taskTitles, subTaskTitles, nodeContents);
     }
 
     /// <summary>空名稱字典（共用，避免每次配置）。</summary>
@@ -153,7 +213,7 @@ public sealed class ActivityLogInterceptor : SaveChangesInterceptor
         }
 
         var scan = ScanChanges(db);
-        if (scan.Primaries.Count == 0 && scan.LinkDeltasByNote.Count == 0)
+        if (scan.Primaries.Count == 0 && scan.LinkDeltasByNote.Count == 0 && scan.RelationDrafts.Count == 0)
         {
             return null; // 沒有任何可記錄的變更
         }
@@ -216,6 +276,32 @@ public sealed class ActivityLogInterceptor : SaveChangesInterceptor
                     }
                     continue;
                 }
+
+                // ── 關聯（本 repo 有兩套並行的關聯系統，都要攝影，缺一不可）──
+                // EntityLink：通用雙向關聯（taskcard/subtask/note/node 任兩者）。
+                case EntityLink entityLink:
+                {
+                    var action = ClassifyLinkAction(entry);
+                    if (action != LinkAction.None)
+                    {
+                        CollectEntityLinkDrafts(scan, entityLink, isLink: action == LinkAction.Add);
+                    }
+                    continue;
+                }
+
+                // NoteTaskLink：筆記↔任務卡的專用多對多（任務關聯管理 UI 走這套）。
+                case NoteTaskLink noteTaskLink:
+                {
+                    var action = ClassifyLinkAction(entry);
+                    if (action != LinkAction.None)
+                    {
+                        AddRelationDraft(scan, "note", noteTaskLink.NoteId,
+                            "taskcard", noteTaskLink.TaskCardId, action == LinkAction.Add);
+                        AddRelationDraft(scan, "taskcard", noteTaskLink.TaskCardId,
+                            "note", noteTaskLink.NoteId, action == LinkAction.Add);
+                    }
+                    continue;
+                }
             }
 
             // 記下所有被追蹤的筆記標題（供「純連結變更」的筆記取當下標題，免查 DB）。
@@ -265,12 +351,18 @@ public sealed class ActivityLogInterceptor : SaveChangesInterceptor
     /// <param name="categoryNames">分類 Id → 名稱。</param>
     /// <param name="tagNames">標籤 Id → 名稱。</param>
     /// <param name="noteTitles">（未被追蹤的）筆記 Id → 標題。</param>
+    /// <param name="taskTitles">任務 Id → 標題（關聯活動用）。</param>
+    /// <param name="subTaskTitles">子任務 Id → 標題（關聯活動用）。</param>
+    /// <param name="nodeContents">節點 Id → 內容首行（關聯活動用）。</param>
     private static void AssembleAndAdd(
         ZonWikiDbContext db,
         CaptureContext context,
         IReadOnlyDictionary<Guid, string> categoryNames,
         IReadOnlyDictionary<Guid, string> tagNames,
-        IReadOnlyDictionary<Guid, string> noteTitles)
+        IReadOnlyDictionary<Guid, string> noteTitles,
+        IReadOnlyDictionary<Guid, string> taskTitles,
+        IReadOnlyDictionary<Guid, string> subTaskTitles,
+        IReadOnlyDictionary<Guid, string> nodeContents)
     {
         var scan = context.Scan;
         var now = DateTime.UtcNow;
@@ -325,9 +417,124 @@ public sealed class ActivityLogInterceptor : SaveChangesInterceptor
             pending.Add(BuildActivity(context, now, userKey, "note", noteId, "updated", title, linkSummary));
         }
 
+        // 關聯活動（EntityLink / NoteTaskLink）：兩端各一筆 updated，
+        // Title＝本端自己的標題、Detail＝「建立關聯／移除關聯：{對端型別}「{對端標題}」」。
+        foreach (var draft in scan.RelationDrafts)
+        {
+            var endTitle = ResolveRelationTitle(
+                scan, draft.EndType, draft.EndId, noteTitles, taskTitles, subTaskTitles, nodeContents);
+            var otherTitle = ResolveRelationTitle(
+                scan, draft.OtherType, draft.OtherId, noteTitles, taskTitles, subTaskTitles, nodeContents);
+            var verb = draft.IsLink ? "建立關聯" : "移除關聯";
+            var label = RelationTypeLabels.GetValueOrDefault(draft.OtherType, draft.OtherType);
+            var detail = $"{verb}：{label}「{(string.IsNullOrWhiteSpace(otherTitle) ? "（不明）" : otherTitle)}」";
+
+            pending.Add(BuildActivity(
+                context, now, userKey, draft.EndType, draft.EndId, "updated", endTitle, detail));
+        }
+
         if (pending.Count > 0)
         {
             db.ActivityLog.AddRange(pending);
+        }
+    }
+
+    /// <summary>
+    /// 解析關聯活動所需的實體標題：筆記優先取本批次已追蹤的標題（in-memory），
+    /// 其餘依型別查對應的批次字典；查不到回空字串（呼叫端會轉為「（不明）」）。
+    /// </summary>
+    /// <param name="scan">掃描結果（含已追蹤的筆記標題）。</param>
+    /// <param name="type">實體型別。</param>
+    /// <param name="id">實體 Id。</param>
+    /// <param name="noteTitles">筆記標題字典。</param>
+    /// <param name="taskTitles">任務標題字典。</param>
+    /// <param name="subTaskTitles">子任務標題字典。</param>
+    /// <param name="nodeContents">節點內容首行字典。</param>
+    /// <returns>標題（可能為空字串）。</returns>
+    private static string ResolveRelationTitle(
+        ScanResult scan,
+        string type,
+        Guid id,
+        IReadOnlyDictionary<Guid, string> noteTitles,
+        IReadOnlyDictionary<Guid, string> taskTitles,
+        IReadOnlyDictionary<Guid, string> subTaskTitles,
+        IReadOnlyDictionary<Guid, string> nodeContents) => type switch
+    {
+        "note" => scan.TrackedNoteTitles.TryGetValue(id, out var tracked)
+            ? tracked
+            : noteTitles.GetValueOrDefault(id, string.Empty),
+        "taskcard" => taskTitles.GetValueOrDefault(id, string.Empty),
+        "subtask" => subTaskTitles.GetValueOrDefault(id, string.Empty),
+        "node" => nodeContents.GetValueOrDefault(id, string.Empty),
+        _ => string.Empty,
+    };
+
+    /// <summary>
+    /// 收集 EntityLink 變更的關聯活動草稿：兩端各一筆（僅限有歷史檢視的型別）；
+    /// 自我連結（兩端同一實體）只記一筆，避免重複。
+    /// </summary>
+    /// <param name="scan">掃描結果。</param>
+    /// <param name="link">變更中的關聯。</param>
+    /// <param name="isLink">true＝建立（或復活）、false＝移除。</param>
+    private static void CollectEntityLinkDrafts(ScanResult scan, EntityLink link, bool isLink)
+    {
+        AddRelationDraft(scan, link.SourceType, link.SourceId, link.TargetType, link.TargetId, isLink);
+        if (link.SourceType == link.TargetType && link.SourceId == link.TargetId)
+        {
+            return; // 自我連結只記一筆
+        }
+        AddRelationDraft(scan, link.TargetType, link.TargetId, link.SourceType, link.SourceId, isLink);
+    }
+
+    /// <summary>
+    /// 加入一筆關聯活動草稿（本端型別不在攝影範圍者略過），並登記兩端的標題查詢需求。
+    /// </summary>
+    /// <param name="scan">掃描結果。</param>
+    /// <param name="endType">本端型別（活動掛在此實體上）。</param>
+    /// <param name="endId">本端 Id。</param>
+    /// <param name="otherType">對端型別（入摘要文字）。</param>
+    /// <param name="otherId">對端 Id。</param>
+    /// <param name="isLink">true＝建立、false＝移除。</param>
+    private static void AddRelationDraft(
+        ScanResult scan,
+        string endType,
+        Guid endId,
+        string otherType,
+        Guid otherId,
+        bool isLink)
+    {
+        if (!RelationRecordedEndTypes.Contains(endType))
+        {
+            return; // 子任務/節點端沒有歷史檢視，依設計不記
+        }
+
+        scan.RelationDrafts.Add(new RelationDraft(endType, endId, otherType, otherId, isLink));
+        RegisterRelationTitleNeed(scan, endType, endId);
+        RegisterRelationTitleNeed(scan, otherType, otherId);
+    }
+
+    /// <summary>
+    /// 依型別把實體 Id 登記進對應的「需補查標題」集合。
+    /// </summary>
+    /// <param name="scan">掃描結果。</param>
+    /// <param name="type">實體型別。</param>
+    /// <param name="id">實體 Id。</param>
+    private static void RegisterRelationTitleNeed(ScanResult scan, string type, Guid id)
+    {
+        switch (type)
+        {
+            case "note":
+                scan.NeededNoteTitleIds.Add(id);
+                break;
+            case "taskcard":
+                scan.NeededTaskTitleIds.Add(id);
+                break;
+            case "subtask":
+                scan.NeededSubTaskTitleIds.Add(id);
+                break;
+            case "node":
+                scan.NeededNodeTitleIds.Add(id);
+                break;
         }
     }
 
@@ -621,6 +828,25 @@ public sealed class ActivityLogInterceptor : SaveChangesInterceptor
     private const int FieldValueMaxLength = 30;
 
     /// <summary>
+    /// 會產生「關聯活動」的本端型別（＝有歷史檢視可看的實體）。
+    /// 子任務/節點端沒有歷史檢視，不記（對端仍會記到它們的標題）。
+    /// </summary>
+    private static readonly HashSet<string> RelationRecordedEndTypes = new(StringComparer.Ordinal)
+    {
+        "note",
+        "taskcard",
+    };
+
+    /// <summary>關聯對端型別 → 摘要用中文標籤。</summary>
+    private static readonly Dictionary<string, string> RelationTypeLabels = new(StringComparer.Ordinal)
+    {
+        ["note"] = "筆記",
+        ["taskcard"] = "任務",
+        ["subtask"] = "子任務",
+        ["node"] = "節點",
+    };
+
+    /// <summary>
     /// 不納入「變更摘要」的欄位名（稽核欄 + 衍生 / 快取欄）。
     /// 影子屬性（xmin 等）另以 <c>IsShadowProperty()</c> 排除。
     /// </summary>
@@ -756,6 +982,18 @@ public sealed class ActivityLogInterceptor : SaveChangesInterceptor
         /// <summary>需要補查標題的筆記 Id（連結變更但未被追蹤者，組裝階段才決定）。</summary>
         public HashSet<Guid> NeededNoteTitleIds { get; } = new();
 
+        /// <summary>關聯活動草稿（EntityLink / NoteTaskLink 變更）。</summary>
+        public List<RelationDraft> RelationDrafts { get; } = new();
+
+        /// <summary>需要補查標題的任務 Id（關聯活動用）。</summary>
+        public HashSet<Guid> NeededTaskTitleIds { get; } = new();
+
+        /// <summary>需要補查標題的子任務 Id（關聯活動用）。</summary>
+        public HashSet<Guid> NeededSubTaskTitleIds { get; } = new();
+
+        /// <summary>需要補查內容首行的節點 Id（關聯活動用）。</summary>
+        public HashSet<Guid> NeededNodeTitleIds { get; } = new();
+
         /// <summary>取得或建立某筆記的連結變更集合。</summary>
         /// <param name="noteId">筆記識別碼。</param>
         /// <returns>該筆記的連結變更集合。</returns>
@@ -777,4 +1015,17 @@ public sealed class ActivityLogInterceptor : SaveChangesInterceptor
     /// <param name="Source">操作來源（web 或 API 權杖名）。</param>
     /// <param name="Scan">變更掃描結果。</param>
     private sealed record CaptureContext(Guid UserId, string Source, ScanResult Scan);
+
+    /// <summary>關聯活動草稿：本端（活動掛的實體）與對端（入摘要文字）。</summary>
+    /// <param name="EndType">本端型別（note / taskcard）。</param>
+    /// <param name="EndId">本端 Id。</param>
+    /// <param name="OtherType">對端型別。</param>
+    /// <param name="OtherId">對端 Id。</param>
+    /// <param name="IsLink">true＝建立（含復活）、false＝移除。</param>
+    private sealed record RelationDraft(
+        string EndType,
+        Guid EndId,
+        string OtherType,
+        Guid OtherId,
+        bool IsLink);
 }

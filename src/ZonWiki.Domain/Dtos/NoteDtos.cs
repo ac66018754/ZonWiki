@@ -541,6 +541,36 @@ public sealed record NoteRevisionDto(
     string CreatedUser);
 
 /// <summary>
+/// 筆記活動紀錄資料傳輸物件（歷史分頁合併時間軸用）。
+/// </summary>
+/// <param name="Id">活動識別碼。</param>
+/// <param name="Action">動作（created / updated / deleted / restored）。</param>
+/// <param name="Title">動作當下的筆記標題。</param>
+/// <param name="Detail">變更明細摘要（分類/標籤/關聯/欄位變更；可空）。</param>
+/// <param name="Source">操作來源（web 或 API 權杖名）。</param>
+/// <param name="At">發生時間（UTC）。</param>
+public sealed record NoteActivityDto(
+    Guid Id,
+    string Action,
+    string Title,
+    string? Detail,
+    string Source,
+    DateTime At);
+
+/// <summary>
+/// 浮層快照清單項目資料傳輸物件（不含重量級 ItemsJson）。
+/// </summary>
+/// <param name="Id">快照識別碼。</param>
+/// <param name="SnapshotNo">快照序號（同一筆記內遞增）。</param>
+/// <param name="Summary">內容摘要（例如「便利貼2・文字框1・畫記3」）。</param>
+/// <param name="CreatedDateTime">儲存時間（UTC）。</param>
+public sealed record NoteOverlaySnapshotListItemDto(
+    Guid Id,
+    int SnapshotNo,
+    string Summary,
+    DateTime CreatedDateTime);
+
+/// <summary>
 /// 反向連結資料傳輸物件。
 /// </summary>
 /// <param name="Id">連結識別碼。</param>

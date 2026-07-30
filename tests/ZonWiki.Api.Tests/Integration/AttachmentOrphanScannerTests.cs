@@ -239,6 +239,47 @@ public sealed class AttachmentOrphanScannerTests(ZonWikiApiFactory factory)
     }
 
     [Fact]
+    public async Task Scan_ReferencedByOverlaySnapshotOnly_IsUntouched()
+    {
+        // Arrange：現行浮層已無引用、但「浮層手動快照」（NoteOverlaySnapshot.ItemsJson）仍有——
+        // 快照是救援用歷史，附件被回收會讓快照裡的圖變壞圖
+        var userId = (await factory.SeedUserWithTokenAsync($"orphan-snap-{Guid.NewGuid():N}@test.local")).UserId;
+        var (id, _) = await SeedAttachmentAsync(userId);
+        var (scope, db) = factory.CreateDbScope();
+        using (scope)
+        {
+            var note = new Note
+            {
+                UserId = userId,
+                Title = "浮層快照引用附件的筆記",
+                Slug = $"snap-{Guid.NewGuid():N}",
+                ContentRaw = "內文無引用",
+                CreatedUser = "test",
+                UpdatedUser = "test",
+            };
+            db.Note.Add(note);
+            db.NoteOverlaySnapshot.Add(new NoteOverlaySnapshot
+            {
+                UserId = userId,
+                NoteId = note.Id,
+                SnapshotNo = 1,
+                ItemsJson = $"{{\"overlayItems\":[{{\"kind\":\"slide\",\"dataJson\":\"[\\\"/api/attachments/{id:D}\\\"]\"}}],\"marks\":[]}}",
+                Summary = "圖片板1",
+                CreatedUser = "test",
+                UpdatedUser = "test",
+            });
+            await db.SaveChangesAsync();
+        }
+        await BackdateAsync(id, days: 3);
+
+        // Act
+        await ScanAsync();
+
+        // Assert
+        (await LoadAsync(id))!.ValidFlag.Should().BeTrue("浮層快照引用也算引用（快照救援時要看得到圖）");
+    }
+
+    [Fact]
     public async Task Scan_ReferencedByTaskCardContentOnly_IsUntouched()
     {
         // Arrange：任務卡內容也用同一個 Markdown 編輯器貼圖 → 任務引用也算引用

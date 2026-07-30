@@ -623,6 +623,70 @@ export async function getNoteRevisions(noteId: string): Promise<NoteRevision[]> 
   return r.data ?? [];
 }
 
+/** 筆記活動紀錄（歷史分頁合併時間軸用；含分類/標籤/關聯等變更明細）。 */
+export interface NoteActivity {
+  /** 活動識別碼 */
+  id: string;
+  /** 動作：created / updated / deleted / restored */
+  action: string;
+  /** 動作當下的筆記標題 */
+  title: string;
+  /** 變更明細摘要（分類/標籤/關聯/欄位；可空） */
+  detail: string | null;
+  /** 操作來源（web 或 API 權杖名） */
+  source: string;
+  /** 發生時間（UTC ISO 字串） */
+  at: string;
+}
+
+/**
+ * 取得「這篇筆記」的完整活動紀錄（倒序、上限 200 筆）。
+ */
+export async function getNoteActivities(noteId: string): Promise<NoteActivity[]> {
+  const r = await fetchJson<NoteActivity[]>(
+    `/api/notes/${encodeURIComponent(noteId)}/activities`
+  );
+  return r.data ?? [];
+}
+
+/** 浮層手動快照（清單項目；不含重量級 JSON 內容）。 */
+export interface NoteOverlaySnapshotListItem {
+  /** 快照識別碼 */
+  id: string;
+  /** 快照序號（同一筆記內遞增） */
+  snapshotNo: number;
+  /** 內容摘要（例如「便利貼2・文字框1・畫記3」） */
+  summary: string;
+  /** 儲存時間（UTC ISO 字串） */
+  createdDateTime: string;
+}
+
+/**
+ * 取得筆記的浮層快照清單（依序號倒序）。
+ */
+export async function listOverlaySnapshots(
+  noteId: string
+): Promise<NoteOverlaySnapshotListItem[]> {
+  const r = await fetchJson<NoteOverlaySnapshotListItem[]>(
+    `/api/notes/${encodeURIComponent(noteId)}/overlay/snapshots`
+  );
+  return r.data ?? [];
+}
+
+/**
+ * 建立浮層快照：把「當下」的全部浮層元件與畫記由伺服器端讀取保存一份。
+ * 回傳新快照摘要；失敗（含並發 409）回 null，由呼叫端提示重試。
+ */
+export async function createOverlaySnapshot(
+  noteId: string
+): Promise<NoteOverlaySnapshotListItem | null> {
+  const r = await fetchJson<NoteOverlaySnapshotListItem>(
+    `/api/notes/${encodeURIComponent(noteId)}/overlay/snapshots`,
+    { method: 'POST' }
+  );
+  return r.success ? (r.data ?? null) : null;
+}
+
 /**
  * 取得筆記的反向連結（哪些筆記指向本筆記）
  */

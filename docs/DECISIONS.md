@@ -5,6 +5,24 @@
 
 ---
 
+## 2026-07-30（第二批）｜歷史分頁合併時間軸＋浮層手動快照＋關聯活動攝影（feature/note-revision-interceptor）
+
+- **背景**：使用者續提三需求：①筆記「歷史」分頁要看得到完整相關變更（活動紀錄頁有記不夠，歷史分頁也要）；②便利貼/T 文字框/畫筆不受版本保護要補，但**不要自動記錄**（筆數會爆炸）——右下角工具列加「儲存」鈕、按了才記一筆；③畫筆跨螢幕尺寸漂移只要解法分析（未動工，見對話紀錄）。
+- **關鍵發現（測試計畫審查抓到的 CRITICAL）**：「筆記↔任務」關聯有**兩套並行系統**——通用 `EntityLink`（/api/links，關聯列 UI）與專用 `NoteTaskLink`（/api/notes/{id}/tasks，任務關聯管理 UI）——只攔一套會讓「歷史看得到關聯」落空。**兩套都納入活動攝影**。第三套「畫記關聯」（NoteMark kind=link）屬內文標註體系，刻意不記（範圍決策）。
+- **實作**：
+  1. `ActivityLogInterceptor` 新增關聯攝影：EntityLink/NoteTaskLink 的建立（含復活）/軟刪 → 兩端（限 note/taskcard，有歷史檢視者）各記一筆 updated，Detail=「建立關聯／移除關聯：{型別}「{對端標題}」」；對端標題批次補查（task/subtask/node，sync/async 雙路徑）。
+  2. `GET /api/notes/{id}/activities`：單一筆記維度活動查詢（倒序、上限 200 筆——超過會靜默截斷最舊，已知取捨）。
+  3. `NoteOverlaySnapshot` 新表（(NoteId,SnapshotNo) 唯一）＋ `POST/GET /api/notes/{id}/overlay/snapshots`：**伺服器端**讀當下 NoteOverlayItem＋NoteMark 序列化保存（不信任 client payload）；**刻意不去重**（按下儲存＝明確存檔意圖，與 NoteRevision 的同值不寫相反，測試鎖住防後人「順手」加去重）；**不註冊 TrashTypeRegistry**（快照不可由使用者刪除——稽核價值）；**無還原端點**（本階段救援走 DB 人工，同軟刪救援流程）。
+  4. 前端：歷史分頁合併三來源時間軸（版本卡片＋活動細列＋浮層快照細列；created/deleted 與純標題/內容 updated 活動因與版本卡片重複而隱藏——用整串正則判定，split('；') 會被含全形分號的標題值打爆）；工具列 Row1 常駐「💾 儲存」鈕（DrawingToolbar 新增 persistentControls 插槽，不動 extraControls 的條件渲染語意）。
+- **必記眉角**：
+  1. **孤兒附件掃描器已擴充** `NoteOverlaySnapshot.ItemsJson`——任何新的「存內容 JSON/Markdown 的欄位」都必須同步擴掃描器（既有不變式，測試鎖住）。
+  2. 攔截器的標題補查用 IgnoreQueryFilters（軟刪對端也要有標題）但**顯式保留 UserId 隔離**——防未來新增關聯路徑漏做擁有權驗證時跨租戶洩漏標題（對抗復審 HIGH）。
+  3. 快照儲存前前端會等待飛行中的位置 PATCH 落地（上限 2 秒；逾時照存但顯示「未含拖曳中變更」）。
+  4. 已知未修（現況不可觸發，留紀錄）：同一 SaveChanges 內「筆記欄位變更＋關聯變更」會產生兩筆分開的 updated 活動（現行程式碼關聯永遠獨立儲存，不會發生）；活動端點 200 筆截斷無 hasMore。
+- **驗證**：TDD——14 條新整合測試（真 Postgres，含並發雙擊快照、不可變快照、使用者隔離雙重驗證、孤兒掃描器快照引用）先 RED（12 敗）後 GREEN；全套零回歸；對抗復審（後端 1 HIGH＋前端 2 HIGH 全修）；本機部署＋Playwright 實測。
+
+---
+
 ## 2026-07-30 ｜筆記版本快照改為 EF 攔截器唯一寫入點（feature/note-revision-interceptor）
 
 - **背景**：使用者發現「從任務建立並連結筆記」（`POST /api/links/note-from`）建立的筆記完全沒有版本快照，並裁示：「任何方式改變了筆記的內容，都要被保存成一個版本，不論是建立還是修改皆是」——系統仍在測試階段、可能有未知的覆寫問題，完整版本紀錄是防止重要筆記遺失的最後防線。

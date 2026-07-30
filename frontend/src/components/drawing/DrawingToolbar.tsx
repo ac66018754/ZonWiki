@@ -76,6 +76,7 @@ export function DrawingToolbar({
   drawingActive,
   onDone,
   extraControls,
+  persistentControls,
   topContent,
   testIdPrefix,
 }: {
@@ -116,8 +117,10 @@ export function DrawingToolbar({
   /** 是否正在使用某個繪圖工具。 */
   drawingActive: boolean;
   onDone: () => void;
-  /** 各端專屬的額外控制（例如筆記的「歸位 / ＋高 / −高」）。 */
+  /** 各端專屬的額外控制（例如筆記的「歸位 / ＋高 / −高」）；有值才會出現情境控制列。 */
   extraControls?: React.ReactNode;
+  /** 常駐於 Row1 尾端的控制（例如筆記的「💾 儲存浮層快照」）；不影響情境控制列的條件渲染。 */
+  persistentControls?: React.ReactNode;
   /** 疊在工具列「上方」的內容（例如選取文字框時的屬性面板）。 */
   topContent?: React.ReactNode;
   /** data-testid 前綴（筆記＝overlay、開問啦＝canvas-anno）。 */
@@ -211,6 +214,7 @@ export function DrawingToolbar({
           </button>
           <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={onAddSticky} title="新增便利貼" data-testid={`${testIdPrefix}-add-sticky`}>＋便利貼</button>
           <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={onAddSlide} title="新增圖片板（可放多張圖、手動切換）" data-testid={`${testIdPrefix}-add-slide`}>＋圖片板</button>
+          {persistentControls}
         </div>
 
         {/* Row2：畫筆 ｜ 螢光筆 ｜ 直線 ｜ 矩形 ｜ 橢圓 ｜ 文字 */}

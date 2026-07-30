@@ -220,6 +220,7 @@ app.MapNoteTaskLinkEndpoints();
 app.MapEntityLinkEndpoints(); // 通用實體關聯：任務/子任務/筆記/節點 互連
 app.MapNoteMarkEndpoints(); // 筆記文字標註：畫重點/做關聯/寫備註
 app.MapNoteOverlayEndpoints(); // 筆記浮層：便利貼/塗鴉/圖片輪播
+app.MapNoteOverlaySnapshotEndpoints(); // 筆記浮層手動快照（右下角工具列儲存鈕）
 app.MapAttachmentEndpoints(); // 筆記附件：貼上/上傳圖片存磁碟，內文只放短網址
 app.MapQuickLinkEndpoints();
 app.MapCaptureItemEndpoints();
