@@ -411,3 +411,25 @@
 - **查詢參數範圍裁示**：`GET /api/tasks?pinnedToTodo=true` **僅 list 視圖生效**，board/calendar 忽略（TDD 計畫審查裁示，測試 `ListTasks_BoardView_IgnoresPinnedToTodoParam` 鎖住）——避免過濾誤套到共用基礎查詢、無聲改變其他視圖行為。
 - **側欄刷新機制**：沿用既有 `zonwiki:tasks-changed` 視窗事件（原只有 SubtaskViewerModal 派發），TaskEditorModal 儲存/刪除與 QuickCreateTaskModal 建立後也派發；TasksPinnedList 監聽即時重載。點側欄項目走既有 `zonwiki:open-task` 開編輯器（免逐層傳 callback）。
 - **順帶修復（驗證時發現的既有 bug）**：ShortcutRuntime 的 keymap 是 `Map<鍵, 單一動作>`，而 `newTodo`（Todo 頁）與 `newNote`（筆記頁）預設鍵都是 `a` → 後註冊者覆蓋，**Todo 頁 `A` 快捷鍵自 newNote 加入後即靜默失效**（README 記載的功能）。改為 `Map<鍵, 動作[]>`＋依當前頁面 scope 解析（/tasks 挑 tasks、/notes 挑 notes、否則 global）；「同鍵不同 scope」從此為合法組合。/time 頁守門與 global 行為不變，Playwright 實測 a 鍵於 /tasks 開新增任務、n 鍵導覽照舊。
+
+## 2026-07-31 ｜ 筆記 URL 一律逐段編碼（noteHref/EncodeSlugForUrl/encodeSlugPath 三份同契約）
+
+- **背景**：舊檔案匯入時代的 slug 可含 `/`（層級）與 `#`（prod 實例 `programming/c#/f`）。多處裸串組 `/notes/{slug}` 連結，`#` 被瀏覽器當 fragment 切掉 → 開頁「筆記不存在」；MCP get_note 同病。
+- **考慮過的選項**：①各呼叫點各自編碼；②共用 helper 逐段 `encodeURIComponent`（`/` 保留為層級分隔）；③URL 改 GUID 根絕（併入 slug 改版討論）。
+- **最終決定**：②。前端 `lib/noteHref.ts`（`noteHref`＋`encodeSlugPath`）、後端 `NoteContentHelpers.EncodeSlugForUrl`、MCP `slugPath.ts` 三份同契約（無共用機制，註解互指）。後端把 `Uri.EscapeDataString` 多編的 RFC 3986 sub-delims（`! * ' ( )`）還原，**對齊 JS `encodeURIComponent` 語意**，確保同一 slug 前後端組出的 URL 逐位元組相同（返回堆疊字面比對不誤判）。孤立 surrogate 以 U+FFFD 兜底（壞 slug 不炸整份側欄渲染）。
+- **機器守衛**：前端 vitest 靜態守衛掃描 `frontend/src` 的 `` /notes/${ `` 裸串樣式（排除 `/api` 前綴），殘留即 FAIL——「漏改」與「未來再寫裸串」都被測試擋下。
+- **取捨備忘**：`POST /api/notes` 的 Location 標頭仍整串 escape——新建 slug 必經 GenerateSlug 過濾、不可能含特殊字元，屬安全死路徑，留待 slug 改版一併檢視。守衛不抓「字串串接」寫法（現庫無此寫法，記為已知限制）。
+
+## 2026-07-31 ｜ 反向連結聯集三來源（wiki/mark/entity）＋排序一律 Ordinal
+
+- **背景**：三套互不相通的連結系統（NoteLink=[[X]]、NoteMark kind=link=框選段落關聯、EntityLink=整篇關聯），反向連結分頁只查 NoteLink——使用者框選段落建的關聯完全看不見（prod 實證：上雲步驟→DB相關）。
+- **最終決定**：`GetBacklinksHandler` 聯集三來源；`BacklinkDto` 加 `Kind`/`MarkId`；mark 來源前端以 `?mark=` 深連結跳回來源段落。**EntityLink 採雙向**（哪端是 Source 只是建立當下開著哪頁的巧合，單向會重演「建了看不見」）；三來源一律**排除自我參照**；**Detached 的 mark 照樣列出**（關聯沒失效，只是定位失效——降級顯示屬段落關聯包）。排序＝Kind 權重（wiki=0、mark=1、entity=2）再標題，標題比較用 **StringComparer.Ordinal**（dev zh-TW 與 prod invariant 文化不同，culture-aware 排序跨環境不一致——實測 ICU 下「乙<甲」與天干直覺相反）。
+- **記錄的 TODO**：backlinks 無 Take 上限（可比照 ActivityLog Take(200)）；`?mark=` 跳轉的 300ms 寫死時序與斷錨無提示 → 段落關聯包一併處理；NoteWriteEndpoints God file 待拆。
+
+## 2026-07-31 ｜ 筆記 URL 改版：slug 連動現行標題＋NoteSlugAlias 永久別名＋消歧異頁
+
+- **背景**：slug 原為「建立時由標題產生、永不變」——改標題後 URL 停留舊名。使用者要求：URL 反映現在標題，且舊 URL（如存在 LINE 備忘錄的連結）永遠有效並指向原篇。三驗收情境：①手打新標題 URL 能通；②舊存 URL 永遠指原篇；③名字被新篇取用後兩邊皆可達。
+- **考慮過的選項**：①slug 永凍（現狀）；②GUID 進 URL（醜但零歧義）；③slug 連動＋alias「先佔永久保留」（名字不可重用）；④slug 連動＋alias＋名字可重用＋消歧異頁。
+- **最終決定**：④（③曾短暫定案，被情境③推翻——使用者要「改成舊名的新篇也能被該名字找到」，而②③無法同時滿足情境②）。規則：改名以 GenerateSlug 重產 slug（撞「活 slug」加 -2 序號；撞 alias 不加——名字可重用）；舊 slug 寫入 `NoteSlugAlias`（唯一鍵 (UserId,Slug,NoteId)，同名多任前屋主各留一筆）；改回舊名自我收斂。解析：**GUID 直達 → 活 slug → alias**，候選去重後唯一直達（alias 命中附「舊網址」橫幅、不強制轉址）、多個進**消歧異頁**（Wikipedia 模式）、零則 404。
+- **關鍵防呆（計畫對抗式復審揪出）**：「自身操作不得落入消歧異」——改名/複製存檔後以回應本體渲染＋已知 id 的重抓一律走 GUID 直達，否則改名撞歷史 alias 時，使用者剛存完檔會被導進消歧異頁看不到自己的筆記。
+- **業界對照**：Wikipedia（redirect＋消歧義頁）＝本方案原型；GitHub repo 改名重用即默默劫持（repojacking）＝反面教材；Stack Overflow/Notion 的 id-in-URL＝我們以「GUID 直達」吸收其零歧義優點而不犧牲純標題 URL。
