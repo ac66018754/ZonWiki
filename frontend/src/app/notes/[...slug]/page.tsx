@@ -1376,7 +1376,7 @@ export default function NotesDetailPage() {
             {/* 建立／更新時間（標題與動作鈕已移至上方置頂工具列） */}
             <div
               style={{
-                marginBottom: 'var(--spacing-5)',
+                marginBottom: 'var(--spacing-3)',
                 display: 'flex',
                 gap: 'var(--spacing-4)',
                 fontSize: 'var(--text-sm)',
@@ -1385,6 +1385,109 @@ export default function NotesDetailPage() {
             >
               <span>建立：{formatNoteFullDateTime(note.createdDateTime)}</span>
               <span>更新：{formatNoteFullDateTime(note.updatedDateTime)}</span>
+            </div>
+
+            {/* 分類／標籤（常駐顯示於時間列下方；分類 chip 可點擊 → 該分類的筆記清單）。
+                樣式沿用全站慣例：📁 分類完整路徑、🏷 標籤名（與全域搜尋結果一致）。 */}
+            <div
+              style={{
+                marginBottom: 'var(--spacing-5)',
+                display: 'grid',
+                gap: 'var(--spacing-2)',
+                fontSize: 'var(--text-sm)',
+                color: 'var(--text-secondary)',
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: 'var(--spacing-2)',
+                }}
+              >
+                <span style={{ flexShrink: 0 }}>分類：</span>
+                {(note.categories ?? []).length === 0 ? (
+                  <span style={{ color: 'var(--text-tertiary)' }}>未分類</span>
+                ) : (
+                  (note.categories ?? []).map((c) => {
+                    // note.categories 實際來自後端 TagRefDto（只有 id/name、無 parentId），
+                    // 完整路徑需以 SWR 分類選項池（allCategories 含 parentId）反查；
+                    // 池尚未載入完成時退回只顯示葉節點名稱（載入後自動補全）。
+                    const fullCategory = allCategories.find((x) => x.id === c.id);
+                    const pathLabel = fullCategory
+                      ? `${categoryPath(fullCategory.parentId, allCategories)}${fullCategory.name}`
+                      : c.name;
+                    return (
+                      <button
+                        key={c.id}
+                        onClick={() => router.push(`/notes?categoryId=${c.id}`)}
+                        title={`查看「${pathLabel}」分類的所有筆記`}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.borderColor = 'var(--border-strong)';
+                          e.currentTarget.style.color = 'var(--text-primary)';
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.borderColor = 'var(--border-default)';
+                          e.currentTarget.style.color = 'var(--text-secondary)';
+                        }}
+                        style={{
+                          padding: '2px 10px',
+                          background: 'var(--bg-surface)',
+                          border: '1px solid var(--border-default)',
+                          borderRadius: 'var(--radius-full)',
+                          color: 'var(--text-secondary)',
+                          fontSize: 'var(--text-xs)',
+                          cursor: 'pointer',
+                          whiteSpace: 'nowrap',
+                          // 名稱無長度上限：截斷防 375px 爆版，完整路徑靠 title 提示。
+                          maxWidth: '240px',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          transition: 'border-color 0.15s ease, color 0.15s ease',
+                        }}
+                      >
+                        📁 {pathLabel}
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: 'var(--spacing-2)',
+                }}
+              >
+                <span style={{ flexShrink: 0 }}>標籤：</span>
+                {(note.tags ?? []).length === 0 ? (
+                  <span style={{ color: 'var(--text-tertiary)' }}>無標籤</span>
+                ) : (
+                  (note.tags ?? []).map((t) => (
+                    <span
+                      key={t.id}
+                      title={t.name}
+                      style={{
+                        padding: '2px 10px',
+                        background: 'var(--bg-surface)',
+                        border: '1px solid var(--border-default)',
+                        borderRadius: 'var(--radius-full)',
+                        color: 'var(--text-secondary)',
+                        fontSize: 'var(--text-xs)',
+                        whiteSpace: 'nowrap',
+                        // 名稱無長度上限：截斷防 375px 爆版，完整名稱靠 title 提示。
+                        maxWidth: '240px',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      🏷 {t.name}
+                    </span>
+                  ))
+                )}
+              </div>
             </div>
 
             {/* 標籤頁 */}

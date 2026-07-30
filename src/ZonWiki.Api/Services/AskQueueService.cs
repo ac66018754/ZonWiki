@@ -368,20 +368,10 @@ public sealed class AskQueueService
                 UpdatedUser = userId.ToString(),
             };
 
-            // 答案筆記、create 版本、錨點、以及 Session 的「已完成」狀態，
+            // 答案筆記、錨點、以及 Session 的「已完成」狀態，
             // 於「單次 SaveChanges」原子寫入——避免多次儲存之間崩潰而留下半完成狀態。
+            // create 版本快照由 NoteRevisionInterceptor 於同一次 SaveChanges 自動寫入。
             _db.Note.Add(answerNote);
-            _db.NoteRevision.Add(new NoteRevision
-            {
-                UserId = userId,
-                NoteId = answerNote.Id,
-                RevisionNo = 1,
-                ChangeKind = "create",
-                Title = answerNote.Title,
-                ContentRaw = answerNote.ContentRaw,
-                CreatedUser = userId.ToString(),
-                UpdatedUser = userId.ToString(),
-            });
             _db.NoteMark.Add(mark);
             ApplyCompleted(session, answerNote.Id, mark.Id);
             await _db.SaveChangesAsync(ct);
@@ -685,18 +675,8 @@ public sealed class AskQueueService
                 UpdatedUser = userId.ToString(),
             };
 
+            // create 版本快照由 NoteRevisionInterceptor 於同一次 SaveChanges 自動寫入。
             _db.Note.Add(answerNote);
-            _db.NoteRevision.Add(new NoteRevision
-            {
-                UserId = userId,
-                NoteId = answerNote.Id,
-                RevisionNo = 1,
-                ChangeKind = "create",
-                Title = answerNote.Title,
-                ContentRaw = answerNote.ContentRaw,
-                CreatedUser = userId.ToString(),
-                UpdatedUser = userId.ToString(),
-            });
             _db.NoteMark.Add(mark);
             session.ResultText = answer;
             ApplyCompleted(session, answerNote.Id, mark.Id);

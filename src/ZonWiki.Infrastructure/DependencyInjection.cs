@@ -24,6 +24,7 @@ public static class DependencyInjection
 
         services.AddSingleton<AuditingSaveChangesInterceptor>();
         services.AddSingleton<ActivityLogInterceptor>();
+        services.AddSingleton<NoteRevisionInterceptor>();
         services.AddSingleton<UserIsolationMaterializationInterceptor>();
 
         services.AddDbContext<ZonWikiDbContext>((sp, options) =>
@@ -31,10 +32,13 @@ public static class DependencyInjection
             options
                 .UseNpgsql(connectionString, npgsql =>
                     npgsql.MigrationsAssembly(typeof(ZonWikiDbContext).Assembly.FullName))
-                // 順序重要：先稽核（設好實體 Id/時間），再活動紀錄（自行設好紀錄列欄位）。
+                // 順序重要：先稽核（設好實體 Id/時間），再活動紀錄與版本快照
+                // （這兩者產生的列不會被稽核攔截器回頭補章，皆須自行設好 Id/時間/使用者欄位）。
                 .AddInterceptors(
                     sp.GetRequiredService<AuditingSaveChangesInterceptor>(),
                     sp.GetRequiredService<ActivityLogInterceptor>(),
+                    // 筆記版本快照唯一寫入點：任何路徑改到筆記標題/內容都自動留全文快照。
+                    sp.GetRequiredService<NoteRevisionInterceptor>(),
                     // 使用者隔離「最終防線」：每筆 IUserOwned 具現化都再核對一次 UserId，
                     // 非本人即 fail-closed 中止——即使其他層已過濾過也再篩一次，杜絕任何回應外洩。
                     sp.GetRequiredService<UserIsolationMaterializationInterceptor>())

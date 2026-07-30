@@ -363,19 +363,9 @@ public sealed class RefineService
             UpdatedUser = userKey,
         };
         _db.Note.Add(note);
+        // 版本快照（create）由 NoteRevisionInterceptor 於 SaveChanges 時自動寫入
+        //（背景服務無 HTTP 脈絡也涵蓋——快照歸屬取 note.UserId）。
         await _db.SaveChangesAsync(ct);
-
-        _db.NoteRevision.Add(new NoteRevision
-        {
-            UserId = userId,
-            NoteId = note.Id,
-            RevisionNo = 1,
-            ChangeKind = "create",
-            Title = note.Title,
-            ContentRaw = note.ContentRaw,
-            CreatedUser = userKey,
-            UpdatedUser = userKey,
-        });
 
         // 分類路徑 → 巢狀分類（找不到就建立）。
         var leafId = await ResolveCategoryPathAsync(userId, userKey, r.CategoryPath, ct);
