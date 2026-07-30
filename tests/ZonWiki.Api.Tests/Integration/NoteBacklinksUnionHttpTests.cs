@@ -114,8 +114,10 @@ public sealed class NoteBacklinksUnionHttpTests
     // ── 測試 4：三來源並存＋排序（wiki=0 → mark=1 → entity=2，再依來源標題）───────────
 
     /// <summary>
-    /// 同時存在 wiki／mark／entity 三種指向 B 的連結 → 恰為 3 筆，
-    /// 順序固定為 wiki → mark → entity（Kind 權重表），同 Kind 內依來源筆記標題。
+    /// 同時存在 wiki／mark×2／entity 指向 B 的連結 → 恰為 4 筆，
+    /// 順序固定為 wiki → mark → entity（Kind 權重表）；mark 桶刻意用「建立順序與標題字序相反」
+    /// 的兩篇來源，釘住「同 Kind 內依來源筆記標題」的 ThenBy 段（對抗式復審：原版每桶只有一篇，
+    /// ThenBy 從未被真正觸發、誤刪也抓不到）。
     /// </summary>
     [Fact]
     public async Task Backlinks_ThreeSources_OrderedByKindWeightThenTitle()
@@ -124,19 +126,23 @@ public sealed class NoteBacklinksUnionHttpTests
         var targetTitle = "排序目標" + Guid.NewGuid().ToString("N")[..8];
         var (noteB, _) = await CreateNoteAsync(client, targetTitle, "內文B");
         var (noteWiki, _) = await CreateNoteAsync(client, "甲-wiki來源", $"見 [[{targetTitle}]]");
-        var (noteMark, _) = await CreateNoteAsync(client, "乙-mark來源", "內文");
+        // 先建「乙」再建「甲」：若實作誤以建立時間排序，此測試會抓到。
+        var (noteMarkLate, _) = await CreateNoteAsync(client, "乙-mark來源", "內文");
+        var (noteMarkEarly, _) = await CreateNoteAsync(client, "甲-mark來源", "內文");
         var (noteEntity, _) = await CreateNoteAsync(client, "丙-entity來源", "內文");
 
-        await CreateLinkMarkAsync(client, noteMark, noteB, "框選段落");
+        await CreateLinkMarkAsync(client, noteMarkLate, noteB, "乙的框選段落");
+        await CreateLinkMarkAsync(client, noteMarkEarly, noteB, "甲的框選段落");
         await CreateEntityLinkAsync(client, noteEntity, noteB);
 
         var backlinks = await GetBacklinksAsync(client, noteB);
 
-        backlinks.Should().HaveCount(3);
-        backlinks.Select(b => b.Kind).Should().ContainInOrder("wiki", "mark", "entity");
+        backlinks.Should().HaveCount(4);
+        backlinks.Select(b => b.Kind).Should().ContainInOrder("wiki", "mark", "mark", "entity");
         backlinks[0].SourceNoteId.Should().Be(noteWiki.ToString());
-        backlinks[1].SourceNoteId.Should().Be(noteMark.ToString());
-        backlinks[2].SourceNoteId.Should().Be(noteEntity.ToString());
+        backlinks[1].SourceNoteId.Should().Be(noteMarkEarly.ToString(), "同 Kind 內依標題：甲在乙前");
+        backlinks[2].SourceNoteId.Should().Be(noteMarkLate.ToString());
+        backlinks[3].SourceNoteId.Should().Be(noteEntity.ToString());
     }
 
     // ── 測試 5：entity 雙向——從 B 頁建立 B→X 也要出現在 backlinks(B) ─────────────────
