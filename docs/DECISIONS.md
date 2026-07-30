@@ -445,3 +445,9 @@
 - **最終決定**：④（③曾短暫定案，被情境③推翻——使用者要「改成舊名的新篇也能被該名字找到」，而②③無法同時滿足情境②）。規則：改名以 GenerateSlug 重產 slug（撞「活 slug」加 -2 序號；撞 alias 不加——名字可重用）；舊 slug 寫入 `NoteSlugAlias`（唯一鍵 (UserId,Slug,NoteId)，同名多任前屋主各留一筆）；改回舊名自我收斂。解析：**GUID 直達 → 活 slug → alias**，候選去重後唯一直達（alias 命中附「舊網址」橫幅、不強制轉址）、多個進**消歧異頁**（Wikipedia 模式）、零則 404。
 - **關鍵防呆（計畫對抗式復審揪出）**：「自身操作不得落入消歧異」——改名/複製存檔後以回應本體渲染＋已知 id 的重抓一律走 GUID 直達，否則改名撞歷史 alias 時，使用者剛存完檔會被導進消歧異頁看不到自己的筆記。
 - **業界對照**：Wikipedia（redirect＋消歧義頁）＝本方案原型；GitHub repo 改名重用即默默劫持（repojacking）＝反面教材；Stack Overflow/Notion 的 id-in-URL＝我們以「GUID 直達」吸收其零歧義優點而不犧牲純標題 URL。
+
+## 2026-07-31 ｜ 段落級關聯＋錨點保護：瀏覽器為唯一座標系（後端不做 reAnchor/Detached 判定）
+
+- **背景**：關聯要能指到「目標筆記的某個段落」（NoteMark 加 TargetMarkId、目標端以 kind="anchor" 純錨點錨定）；且「編輯到被引用的段落」要在存檔時提醒（使用者 1~100 例子）。原計畫由後端在存檔時以 C# 移植 reAnchor 重算 Detached——對抗式復審揪出 CRITICAL：mark 座標系是「瀏覽器對 Markdig HTML 的 textContent」，repo 無 HTML parser、編輯預覽（react-markdown）又是第三套渲染，後端重建純文字必然座標分歧，整個安全網會假陰性失效。
+- **最終決定（v2）**：**瀏覽器為唯一座標系**。①新 `POST /api/notes/render` 純轉換 dry-run（掛輕量限流；僅存檔動作觸發、非逐鍵）；②存檔攔截在前端：舊文字＝手上 note.contentHtml 注入 detached DOM 讀 textContent、新文字＝dry-run 結果同法，以既有 textAnchor.reAnchor 原碼預跑——「原本」基準＝**即時重算舊內容**，絕不讀 DB 存量 Detached（滯後污染會把舊帳誤植為本次破壞）；③Detached 由前端回寫（每次真實渲染重錨定，found 與存值不一致即 PATCH，帶 contentHash 防過期覆蓋＋markId 去重防風暴）。
+- **記錄的取捨**：Detached 信任模型＝前端為權威（僅影響自身資料的顯示狀態）；「最終一致」的前提是「最終有人用瀏覽器開過該筆記」——純 PAT 寫入、從未在瀏覽器開啟的筆記永不校正；編輯模式「N 處被引用」提示同受此滯後；`?mark=` 跳轉退化是即時 DOM 查找、不受滯後影響。anchor 孤兒：刪 link 連動軟刪無主 anchor、複製引用以同位置去重。jsdom 單元測試與 E2E 共用同一份 fixtures（frontend/src/lib/__fixtures__/anchorFixtures.ts），確保「jsdom==瀏覽器 textContent」主張真的被驗證。
