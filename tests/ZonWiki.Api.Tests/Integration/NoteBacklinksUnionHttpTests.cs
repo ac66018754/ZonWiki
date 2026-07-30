@@ -125,14 +125,16 @@ public sealed class NoteBacklinksUnionHttpTests
         var client = await NewUserClientAsync("bl-order");
         var targetTitle = "排序目標" + Guid.NewGuid().ToString("N")[..8];
         var (noteB, _) = await CreateNoteAsync(client, targetTitle, "內文B");
-        var (noteWiki, _) = await CreateNoteAsync(client, "甲-wiki來源", $"見 [[{targetTitle}]]");
-        // 先建「乙」再建「甲」：若實作誤以建立時間排序，此測試會抓到。
-        var (noteMarkLate, _) = await CreateNoteAsync(client, "乙-mark來源", "內文");
-        var (noteMarkEarly, _) = await CreateNoteAsync(client, "甲-mark來源", "內文");
-        var (noteEntity, _) = await CreateNoteAsync(client, "丙-entity來源", "內文");
+        // 標題用 ASCII 前綴消歧義：中文字（如甲/乙）在 Ordinal 與各文化 collation 下順序不一，
+        // 拿來當排序測資會讓期望值依環境搖擺（實測就踩到：ICU 下乙<甲、與天干直覺相反）。
+        var (noteWiki, _) = await CreateNoteAsync(client, "W-wiki來源", $"見 [[{targetTitle}]]");
+        // 先建「B」再建「A」：若實作誤以建立時間排序，此測試會抓到。
+        var (noteMarkLate, _) = await CreateNoteAsync(client, "B-mark來源", "內文");
+        var (noteMarkEarly, _) = await CreateNoteAsync(client, "A-mark來源", "內文");
+        var (noteEntity, _) = await CreateNoteAsync(client, "E-entity來源", "內文");
 
-        await CreateLinkMarkAsync(client, noteMarkLate, noteB, "乙的框選段落");
-        await CreateLinkMarkAsync(client, noteMarkEarly, noteB, "甲的框選段落");
+        await CreateLinkMarkAsync(client, noteMarkLate, noteB, "B 的框選段落");
+        await CreateLinkMarkAsync(client, noteMarkEarly, noteB, "A 的框選段落");
         await CreateEntityLinkAsync(client, noteEntity, noteB);
 
         var backlinks = await GetBacklinksAsync(client, noteB);
@@ -140,7 +142,7 @@ public sealed class NoteBacklinksUnionHttpTests
         backlinks.Should().HaveCount(4);
         backlinks.Select(b => b.Kind).Should().ContainInOrder("wiki", "mark", "mark", "entity");
         backlinks[0].SourceNoteId.Should().Be(noteWiki.ToString());
-        backlinks[1].SourceNoteId.Should().Be(noteMarkEarly.ToString(), "同 Kind 內依標題：甲在乙前");
+        backlinks[1].SourceNoteId.Should().Be(noteMarkEarly.ToString(), "同 Kind 內依標題 Ordinal：A 在 B 前");
         backlinks[2].SourceNoteId.Should().Be(noteMarkLate.ToString());
         backlinks[3].SourceNoteId.Should().Be(noteEntity.ToString());
     }

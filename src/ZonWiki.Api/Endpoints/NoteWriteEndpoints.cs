@@ -1147,12 +1147,15 @@ public static class NoteWriteEndpoints
             _ => 3,
         };
 
+        // 標題排序用 Ordinal（碼位序）而非預設文化比較器：伺服器文化在本機（zh-TW）與
+        // prod 容器（invariant/ICU）不同，culture-aware 排序會讓同一份資料在兩環境順序不一致；
+        // Ordinal 跨環境確定、可被整合測試釘死。
         var backlinks = wikiRows
             .Concat(markRows)
             .Concat(entityAsSource)
             .Concat(entityAsTarget)
             .OrderBy(b => KindWeight(b.Kind))
-            .ThenBy(b => b.SourceNoteTitle)
+            .ThenBy(b => b.SourceNoteTitle, StringComparer.Ordinal)
             .ToList();
 
         return Results.Ok(ApiResponse<List<BacklinkDto>>.Ok(backlinks));
