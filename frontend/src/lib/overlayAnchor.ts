@@ -278,3 +278,52 @@ export function locateAnchor(
   const cRect = container.getBoundingClientRect();
   return { visible: true, x: rect.left - cRect.left, y: rect.top - cRect.top };
 }
+
+/**
+ * 把 el（含自身）到 container（不含）之間所有「收合中」的 <details> 祖先展開。
+ * 與目錄（TocPanel.scrollToHeading）的展開行為一致：只展開「祖先鏈」，旁支的收合區塊不動；
+ * 走訪止步於 container 邊界，container 之外的 details 一律不碰。
+ * @param container 內文容器（.markdown-prose）。
+ * @param el 目標元素（null 或不在 container 內時不做任何事）。
+ * @returns 是否有實際展開任何一層。
+ */
+export function openAncestorDetails(container: HTMLElement, el: Element | null): boolean {
+  if (!el || !container.contains(el)) return false;
+  let opened = false;
+  for (let p: Element | null = el; p && p !== container; p = p.parentElement) {
+    if (p instanceof HTMLDetailsElement && !p.open) {
+      p.open = true;
+      opened = true;
+    }
+  }
+  return opened;
+}
+
+/**
+ * 依錨點重新定位文字，若其位於收合的 <details>（:::toggle）內則循著階層展開全部祖先。
+ * 供「問題清單定位 / ?overlay= 深連結」在捲動前呼叫——被收合隱藏的浮層項目整個不會渲染，
+ * 必須先展開其錨定文字的收合祖先，項目才會恢復渲染、後續的捲動定位才找得到 DOM。
+ *
+ * 刻意只做「純 DOM 判定」（reAnchor 文字重定位＋祖先鏈走訪），不做任何幾何量測
+ * （getClientRects / getBoundingClientRect）——功能上不需要，且測試環境（jsdom）沒有版面。
+ * @param container 內文容器（.markdown-prose）。
+ * @param anchor 持久化錨點。
+ * @param cachedText 已算好的 container.textContent（可省，未傳自行計算）。
+ * @returns 錨點文字仍存在（無論是否需要展開）→ true；文字已被編輯移除 → false
+ * （此時項目以絕對座標渲染、永遠可見，呼叫端應照常繼續捲動定位）。
+ */
+export function revealAnchor(
+  container: HTMLElement,
+  anchor: OverlayAnchor,
+  cachedText?: string
+): boolean {
+  const containerText = cachedText ?? container.textContent ?? '';
+  const r = reAnchor(containerText, anchor.text, anchor.start, anchor.prefix, anchor.suffix);
+  if (!r.found) return false;
+  const range = rangeFromOffsets(container, r.start, r.end);
+  if (!range) return false;
+  const startEl: Element | null =
+    range.startContainer instanceof Element ? range.startContainer : range.startContainer.parentElement;
+  openAncestorDetails(container, startEl);
+  return true;
+}
