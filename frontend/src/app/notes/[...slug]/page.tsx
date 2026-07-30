@@ -842,10 +842,10 @@ export default function NotesDetailPage() {
       }
 
       // 未改名（含經 alias 進入只改內容）：就地更新（即時回饋）＋以 id 直達補齊分類/標籤
-      //（PUT 回應不含 categories/tags；GUID 直達永不歧義）。存檔後即停在現行 slug，撤掉別名橫幅。
+      //（PUT 回應不含 categories/tags；GUID 直達永不歧義）。
+      // 別名橫幅「保留不動」：使用者此刻仍停留在舊網址上（本路徑不換 URL），
+      // 橫幅正是「你在舊網址」的提示，存個檔就撤掉會誤導（規格 E2E-21，對抗式復審裁決）。
       setNote(saved);
-      setMatchedByAlias(false);
-      setAliasRequestedSlug(null);
       setIsEditing(false);
       setError(null);
 
