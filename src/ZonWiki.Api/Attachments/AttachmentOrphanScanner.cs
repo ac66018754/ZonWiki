@@ -8,7 +8,7 @@ namespace ZonWiki.Api.Attachments;
 /// 孤兒附件掃描器：找出「建立超過寬限期、且未被任何內容引用」的附件並軟刪除（ValidFlag=0）。
 ///
 /// 引用判定（保守設計，寧可留著也不誤殺）：附件 Id 字串出現在「同一位使用者」的
-/// Note.ContentRaw、NoteRevision.ContentRaw（編輯歷史可還原）、NoteOverlayItem.DataJson
+/// Note.ContentRaw、NoteRevision.ContentRaw（編輯歷史可還原）、NoteOverlaySnapshot.ItemsJson（浮層快照可救援）、NoteOverlayItem.DataJson
 /// （圖片輪播）、NoteOverlayItem.Text（便利貼／文字框本文，以 Markdown 渲染可手貼附件網址顯圖）、
 /// NoteOverlayItem.QuestionAnswer（問題的回答，答題彈窗同樣能貼圖）、
 /// TaskCard.Content、Node.Content 或 NodeRevision.Content（任務與畫布節點
@@ -78,7 +78,11 @@ public sealed class AttachmentOrphanScanner(
                 || await db.Node.IgnoreQueryFilters()
                     .AnyAsync(n => n.UserId == userId && EF.Functions.ILike(n.Content, pattern), ct)
                 || await db.NodeRevision.IgnoreQueryFilters()
-                    .AnyAsync(r => r.UserId == userId && EF.Functions.ILike(r.Content, pattern), ct);
+                    .AnyAsync(r => r.UserId == userId && EF.Functions.ILike(r.Content, pattern), ct)
+                // 浮層手動快照（NoteOverlaySnapshot.ItemsJson）內的引用也算——
+                // 快照是救援用歷史，附件被回收會讓快照裡的圖變壞圖（同 NoteRevision 的教訓）。
+                || await db.NoteOverlaySnapshot.IgnoreQueryFilters()
+                    .AnyAsync(s => s.UserId == userId && EF.Functions.ILike(s.ItemsJson, pattern), ct);
             if (isReferenced)
             {
                 continue;

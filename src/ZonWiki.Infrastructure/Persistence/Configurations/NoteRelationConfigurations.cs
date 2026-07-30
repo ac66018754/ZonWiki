@@ -108,6 +108,31 @@ public sealed class NoteRevisionConfiguration : IEntityTypeConfiguration<NoteRev
 }
 
 /// <summary>
+/// NoteOverlaySnapshot（筆記浮層手動快照）的 EF Core 對應設定。
+/// </summary>
+public sealed class NoteOverlaySnapshotConfiguration : IEntityTypeConfiguration<NoteOverlaySnapshot>
+{
+    /// <summary>
+    /// 設定 NoteOverlaySnapshot 實體的對應規則。
+    /// </summary>
+    /// <param name="builder">EF Core 提供的實體型別建構器。</param>
+    public void Configure(EntityTypeBuilder<NoteOverlaySnapshot> builder)
+    {
+        builder.HasKey(x => x.Id);
+        // ItemsJson 不限長度（塗鴉資料可能較大）；Summary 為顯示用短字串。
+        builder.Property(x => x.ItemsJson).IsRequired();
+        builder.Property(x => x.Summary).IsRequired().HasMaxLength(NoteOverlaySnapshot.SummaryMaxLength);
+        // (NoteId, SnapshotNo) 唯一：取號必須無視查詢過濾器看全部列（同 NoteRevision 的教訓）。
+        builder.HasIndex(x => new { x.NoteId, x.SnapshotNo }).IsUnique();
+
+        builder.HasOne(x => x.Note)
+            .WithMany()
+            .HasForeignKey(x => x.NoteId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+/// <summary>
 /// NoteTaskLink（筆記↔任務卡片 多對多）的 EF Core 對應設定。
 /// </summary>
 public sealed class NoteTaskLinkConfiguration : IEntityTypeConfiguration<NoteTaskLink>

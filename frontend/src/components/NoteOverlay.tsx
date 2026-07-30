@@ -8,6 +8,7 @@ import {
   updateNoteOverlay,
   deleteNoteOverlay,
   askNoteSelectionAnswer,
+  createOverlaySnapshot,
   type NoteOverlayItem,
 } from '@/lib/api';
 import { logger } from '@/lib/logger';
@@ -273,13 +274,49 @@ export function NoteOverlay({
   const patchLocal = (id: string, patch: Partial<NoteOverlayItem>) =>
     setItems((prev) => prev.map((i) => (i.id === id ? { ...i, ...patch } : i)));
 
+  // 飛行中的浮層更新數（persist 是 fire-and-forget）：儲存快照前要等它們落地，
+  // 否則「剛拖完就按儲存」會拍到伺服器上的舊位置。
+  const inFlightPersists = useRef(0);
+
   const persist = useCallback(async (id: string, patch: Partial<NoteOverlayItem>) => {
+    inFlightPersists.current += 1;
     try {
       await updateNoteOverlay(id, patch);
     } catch (e) {
       logger.error('Failed to update overlay item:', e);
+    } finally {
+      inFlightPersists.current -= 1;
     }
   }, []);
+
+  // 浮層快照儲存狀態（工具列「💾 儲存」鈕的回饋）。
+  // saved-partial：逾時仍有飛行中更新未落地——快照已存，但可能未含最後一刻的拖曳變更。
+  const [snapshotState, setSnapshotState] = useState<
+    'idle' | 'saving' | 'saved' | 'saved-partial' | 'error'
+  >('idle');
+
+  /**
+   * 儲存浮層快照：等待飛行中的位置/內容更新落地（上限 2 秒）後，
+   * 請伺服器把當下全部浮層與畫記存成一份不可變快照（歷史分頁可見）。
+   * 逾時仍有未落地的更新時照樣儲存，但以「未含拖曳中變更」如實告知。
+   */
+  const saveOverlaySnapshot = useCallback(async () => {
+    if (snapshotState === 'saving') return;
+    setSnapshotState('saving');
+    const deadline = Date.now() + 2000;
+    while (inFlightPersists.current > 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const fullyFlushed = inFlightPersists.current === 0;
+    const result = await createOverlaySnapshot(noteId);
+    if (result) {
+      setSnapshotState(fullyFlushed ? 'saved' : 'saved-partial');
+      setTimeout(() => setSnapshotState('idle'), fullyFlushed ? 2000 : 4000);
+    } else {
+      setSnapshotState('error');
+      setTimeout(() => setSnapshotState('idle'), 3000);
+    }
+  }, [noteId, snapshotState]);
 
   const bringToFront = (item: NoteOverlayItem) => {
     if (item.zIndex >= maxZ) return;
@@ -1683,6 +1720,23 @@ export function NoteOverlay({
           onClear={clearDrawing}
           drawingActive={drawingActive}
           onDone={() => { setSelectedShapeIdx(null); setTool(null); }}
+          persistentControls={(
+            // 浮層快照儲存鈕（Row1 常駐）：按下才記一筆——手動版本保護，避免自動記錄筆數爆炸。
+            <button
+              className="tk-btn"
+              style={{ cursor: snapshotState === 'saving' ? 'wait' : 'pointer' }}
+              onClick={saveOverlaySnapshot}
+              disabled={snapshotState === 'saving'}
+              title="儲存浮層快照：把目前全部便利貼/文字框/塗鴉/畫記存成一份版本（筆記「歷史」分頁可見）"
+              data-testid="overlay-snapshot-save"
+            >
+              {snapshotState === 'saving' && '⏳ 儲存中…'}
+              {snapshotState === 'saved' && '✓ 已儲存'}
+              {snapshotState === 'saved-partial' && '✓ 已儲存（未含拖曳中變更）'}
+              {snapshotState === 'error' && '⚠️ 失敗，請重試'}
+              {snapshotState === 'idle' && '💾 儲存'}
+            </button>
+          )}
           extraControls={(items.some((i) => i.kind !== 'drawing') || drawingActive) ? (
             <>
               {items.some((i) => i.kind !== 'drawing') && (
