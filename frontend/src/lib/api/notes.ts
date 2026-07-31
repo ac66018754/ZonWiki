@@ -75,6 +75,8 @@ export interface NoteDetail {
   isDraft?: boolean;
   /** 樂觀鎖版本（PostgreSQL xmin，#4/#34）；保存時原封帶回為 baseVersion 供後端偵測併發衝突 */
   version?: number;
+  /** 內容雜湊（SHA-256）：包4 Detached 回寫的「當次渲染基準」防過期用 */
+  contentHash?: string;
   /** @deprecated 相容舊欄位名 */
   categoryId?: string;
   /** @deprecated 相容舊欄位名 */
@@ -349,6 +351,11 @@ export interface Backlink {
   kind?: "wiki" | "mark" | "entity";
   /** mark 來源的標註 ID（供組 ?mark= 深連結跳回段落）；其餘來源為 null */
   markId?: string | null;
+  /**
+   * （僅 mark 來源）該關聯指向的「本篇段落錨點」ID：有值時前端跳轉改用 ?mark={targetMarkId}
+   * 精準落在被引用段落；null＝整篇關聯（落頁頂）。其餘來源恆為 null。
+   */
+  targetMarkId?: string | null;
 }
 
 /**
@@ -370,8 +377,8 @@ export interface AiTransformResult {
  */
 export interface NoteMark {
   id: string;
-  /** 種類："highlight" | "link" | "annotation" */
-  kind: 'highlight' | 'link' | 'annotation';
+  /** 種類："highlight" | "link" | "annotation" | "anchor"（純錨點＝段落級關聯目標） */
+  kind: 'highlight' | 'link' | 'annotation' | 'anchor';
   anchorText: string;
   anchorStart: number;
   anchorEnd: number;
@@ -392,11 +399,15 @@ export interface NoteMark {
   targetSlug?: string | null;
   /** 備註文字（annotation 用） */
   text?: string | null;
+  /** 段落級關聯的目標錨點 ID（link 用；null＝整篇關聯） */
+  targetMarkId?: string | null;
+  /** （僅 kind="anchor"）此錨點被哪些來源筆記引用（去重、依標題排序）；其他 kind 為空陣列 */
+  referencedBy?: string[];
 }
 
 /** 建立筆記標註的請求內容。 */
 export interface CreateNoteMarkInput {
-  kind: 'highlight' | 'link' | 'annotation';
+  kind: 'highlight' | 'link' | 'annotation' | 'anchor';
   anchorText: string;
   anchorStart: number;
   anchorEnd: number;
@@ -407,6 +418,8 @@ export interface CreateNoteMarkInput {
   targetId?: string;
   targetUrl?: string;
   text?: string;
+  /** 段落級關聯的目標錨點 ID（link 用） */
+  targetMarkId?: string;
 }
 
 /** 框選提問的結果（新建的答案筆記 + 建立的關聯標註）。 */
@@ -546,6 +559,48 @@ export async function updateNoteMark(
 export async function deleteNoteMark(markId: string): Promise<boolean> {
   const r = await fetchJson(`/api/notes/marks/${encodeURIComponent(markId)}`, { method: 'DELETE' });
   return r.success;
+}
+
+/**
+ * 回寫某標註的「錨點失效狀態（Detached）」。
+ *
+ * 包4 錨點保護：Detached 由前端每次真實渲染後計算並回寫（瀏覽器為唯一座標系，見 DECISIONS）。
+ * 帶「當次渲染所依據的 contentHash」防過期——後端比對非最新即忽略（no-op），
+ * 不讓停在舊內容的分頁覆蓋另一分頁剛寫對的值。fire-and-forget、失敗靜默。
+ *
+ * @param markId 標註識別碼。
+ * @param detached 當次渲染下是否失去定位。
+ * @param contentHash 當次渲染所依據的筆記 contentHash。
+ * @returns 是否成功（含 no-op 也算成功）；網路/權限失敗回 false。
+ */
+export async function patchNoteMarkDetached(
+  markId: string,
+  detached: boolean,
+  contentHash: string
+): Promise<boolean> {
+  try {
+    const r = await fetchJson(`/api/notes/marks/${encodeURIComponent(markId)}/detached`, {
+      method: 'PATCH',
+      body: JSON.stringify({ detached, contentHash }),
+    });
+    return r.success;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 純轉換（dry-run）渲染：把 Markdown 原文轉成 HTML 但不落地。
+ * 存檔攔截以此取得「新內容」的權威 HTML（＝正式儲存管線同一函式），再讀 textContent 預跑 reAnchor。
+ * @param contentRaw 要渲染的 Markdown 原文。
+ * @returns 渲染後 HTML；失敗回 null。
+ */
+export async function renderNoteDryRun(contentRaw: string): Promise<string | null> {
+  const r = await fetchJson<{ contentHtml: string }>(`/api/notes/render`, {
+    method: 'POST',
+    body: JSON.stringify({ contentRaw }),
+  });
+  return r.data?.contentHtml ?? null;
 }
 
 /**

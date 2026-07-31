@@ -82,6 +82,9 @@ public static class NoteWriteEndpoints
         // GET /api/graph - 知識圖譜（所有筆記與連結，供前端繪製）
         var getGraph = app.MapGet("/api/graph", GetKnowledgeGraphHandler);
 
+        // POST /api/notes/render - 純轉換 dry-run（存檔攔截用；把 Markdown 轉 HTML 但不落地）
+        var renderNote = app.MapPost("/api/notes/render", RenderNoteHandler);
+
         // POST /api/notes/{id}/reformat - AI 排版調整
         var reformatNote = app.MapPost("/api/notes/{id:guid}/reformat", ReformatNoteHandler);
 
@@ -108,6 +111,9 @@ public static class NoteWriteEndpoints
         askSelectionAnswer.RequireRateLimiting(RateLimitingExtensions.AiPolicy);
         askQuestion.RequireRateLimiting(RateLimitingExtensions.AiPolicy);
 
+        // 純轉換渲染只吃 CPU（不觸發 LLM），掛「寬鬆」限流（RenderPolicy）——僅存檔動作觸發、非逐鍵。
+        renderNote.RequireRateLimiting(RateLimitingExtensions.RenderPolicy);
+
         // 要求驗證的端點
         if (authConfigured)
         {
@@ -117,6 +123,7 @@ public static class NoteWriteEndpoints
             assignCategories.RequireAuthorization();
             addNoteToCategory.RequireAuthorization();
             assignTags.RequireAuthorization();
+            renderNote.RequireAuthorization();
             reformatNote.RequireAuthorization();
             beautifyNote.RequireAuthorization();
             askSelection.RequireAuthorization();
@@ -432,7 +439,8 @@ public static class NoteWriteEndpoints
                 note.CreatedDateTime,
                 note.UpdatedDateTime,
                 0,
-                Version: db.Entry(note).GetConcurrencyVersion());
+                Version: db.Entry(note).GetConcurrencyVersion(),
+                ContentHash: note.ContentHash);
 
             // Location 標頭只能是 ASCII；slug 可能含中文（GenerateSlug 保留 Unicode），故 URL 編碼，
             // 否則會丟 InvalidOperationException: Invalid non-ASCII character in header。
@@ -577,7 +585,8 @@ public static class NoteWriteEndpoints
                 note.CreatedDateTime,
                 note.UpdatedDateTime,
                 await db.Comment.CountAsync(c => c.NoteId == id && c.ValidFlag, ct),
-                Version: db.Entry(note).GetConcurrencyVersion());
+                Version: db.Entry(note).GetConcurrencyVersion(),
+                ContentHash: note.ContentHash);
 
             return Results.Ok(ApiResponse<NoteDetailDto>.Ok(dto));
         }
@@ -1046,6 +1055,25 @@ public static class NoteWriteEndpoints
         return Results.Ok(ApiResponse<List<NoteActivityDto>>.Ok(activities));
     }
 
+    // ==================== Render Dry-Run（純轉換，不落地） ====================
+
+    /// <summary>
+    /// 把 Markdown 原文渲染成 HTML 但不寫入資料庫（存檔攔截用）。
+    ///
+    /// 為什麼要有這個端點：包4 錨點保護的架構裁決是「瀏覽器為唯一座標系」（見 docs/DECISIONS.md）——
+    /// 存檔前前端需拿到「新內容」的權威 HTML，注入 detached DOM 讀 textContent 預跑 reAnchor，
+    /// 判斷哪些標註會斷。此 HTML 必須與正式儲存管線「逐字元一致」，故直接呼叫同一個
+    /// <see cref="NoteContentHelpers.RenderToHtml"/>，零座標系分歧、零演算法移植。
+    /// 僅在「存檔動作」被觸發（非逐鍵、非即時預覽），故掛寬鬆的 RenderPolicy 限流即可。
+    /// </summary>
+    /// <param name="request">要渲染的 Markdown 原文。</param>
+    /// <returns>渲染後的 HTML（與正式儲存一致）。</returns>
+    private static IResult RenderNoteHandler(NoteRenderRequest request)
+    {
+        var html = NoteContentHelpers.RenderToHtml(request.ContentRaw ?? string.Empty);
+        return Results.Ok(ApiResponse<NoteRenderResultDto>.Ok(new NoteRenderResultDto(html)));
+    }
+
     // ==================== Get Backlinks ====================
 
     private static async Task<IResult> GetBacklinksHandler(
@@ -1110,7 +1138,9 @@ public static class NoteWriteEndpoints
                     n.Slug,
                     m.AnchorText,
                     "mark",
-                    m.Id))
+                    m.Id,
+                    // 段落級關聯：帶回目標段落錨點 Id，前端跳轉改用 ?mark={TargetMarkId} 精準落段。
+                    m.TargetMarkId))
             .ToListAsync(ct);
 
         // ── 來源3（entity）：整篇雙向關聯 → EntityLink ──

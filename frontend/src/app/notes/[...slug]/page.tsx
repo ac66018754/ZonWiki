@@ -20,6 +20,7 @@ import {
   createNoteCategory,
   createNoteTag,
   listTaskGroups,
+  listNoteMarks,
   type NoteDetail,
   type NoteCategory,
   type NoteTag,
@@ -27,6 +28,7 @@ import {
   type Comment,
   type TaskGroup,
 } from '@/lib/api';
+import { findLostMarksForSave, formatLostMarksMessage } from '@/lib/saveGuardRun';
 import { useCurrentUser, useNoteCategories, useNoteTags } from '@/lib/swr';
 import { ConflictError } from '@/lib/errors';
 import { formatFullDateTime, formatDateTime as formatDateTimeUtil } from '@/lib/formatters';
@@ -181,6 +183,8 @@ export default function NotesDetailPage() {
   // 圖片上傳進行中的數量：>0 時擋「保存」與 AI 動作，
   // 避免把編輯器裡的「〔圖片上傳中 #xxx〕」佔位文字永久存進 DB。
   const [uploadingCount, setUploadingCount] = useState(0);
+  // 進入編輯模式時：本篇有幾處「被其他筆記引用」的段落錨點（存檔攔截會檢查是否受影響）。
+  const [referencedAnchorCount, setReferencedAnchorCount] = useState(0);
   // 預覽內文容器參考（供 NoteMarksLayer 套用文字標註）。
   const previewRef = useRef<HTMLDivElement | null>(null);
   // 編輯器 textarea 參考：供「局部排版（重排選取範圍）」讀取目前選取位置。
@@ -630,6 +634,22 @@ export default function NotesDetailPage() {
   const searchParamsRef = useRef(searchParams);
   searchParamsRef.current = searchParams;
 
+  // 進入編輯模式時，數本篇「被其他筆記引用的段落錨點」數量（存檔攔截提示用；離開編輯歸零）。
+  const editingNoteId = isEditing ? note?.id : undefined;
+  useEffect(() => {
+    if (!editingNoteId) { setReferencedAnchorCount(0); return; }
+    let alive = true;
+    listNoteMarks(editingNoteId)
+      .then((ms) => {
+        if (!alive) return;
+        setReferencedAnchorCount(
+          ms.filter((m) => m.kind === 'anchor' && (m.referencedBy?.length ?? 0) > 0).length
+        );
+      })
+      .catch(() => { /* 提示性資訊，失敗靜默 */ });
+    return () => { alive = false; };
+  }, [editingNoteId]);
+
   // 滾動到標記位置（當標記 ID 有效且預覽容器已掛載時觸發）
   // 這部分在預覽 HTML 與標記層載入後執行，以確保 DOM 已準備好
   useEffect(() => {
@@ -655,6 +675,10 @@ export default function NotesDetailPage() {
         }, 2000);
 
         return () => clearTimeout(highlightTimer);
+      } else {
+        // 跳轉退化（包4）：計時後仍找不到對應段落元素（斷錨／已刪除）→ 提示並停留頁頂，
+        // 不再無聲失敗（改良包2 記錄的無聲降級）。此為即時 DOM 查找，不受 Detached 回寫滯後影響。
+        showToast('原段落可能已被修改或刪除，無法精準定位', { type: 'info', durationMs: 3500 });
       }
     }, 300);
 
@@ -768,6 +792,20 @@ export default function NotesDetailPage() {
     if (uploadingCount > 0) {
       setError('圖片上傳中，請稍候再保存');
       return;
+    }
+
+    // 存檔攔截（錨點保護，包4）：內容有變且會弄斷既有標註 → 先列清單確認再存。
+    // 「原本」基準＝手上的 note.contentHtml（即時重算，不讀 DB 存量 Detached）；新內容走 render dry-run。
+    if (editContent !== note.contentRaw) {
+      const lost = await findLostMarksForSave(note.id, note.contentHtml, editContent);
+      if (lost.length > 0) {
+        const proceed = await confirm({
+          title: '有標註會失去定位',
+          message: formatLostMarksMessage(lost),
+          confirmLabel: '仍要儲存',
+        });
+        if (!proceed) return;
+      }
     }
 
     // 以指定 baseVersion 送出更新（undefined＝不做併發檢查、覆蓋）。
@@ -1357,6 +1395,22 @@ export default function NotesDetailPage() {
           </div>
         ) : isEditing ? (
           <div style={{ marginBottom: 'var(--spacing-6)' }}>
+            {/* 段落被引用提示（包4）：本篇有 N 處段落被其他筆記引用，存檔時會檢查是否受影響。 */}
+            {referencedAnchorCount > 0 && (
+              <div
+                style={{
+                  marginBottom: 'var(--spacing-3)',
+                  fontSize: 'var(--text-xs)',
+                  color: 'var(--text-secondary)',
+                  background: 'var(--bg-surface-secondary, var(--bg-surface))',
+                  border: '1px solid var(--border-default)',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '6px 10px',
+                }}
+              >
+                🔗 本篇有 {referencedAnchorCount} 處段落被其他筆記引用，存檔時會檢查是否受影響。
+              </div>
+            )}
             {/* 標題列：標題輸入框與「取消／保存」同行 */}
             <div
               style={{
@@ -1794,6 +1848,7 @@ export default function NotesDetailPage() {
                   containerRef={previewRef}
                   contentHtml={previewHtml}
                   active={activeTab === 'preview'}
+                  contentHash={note.contentHash}
                 />
                 <NoteOverlay
                   noteId={note.id}

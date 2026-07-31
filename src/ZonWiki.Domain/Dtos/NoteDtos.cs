@@ -118,6 +118,10 @@ public sealed record NoteSummaryDto(
 /// 樂觀鎖併發權杖（PostgreSQL xmin，#4/#34）。前端保存時原封帶回為 baseVersion，
 /// 供後端偵測「載入後是否被其他來源改過」；0＝未知（不參與併發檢查）。
 /// </param>
+/// <param name="ContentHash">
+/// 內容雜湊（SHA-256）。包4 錨點保護的 Detached 回寫以此為「當次渲染基準」防過期：
+/// 前端 PATCH detached 帶當次渲染的 ContentHash，後端比對非最新即忽略（防兩分頁競態）。
+/// </param>
 public sealed record NoteDetailDto(
     Guid Id,
     string Title,
@@ -131,7 +135,8 @@ public sealed record NoteDetailDto(
     int CommentCount,
     List<TagRefDto>? Categories = null,
     List<TagRefDto>? Tags = null,
-    long Version = 0);
+    long Version = 0,
+    string ContentHash = "");
 
 /// <summary>
 /// 依 slug 解析筆記的結果（GET /api/notes/{slug} 的統一回應形狀）。
@@ -416,6 +421,11 @@ public sealed record AiAsyncStartedDto(Guid SessionId);
 /// <param name="TargetTitle">關聯目標顯示名稱（伺服器解析；供 hover 浮窗顯示）。</param>
 /// <param name="TargetSlug">關聯目標（筆記）slug，供前端導航（僅 note）。</param>
 /// <param name="Text">備註文字（annotation 用）。</param>
+/// <param name="TargetMarkId">段落級關聯的目標錨點識別碼（link 用；null＝整篇關聯）。</param>
+/// <param name="ReferencedBy">
+/// （僅 kind="anchor"）此錨點「被哪些來源筆記引用」的標題清單（去重、依標題 Ordinal 排序）。
+/// 供存檔攔截確認框顯示「被《X》引用」；其他 kind 一律給空陣列（前端免 null 防禦）。
+/// </param>
 public sealed record NoteMarkDto(
     Guid Id,
     string Kind,
@@ -431,7 +441,9 @@ public sealed record NoteMarkDto(
     string? TargetUrl,
     string? TargetTitle,
     string? TargetSlug,
-    string? Text);
+    string? Text,
+    Guid? TargetMarkId = null,
+    IReadOnlyList<string>? ReferencedBy = null);
 
 /// <summary>
 /// 建立筆記文字標註的請求。依 Kind 帶對應欄位。
@@ -447,6 +459,7 @@ public sealed record NoteMarkDto(
 /// <param name="TargetId">關聯目標實體識別碼（link 用）。</param>
 /// <param name="TargetUrl">外部網址（link 用）。</param>
 /// <param name="Text">備註文字（annotation 用）。</param>
+/// <param name="TargetMarkId">段落級關聯的目標錨點識別碼（link 用；null＝整篇關聯）。</param>
 public sealed record CreateNoteMarkRequest(
     string Kind,
     string AnchorText,
@@ -458,7 +471,8 @@ public sealed record CreateNoteMarkRequest(
     string? TargetType = null,
     Guid? TargetId = null,
     string? TargetUrl = null,
-    string? Text = null);
+    string? Text = null,
+    Guid? TargetMarkId = null);
 
 /// <summary>
 /// 更新筆記文字標註的請求（編輯備註文字或重點顏色）。
@@ -468,6 +482,37 @@ public sealed record CreateNoteMarkRequest(
 public sealed record UpdateNoteMarkRequest(
     string? Text = null,
     string? Color = null);
+
+/// <summary>
+/// 回寫「錨點失效狀態（Detached）」的請求（PATCH /api/notes/marks/{id}/detached）。
+/// 座標系為「瀏覽器對渲染 HTML 的 textContent」，Detached 由前端每次真實渲染時計算後回寫；
+/// 後端不做 reAnchor、只信任前端（信任模型僅及於自己的資料）。
+/// </summary>
+/// <param name="Detached">此標註在當次渲染下是否失去定位（true＝找不到錨點）。</param>
+/// <param name="ContentHash">
+/// 前端「當次渲染所依據」的筆記 ContentHash。後端與筆記目前的 ContentHash 比對：
+/// 不一致代表這是「停在舊內容的分頁」送來的過期計算 → 忽略（no-op），
+/// 不得覆蓋另一分頁在新內容上剛寫對的值（兩分頁競態防呆）。
+/// </param>
+public sealed record PatchMarkDetachedRequest(
+    bool Detached,
+    string ContentHash);
+
+/// <summary>
+/// 純轉換（dry-run）渲染請求：把 Markdown 原文轉成 HTML 但不落地。
+/// 存檔攔截以此取得「新內容」的權威 HTML（＝正式儲存管線的同一函式），
+/// 前端再注入 detached DOM 讀 textContent 預跑 reAnchor 判斷哪些標註會斷。
+/// </summary>
+/// <param name="ContentRaw">要渲染的 Markdown 原文。</param>
+public sealed record NoteRenderRequest(
+    string ContentRaw);
+
+/// <summary>
+/// 純轉換（dry-run）渲染回應。
+/// </summary>
+/// <param name="ContentHtml">渲染後的 HTML（與正式儲存管線 RenderToHtml 完全一致）。</param>
+public sealed record NoteRenderResultDto(
+    string ContentHtml);
 
 /// <summary>
 /// 筆記浮層元件資料傳輸物件（便利貼 / 塗鴉 / 圖片輪播）。
@@ -629,6 +674,10 @@ public sealed record NoteOverlaySnapshotListItemDto(
 /// "entity"（整篇關聯 → EntityLink）。放在最後並給預設值，維持既有 5 參數建構的相容性。
 /// </param>
 /// <param name="MarkId">mark 來源的標註識別碼（供前端組 ?mark= 深連結跳回段落）；其餘來源為 null。</param>
+/// <param name="TargetMarkId">
+/// （僅 mark 來源）該框選關聯指向的「目標筆記段落錨點」識別碼：有值時前端跳轉改用
+/// <c>?mark={TargetMarkId}</c> 精準落在本篇的被引用段落；null＝整篇關聯（落在頁頂）。其餘來源恆為 null。
+/// </param>
 public sealed record BacklinkDto(
     Guid Id,
     Guid SourceNoteId,
@@ -636,7 +685,8 @@ public sealed record BacklinkDto(
     string SourceNoteSlug,
     string AnchorText,
     string Kind = "wiki",
-    Guid? MarkId = null);
+    Guid? MarkId = null,
+    Guid? TargetMarkId = null);
 
 /// <summary>
 /// 知識圖譜節點資料傳輸物件。

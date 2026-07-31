@@ -755,7 +755,9 @@ html[data-route="time"] .header {
    任務彈窗 .tk-overlay 為 z-index:1000、快速新增為 3500，故此處用更高值，
    確保「放棄未儲存變更？」等確認一定看得到、不被蓋住。 */
 .modal-overlay--top {
-  z-index: 4000;
+  /* 「最上層」確認框必須疊在所有一般彈窗之上；亦需高於編輯彈窗滿版遮罩（z-index:100000），
+     否則從編輯彈窗觸發的存檔攔截確認框（包4）會被遮罩蓋住看不到、使用者無從確認而卡住。 */
+  z-index: 100010;
 }
 
 .modal {
@@ -4420,6 +4422,13 @@ html[data-route="time"] .sidebar-toggle {
 .markdown-prose .note-anno-note {
   border-bottom: 1px dashed var(--status-warning-fg, #d97706);
   cursor: help;
+}
+
+/* 段落級關聯第二步（方案 A）：預覽中 hover 的段落高亮（亮暗通用，僅用語意色票）。 */
+.relate-preview .relate-para-hover {
+  background: var(--accent-soft, rgba(37, 99, 235, 0.12));
+  outline: 1px solid var(--accent, #2563eb);
+  border-radius: var(--radius-sm);
 }
 
 /* ============================================================================

@@ -275,7 +275,9 @@ public static class NoteEndpoints
                         .Select(nt => new TagRefDto(nt.Tag!.Id, nt.Tag.Name))
                         .ToList(),
                     // 版本先以 0 佔位，材質化後再回填（見上方註解）。
-                    0L),
+                    0L,
+                    // 內容雜湊：供包4 錨點保護的 Detached 回寫做「當次渲染基準」防過期比對。
+                    n.ContentHash),
                 Version = EF.Property<uint>(n, "xmin"),
             })
             .FirstOrDefaultAsync(ct);
