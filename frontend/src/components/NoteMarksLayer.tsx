@@ -474,8 +474,9 @@ export function NoteMarksLayer({ noteId, containerRef, contentHtml, active, cont
 
   if (!active) return null;
 
+  // 排除 anchor：純錨點是不可見的定位點，hover 到它不該彈出檢視卡（保持閱讀零噪音）。
   const hoveredMarks = hover
-    ? marks.filter((m) => hover.markIds.includes(m.id))
+    ? marks.filter((m) => hover.markIds.includes(m.id) && m.kind !== 'anchor')
     : [];
 
   return (
@@ -1081,10 +1082,20 @@ function applyMarks(container: HTMLElement, marks: NoteMark[]): Map<string, bool
     });
   }
 
-  // anchor（段落級關聯的目標定位點）：不做視覺包裹，只算 found 供 Detached 回寫（斷了→backlinks 顯示失去定位）。
+  // anchor（段落級關聯的目標定位點）：以「無樣式」span 包裹——只有 data-mark-id / data-anno 屬性，
+  // 無 class、無底線、無游標、無 title，閱讀畫面零視覺噪音（錨點「不可見」）；但仍必須存在於 DOM，
+  // 因為 ?mark={anchorId} 深連結靠 querySelector([data-mark-id]) 找元素做 scrollIntoView＋暫時底色高亮
+  //（錨點「不可見但可定位」）。同時算 found 供 Detached 回寫（斷了→backlinks/清單顯示失去定位）。
   for (const m of marks.filter((x) => x.kind === 'anchor')) {
     const r = reAnchor(text, m.anchorText, m.anchorStart, m.anchorPrefix, m.anchorSuffix);
     foundMap.set(m.id, r.found);
+    if (!r.found) continue;
+    wrapRange(container, r.start, r.end, () => {
+      const span = document.createElement('span');
+      span.dataset.anno = '1';
+      span.dataset.markId = m.id;
+      return span;
+    });
   }
 
   return foundMap;

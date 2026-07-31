@@ -650,39 +650,54 @@ export default function NotesDetailPage() {
     return () => { alive = false; };
   }, [editingNoteId]);
 
-  // 滾動到標記位置（當標記 ID 有效且預覽容器已掛載時觸發）
-  // 這部分在預覽 HTML 與標記層載入後執行，以確保 DOM 已準備好
+  // 滾動到標記位置（當標記 ID 有效且預覽容器已掛載時觸發）。
+  // 為何用「輪詢」而非固定 300ms：NoteMarksLayer 的標註是「非同步抓回＋套用」的（listNoteMarks → useLayoutEffect），
+  // 沒有現成的「套用完成」事件；固定 300ms 計時到期時標註可能根本還沒套進 DOM，會把「還沒套用」誤判成
+  // 「斷錨」而提早發退化 toast（假陽性）。改為每 300ms 查一次、最多 10 次（≈3 秒）：期間找到就捲動＋暫時高亮並停止；
+  // 用盡仍無此錨點元素＝真的斷錨（錨文字被改/刪）→ 才發退化提示。此為即時 DOM 查找，不受 Detached 回寫滯後影響。
   useEffect(() => {
-    if (!markId || !previewRef.current) return;
+    // 閘門看 previewHtml 而非 previewRef：內容就緒的那次 commit 可能仍在 loading 早退（渲染骨架、
+    // 預覽容器未掛載），若以 ref 為閘門會 early-return 且依賴不再變化 → 輪詢永遠不會開始
+    //（E2E 插樁實證：htmlLen>0 而 hasPreview=false）。tryLocate 每輪都重讀 previewRef.current，
+    // 容器晚一拍掛載完全無妨。
+    if (!markId || !previewHtml) return;
 
-    // 延遲執行，確保 DOM 已完全渲染
-    const timer = setTimeout(() => {
-      // 尋找標記對應的 DOM 元素（預期由 NoteMarksLayer 建立的標記視覺化）
-      // 標記通常在 previewRef 内部的某個高亮元素或標註 UI
+    const MAX_ATTEMPTS = 14;
+    const INTERVAL_MS = 300;
+    let attempts = 0;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+    let highlightTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const tryLocate = () => {
       const markElement = previewRef.current?.querySelector(
         `[data-mark-id="${CSS.escape(markId)}"]`
       ) as HTMLElement | null;
 
       if (markElement) {
-        // 滾動到該元素
         markElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
-        // 短暫高亮（添加視覺反饋）
         const originalBackground = markElement.style.backgroundColor;
         markElement.style.backgroundColor = 'rgba(255, 193, 7, 0.3)';
-        const highlightTimer = setTimeout(() => {
+        highlightTimer = setTimeout(() => {
           markElement.style.backgroundColor = originalBackground;
         }, 2000);
-
-        return () => clearTimeout(highlightTimer);
-      } else {
-        // 跳轉退化（包4）：計時後仍找不到對應段落元素（斷錨／已刪除）→ 提示並停留頁頂，
-        // 不再無聲失敗（改良包2 記錄的無聲降級）。此為即時 DOM 查找，不受 Detached 回寫滯後影響。
-        showToast('原段落可能已被修改或刪除，無法精準定位', { type: 'info', durationMs: 3500 });
+        return;
       }
-    }, 300);
 
-    return () => clearTimeout(timer);
+      attempts += 1;
+      if (attempts >= MAX_ATTEMPTS) {
+        // 輪詢用盡仍找不到（標註早已套用、但此錨點的錨文字已被改/刪＝真斷錨）→ 退化提示、停留頁頂。
+        showToast('原段落可能已被修改或刪除，無法精準定位', { type: 'info', durationMs: 3500 });
+        return;
+      }
+      pollTimer = setTimeout(tryLocate, INTERVAL_MS);
+    };
+
+    pollTimer = setTimeout(tryLocate, INTERVAL_MS);
+
+    return () => {
+      if (pollTimer) clearTimeout(pollTimer);
+      if (highlightTimer) clearTimeout(highlightTimer);
+    };
   }, [markId, previewHtml]);
 
   // 讀取 ?overlay= 用來從搜尋結果 / 問題清單跳轉到某個浮層元件（便利貼 / T 文字框）位置。
