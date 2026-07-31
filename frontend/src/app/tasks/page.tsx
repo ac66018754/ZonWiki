@@ -22,6 +22,7 @@ import { CalendarDayView } from "@/app/calendar/components/CalendarDayView";
 import { CalendarYearView } from "@/app/calendar/components/CalendarYearView";
 import { SkeletonCard } from "@/components/Skeleton";
 import { FALLBACK_TZ, fromLocalInputValue, isOverdue, isToday } from "./taskUtils";
+import { isTaskHiddenByDoneFilter } from "@/lib/taskVisibility";
 import { SHORTCUT_ACTION_EVENT } from "@/lib/shortcuts";
 import { useConfirm } from "@/components/ConfirmProvider";
 
@@ -71,6 +72,8 @@ export default function TasksPage() {
   const [quickCreateInitial, setQuickCreateInitial] = useState<QuickCreateInitial | null>(null);
   // 子任務（有父任務的任務）顯示模式：false＝只顯示頂層任務（子任務內嵌於父卡）；true＝連子任務也當獨立卡片顯示。
   const [showAllTasks, setShowAllTasks] = useState(false);
+  // 清單視圖「顯示已完成」切換：預設 false＝只顯示未完成／進行中（使用者 2026-07-31 裁示）。不做持久化。
+  const [showDone, setShowDone] = useState(false);
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   // 行事曆視圖自帶資料抓取（getCalendarView）；編輯任務關閉後 bump 此 key 以強制重抓，
   // 讓在行事曆中改過的任務（日期/狀態）即時反映。
@@ -394,6 +397,8 @@ export default function TasksPage() {
 
   // ─────────── 篩選 ───────────
   const filteredTasks = tasks.filter((t) => {
+    // 清單視圖未開「顯示已完成」時，隱藏 done 任務（看板/行事曆不受影響，詳見 taskVisibility）。
+    if (isTaskHiddenByDoneFilter(view, showDone, t.status)) return false;
     // 預設只顯示頂層任務（子任務內嵌於父卡）；「顯示全部」時連子任務也當獨立卡片列出。
     if (!showAllTasks && t.parentId) return false;
     // 分類（多選 OR；空集合＝全部。"__none__" 代表未分類）
@@ -624,6 +629,21 @@ export default function TasksPage() {
                 </button>
               ))}
             </div>
+            {/* 顯示已完成 切換：僅清單視圖渲染（看板「已完成」欄不受此過濾，出現卻無效會像壞掉）。 */}
+            {view === "list" && (
+              <button
+                className={`tk-filter-chip ${showDone ? "tk-filter-chip--on" : ""}`}
+                aria-pressed={showDone}
+                onClick={() => setShowDone((v) => !v)}
+                title={
+                  showDone
+                    ? "目前：顯示已完成的任務（點擊改為隱藏已完成）"
+                    : "目前：隱藏已完成的任務（點擊改為顯示已完成）"
+                }
+              >
+                {showDone ? "☑ 顯示已完成" : "☐ 隱藏已完成"}
+              </button>
+            )}
             {/* 頂層/全部 切換：放在「收合子任務」旁邊 */}
             <button
               className={`tk-filter-chip ${showAllTasks ? "tk-filter-chip--on" : ""}`}
