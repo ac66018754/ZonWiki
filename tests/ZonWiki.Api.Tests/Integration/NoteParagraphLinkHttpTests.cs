@@ -258,6 +258,61 @@ public sealed class NoteParagraphLinkHttpTests
                 "無主錨點應連動軟刪");
     }
 
+    // ── 測試 8b：來源筆記已軟刪的 link 不得撐住孤兒判斷（復審 MEDIUM）──────────────────
+
+    /// <summary>
+    /// 來源甲整篇軟刪（其 link 未連動軟刪＝既有行為）後，刪掉來源乙的 link →
+    /// 錨點應視為無主並連動軟刪（孤兒判斷必須 join 來源筆記 ValidFlag，
+    /// 與 referencedBy 的讀取路徑一致，否則殭屍 link 會永遠撐住錨點）。
+    /// </summary>
+    [Fact]
+    public async Task Marks_DeleteLink_SourceNoteSoftDeleted_DoesNotKeepAnchorAlive()
+    {
+        var client = await NewUserClientAsync("plink-ghostsrc");
+        var (noteB, _) = await CreateNoteAsync(client, "宿主", "殭屍測試段落。");
+        var (srcA, _) = await CreateNoteAsync(client, "來源甲", "內文");
+        var (srcB, _) = await CreateNoteAsync(client, "來源乙", "內文");
+        var anchorId = await CreateAnchorAsync(client, noteB, "殭屍測試段落");
+        await CreateParagraphLinkAsync(client, srcA, noteB, anchorId, "框選甲");
+        var link2 = await CreateParagraphLinkAsync(client, srcB, noteB, anchorId, "框選乙");
+
+        (await client.DeleteAsync($"/api/notes/{srcA}")).EnsureSuccessStatusCode(); // 甲整篇軟刪
+        (await client.DeleteAsync($"/api/notes/marks/{link2}")).EnsureSuccessStatusCode();
+
+        (await GetMarksAsync(client, noteB))
+            .Should().NotContain(m => m!["id"]!.GetValue<string>() == anchorId.ToString(),
+                "唯一活著的引用來自已軟刪的來源筆記——錨點應視為無主");
+    }
+
+    // ── 測試 8c：targetMarkId 僅允許 targetType=note（復審 LOW 防呆）─────────────────
+
+    /// <summary>
+    /// kind=link 帶 targetMarkId 但 targetType 不是 "note" → 400（段落目標只存在於筆記）。
+    /// </summary>
+    [Fact]
+    public async Task Marks_TargetMarkIdWithNonNoteTargetType_IsRejected()
+    {
+        var client = await NewUserClientAsync("plink-badtype");
+        var (noteA, _) = await CreateNoteAsync(client, "來源", "內文");
+        var (noteB, _) = await CreateNoteAsync(client, "目標", "有段落。");
+        var anchorId = await CreateAnchorAsync(client, noteB, "有段落");
+
+        var response = await client.PostAsJsonAsync($"/api/notes/{noteA}/marks", new
+        {
+            kind = "link",
+            anchorText = "框選",
+            anchorStart = 0,
+            anchorEnd = 2,
+            anchorPrefix = "",
+            anchorSuffix = "",
+            targetType = "url",
+            targetUrl = "https://example.com",
+            targetMarkId = anchorId,
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
     // ── 測試 9（回歸鎖）：anchor 不入 backlinks ─────────────────────────────────────
 
     /// <summary>
