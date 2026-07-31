@@ -40,14 +40,16 @@ export const NUMBER_SCENARIO = {
 } as const;
 
 /**
- * 上述 markdown 的「Markdig 形狀」HTML（jsdom 單元測試直接用；E2E 則以真後端渲染，
- * 兩者對 textContent 的結果必須一致——E2E 有斷言把這件事釘住）。
+ * 上述 markdown 經後端 `RenderToHtml` 的「實際輸出快照」（逐字元抄自真後端；含 Markdig
+ * 自動產生的 heading id＝`<h1 id="section">`，手打字串容易漏掉、故以真輸出為準）。
+ * jsdom 單元測試直接用此快照；E2E 會對真後端 render API 斷言 fixture 相等（由主控的 E2E 腳本執行），
+ * 一旦後端渲染漂移、此快照過期，E2E 會抓到（jsdom 這層的 textContent 不受 id 屬性影響）。
  */
 export const NUMBER_SCENARIO_HTML = {
   oldHtml:
-    '<h1>數字清單</h1>\n<p><strong>前段</strong>說明文字。</p>\n' +
+    '<h1 id="section">數字清單</h1>\n<p><strong>前段</strong>說明文字。</p>\n' +
     "<ul>\n<li>49、50、51、52、53</li>\n</ul>\n<p>後段還有其他內容。</p>\n",
   newHtml:
-    '<h1>數字清單</h1>\n<p><strong>前段</strong>說明文字。</p>\n' +
+    '<h1 id="section">數字清單</h1>\n<p><strong>前段</strong>說明文字。</p>\n' +
     "<ul>\n<li>49、51、53</li>\n</ul>\n<p>後段還有其他內容。</p>\n",
 } as const;

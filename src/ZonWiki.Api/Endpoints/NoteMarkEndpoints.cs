@@ -137,14 +137,21 @@ public static class NoteMarkEndpoints
 
             // 段落級關聯驗證：link 帶 TargetMarkId 時，該錨點必須「屬於本人、有效、
             // 且正是 targetId 那篇筆記內的 kind="anchor"」——否則段落目標無意義（跨篇／跨帳號／型別錯）。
+            // 段落目標只存在於筆記，故 targetType 必須是 note（防呆：不接受 url/taskcard/node 帶 targetMarkId）。
             // 跨帳號情形因全域過濾（＋顯式 UserId）根本查不到 → 一律回 400（測試接受 400/404）。
             if (kind == "link" && req.TargetMarkId.HasValue)
             {
+                if (!string.Equals(req.TargetType, "note", StringComparison.OrdinalIgnoreCase)
+                    || !req.TargetId.HasValue)
+                {
+                    return Results.BadRequest(
+                        ApiResponse<NoteMarkDto>.Fail("段落目標只允許關聯到筆記（targetType=note）", 400));
+                }
+
                 var targetAnchor = await db.NoteMark.FirstOrDefaultAsync(
                     m => m.Id == req.TargetMarkId.Value && m.UserId == userGuid && m.ValidFlag, ct);
                 if (targetAnchor is null
                     || targetAnchor.Kind != "anchor"
-                    || !req.TargetId.HasValue
                     || targetAnchor.NoteId != req.TargetId.Value)
                 {
                     return Results.BadRequest(
@@ -236,9 +243,17 @@ public static class NoteMarkEndpoints
             {
                 var anchorId = mark.TargetMarkId.Value;
                 // 以 m.Id != mark.Id 排除「當下正在刪的這一筆」（其 DB 值尚為 ValidFlag=true，尚未存檔）。
-                var stillReferenced = await db.NoteMark.AnyAsync(
-                    m => m.Id != mark.Id && m.Kind == "link" && m.ValidFlag && m.UserId == userGuid
-                        && m.TargetMarkId == anchorId, ct);
+                // 必須 join 來源筆記並過濾其 ValidFlag——與 referencedBy 的讀取路徑一致：
+                // 來源筆記整篇軟刪時，其 link（既有行為不連動軟刪）是「殭屍引用」，不得永遠撐住錨點。
+                var stillReferenced = await db.NoteMark
+                    .Where(m => m.Id != mark.Id && m.Kind == "link" && m.ValidFlag && m.UserId == userGuid
+                        && m.TargetMarkId == anchorId)
+                    .Join(
+                        db.Note.Where(n => n.ValidFlag && n.UserId == userGuid),
+                        m => m.NoteId,
+                        n => n.Id,
+                        (m, n) => m.Id)
+                    .AnyAsync(ct);
                 if (!stillReferenced)
                 {
                     var anchor = await db.NoteMark.FirstOrDefaultAsync(

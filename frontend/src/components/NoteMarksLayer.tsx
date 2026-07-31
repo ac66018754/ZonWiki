@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { captureSelection, reAnchor, type SelectionInfo } from '@/lib/textAnchor';
@@ -19,7 +19,6 @@ import {
   type LinkCandidate,
 } from '@/lib/api';
 import { ColorPickerInline, resolveColor } from '@/components/ColorPicker';
-import { ToggleAwareMarkdown } from '@/components/MarkdownPreview';
 import { pushUndo } from '@/lib/undoManager';
 import { showToast } from '@/lib/toast';
 import { noteHref } from '@/lib/noteHref';
@@ -130,6 +129,16 @@ export function NoteMarksLayer({ noteId, containerRef, contentHtml, active, cont
       if (el) unwrap(el);
     };
   }, [marks, contentHtml, active, containerRef, contentHash]);
+
+  // 切換筆記（noteId 變）→ 立即清空 Detached 回寫佇列與已回寫記錄，避免上一篇的
+  // pending/inFlight/synced 污染下一篇（不倚賴後端 hash 巧合防跨筆記錯寫；顯式重置才可靠）。
+  useEffect(() => {
+    const sync = detachedSync.current;
+    if (sync.timer != null) { window.clearTimeout(sync.timer); sync.timer = null; }
+    sync.pending.clear();
+    sync.inFlight.clear();
+    sync.synced.clear();
+  }, [noteId]);
 
   // 卸載時清掉 Detached 回寫的防抖計時器（不在上面的重套 cleanup 清，才能跨重繪維持防抖）。
   useEffect(() => {
@@ -274,13 +283,16 @@ export function NoteMarksLayer({ noteId, containerRef, contentHtml, active, cont
   const copyParagraphRef = async () => {
     const info = copyRefBtn;
     if (!info) return;
+    // 先確認剪貼簿可用再動作：否則會「建了 anchor 卻沒複製到」＝假成功＋殘留孤兒錨點。
+    if (!navigator.clipboard) {
+      showToast('此環境無法存取剪貼簿', { type: 'error' });
+      return;
+    }
     const full = containerRef.current?.textContent ?? '';
     const prefix = full.slice(Math.max(0, info.start - 24), info.start);
     const suffix = full.slice(info.end, info.end + 24);
-    // 去重：本篇已有同 (anchorStart, anchorEnd) 的 anchor → 直接複用，不重覆建立殭屍錨點。
-    const existing = marks.find(
-      (m) => m.kind === 'anchor' && m.anchorStart === info.start && m.anchorEnd === info.end
-    );
+    // 去重：以 anchorText 為鍵（不用位移——前文一經編輯，位移就漂掉、同段會被當新錨重建；復審實證）。
+    const existing = marks.find((m) => m.kind === 'anchor' && m.anchorText === info.text);
     let markId = existing?.id;
     if (!markId) {
       const created = await createNoteMark(noteId, {
@@ -297,7 +309,7 @@ export function NoteMarksLayer({ noteId, containerRef, contentHtml, active, cont
     }
     const ref = formatMarkRef(noteId, markId);
     try {
-      await navigator.clipboard?.writeText(ref);
+      await navigator.clipboard.writeText(ref);
       showToast('已複製段落引用', { type: 'success' });
     } catch {
       showToast(ref, { type: 'info', durationMs: 4000 }); // 剪貼簿被擋 → 直接秀字串供手動複製
@@ -842,6 +854,13 @@ function RelateSecondStep({
   const previewRef = useRef<HTMLDivElement>(null);
   const [picking, setPicking] = useState(false);
 
+  // 用「後端 RenderToHtml 的同一份 contentHtml」注入預覽（不用 react-markdown 重繪）：
+  // 錨定座標系是「瀏覽器對 Markdig HTML 的 textContent」（見 docs/DECISIONS.md「瀏覽器為唯一座標系」）。
+  // react-markdown 對原始 HTML 片段的處理與 Markdig 不同（丟棄 vs 轉義保留）＝第三套座標系，
+  // 會讓「剛建立就死」的段落連結，故一律吃 contentHtml 與閱讀模式/存檔攔截完全同源。
+  // React 19 識別陷阱：{__html} 物件必須 useMemo 固定，否則任何重繪都重注入 innerHTML 清掉 DOM 狀態。
+  const previewHtml = useMemo(() => ({ __html: target.contentHtml ?? '' }), [target.contentHtml]);
+
   // 預覽容器內 hover 高亮 p/li/h1-h3（事件委派＋加/移 class，CSS 於 globals.css）。
   useEffect(() => {
     const el = previewRef.current;
@@ -924,9 +943,8 @@ function RelateSecondStep({
           padding: 'var(--spacing-2)', background: 'var(--bg-default)',
         }}
         data-testid="relate-preview"
-      >
-        <ToggleAwareMarkdown value={target.contentRaw ?? ''} />
-      </div>
+        dangerouslySetInnerHTML={previewHtml}
+      />
       {picking && (
         <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', textAlign: 'center' }}>
           建立段落關聯中…
