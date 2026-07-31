@@ -1,6 +1,7 @@
 using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using ZonWiki.Api.Auth;
+using ZonWiki.Api.Notes;
 using ZonWiki.Domain.Common;
 using ZonWiki.Domain.Entities;
 using ZonWiki.Infrastructure.Persistence;
@@ -422,7 +423,7 @@ public static class EntityLinkEndpoints
                 if (n is null) return null;
                 return new LinkedEntityDto(Guid.Empty, TypeNote, id,
                     string.IsNullOrWhiteSpace(n.Title) ? "(無標題筆記)" : n.Title,
-                    $"/notes/{Uri.EscapeDataString(n.Slug)}", "筆記");
+                    $"/notes/{NoteContentHelpers.EncodeSlugForUrl(n.Slug)}", "筆記");
             }
             case TypeNode:
             {

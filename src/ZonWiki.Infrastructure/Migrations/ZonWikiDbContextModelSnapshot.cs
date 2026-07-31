@@ -2379,6 +2379,10 @@ namespace ZonWiki.Infrastructure.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("NoteMark_TargetId");
 
+                    b.Property<Guid?>("TargetMarkId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("NoteMark_TargetMarkId");
+
                     b.Property<string>("TargetType")
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)")
@@ -2414,6 +2418,9 @@ namespace ZonWiki.Infrastructure.Migrations
 
                     b.HasKey("Id")
                         .HasName("PK_NoteMark");
+
+                    b.HasIndex("UserId", "TargetMarkId")
+                        .HasDatabaseName("IX_NoteMark_UserId_TargetMarkId");
 
                     b.HasIndex("UserId", "NoteId", "ValidFlag")
                         .HasDatabaseName("IX_NoteMark_UserId_NoteId_ValidFlag");
@@ -2677,6 +2684,80 @@ namespace ZonWiki.Infrastructure.Migrations
                         .HasDatabaseName("UX_NoteRevision_NoteId_RevisionNo");
 
                     b.ToTable("NoteRevision");
+                });
+
+            modelBuilder.Entity("ZonWiki.Domain.Entities.NoteSlugAlias", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("NoteSlugAlias_Id");
+
+                    b.Property<DateTime>("CreatedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("NoteSlugAlias_CreatedDateTime");
+
+                    b.Property<string>("CreatedUser")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("NoteSlugAlias_CreatedUser");
+
+                    b.Property<DateTime?>("DeletedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("NoteSlugAlias_DeletedDateTime");
+
+                    b.Property<Guid>("NoteId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("NoteSlugAlias_NoteId");
+
+                    b.Property<string>("OriginalTitle")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("NoteSlugAlias_OriginalTitle");
+
+                    b.Property<DateTime?>("PurgedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("NoteSlugAlias_PurgedDateTime");
+
+                    b.Property<string>("Slug")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("NoteSlugAlias_Slug");
+
+                    b.Property<DateTime>("UpdatedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("NoteSlugAlias_UpdatedDateTime");
+
+                    b.Property<string>("UpdatedUser")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("NoteSlugAlias_UpdatedUser");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("NoteSlugAlias_UserId");
+
+                    b.Property<bool>("ValidFlag")
+                        .HasColumnType("boolean")
+                        .HasColumnName("NoteSlugAlias_ValidFlag");
+
+                    b.HasKey("Id")
+                        .HasName("PK_NoteSlugAlias");
+
+                    b.HasIndex("NoteId")
+                        .HasDatabaseName("IX_NoteSlugAlias_NoteId");
+
+                    b.HasIndex("UserId", "Slug")
+                        .HasDatabaseName("IX_NoteSlugAlias_UserId_Slug");
+
+                    b.HasIndex("UserId", "Slug", "NoteId")
+                        .IsUnique()
+                        .HasDatabaseName("UX_NoteSlugAlias_UserId_Slug_NoteId")
+                        .HasFilter("\"NoteSlugAlias_ValidFlag\" = TRUE");
+
+                    b.ToTable("NoteSlugAlias");
                 });
 
             modelBuilder.Entity("ZonWiki.Domain.Entities.NoteTag", b =>
@@ -4057,6 +4138,18 @@ namespace ZonWiki.Infrastructure.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("FK_NoteRevision_Note_NoteId");
+
+                    b.Navigation("Note");
+                });
+
+            modelBuilder.Entity("ZonWiki.Domain.Entities.NoteSlugAlias", b =>
+                {
+                    b.HasOne("ZonWiki.Domain.Entities.Note", "Note")
+                        .WithMany()
+                        .HasForeignKey("NoteId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("FK_NoteSlugAlias_Note_NoteId");
 
                     b.Navigation("Note");
                 });

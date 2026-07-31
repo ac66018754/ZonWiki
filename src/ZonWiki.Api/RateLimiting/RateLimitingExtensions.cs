@@ -47,6 +47,13 @@ public static class RateLimitingExtensions
     /// </summary>
     public const string UploadPolicy = "zonwiki-upload";
 
+    /// <summary>
+    /// 純轉換（dry-run）渲染端點（POST /api/notes/render）的限流 policy 名稱。
+    /// 以 UserId 分區、SlidingWindow、額度寬鬆——此端點只在「存檔動作」被觸發（非逐鍵、非即時預覽），
+    /// 正常單人使用到不了上限；掛限流僅為防被盜權杖或程式錯誤把純 CPU 渲染打成 DoS。
+    /// </summary>
+    public const string RenderPolicy = "zonwiki-render";
+
     // ── 登入限流參數（IP 分區）───────────────────────────────────────────────
     /// <summary>登入視窗長度（1 分鐘）。</summary>
     private static readonly TimeSpan LoginWindow = TimeSpan.FromMinutes(1);
@@ -76,6 +83,14 @@ public static class RateLimitingExtensions
     private const int UploadTokensPerPeriod = 10;
     /// <summary>上傳令牌補充週期（1 分鐘補一次）。</summary>
     private static readonly TimeSpan UploadReplenishmentPeriod = TimeSpan.FromMinutes(1);
+
+    // ── 純轉換渲染限流參數（UserId 分區）────────────────────────────────────
+    /// <summary>渲染滑動視窗長度（1 分鐘）。</summary>
+    private static readonly TimeSpan RenderWindow = TimeSpan.FromMinutes(1);
+    /// <summary>渲染滑動視窗的分段數（越多越平滑）。</summary>
+    private const int RenderSegmentsPerWindow = 6;
+    /// <summary>單一使用者於每個渲染滑動視窗內允許的請求數上限（存檔才觸發，故寬鬆）。</summary>
+    private const int RenderPermitLimit = 30;
 
     /// <summary>
     /// 逾限時回應的 JSON 訊息（繁中＋英文提示，方便前端與外部 AI 客戶端辨識）。
@@ -142,6 +157,18 @@ public static class RateLimitingExtensions
                         TokensPerPeriod = UploadTokensPerPeriod,
                         ReplenishmentPeriod = UploadReplenishmentPeriod,
                         AutoReplenishment = true,
+                        QueueLimit = 0,
+                    }));
+
+            // 純轉換渲染（存檔攔截 dry-run）：以 UserId 分區的滑動視窗；額度寬鬆；不排隊。
+            options.AddPolicy(RenderPolicy, httpContext =>
+                RateLimitPartition.GetSlidingWindowLimiter(
+                    partitionKey: ResolveUserPartitionKey(httpContext),
+                    factory: _ => new SlidingWindowRateLimiterOptions
+                    {
+                        PermitLimit = RenderPermitLimit,
+                        Window = RenderWindow,
+                        SegmentsPerWindow = RenderSegmentsPerWindow,
                         QueueLimit = 0,
                     }));
 

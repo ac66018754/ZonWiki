@@ -15,6 +15,7 @@ import { useCurrentUser, useNotes, useNoteCategories, useNoteTags } from '@/lib/
 import { formatDateTime } from '@/lib/formatters';
 import { DEFAULT_TIMEZONE, NOTE_DND_MIME } from '@/lib/constants';
 import { recordNoteNav } from '@/lib/noteNav';
+import { noteHref } from '@/lib/noteHref';
 import { SkeletonListItem } from '@/components/Skeleton';
 import { NotesBatchToolbar } from './components/NotesBatchToolbar';
 
@@ -429,7 +430,7 @@ export default function NotesPage() {
                       />
                     )}
                     <Link
-                      href={`/notes/${note.slug}`}
+                      href={noteHref(note.slug)}
                       prefetch
                       draggable
                       title="可拖曳到左側分類，把這篇筆記歸入該分類"

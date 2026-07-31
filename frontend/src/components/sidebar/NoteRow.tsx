@@ -4,6 +4,7 @@ import React from "react";
 import Link from "next/link";
 import type { NoteSummary } from "@/lib/api";
 import { NOTE_DND_MIME } from "@/lib/constants";
+import { noteHref } from "@/lib/noteHref";
 
 /**
  * NoteRow 的 props。
@@ -32,7 +33,7 @@ function NoteRowImpl({ note, depth, isActive }: NoteRowProps): React.ReactElemen
     <div className="nt-row nt-row--note" style={{ paddingLeft: `${depth * 14}px` }}>
       <span className="nt-caret nt-caret--spacer" />
       <Link
-        href={`/notes/${note.slug}`}
+        href={noteHref(note.slug)}
         prefetch
         draggable
         className="nt-name nt-name--note"

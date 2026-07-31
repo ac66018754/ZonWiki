@@ -31,5 +31,9 @@ public sealed class NoteMarkConfiguration : IEntityTypeConfiguration<NoteMark>
 
         // 依筆記查詢此筆記的所有標註（含 UserId 利於使用者隔離過濾）。
         builder.HasIndex(e => new { e.UserId, e.NoteId, e.ValidFlag });
+
+        // 段落級關聯的目標錨點反向查詢：referencedBy（誰引用了這個 anchor）與
+        // 「刪 link 時判斷目標 anchor 是否成孤兒」都以 TargetMarkId 反查，故建索引。
+        builder.HasIndex(e => new { e.UserId, e.TargetMarkId });
     }
 }

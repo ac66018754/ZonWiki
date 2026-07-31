@@ -7,6 +7,7 @@
 
 import { withAiQueueNotify } from "../aiQueue";
 import { ConflictError } from "../errors";
+import { encodeSlugPath } from "../noteHref";
 import { fetchJson } from "./client";
 import { pollAskQueueUntilDone } from "./askQueue";
 import type { NoteCategory } from "./categories";
@@ -74,6 +75,8 @@ export interface NoteDetail {
   isDraft?: boolean;
   /** 樂觀鎖版本（PostgreSQL xmin，#4/#34）；保存時原封帶回為 baseVersion 供後端偵測併發衝突 */
   version?: number;
+  /** 內容雜湊（SHA-256）：包4 Detached 回寫的「當次渲染基準」防過期用 */
+  contentHash?: string;
   /** @deprecated 相容舊欄位名 */
   categoryId?: string;
   /** @deprecated 相容舊欄位名 */
@@ -81,6 +84,33 @@ export interface NoteDetail {
   /** @deprecated 相容舊欄位名 */
   filePath?: string;
 }
+
+/**
+ * 消歧異候選：某個 slug 目前可能指向的一篇筆記（對應後端 SlugCandidateDto）。
+ */
+export interface SlugCandidate {
+  /** 筆記識別碼（前端以此 GUID 直達，永不再歧義）。 */
+  id: string;
+  /** 筆記目前的標題。 */
+  title: string;
+  /** 筆記目前的（活著的）slug。 */
+  slug: string;
+  /** 是否為「現在正用這個名字」的那一篇（true＝活 slug 命中、false＝僅舊 slug 別名命中）。 */
+  isCurrentHolder: boolean;
+  /** 別名命中者：讓出此 slug 當下的標題（「曾用此名（現名《…》）」辨識用）；現用者為 null。 */
+  originalTitle: string | null;
+  /** 最後更新時間（UTC ISO 字串；候選排序用）。 */
+  updatedAt: string;
+}
+
+/**
+ * 依 slug 解析筆記的結果（GET /api/notes/{slug} 的統一回應形狀）。
+ * - kind="note"：<code>note</code> 有值、<code>matchedByAlias</code> 表示是否經舊 slug（別名）命中；
+ * - kind="ambiguous"：<code>candidates</code> 列出所有候選、<code>requestedSlug</code> 為輸入的 slug。
+ */
+export type NoteResolution =
+  | { kind: 'note'; matchedByAlias: boolean; note: NoteDetail }
+  | { kind: 'ambiguous'; requestedSlug: string; candidates: SlugCandidate[] };
 
 // ============================================================================
 // API 方法 — 筆記與標籤的關聯（標籤庫本身的 CRUD 見 tags.ts）
@@ -181,17 +211,30 @@ export async function markNoteOpened(noteId: string): Promise<number | null> {
 }
 
 /**
- * 取得單一筆記詳細資訊
+ * 依 slug 解析單篇筆記（slug 連動標題 + 舊 slug 別名 + 消歧異）。
+ *
+ * 回傳統一的 {@link NoteResolution}：唯一命中→kind="note"（含 matchedByAlias）；
+ * 名字被多篇取用過→kind="ambiguous"（含 candidates）；404→null。
+ *
+ * slug 可能含「/」（對應子資料夾層級）。逐段 encode、保留「/」當路徑分隔（含 # fragment 陷阱與
+ * 畸形 Unicode 防禦），對應後端 catch-all 路由 GET /api/notes/{*slug}（整段 slash 視為 slug 的一部分）。
+ * 編碼邏輯與頁面連結共用 noteHref 的 encodeSlugPath，避免同一套規則兩處各寫一次而漂移（收斂 DRY）。
  */
-export async function getNote(slug: string): Promise<NoteDetail | null> {
-  // slug 可能含「/」（對應子資料夾層級）。逐段 encode、保留「/」當路徑分隔，
-  // 對應後端 catch-all 路由 GET /api/notes/{*slug}（整段 slash 視為 slug 的一部分）。
-  const encodedSlug = slug
-    .split('/')
-    .map((segment) => encodeURIComponent(segment))
-    .join('/');
-  const r = await fetchJson<NoteDetail>(`/api/notes/${encodedSlug}`);
+export async function getNote(slug: string): Promise<NoteResolution | null> {
+  const r = await fetchJson<NoteResolution>(`/api/notes/${encodeSlugPath(slug)}`);
   return r.data ?? null;
+}
+
+/**
+ * 以筆記 id（GUID）直達取得筆記詳情。
+ *
+ * 後端 slug 解析支援「把 GUID 當 slug」的錨點路徑，且 GUID 直達永不歧義（只會命中本人那一篇），
+ * 故本函式只在 kind="note" 時回 note、其餘（理論上不會發生的 ambiguous / 查無）回 null。
+ * 供「已知 id 的重抓」——存檔成功重抓、409 衝突重載、編輯彈窗存檔重抓——避免落入消歧異頁。
+ */
+export async function getNoteById(id: string): Promise<NoteDetail | null> {
+  const resolution = await getNote(id);
+  return resolution && resolution.kind === 'note' ? resolution.note : null;
 }
 
 /**
@@ -302,8 +345,17 @@ export interface Backlink {
   sourceNoteTitle: string;
   /** 來源筆記 slug */
   sourceNoteSlug: string;
-  /** 連結文字 (anchor text，來自 [[X]] 中的 X) */
+  /** 連結文字 (anchor text)：wiki=[[X]] 中的 X；mark=框選段落；entity=空字串 */
   anchorText: string;
+  /** 來源型別：wiki（內文 [[X]]）｜mark（框選段落關聯）｜entity（整篇關聯）；舊資料相容故可選 */
+  kind?: "wiki" | "mark" | "entity";
+  /** mark 來源的標註 ID（供組 ?mark= 深連結跳回段落）；其餘來源為 null */
+  markId?: string | null;
+  /**
+   * （僅 mark 來源）該關聯指向的「本篇段落錨點」ID：有值時前端跳轉改用 ?mark={targetMarkId}
+   * 精準落在被引用段落；null＝整篇關聯（落頁頂）。其餘來源恆為 null。
+   */
+  targetMarkId?: string | null;
 }
 
 /**
@@ -325,8 +377,8 @@ export interface AiTransformResult {
  */
 export interface NoteMark {
   id: string;
-  /** 種類："highlight" | "link" | "annotation" */
-  kind: 'highlight' | 'link' | 'annotation';
+  /** 種類："highlight" | "link" | "annotation" | "anchor"（純錨點＝段落級關聯目標） */
+  kind: 'highlight' | 'link' | 'annotation' | 'anchor';
   anchorText: string;
   anchorStart: number;
   anchorEnd: number;
@@ -347,11 +399,15 @@ export interface NoteMark {
   targetSlug?: string | null;
   /** 備註文字（annotation 用） */
   text?: string | null;
+  /** 段落級關聯的目標錨點 ID（link 用；null＝整篇關聯） */
+  targetMarkId?: string | null;
+  /** （僅 kind="anchor"）此錨點被哪些來源筆記引用（去重、依標題排序）；其他 kind 為空陣列 */
+  referencedBy?: string[];
 }
 
 /** 建立筆記標註的請求內容。 */
 export interface CreateNoteMarkInput {
-  kind: 'highlight' | 'link' | 'annotation';
+  kind: 'highlight' | 'link' | 'annotation' | 'anchor';
   anchorText: string;
   anchorStart: number;
   anchorEnd: number;
@@ -362,6 +418,8 @@ export interface CreateNoteMarkInput {
   targetId?: string;
   targetUrl?: string;
   text?: string;
+  /** 段落級關聯的目標錨點 ID（link 用） */
+  targetMarkId?: string;
 }
 
 /** 框選提問的結果（新建的答案筆記 + 建立的關聯標註）。 */
@@ -501,6 +559,48 @@ export async function updateNoteMark(
 export async function deleteNoteMark(markId: string): Promise<boolean> {
   const r = await fetchJson(`/api/notes/marks/${encodeURIComponent(markId)}`, { method: 'DELETE' });
   return r.success;
+}
+
+/**
+ * 回寫某標註的「錨點失效狀態（Detached）」。
+ *
+ * 包4 錨點保護：Detached 由前端每次真實渲染後計算並回寫（瀏覽器為唯一座標系，見 DECISIONS）。
+ * 帶「當次渲染所依據的 contentHash」防過期——後端比對非最新即忽略（no-op），
+ * 不讓停在舊內容的分頁覆蓋另一分頁剛寫對的值。fire-and-forget、失敗靜默。
+ *
+ * @param markId 標註識別碼。
+ * @param detached 當次渲染下是否失去定位。
+ * @param contentHash 當次渲染所依據的筆記 contentHash。
+ * @returns 是否成功（含 no-op 也算成功）；網路/權限失敗回 false。
+ */
+export async function patchNoteMarkDetached(
+  markId: string,
+  detached: boolean,
+  contentHash: string
+): Promise<boolean> {
+  try {
+    const r = await fetchJson(`/api/notes/marks/${encodeURIComponent(markId)}/detached`, {
+      method: 'PATCH',
+      body: JSON.stringify({ detached, contentHash }),
+    });
+    return r.success;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 純轉換（dry-run）渲染：把 Markdown 原文轉成 HTML 但不落地。
+ * 存檔攔截以此取得「新內容」的權威 HTML（＝正式儲存管線同一函式），再讀 textContent 預跑 reAnchor。
+ * @param contentRaw 要渲染的 Markdown 原文。
+ * @returns 渲染後 HTML；失敗回 null。
+ */
+export async function renderNoteDryRun(contentRaw: string): Promise<string | null> {
+  const r = await fetchJson<{ contentHtml: string }>(`/api/notes/render`, {
+    method: 'POST',
+    body: JSON.stringify({ contentRaw }),
+  });
+  return r.data?.contentHtml ?? null;
 }
 
 /**

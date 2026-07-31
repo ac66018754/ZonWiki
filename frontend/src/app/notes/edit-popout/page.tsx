@@ -9,11 +9,14 @@ import {
   listNoteCategories,
   listNoteTags,
   updateNote,
+  getNoteById,
   createNoteCategory,
   createNoteTag,
   type NoteCategory,
   type NoteTag,
 } from "@/lib/api";
+import { useConfirm } from "@/components/ConfirmProvider";
+import { findLostMarksForSave, formatLostMarksMessage } from "@/lib/saveGuardRun";
 
 /** 組出分類的階層路徑前綴（父 / 祖父 / …）。 */
 function categoryPath(parentId: string | null | undefined, cats: NoteCategory[]): string {
@@ -46,6 +49,7 @@ export default function NoteEditPopoutPage() {
   const [savedNote, setSavedNote] = useState<string | null>(null);
   const channelRef = useRef<BroadcastChannel | null>(null);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
+  const confirm = useConfirm();
 
   // 頻道：postMessage 型別安全的小包裝。
   const post = (msg: NoteEditMessage) => channelRef.current?.postMessage(msg);
@@ -96,6 +100,22 @@ export default function NoteEditPopoutPage() {
     try {
       setIsSaving(true);
       setError(null);
+
+      // 存檔攔截（錨點保護，包4）：以目前存檔版為基準，內容有變且會弄斷既有標註 → 先列清單確認。
+      // 彈窗無手上的 contentHtml，故以 getNoteById 取當前存檔版當「舊內容」基準（即時重算）。
+      const current = await getNoteById(init.noteId);
+      if (current && content !== current.contentRaw) {
+        const lost = await findLostMarksForSave(init.noteId, current.contentHtml, content);
+        if (lost.length > 0) {
+          const proceed = await confirm({
+            title: "有標註會失去定位",
+            message: formatLostMarksMessage(lost),
+            confirmLabel: "仍要儲存",
+          });
+          if (!proceed) { setIsSaving(false); return; }
+        }
+      }
+
       const ok = await updateNote(init.noteId, {
         title,
         contentRaw: content,

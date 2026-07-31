@@ -56,7 +56,9 @@ public sealed class SearchOverlayHttpTests
         results.Should().ContainSingle(r => r.Type == "overlay-text");
         var hit = results.Single(r => r.Type == "overlay-text");
         hit.Id.Should().Be(itemId.ToString());
-        hit.Url.Should().Contain(slug);
+        // 2026-07-31 fix/note-url-encoding：URL 改為逐段百分號編碼（含中文），
+        // 故斷言改比對編碼後的 slug（此 slug 為單段，逐段編碼＝整串編碼）。
+        hit.Url.Should().Contain(Uri.EscapeDataString(slug));
         hit.Url.Should().Contain($"?overlay={itemId}");
     }
 
