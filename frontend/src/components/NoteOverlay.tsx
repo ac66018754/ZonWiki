@@ -44,6 +44,7 @@ import { NoteQuestionListPanel } from '@/components/questions/NoteQuestionListPa
 import { QuestionAnswerPopup } from '@/components/questions/QuestionAnswerPopup';
 import { deriveQuestionTitle } from '@/lib/questionTitle';
 import { scrollToOverlayItem } from '@/lib/scrollToOverlayItem';
+import { createDragClickTracker } from '@/lib/overlayDragClick';
 
 /**
  * 事件：框選提問的答案要放進「就在原處旁邊」的便利貼（由 NoteMarksLayer 派發、NoteOverlay 接收建立）。
@@ -1019,8 +1020,13 @@ export function NoteOverlay({
     const sx = e.clientX, sy = e.clientY;
     const ox = item.x, oy = item.y, ow = item.width, oh = item.height;
     let next = { x: ox, y: oy, width: ow, height: oh };
+    // 「點擊 vs 拖曳」判定器：每次 pointerdown 各自新建（跨手勢不污染）。
+    // 【只用於 mode==='move'】標題列同時承擔「點擊收合」與「拖曳移動」，故需要死區把兩者分開。
+    // resize 把手沒有點擊語意，不套死區——否則縮放起手會有 8px 不跟手再跳一段（對抗式復審實測）。
+    const tracker = createDragClickTracker();
     const onMove = (ev: PointerEvent) => {
       const dx = ev.clientX - sx, dy = ev.clientY - sy;
+      if (mode === 'move' && !tracker.move(dx, dy)) return; // 死區：微晃不動作，保留點擊判定
       if (mode === 'move') {
         let nx = ox + dx;
         let ny = oy + dy;
@@ -1052,7 +1058,19 @@ export function NoteOverlay({
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
       draggingItemIdRef.current = null;
-      if (mode === 'move' && !isPinned(item)) {
+      if (mode === 'resize') {
+        // 單純點一下把手（尺寸沒變）：不必發 PATCH。
+        if (next.width === ow && next.height === oh) return;
+        persist(item.id, { width: next.width, height: next.height });
+        return;
+      }
+      if (tracker.isClick()) {
+        // 點一下標題列（沒拖）＝切換收合/展開。位置沒變，故不持久化座標、也不重建錨點
+        // （避免無意義的 PATCH 與錨點飄移）。
+        toggleCollapse(item.id);
+        return;
+      }
+      if (!isPinned(item)) {
         // 拖曳＝使用者把它放到新的文字上 → 重建內容錨點一併持久化（拖到無文字處則移除錨點、回絕對座標）。
         const anchor = anchorAtContainerPoint(next.x, next.y);
         const cur = itemsRef.current.find((x) => x.id === item.id) ?? item;
@@ -1063,7 +1081,8 @@ export function NoteOverlay({
         patchLocal(item.id, { dataJson: json });
         persist(item.id, { x: next.x, y: next.y, dataJson: json });
       } else {
-        persist(item.id, mode === 'move' ? { x: next.x, y: next.y } : { width: next.width, height: next.height });
+        // 釘住（浮動）：座標是視窗座標，不做內容錨點重建。
+        persist(item.id, { x: next.x, y: next.y });
       }
     };
     window.addEventListener('pointermove', onMove);
@@ -1534,6 +1553,7 @@ export function NoteOverlay({
         <div
           className="overlay-item-chrome"
           onPointerDown={(e) => startDrag(e, item, 'move')}
+          title="點一下收合/展開；按住拖曳移動"
           style={{
             display: 'flex', alignItems: 'center', gap: 4,
             padding: '2px 4px 2px 6px', cursor: 'move', background: 'rgba(0,0,0,0.06)', flexShrink: 0,

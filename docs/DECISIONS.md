@@ -451,3 +451,16 @@
 - **背景**：關聯要能指到「目標筆記的某個段落」（NoteMark 加 TargetMarkId、目標端以 kind="anchor" 純錨點錨定）；且「編輯到被引用的段落」要在存檔時提醒（使用者 1~100 例子）。原計畫由後端在存檔時以 C# 移植 reAnchor 重算 Detached——對抗式復審揪出 CRITICAL：mark 座標系是「瀏覽器對 Markdig HTML 的 textContent」，repo 無 HTML parser、編輯預覽（react-markdown）又是第三套渲染，後端重建純文字必然座標分歧，整個安全網會假陰性失效。
 - **最終決定（v2）**：**瀏覽器為唯一座標系**。①新 `POST /api/notes/render` 純轉換 dry-run（掛輕量限流；僅存檔動作觸發、非逐鍵）；②存檔攔截在前端：舊文字＝手上 note.contentHtml 注入 detached DOM 讀 textContent、新文字＝dry-run 結果同法，以既有 textAnchor.reAnchor 原碼預跑——「原本」基準＝**即時重算舊內容**，絕不讀 DB 存量 Detached（滯後污染會把舊帳誤植為本次破壞）；③Detached 由前端回寫（每次真實渲染重錨定，found 與存值不一致即 PATCH，帶 contentHash 防過期覆蓋＋markId 去重防風暴）。
 - **記錄的取捨**：Detached 信任模型＝前端為權威（僅影響自身資料的顯示狀態）；「最終一致」的前提是「最終有人用瀏覽器開過該筆記」——純 PAT 寫入、從未在瀏覽器開啟的筆記永不校正；編輯模式「N 處被引用」提示同受此滯後；`?mark=` 跳轉退化是即時 DOM 查找、不受滯後影響。anchor 孤兒：刪 link 連動軟刪無主 anchor（判斷 join 來源筆記 ValidFlag，殭屍 link 不撐住錨點）、複製引用以同段文字（anchorText）去重（不用位移——前文一經編輯位移即漂）。jsdom 單元測試與 E2E 共用同一份 fixtures（frontend/src/lib/__fixtures__/anchorFixtures.ts；其 HTML 為後端 RenderToHtml 的實際輸出快照，含 Markdig 自動 heading id），確保「jsdom==瀏覽器 textContent」主張真的被驗證（E2E 另對真後端 render API 斷言 fixture 相等，核對自動化——快照漂移時 E2E 會抓到）。
+
+## 2026-08-06 ｜ 便利貼/圖片板 top bar：以「位移閾值死區」讓同一條標題列同時支援點擊收合與拖曳移動
+
+- **背景**：便利貼標題列原本只有「按住拖曳移動」，收合/展開必須精準點右上角的 ＋/－ 小鈕（16px 級目標）。使用者要求點標題列任一處即可收合/展開，且不可影響既有的 ＋/－ 鈕與拖曳。
+- **考慮過的選項**：①雙擊收合（與拖曳零衝突，但不符「點一下」的要求、且雙擊在觸控上判定慢）；②在 pointerup 比對座標是否完全相等（0 容忍，滑鼠微晃或觸控手指抖動就會判成拖曳，實務上點不到）；③位移閾值死區——未超過閾值視為點擊、超過才進入拖曳（業界慣例，dnd-kit 的 activation constraint 同一套）。
+- **最終決定**：③。抽出純函式 `frontend/src/lib/overlayDragClick.ts` 的 `createDragClickTracker`，由 NoteOverlay（筆記浮層）與 CanvasAnnotationLayer（開問啦畫布）兩處 startDrag 共用。閾值 8px，沿用本專案既有拖曳把手慣例（SubtaskChecklist 的拖曳排序），桌機與觸控皆適用。
+- **關鍵取捨與防呆**：
+  - **tracker 必須每次 pointerdown 新建**（閉包狀態只活一個手勢）。若提升為模組層級單例，第一次拖曳後所有點擊都會被永久誤判為拖曳——單元測試與 E2E 各有一條案例把這個退化鎖住。
+  - **死區只套 `mode === 'move'`（標題列）**，resize 把手不套。對抗式復審用 Playwright 逐像素插樁實測，證實一開始「不分 mode 套死區」的版本會讓縮放起手 6px 完全不跟手、第 7px 瞬間跳 8px；resize 沒有點擊語意，不需要死區。resize 改以「尺寸與起始值相同就不發 PATCH」達成「點一下把手不動作」。
+  - **畫布版（有 zoom）餵 tracker 的是「除以 zoom 之前」的螢幕位移**，讓點擊容忍度不隨縮放改變（否則 zoom=0.5 時要移動 16 螢幕像素才算拖曳）。
+  - **點擊路徑不持久化座標、不重建錨點**：位置沒變，發 PATCH 與重算錨點都只會製造無意義寫入與錨點飄移。
+  - 收合狀態沿用既有設計「每次打開筆記全收合、不記憶展開狀態」（NoteOverlay 載入時把所有 sticky/slide 塞進 collapsedIds），新手勢走同一個 toggleCollapse，行為一致。
+- **驗證**：13 個單元測試（含閾值邊界、跨實例污染、浮點次像素）；Playwright 實測筆記端 14 例、畫布端 6 例全通過，涵蓋死區、拖曳不誤判、先拖後點、＋/－ 鈕、標題編輯、📌 鈕、pinned 拖曳持久化、resize 逐像素跟手與持久化、暗色主題、375px 手機寬度，console 零錯誤。

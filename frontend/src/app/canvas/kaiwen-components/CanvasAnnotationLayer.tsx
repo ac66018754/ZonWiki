@@ -21,6 +21,7 @@ import {
 } from '@/lib/drawing/shapes';
 import { ShapeEl } from '@/lib/drawing/ShapeEl';
 import { StickyBody } from '@/components/overlay/StickyBody';
+import { createDragClickTracker } from '@/lib/overlayDragClick';
 import { SlideBody } from '@/components/overlay/SlideBody';
 import { STICKY_COLORS } from '@/components/overlay/overlayShared';
 import { DrawingTextBox, parseTextExtra, type TextExtra } from '@/components/drawing/TextBox';
@@ -403,8 +404,14 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
     const z = zoomRef.current || 1;
     const ox = item.x, oy = item.y, ow = item.width, oh = item.height;
     let next = { x: ox, y: oy, width: ow, height: oh };
+    // 「點擊 vs 拖曳」判定器：每次 pointerdown 各自新建。死區判定餵「除以 zoom 之前」的
+    // 螢幕位移，讓點擊容忍度不隨畫布縮放改變（zoom=2 時 4px 螢幕微晃仍是點擊）。
+    // 【只用於 mode==='move'】resize 把手沒有點擊語意，不套死區——否則縮放起手會不跟手。
+    const tracker = createDragClickTracker();
     const onMove = (ev: PointerEvent) => {
-      const dx = (ev.clientX - sx) / z, dy = (ev.clientY - sy) / z;
+      const rawDx = ev.clientX - sx, rawDy = ev.clientY - sy;
+      if (mode === 'move' && !tracker.move(rawDx, rawDy)) return; // 死區：微晃不動作，保留點擊判定
+      const dx = rawDx / z, dy = rawDy / z;
       if (mode === 'move') {
         next = { x: ox + dx, y: oy + dy, width: ow, height: oh };
         patchLocal(item.id, { x: next.x, y: next.y });
@@ -416,7 +423,18 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
     const onUp = () => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
-      persist(item.id, mode === 'move' ? { x: next.x, y: next.y } : { width: next.width, height: next.height });
+      if (mode === 'resize') {
+        // 單純點一下把手（尺寸沒變）：不必發 PATCH。
+        if (next.width === ow && next.height === oh) return;
+        persist(item.id, { width: next.width, height: next.height });
+        return;
+      }
+      if (tracker.isClick()) {
+        // 點一下標題列（沒拖）＝切換收合/展開。位置沒變，故不持久化。
+        toggleCollapse(item.id);
+        return;
+      }
+      persist(item.id, { x: next.x, y: next.y });
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
@@ -701,6 +719,7 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
             >
               <div
                 onPointerDown={(e) => startDrag(e, item, 'move')}
+                title="點一下收合/展開；按住拖曳移動"
                 style={{
                   display: 'flex', alignItems: 'center', gap: 4,
                   padding: '2px 4px 2px 6px', cursor: 'move', background: 'rgba(0,0,0,0.06)', flexShrink: 0,
