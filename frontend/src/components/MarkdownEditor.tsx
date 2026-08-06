@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { ToggleAwareMarkdown } from "@/components/MarkdownPreview";
 import { TOGGLE_SNIPPET, PROTECT_SNIPPET } from "@/lib/toggleBlocks";
 import { uploadAttachment } from "@/lib/api";
@@ -8,6 +9,28 @@ import { showToast } from "@/lib/toast";
 
 /** 彈出預覽視窗與編輯器之間的即時同步頻道名稱（同源 BroadcastChannel）。 */
 export const PREVIEW_CHANNEL = "zonwiki:note-preview";
+
+/**
+ * 「快速連點兩下右鍵」判定的間隔上限（毫秒）。
+ * 間隔判定 pin 在 Date.now()（不可改用 event.timeStamp / performance.now()——
+ * 單元測試以 vi.spyOn(Date, 'now') 控制間隔，換來源會讓測試控不到時間）。
+ */
+const DOUBLE_RIGHT_CLICK_MS = 500;
+
+/** PiP 置頂預覽視窗的預設尺寸（px；與既有 window.open 彈出預覽相同）。 */
+const PIP_WIDTH = 780;
+const PIP_HEIGHT = 920;
+
+/** 右鍵定位時，往上找到的「區塊級」元素標籤（與 /notes/preview-popout 頁的清單一致）。 */
+const PIP_BLOCK_TAGS = new Set(["P", "LI", "H1", "H2", "H3", "H4", "H5", "H6", "SUMMARY", "TD", "TH", "PRE", "BLOCKQUOTE"]);
+
+/**
+ * Document Picture-in-Picture 的最小型別（lib.dom 尚未內建；僅 Chromium 系支援）。
+ * requestWindow 回傳的 Window 由瀏覽器保證「永遠置頂（always-on-top）」。
+ */
+interface DocumentPictureInPictureLike {
+  requestWindow: (options?: { width?: number; height?: number }) => Promise<Window>;
+}
 
 /**
  * 共用 Markdown 編輯器：文字輸入框 + 格式工具列。
@@ -18,6 +41,8 @@ export const PREVIEW_CHANNEL = "zonwiki:note-preview";
  *
  * 不熟 Markdown 的人也能用按鈕快速產生格式；熟的人仍可直接打字。
  * 可選 withPreview：提供 編輯／並排／預覽 三種檢視，並可把預覽「彈出成獨立視窗」即時同步。
+ * 可選 defaultView／rightClickTogglesEdit／popoutAlwaysOnTop：供答題彈窗這類「以閱讀為主」
+ * 的呼叫端使用（打開就是預覽、雙右鍵切編輯、彈出預覽走 Document PiP 置頂視窗）。
  */
 type ViewMode = "edit" | "split" | "preview";
 
@@ -28,6 +53,9 @@ export function MarkdownEditor({
   placeholder,
   minHeight = 200,
   withPreview = false,
+  defaultView = "edit",
+  rightClickTogglesEdit = false,
+  popoutAlwaysOnTop = false,
   className,
   textareaClassName,
   ariaLabel = "Markdown 編輯器",
@@ -43,6 +71,19 @@ export function MarkdownEditor({
   minHeight?: number;
   /** 是否提供 編輯／並排／預覽 切換（以及「彈出預覽」）。 */
   withPreview?: boolean;
+  /** 初始檢視模式（僅 withPreview 時有意義；答題彈窗要「打開就是預覽」）。 */
+  defaultView?: ViewMode;
+  /**
+   * 「預覽」檢視中快速連點兩下右鍵＝切回編輯模式，並抑制瀏覽器右鍵選單
+   * （只作用於預覽檢視的預覽窗格；並排/編輯檢視維持原生右鍵行為）。
+   */
+  rightClickTogglesEdit?: boolean;
+  /**
+   * 「⬈ 彈出預覽」優先使用 Document Picture-in-Picture 開「永遠置頂」的預覽視窗
+   * （不會被主視窗或其他應用程式蓋掉；僅 Chromium 系支援）。
+   * 不支援或開啟失敗時自動退回既有的 window.open 獨立視窗。
+   */
+  popoutAlwaysOnTop?: boolean;
   /** 外層額外 class（例如畫布需要 nodrag）。 */
   className?: string;
   /** textarea 額外 class（沿用既有樣式時）。 */
@@ -58,11 +99,22 @@ export function MarkdownEditor({
   onUploadingChange?: (count: number) => void;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
-  const [view, setView] = useState<ViewMode>("edit");
+  const [view, setView] = useState<ViewMode>(defaultView);
   // 「彈出預覽獨立視窗」狀態與同步頻道。
   const [poppedOut, setPoppedOut] = useState(false);
   const channelRef = useRef<BroadcastChannel | null>(null);
   const popupRef = useRef<Window | null>(null);
+  // Document PiP（置頂）彈出預覽：視窗參考＋portal 掛載容器（非 null＝PiP 模式進行中）。
+  const pipWindowRef = useRef<Window | null>(null);
+  const [pipContainer, setPipContainer] = useState<HTMLElement | null>(null);
+  // PiP 開啟請求進行中旗標：requestWindow 是非同步、resolve 前按鈕仍可按——
+  // 防「連點兩下開出兩個 PiP、先開的失去參照變孤兒」（對抗式復審 HIGH）。
+  const pipRequestInFlightRef = useRef(false);
+  // 元件是否已卸載：PiP 請求 pending 期間彈窗被關（元件卸載）時，resolve 後必須
+  // 直接關掉剛開出的視窗、不碰 state——否則留下使用者關不掉的孤兒置頂視窗（對抗式復審 HIGH）。
+  const unmountedRef = useRef(false);
+  // 「快速連點兩下右鍵」的上一次右鍵時間戳（Date.now()；0＝尚無前一擊）。
+  const lastRightClickAtRef = useRef(0);
 
   // 以 ref 持有最新內容，供 openPopout 的非同步 onmessage 取用最新值（避免讀 ref.current 觸發編譯器規則）。
   const valueRef = useRef(value);
@@ -114,10 +166,135 @@ export function MarkdownEditor({
     ta.scrollTop = Math.max(0, y); // 讓該行落在可視內容頂端
   };
 
-  /** 開啟／聚焦「獨立預覽視窗」：以 BroadcastChannel 即時把編輯框最新 markdown 推給它渲染。 */
+  /**
+   * 關閉 Document PiP 置頂預覽並恢復內嵌預覽。
+   * closeWindow=true＝使用者按「⇲ 收回預覽」主動關（要呼叫 close()）；
+   * false＝視窗已被關（pagehide：使用者關窗、或同分頁開了另一個 PiP 被擠掉）只需復位狀態。
+   * 兩條路徑可能連續發生（close() 會再觸發 pagehide），狀態復位為冪等、重跑無害。
+   */
+  const closePipPopout = (closeWindow: boolean) => {
+    if (closeWindow) {
+      try { pipWindowRef.current?.close(); } catch { /* 視窗已關閉時忽略 */ }
+    }
+    pipWindowRef.current = null;
+    setPipContainer(null);
+    setPoppedOut(false);
+  };
+
+  /**
+   * 以 Document Picture-in-Picture 開「永遠置頂」的預覽視窗（Chromium 系）。
+   * PiP 視窗是空白文件：複製主文件樣式與主題屬性後，用 React portal 把預覽渲染進去
+   * （portal 直接吃 live state，內容即時同步，不需 BroadcastChannel）。
+   */
+  const openPipPopout = async (dpip: DocumentPictureInPictureLike) => {
+    const pipWin = await dpip.requestWindow({ width: PIP_WIDTH, height: PIP_HEIGHT });
+    if (unmountedRef.current) {
+      // 等待期間彈窗已被關（元件卸載）→ 立刻關掉剛開出的視窗，不留孤兒、不碰 state。
+      try { pipWin.close(); } catch { /* 視窗已關閉時忽略 */ }
+      return;
+    }
+    const pipDoc = pipWin.document;
+    pipDoc.title = "即時預覽（置頂） — ZonWiki";
+    // 複製主文件樣式表（Tailwind／全站 CSS 變數），PiP 內外觀才與主視窗一致。
+    for (const sheet of Array.from(document.styleSheets)) {
+      try {
+        const css = Array.from(sheet.cssRules).map((rule) => rule.cssText).join("\n");
+        const style = pipDoc.createElement("style");
+        style.textContent = css;
+        pipDoc.head.appendChild(style);
+      } catch {
+        // 跨網域樣式表讀不到 cssRules → 改以 <link> 引用原網址。
+        if (sheet.href) {
+          const link = pipDoc.createElement("link");
+          link.rel = "stylesheet";
+          link.href = sheet.href;
+          pipDoc.head.appendChild(link);
+        }
+      }
+    }
+    // 同步主題（全站 CSS 變數靠 <html data-theme> 解析；未設定時維持預設）。
+    const theme = document.documentElement.getAttribute("data-theme");
+    if (theme) pipDoc.documentElement.setAttribute("data-theme", theme);
+    pipDoc.body.style.margin = "0";
+    pipDoc.body.style.background = "var(--bg-surface)";
+    const container = pipDoc.createElement("div");
+    pipDoc.body.appendChild(container);
+    // 視窗被關（使用者關窗、或同分頁開了另一個 PiP 被自動擠掉）→ 恢復內嵌預覽。
+    pipWin.addEventListener("pagehide", () => closePipPopout(false));
+    pipWindowRef.current = pipWin;
+    setPipContainer(container);
+    setPoppedOut(true);
+  };
+
+  /**
+   * PiP 預覽內右鍵某一行 → 編輯框捲到對應來源行（與 /notes/preview-popout 頁行為對等）。
+   * 注意：PiP 內右鍵語意是「定位來源行」，與內嵌預覽的「雙右鍵切編輯」並存不衝突——
+   * PiP 開啟時編輯器已強制顯示編輯區，沒有「切回編輯」的需求。
+   */
+  const onPipContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
+    let el = e.target as HTMLElement | null;
+    while (el && el !== e.currentTarget && !PIP_BLOCK_TAGS.has(el.tagName)) {
+      el = el.parentElement;
+    }
+    const text = (el?.textContent || "").trim().slice(0, 40);
+    if (!text) return;
+    e.preventDefault();
+    scrollEditorToText(text);
+  };
+
+  /**
+   * 「預覽」檢視的預覽窗格右鍵手勢（rightClickTogglesEdit 啟用時）：
+   * 一律抑制瀏覽器右鍵選單；快速連點兩下（間隔 ≤ DOUBLE_RIGHT_CLICK_MS）切回編輯模式。
+   * 只綁「預覽」檢視——並排（split）維持原生右鍵，行為單純可預期。
+   */
+  const onPreviewContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!rightClickTogglesEdit || view !== "preview") return;
+    e.preventDefault();
+    const now = Date.now();
+    if (now - lastRightClickAtRef.current <= DOUBLE_RIGHT_CLICK_MS) {
+      lastRightClickAtRef.current = 0;
+      setView("edit");
+      // 切回編輯後把焦點放進 textarea，接著就能直接打字（rAF 等 textarea 掛載完）。
+      requestAnimationFrame(() => ref.current?.focus());
+    } else {
+      lastRightClickAtRef.current = now;
+    }
+  };
+
+  /** 開啟「獨立預覽視窗」：優先 PiP 置頂（popoutAlwaysOnTop 且瀏覽器支援），否則走既有 window.open。 */
   const openPopout = () => {
-    if (poppedOut) { popupRef.current?.focus(); return; }
-    if (typeof window === "undefined" || typeof BroadcastChannel === "undefined") return;
+    if (poppedOut) { (pipWindowRef.current ?? popupRef.current)?.focus(); return; }
+    if (typeof window === "undefined") return;
+    const dpip = popoutAlwaysOnTop
+      ? (window as Window & { documentPictureInPicture?: DocumentPictureInPictureLike }).documentPictureInPicture
+      : undefined;
+    if (dpip) {
+      // 防連點：requestWindow resolve 前按鈕仍可按，重複請求會開出多個 PiP 視窗。
+      if (pipRequestInFlightRef.current) return;
+      pipRequestInFlightRef.current = true;
+      // PiP 開啟為非同步；失敗（權限、非使用者手勢…）就退回既有 window.open 流程。
+      openPipPopout(dpip)
+        .catch(() => { if (!unmountedRef.current) openLegacyPopout(); })
+        .finally(() => { pipRequestInFlightRef.current = false; });
+      return;
+    }
+    openLegacyPopout();
+  };
+
+  /** 既有的 window.open 獨立預覽視窗：以 BroadcastChannel 即時把編輯框最新 markdown 推給它渲染。 */
+  const openLegacyPopout = () => {
+    if (typeof BroadcastChannel === "undefined") return;
+    const win = window.open(
+      "/notes/preview-popout",
+      "zonwiki-note-preview",
+      "width=780,height=920,menubar=no,toolbar=no,location=no,status=no",
+    );
+    if (!win) {
+      // 被瀏覽器彈窗攔截器擋下（常見於 PiP 失敗後的非同步 fallback——原始點擊手勢已被消耗）。
+      // 不可仍 setPoppedOut(true)：那會變成「畫面說已彈出、實際沒有任何視窗」的假態。
+      showToast("彈出預覽視窗被瀏覽器攔截，請允許本站的彈出式視窗後再試", { type: "error" });
+      return;
+    }
     const ch = new BroadcastChannel(PREVIEW_CHANNEL);
     ch.onmessage = (e: MessageEvent) => {
       const data = e.data as { type?: string; text?: string } | null;
@@ -132,11 +309,7 @@ export function MarkdownEditor({
       }
     };
     channelRef.current = ch;
-    popupRef.current = window.open(
-      "/notes/preview-popout",
-      "zonwiki-note-preview",
-      "width=780,height=920,menubar=no,toolbar=no,location=no,status=no",
-    );
+    popupRef.current = win;
     setPoppedOut(true);
   };
 
@@ -154,14 +327,33 @@ export function MarkdownEditor({
     return () => window.clearInterval(timer);
   }, [poppedOut]);
 
-  // 卸載時關閉頻道與視窗，避免殘留。
+  // 卸載時關閉頻道與視窗（含 PiP 置頂視窗），避免殘留。
+  // unmountedRef 在 setup 時重設為 false：StrictMode 開發模式會「模擬卸載再掛回」，
+  // 只設不清會讓旗標永遠卡在 true、PiP 從此開不起來。
   useEffect(() => {
+    unmountedRef.current = false;
     return () => {
+      unmountedRef.current = true;
       channelRef.current?.close();
       channelRef.current = null;
       try { popupRef.current?.close(); } catch { /* 跨視窗關閉可能受限，忽略 */ }
+      try { pipWindowRef.current?.close(); } catch { /* 視窗已關閉時忽略 */ }
     };
   }, []);
+
+  // PiP 開啟期間：主視窗切換主題（<html data-theme>）即時同步到 PiP 文件，
+  // 避免 PiP 停留在建立當下的舊主題（對抗式復審 MEDIUM）。
+  useEffect(() => {
+    if (!pipContainer) return;
+    const pipDoc = pipWindowRef.current?.document;
+    if (!pipDoc || typeof MutationObserver === "undefined") return;
+    const observer = new MutationObserver(() => {
+      const theme = document.documentElement.getAttribute("data-theme");
+      if (theme) pipDoc.documentElement.setAttribute("data-theme", theme);
+    });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    return () => observer.disconnect();
+  }, [pipContainer]);
 
   /** 還原 textarea 的選取狀態（在 onChange 觸發重繪後）。 */
   const restore = (start: number, end: number) => {
@@ -391,6 +583,10 @@ export function MarkdownEditor({
   const showEditor = poppedOut || !withPreview || view !== "preview";
   const showPreview = !poppedOut && withPreview && view !== "edit";
 
+  // 本瀏覽器是否支援 Document PiP（置頂視窗）：按鈕文案據此決定——
+  // 不支援（Firefox/Safari）時不可承諾「置頂」（那會是假承諾，對抗式復審 HIGH）。
+  const pipSupported = typeof window !== "undefined" && "documentPictureInPicture" in window;
+
   return (
     <div className={`mde ${className || ""}`}>
       <div className="mde-toolbar">
@@ -415,7 +611,12 @@ export function MarkdownEditor({
                 key={m}
                 type="button"
                 className={`mde-view-btn ${view === m ? "mde-view-btn--on" : ""}`}
-                onClick={() => setView(m)}
+                onClick={() => {
+                  // 手動切檢視時歸零右鍵計時：避免「右鍵一下→手動切走再切回→再右鍵一下」
+                  // 被誤判成連續雙擊（對抗式復審 LOW）。
+                  lastRightClickAtRef.current = 0;
+                  setView(m);
+                }}
                 disabled={poppedOut && m !== "edit"}
                 title={poppedOut ? "預覽已彈出成獨立視窗" : undefined}
                 tabIndex={-1}
@@ -426,8 +627,16 @@ export function MarkdownEditor({
             <button
               type="button"
               className={`mde-view-btn ${poppedOut ? "mde-view-btn--on" : ""}`}
-              onClick={poppedOut ? closePopout : openPopout}
-              title={poppedOut ? "關閉獨立預覽視窗、恢復內嵌預覽" : "把預覽彈出成獨立視窗（可拖到另一個螢幕，即時同步）"}
+              onClick={poppedOut ? (pipContainer ? () => closePipPopout(true) : closePopout) : openPopout}
+              title={
+                poppedOut
+                  ? "關閉獨立預覽視窗、恢復內嵌預覽"
+                  : popoutAlwaysOnTop && pipSupported
+                    ? "把預覽彈出成「永遠置頂」的獨立視窗（不會被其他視窗蓋掉，即時同步；同時僅能置頂一個）"
+                    : popoutAlwaysOnTop
+                      ? "把預覽彈出成獨立視窗（此瀏覽器不支援置頂，即時同步）"
+                      : "把預覽彈出成獨立視窗（可拖到另一個螢幕，即時同步）"
+              }
               tabIndex={-1}
             >
               {poppedOut ? "⇲ 收回預覽" : "⬈ 彈出預覽"}
@@ -466,16 +675,43 @@ export function MarkdownEditor({
           />
         )}
         {showPreview && (
-          <div className="mde-preview md-preview" style={{ minHeight }}>
+          <div
+            className="mde-preview md-preview"
+            style={{ minHeight }}
+            onContextMenu={onPreviewContextMenu}
+            title={rightClickTogglesEdit && view === "preview" ? "快速連點兩下右鍵：切換為編輯模式" : undefined}
+          >
             {value.trim() ? (
               // 傳入 onChange → 預覽/並排中的待辦核取方塊可直接點擊勾選，切換後即時寫回內容。
               <ToggleAwareMarkdown value={value} onChange={onChange} />
             ) : (
-              <span className="mde-muted">預覽會顯示在這裡…</span>
+              <span className="mde-muted">
+                {rightClickTogglesEdit && view === "preview"
+                  ? "預覽會顯示在這裡…（快速連點兩下右鍵可切換為編輯）"
+                  : "預覽會顯示在這裡…"}
+              </span>
             )}
           </div>
         )}
       </div>
+
+      {/* Document PiP 置頂預覽：portal 直接吃 live value，內容即時同步（不經 BroadcastChannel）。 */}
+      {pipContainer &&
+        createPortal(
+          <div
+            className="markdown-prose md-preview"
+            style={{ padding: "20px 24px", maxWidth: 900, margin: "0 auto", boxSizing: "border-box" }}
+            onContextMenu={onPipContextMenu}
+            title="右鍵點某一行 → 編輯視窗會捲到該行"
+          >
+            {value.trim() ? (
+              <ToggleAwareMarkdown value={value} />
+            ) : (
+              <span style={{ color: "var(--text-tertiary)" }}>（尚無內容；請在編輯器輸入 Markdown）</span>
+            )}
+          </div>,
+          pipContainer
+        )}
 
       {poppedOut && (
         <div className="mde-popout-hint">
