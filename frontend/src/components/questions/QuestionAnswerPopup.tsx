@@ -46,6 +46,8 @@ interface QuestionAnswerPopupProps {
  * 答題彈窗：可拖曳、可縮放的浮動小視窗（似便利貼但有關閉鈕；狀態只存 React、刷新即消失、可同時開多個）。
  *
  * 內含「問題」（唯讀，以 Markdown 渲染）與「回答」（Markdown 編輯器：工具列＋編輯/並排/預覽）兩區，支援：
+ * - 回答區「預設為預覽」：打開即閱讀已存回答；預覽中快速連點兩下右鍵＝切回編輯
+ *   （預覽窗格抑制瀏覽器右鍵選單）；「⬈ 彈出預覽」走 Document PiP 置頂視窗（不被其他視窗蓋掉）；
  * - 🤖 請 AI 回答：以整篇筆記為脈絡非同步提問，完成後「覆蓋」回答框內容；
  * - Ctrl+Z：還原「AI 覆蓋前」的內容（僅在值仍等於 AI 覆蓋結果時攔截，否則交給原生 undo）；
  * - 儲存：寫回浮層元件的 questionAnswer；
@@ -356,6 +358,9 @@ export function QuestionAnswerPopup({
             value={answer}
             onChange={setAnswer}
             withPreview
+            defaultView="preview"
+            rightClickTogglesEdit
+            popoutAlwaysOnTop
             minHeight={0}
             className="mde--fill"
             ariaLabel="問題回答編輯器"

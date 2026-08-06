@@ -5,6 +5,18 @@
 
 ---
 
+## 2026-08-06 ｜答題彈窗回答預設預覽＋雙右鍵切編輯；「彈出預覽」以 Document PiP 實現置頂（feature/qa-answer-preview-mode）
+
+- **背景**：使用者要求（便利貼／T 文字框「?」的回答）①打開彈窗時回答區預設是「預覽」、預覽中快速點兩下右鍵切回編輯、關閉瀏覽器預設右鍵選單；②「彈出預覽視窗要置頂，不要被其他視窗蓋掉」。
+- **需求②的解讀**：「彈出預覽」精準對應編輯器既有的「⬈ 彈出預覽」功能（window.open 獨立視窗，一點回主視窗就被蓋到後面）；答題彈窗本身（z 2000+）在頁內幾乎不會被其他面板蓋住。故解讀為「該獨立視窗要 OS 層級置頂」。（若使用者實指頁內 z-index 疊放，另案處理。）
+- **考慮過的選項（置頂手段）**：(a) `window.open`——Web 無任何 API 能讓一般視窗 always-on-top，做不到；(b) 調高答題彈窗頁內 z-index——只解頁內疊放、離開瀏覽器仍會被蓋，且與解讀不符；(c) **Document Picture-in-Picture（採用）**——Chromium 系提供的「永遠置頂」視窗，Web 唯一正解；不支援的瀏覽器（Firefox/Safari）自動退回既有 window.open，按鈕文案同步降級（不假承諾「置頂」）。
+- **實作**：`MarkdownEditor` 新增三個可選 props（預設值＝既有行為，12 個既有呼叫端零回歸）：`defaultView`（答題彈窗傳 "preview"）、`rightClickTogglesEdit`（僅「預覽」檢視的預覽窗格：一律 preventDefault contextmenu；兩次右鍵間隔 ≤500ms（pin 在 `Date.now()`，測試以 spy 控制）切回編輯；split/編輯檢視維持原生右鍵）、`popoutAlwaysOnTop`（PiP 路徑：requestWindow → 複製主文件樣式表＋`data-theme` → React portal 把 ToggleAwareMarkdown 渲染進 PiP 文件（吃 live state，不需 BroadcastChannel）→ pagehide 恢復內嵌預覽；主題切換以 MutationObserver 即時同步）。僅 `QuestionAnswerPopup` 啟用三者（範圍紀律；筆記編輯頁等其他呼叫端不變）。
+- **已知限制（明文接受）**：PiP 僅 Chromium；同分頁同時只能有一個 PiP（開第二個會擠掉第一個，靠 pagehide 恢復第一個的狀態，按鈕 title 有註明）；PiP 內右鍵維持「定位來源行」語意（與舊 popout 對等）；「置頂」本身是視窗管理器行為、自動化測不到，以「PiP 視窗存在＋內容渲染」為代理驗證。
+- **對抗式復審後補強（4 HIGH）**：①PiP 請求 pending 期間彈窗被關（元件卸載）→ resolve 後直接 close、不留「使用者關不掉的孤兒置頂視窗」（unmountedRef，StrictMode 下 setup 時要重設）；②彈出鈕連點 → in-flight 旗標防併發雙視窗；③PiP 失敗 fallback 的 `window.open` 在非同步 catch 內易被彈窗攔截器擋 → 回傳 null 時 toast 告知且**不**進入彈出狀態（修掉既有「假態」隱患）；④不支援 PiP 時按鈕文案不承諾置頂。
+- **驗證**：TDD（單元 RED→GREEN，MarkdownEditor 18 條＋QuestionAnswerPopup 2 條，全站 78/78）＋Playwright E2E 8/8（預設預覽、雙右鍵切換＋defaultPrevented、>500ms 不切、T 文字框同款、PiP 開/收、暗主題＋PiP 主題複製、375px、console 零錯誤）；截圖存 zonwiki-ui-tests/2026-08-06-qa-answer-preview/。測試環境教訓：vitest 3 預設 fake 全組計時 API（會誤傷 rAF 與輪詢 interval）→ 雙右鍵間隔用 `vi.spyOn(Date,'now')` 而非 fake timers；jsdom 沒有 BroadcastChannel（能動是 Node 全域殘留）→ 顯式 stubGlobal；React 19 portal 可渲染進 `createHTMLDocument` 的 body（跨文件事件委派正常）。
+
+---
+
 ## 2026-07-31 ｜問題清單定位改「循著階層展開」＋定位不關面板＋便利貼答鈕（fix/question-list-ux）
 
 - **背景**：使用者回報三個問題：①筆記頁點「問題清單」面板列項目後，面板會被自動關閉（連續定位多個問題要一直重開）；②問題（便利貼）的錨定文字位於收合的 :::toggle 內時，點定位完全沒反應——因為被收合隱藏的浮層項目**整個不會渲染**（collapsedByToggle 過濾），scrollToOverlayItem 的重試迴圈找不到 DOM 而靜默失敗，應比照「目錄」先循著階層展開；③便利貼有 ❓ 可標記問題、T 文字框有「答」鈕，但便利貼本體沒有「答」鈕（只能從問題清單開答題彈窗）。
