@@ -79,6 +79,12 @@ builder.Services.AddScoped<RefineService>(); // 精煉成筆記協調器
 // 重複規則「到期具現化」背景服務（#17）：每日把母規則的到期發生具現化成可打勾的實體任務卡。
 builder.Services.AddHostedService<RecurringTaskMaterializationService>();
 
+// 筆記渲染快取「啟動一次性收斂」（見 docs/DECISIONS.md 2026-08-08）：GET 的自癒是純記憶體（不落 DB，
+// 防跨 session 假 409），DB 收斂由本服務在啟動後背景跑一次（MigrateAsync 於 app.Run() 前完成，schema 必就緒）。
+// 註冊成 Singleton＋HostedService 同一實例：整合測試可自容器解析、直接呼叫核心方法驗證。
+builder.Services.AddSingleton<NoteRenderMigrationService>();
+builder.Services.AddHostedService(provider => provider.GetRequiredService<NoteRenderMigrationService>());
+
 // 筆記附件（貼圖改存磁碟，內文只放短網址；見 docs/DECISIONS.md 2026-07-08）。
 builder.Services.Configure<AttachmentOptions>(builder.Configuration.GetSection(AttachmentOptions.SectionName));
 builder.Services.AddScoped<AttachmentService>();

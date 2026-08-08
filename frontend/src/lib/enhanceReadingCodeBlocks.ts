@@ -14,16 +14,21 @@
  */
 import { parseCodeMeta, canonicalLangValue, CODE_LANGUAGES } from './codeBlockMeta';
 import { highlightCode } from './highlightCode';
+import { createDoubleRightClickTracker } from './doubleRightClick';
 
 /**
  * 美化容器內所有尚未處理的程式碼區塊。
  * @param container 閱讀內文的容器（.markdown-prose）；null 時不動作。
  * @param onMetaChange 可選；提供時「圍欄程式碼區塊」的檔名／語言變成可就地編輯，變更時以
  *   （圍欄來源行號 data-fence-line、新語言、新檔名）回呼。縮排程式碼區塊無此行號 → 維持唯讀。
+ * @param onBodyEdit 可選；提供時「圍欄程式碼區塊」可雙右鍵進入內文直編（textarea 取代顯示、
+ *   標題列 💾 儲存鈕啟用），儲存時以（圍欄來源行號、新內文）回呼並回傳是否成功——
+ *   成功後上層以最新筆記重注入整段 HTML；失敗保留編輯內容。縮排程式碼區塊不可直編。
  */
 export function enhanceReadingCodeBlocks(
   container: HTMLElement | null,
   onMetaChange?: (fenceLine: number, lang: string, filename: string) => void,
+  onBodyEdit?: (fenceLine: number, newBody: string) => Promise<boolean>,
 ): void {
   if (!container) return;
 
@@ -126,6 +131,87 @@ export function enhanceReadingCodeBlocks(
     });
 
     right.appendChild(langEl);
+
+    // ── 內文直編（雙右鍵進入；💾 儲存鈕平時停用、編輯且有變更時啟用）────────────────────
+    // 只有「圍欄」程式碼區塊可直編（有 data-fence-line 才能定位原文改寫；縮排程式碼區塊維持唯讀）。
+    const canEditBody = !!onBodyEdit && canEditMeta;
+    if (canEditBody) {
+      const saveBtn = document.createElement('button');
+      saveBtn.type = 'button';
+      saveBtn.className = 'zw-code-save-btn';
+      saveBtn.textContent = '💾 儲存';
+      saveBtn.title = '雙擊右鍵進入編輯後，按此儲存（Esc 取消）';
+      saveBtn.disabled = true;
+      right.appendChild(saveBtn);
+
+      /** 目前的編輯器（null＝未在編輯）。 */
+      let editor: HTMLTextAreaElement | null = null;
+
+      /** 離開編輯態（還原顯示；不儲存）。 */
+      const exitEditing = (): void => {
+        if (!editor) return;
+        editor.remove();
+        editor = null;
+        pre.style.display = '';
+        saveBtn.disabled = true;
+      };
+
+      /** 進入編輯態：textarea 取代 pre 顯示，初值＝圍欄內文（textContent 即原始碼，Markdig 轉義已被 DOM 還原）。 */
+      const enterEditing = (): void => {
+        if (editor) return;
+        editor = document.createElement('textarea');
+        editor.className = 'zw-code-editor';
+        editor.value = text;
+        editor.rows = Math.min(40, Math.max(3, text.split('\n').length + 1));
+        editor.spellcheck = false;
+        editor.addEventListener('input', () => {
+          saveBtn.disabled = !editor || editor.value === text;
+        });
+        editor.addEventListener('keydown', (event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            exitEditing();
+          }
+          // Enter＝換行（程式碼多行天性），儲存一律走 💾 鈕。
+        });
+        pre.style.display = 'none';
+        wrap.appendChild(editor);
+        editor.focus();
+      };
+
+      saveBtn.addEventListener('click', () => {
+        if (!editor || editor.value === text) return;
+        const pendingEditor = editor;
+        pendingEditor.disabled = true;
+        saveBtn.disabled = true;
+        saveBtn.textContent = '儲存中…';
+        onBodyEdit(fenceLine as number, pendingEditor.value).then((ok) => {
+          if (ok) {
+            // 成功也自行離開編輯態（還原顯示舊 pre）：渲染後 HTML 可能一字未變（極端情況）
+            // → 不會有重注入；若真的變了，重注入隨後汰換整塊，這裡只是暫態（復審 HIGH）。
+            saveBtn.textContent = '💾 儲存';
+            exitEditing();
+            return;
+          }
+          // 失敗：保留使用者輸入，可修正後再存或 Esc 放棄。
+          pendingEditor.disabled = false;
+          saveBtn.disabled = false;
+          saveBtn.textContent = '💾 儲存';
+          pendingEditor.focus();
+        });
+      });
+
+      const tracker = createDoubleRightClickTracker(() => enterEditing());
+      wrap.addEventListener('contextmenu', (event) => {
+        // 編輯中的 textarea 保留原生右鍵（貼上/拼字修正）。
+        if (event.target instanceof Element && event.target.closest('textarea')) return;
+        // 順序關鍵：先餵 tracker 再 preventDefault——tracker 會忽略「已被別人 preventDefault」的
+        // 事件（NoteOverlay 繪圖取消那一下），若自己先 preventDefault 雙右鍵永遠不會觸發。
+        tracker.handleContextMenu(event);
+        event.preventDefault(); // 程式碼區塊內一律抑制原生選單（單次右鍵也抑制，與全站慣例一致）
+      });
+    }
+
     right.appendChild(copyBtn);
     header.appendChild(fnEl);
     header.appendChild(right);

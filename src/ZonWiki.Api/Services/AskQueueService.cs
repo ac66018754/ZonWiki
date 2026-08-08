@@ -345,6 +345,8 @@ public sealed class AskQueueService
                 ContentRaw = answerContent,
                 ContentHtml = NoteContentHelpers.RenderToHtml(answerContent),
                 ContentHash = NoteContentHelpers.ComputeContentHash(answerContent),
+                // 快取版本：與 ContentHtml 同步寫入現行管線版本（lazy 自癒比對基準）。
+                RenderVersion = NoteContentHelpers.CurrentRenderVersion,
                 Kind = "note",
                 IsDraft = false,
                 CreatedUser = userId.ToString(),
@@ -654,6 +656,8 @@ public sealed class AskQueueService
                 ContentRaw = answerContent,
                 ContentHtml = NoteContentHelpers.RenderToHtml(answerContent),
                 ContentHash = NoteContentHelpers.ComputeContentHash(answerContent),
+                // 快取版本：與 ContentHtml 同步寫入現行管線版本（lazy 自癒比對基準）。
+                RenderVersion = NoteContentHelpers.CurrentRenderVersion,
                 Kind = "note",
                 IsDraft = false,
                 CreatedUser = userId.ToString(),

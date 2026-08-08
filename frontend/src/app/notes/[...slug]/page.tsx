@@ -5,8 +5,10 @@ import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { enhanceReadingCodeBlocks } from '@/lib/enhanceReadingCodeBlocks';
-import { enhanceReadingTables } from '@/lib/enhanceReadingTables';
+import { enhanceReadingTables, type ReadingTableInteractions } from '@/lib/enhanceReadingTables';
 import { setFenceMetaAtLine } from '@/lib/codeBlockMeta';
+import { getCellRawFromContent, setCellValueInContent } from '@/lib/tableSpec';
+import { replaceFenceBody } from '@/lib/fenceBody';
 import { showToast } from '@/lib/toast';
 import {
   getNote,
@@ -537,30 +539,105 @@ export default function NotesDetailPage() {
   // → 改寫 Markdown 圍欄（```lang:filename）→ 即時存 DB，並以回傳的最新版重繪（不必進編輯模式）。
   // 索引以「變更當下查 DOM 的 .code-block 文件順序」算出，與 setCodeFenceMeta 的文件順序掃描對齊
   // （同編輯預覽既有機制）；用 noteRef 讀最新 contentRaw 避免 stale closure。
-  const handleReadingCodeMeta = useCallback((fenceLine: number, lang: string, filename: string) => {
+  // H2：draft 記錄「基於哪份 contentRaw（appliedTo）算出哪份結果（result）」。只有當前 note 仍停在
+  // draft 起點（in-flight、尚未 setNote）或已成為 draft 結果（寫回成功）時才續用 draft 當基準；
+  // 若 note.contentRaw 已被別條路徑（編輯彈窗／編輯頁／AI 保存）換掉，draft 即失效、改以最新
+  // note.contentRaw 為基準——否則會用過期 draft 覆寫掉別條路徑的整篇編輯（靜默資料遺失）。
+  /** 讀模式就地編輯的共同基準：draft 有效時用 draft 結果，否則用最新 contentRaw（無筆記回 null）。 */
+  const getReadingBase = useCallback((): string | null => {
     const cur = noteRef.current;
-    if (!cur) return;
-    // H2：draft 記錄「基於哪份 contentRaw（appliedTo）算出哪份結果（result）」。只有當前 note 仍停在
-    // draft 起點（in-flight、尚未 setNote）或已成為 draft 結果（本函式存回）時才續用 draft 當基準；
-    // 若 note.contentRaw 已被別條路徑（編輯彈窗／編輯頁／AI 保存）換掉，draft 即失效、改以最新
-    // note.contentRaw 為基準——否則會用過期 draft 覆寫掉別條路徑的整篇編輯（靜默資料遺失）。
+    if (!cur) return null;
     const draft = readingDraftRef.current;
-    const draftValid = draft !== null && (cur.contentRaw === draft.appliedTo || cur.contentRaw === draft.result);
-    const base = draftValid ? draft.result : cur.contentRaw;
-    const nextRaw = setFenceMetaAtLine(base, fenceLine, lang, filename);
-    if (nextRaw === base) return; // 行號無對應圍欄或無實際變更 → 不打擾
-    readingDraftRef.current = { appliedTo: base, result: nextRaw };
-    updateNote(cur.id, { contentRaw: nextRaw })
-      .then((latest) => {
-        if (latest) {
-          pendingMetaReflowRef.current = true; // M1：重注入後由 observer 重套 toggle 展開狀態與捲動位置
-          setNote(latest);
-        } else {
-          showToast('程式碼區塊資訊儲存失敗，請稍後再試', { type: 'error' });
-        }
-      })
-      .catch(() => showToast('程式碼區塊資訊儲存失敗，請稍後再試', { type: 'error' }));
+    const draftValid =
+      draft !== null && (cur.contentRaw === draft.appliedTo || cur.contentRaw === draft.result);
+    return draftValid ? draft.result : cur.contentRaw;
   }, []);
+
+  // 讀模式編輯的序列化佇列＋版本鏈（復審 HIGH：連續勾兩格若各自帶同一個過期 baseVersion，
+  // 後到的 PUT 必撞假 409——xmin 每次 UPDATE 都前進。故同一時間只送一個 PUT，且 draft 鏈
+  // 延續時 baseVersion 用「上一次成功回應的最新 version」而非可能過期的 note.version）。
+  const readingEditQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const readingVersionRef = useRef<number | null>(null);
+
+  /**
+   * 讀模式就地編輯的共用寫回（程式碼 metadata／圍欄內文／表格儲存格共用）：
+   * 佇列序列化 → 以 draft 基準套 transform → PUT（帶樂觀鎖 baseVersion）→ setNote 重注入。
+   * transform 回 null＝定位失敗不動；回原字串＝無變更視為成功不打擾後端。
+   * 任何失敗都棄置 draft 與版本鏈（避免下次以「未落地的結果」為基準續寫）並回傳 false 讓呼叫端還原 UI。
+   */
+  const applyReadingEdit = useCallback(
+    (transform: (base: string) => string | null): Promise<boolean> => {
+      const execute = (): Promise<boolean> => {
+        const cur = noteRef.current;
+        const draft = readingDraftRef.current;
+        const draftValid =
+          draft !== null && (cur?.contentRaw === draft.appliedTo || cur?.contentRaw === draft.result);
+        const base = getReadingBase();
+        if (!cur || base === null) return Promise.resolve(false);
+        const nextRaw = transform(base);
+        if (nextRaw === null) return Promise.resolve(false);
+        if (nextRaw === base) return Promise.resolve(true);
+        // draft 鏈延續中優先用鏈上最新版本（前一個 PUT 回應的 version）；新鏈用當前筆記版本。
+        const baseVersion = draftValid && readingVersionRef.current !== null
+          ? readingVersionRef.current
+          : cur.version;
+        readingDraftRef.current = { appliedTo: base, result: nextRaw };
+        return updateNote(cur.id, { contentRaw: nextRaw, baseVersion })
+          .then((latest) => {
+            if (latest) {
+              readingVersionRef.current = latest.version ?? null;
+              pendingMetaReflowRef.current = true; // M1：重注入後由 observer 重套 toggle 展開狀態與捲動位置
+              setNote(latest);
+              return true;
+            }
+            readingDraftRef.current = null;
+            readingVersionRef.current = null;
+            showToast('儲存失敗，請稍後再試', { type: 'error' });
+            return false;
+          })
+          .catch((error) => {
+            readingDraftRef.current = null;
+            readingVersionRef.current = null;
+            if (error instanceof ConflictError) {
+              showToast('內容已被其他來源修改，請重新整理後再編輯', { type: 'error' });
+            } else {
+              showToast('儲存失敗，請稍後再試', { type: 'error' });
+            }
+            return false;
+          });
+      };
+      // 佇列：前一個寫回（成功或失敗）結束後才執行下一個；佇列本身永不 reject。
+      const run = readingEditQueueRef.current.then(execute, execute);
+      readingEditQueueRef.current = run.catch(() => {});
+      return run;
+    },
+    [getReadingBase],
+  );
+
+  const handleReadingCodeMeta = useCallback((fenceLine: number, lang: string, filename: string) => {
+    // setFenceMetaAtLine 對「行號無對應圍欄」回原文 → applyReadingEdit 視為無變更、不打擾。
+    void applyReadingEdit((base) => setFenceMetaAtLine(base, fenceLine, lang, filename));
+  }, [applyReadingEdit]);
+
+  /** 讀模式：程式碼區塊「內文」直編儲存（雙右鍵進編輯、💾 儲存）。 */
+  const handleReadingFenceBody = useCallback(
+    (fenceLine: number, newBody: string): Promise<boolean> =>
+      applyReadingEdit((base) => replaceFenceBody(base, fenceLine, newBody)),
+    [applyReadingEdit],
+  );
+
+  /** 讀模式：互動表格的儲存格讀取/寫回介面（chip 勾選、checkbox、雙右鍵直編共用）。 */
+  const readingTableInteractions = useMemo<ReadingTableInteractions>(
+    () => ({
+      getCellRaw: (mdLine, cellIndex) => {
+        const base = getReadingBase();
+        return base === null ? null : getCellRawFromContent(base, mdLine, cellIndex);
+      },
+      saveCell: (mdLine, cellIndex, newValue) =>
+        applyReadingEdit((base) => setCellValueInContent(base, mdLine, cellIndex, newValue)),
+    }),
+    [getReadingBase, applyReadingEdit],
+  );
 
   const previewObsRef = useRef<MutationObserver | null>(null);
   const setPreviewNode = useCallback((node: HTMLDivElement | null) => {
@@ -568,19 +645,29 @@ export default function NotesDetailPage() {
     previewObsRef.current?.disconnect();
     previewObsRef.current = null;
     if (!node) return;
-    enhanceReadingCodeBlocks(node, handleReadingCodeMeta);
+    enhanceReadingCodeBlocks(node, handleReadingCodeMeta, handleReadingFenceBody);
     const nid = noteIdRef.current;
-    // 表格增強（可拖曳調寬＋記住寬度）與程式碼區塊美化同一時機處理；欄寬還原需要 noteId。
-    enhanceReadingTables(node, nid);
+    // 表格增強（調寬＋互動表格：控件/排序/篩選/直編）與程式碼區塊美化同一時機處理；還原需要 noteId。
+    enhanceReadingTables(node, nid, readingTableInteractions);
     if (nid) {
       applyStoredToggleState(node, nid);
       restoreScrollPosition(nid);
     }
     node.addEventListener('toggle', handleToggleChange, true);
     // 重注入後（React 19 會清掉就地 DOM 改動）由 observer 重跑兩者：程式碼美化＋表格增強（會從 localStorage 還原欄寬）。
-    const obs = new MutationObserver(() => {
-      enhanceReadingCodeBlocks(node, handleReadingCodeMeta);
-      enhanceReadingTables(node, noteIdRef.current);
+    const obs = new MutationObserver((records) => {
+      // 互動操作自身（排序搬列、chip/checkbox 汰換、直編 textarea 進出）也是 childList 變動，
+      // 但都發生在「已增強子樹」（帶 data-zw-table-enhanced 的表格／.code-block）內——
+      // 跳過整容器重掃：省效能（每次點擊不再全掃）且避免把互動中的浮動篩選面板誤關
+      // （enhanceReadingTables 開頭會關孤兒面板，只該在真正重注入時發生）。
+      const needsRescan = records.some((record) => {
+        const target = record.target;
+        if (!(target instanceof Element)) return true;
+        return !target.closest('[data-zw-table-enhanced], .code-block');
+      });
+      if (!needsRescan) return;
+      enhanceReadingCodeBlocks(node, handleReadingCodeMeta, handleReadingFenceBody);
+      enhanceReadingTables(node, noteIdRef.current, readingTableInteractions);
       // 就地改程式碼 metadata 即存後的整篇重注入：重套使用者的 toggle 展開狀態與捲動位置，
       // 避免「讀到一半改個語言就把展開的段落全收合、畫面跳回頂端」（只認即存觸發的那次重注入，
       // 不干擾一般 DOM 變動如畫記包字）。
@@ -595,7 +682,7 @@ export default function NotesDetailPage() {
     });
     obs.observe(node, { childList: true, subtree: true });
     previewObsRef.current = obs;
-  }, [applyStoredToggleState, restoreScrollPosition, handleToggleChange, handleReadingCodeMeta]);
+  }, [applyStoredToggleState, restoreScrollPosition, handleToggleChange, handleReadingCodeMeta, handleReadingFenceBody, readingTableInteractions]);
 
   // 編輯彈窗「即時預覽」容器的 callback ref：這條路徑用 ToggleAwareMarkdown（React 元件）渲染，
   // 與查看模式的 dangerouslySetInnerHTML 是兩套 DOM，但同為 .markdown-prose 容器、同以序號記憶 toggle。

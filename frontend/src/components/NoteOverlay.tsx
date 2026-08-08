@@ -912,14 +912,20 @@ export function NoteOverlay({
       }, 200);
     };
 
+    // 互動表格的排序/篩選是「不經 toggle、不觸發捲動/resize」的純版面變動——
+    // enhanceReadingTables 在變動後派發此事件，讓浮層立即 rebase 到新位置（不必等使用者捲動）。
+    const onLayoutChanged = () => scheduleRecompute();
+
     container.addEventListener('toggle', onToggle, true);
     window.addEventListener('scroll', scheduleRecompute, true);
     window.addEventListener('resize', scheduleRecompute);
+    window.addEventListener('zonwiki:layout-changed', onLayoutChanged);
     recompute();
     return () => {
       container.removeEventListener('toggle', onToggle, true);
       window.removeEventListener('scroll', scheduleRecompute, true);
       window.removeEventListener('resize', scheduleRecompute);
+      window.removeEventListener('zonwiki:layout-changed', onLayoutChanged);
       if (throttleTimer != null) window.clearTimeout(throttleTimer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

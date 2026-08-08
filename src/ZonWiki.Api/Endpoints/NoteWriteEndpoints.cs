@@ -397,6 +397,8 @@ public static class NoteWriteEndpoints
                 ContentRaw = contentRaw,
                 ContentHtml = contentHtml,
                 ContentHash = contentHash,
+                // 快取版本：ContentHtml 由現行管線產生，同步記下版本號（lazy 自癒的比對基準）。
+                RenderVersion = NoteContentHelpers.CurrentRenderVersion,
                 Kind = request.Kind ?? "note",
                 IsDraft = request.IsDraft,
                 JournalDate = request.JournalDate,
@@ -527,6 +529,8 @@ public static class NoteWriteEndpoints
                 note.ContentRaw = request.ContentRaw;
                 note.ContentHtml = NoteContentHelpers.RenderToHtml(request.ContentRaw);
                 note.ContentHash = NoteContentHelpers.ComputeContentHash(request.ContentRaw);
+                // 快取版本同步為現行管線（否則剛編輯完的存量筆記會被 GET 誤判成待自癒）。
+                note.RenderVersion = NoteContentHelpers.CurrentRenderVersion;
                 contentChanged = true;
             }
 

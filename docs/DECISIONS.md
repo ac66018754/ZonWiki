@@ -5,6 +5,24 @@
 
 ---
 
+## 2026-08-08 ｜讀模式互動表格（表頭宣告控件）＋儲存格/程式碼區塊直編；移除 GenericAttributes（修 stored XSS）＋渲染版本 lazy 自癒（feature/interactive-tables）
+
+- **背景**：使用者要（104 職缺追蹤筆記）表格支援 RadioBox/CheckBox 且**非編輯模式**滑鼠直接勾選、欄排序、欄篩選、雙右鍵直編儲存格、禁用預設右鍵、程式碼區塊雙右鍵直編＋右上 💾、全部進 NoteRevision 歷史；並明點「畫記/便利貼在篩選（要跟著看不到）與排序（要跟著移動）下不可出 bug」。
+- **語法決策**：**表頭宣告控件、儲存格只存純文字**——`狀態{radio:未看,考慮中,…}`／`已讀{checkbox}`，儲存格存目前值／`[x]`。100% 合法 GFM、舊筆記零影響、原文人眼可讀。放棄「行內標記語法」選項（會污染儲存格內容與編輯體驗）。
+- **對抗式設計審查的兩個實測翻案**：①Markdig `UseAdvancedExtensions()` 內含 GenericAttributes，會把表頭 `{checkbox}` 吃成 `<table>` 的屬性（語法立足點被推翻）；②同機制構成**既有 stored XSS**（`{onclick=alert(1)}` 渲染成真屬性，DisableHtml 擋不住屬性語法）。**最終決定：從 pipeline 移除 GenericAttributesExtension**——一石二鳥（`{…}` 存活為字面文字＝與編輯預覽 remark-gfm 行為一致；XSS 關死）。取捨：放棄 `{.class}` 等屬性語法（本站從未文件化使用）。
+- **DOM↔原文對應**：沿 `data-fence-line` 先例（RenderToHtml 的 AST 後處理，**非** IMarkdownExtension），後端對每個表格列吐 `data-md-line`（TableRow.Line+1）、表吐 `data-md-table`；前端以「後端行號＋欄索引」定位改寫，行內欄位切分（`\|` 轉義、blockquote 前綴、CRLF）為良定義純函數。嚴禁前端逐行正則近似 CommonMark（既有鐵律）。
+- **存量筆記自癒**：ContentHtml 是寫入時渲染存 DB——舊筆記沒有新屬性（且殘留 GenericAttributes 產物）。加 `Note_RenderVersion`＋`CurrentRenderVersion=2` 常數，GET 單篇時版本落後→從 ContentRaw 重渲染（見下一條的最終形態）。
+- **自癒實作的兩次實查翻案（最終＝GET 純記憶體＋啟動一次性收斂）**：
+  1. 規格原寫「GET 時重算並以 SaveChanges 回存；ContentHtml 屬 ActivityLog 排除欄→不記活動」——**實查為誤**：排除清單（ActivityLogInterceptor.cs:853）只作用於變更摘要 Detail，判定要不要記 updated 的 `ClassifyAction`（同檔 606-610）把 ContentHtml 也算實質變更→走 SaveChanges 會**多記一筆假活動**；且 AuditingSaveChangesInterceptor（:65）對 Modified 一律推 UpdatedDateTime→舊筆記一被打開就跳到「最近更新」頂端。初版因此改走 /opened 先例的 ExecuteUpdate＋回讀 fresh xmin。
+  2. **對抗式復審 HIGH-1 再翻案（實測重現）**：ExecuteUpdate 版仍會推進 xmin——「另一個在自癒前就載入筆記」的 session（別的分頁/裝置/MCP）手上的 baseVersion 立刻過期、存檔撞**跨 session 假 409**（回讀 fresh xmin 只救得了發出 GET 的那個 session）。**最終決定：讀取層純記憶體**——GET 過時筆記只在「回應中」用重算的 ContentHtml，**絕不寫 DB**（讀取不可改變併發權杖）；**收斂層＝NoteRenderMigrationService**（啟動、MigrateAsync 之後背景一次性掃描：IgnoreQueryFilters 跨全使用者、限 ValidFlag、逐筆 ExecuteUpdate＋guard `RenderVersion < Current`、每筆 Information log 存證、單筆失敗 Warning 續走不中斷）。明文接受：收斂那一刻會動 xmin，部署當下跨版開著的編輯 session 可能吃到一次 409（重整即復原），與 schema migration 同級的一次性成本。三個「不」（不產 Revision、不記活動、不動 UpdatedDateTime）、「GET 完全不落 DB」、「跨 session 假 409 已消」皆有整合測試鎖住（NoteRenderVersionHttpTests）。ExecuteUpdate 禁區不變：嚴禁改 Title/ContentRaw（NoteRevisionInterceptor 註解已更新列出兩個合法使用處：/opened 與收斂服務）。
+- **一併移除 GridTableExtension（復審 HIGH-2，實測重現）**：grid table（`+---+` 語法）的「一列」可跨多個原始行，「列行號＋欄索引→改寫 ContentRaw」座標系對它不成立，卻會被 AST 後處理照樣標上 data-md-table/data-md-line→前端直編會改寫到錯誤的行（跨行資料損毀）；且編輯預覽 remark-gfm 本來就不支援 grid table。與 GenericAttributes 同手法自管線移除，grid 語法退回字面文字（回歸測試 GridTableRemovalTests 鎖住）。
+- **錨定安全（畫記/浮層）**：篩選＝**只用 CSS `display:none`**（textContent/Range 座標不變→畫記不斷錨、浮層錨點 rects 空→自然隱藏）；排序＝**搬移既有 tr 節點**（畫記 `[data-anno]` 包裹跟著列走）。排序/篩選作用中 table 標 `data-zw-view-altered`：NoteMarksLayer「標失效」回寫**延後**（復活照常放行——復活永遠安全）、**暫停新建標註**（此刻座標會以重排後位置入庫、永久錯位）；變動後派發 `zonwiki:layout-changed` 讓浮層立即 rebase。已知取捨：rebase 會持久化座標（多裝置間座標乒乓、自癒無損毀）；塗鴉跨列長筆畫仍整體平移。
+- **寫回管線**：三種讀模式編輯（程式碼 meta／圍欄內文／表格儲存格）統一走 `applyReadingEdit`——draft（appliedTo/result）基準防過期覆寫＋樂觀鎖 `baseVersion`（409 專屬提示）＋失敗棄 draft；文字直編**不做樂觀 DOM 替換**（textarea 保留至成功，失敗不摧毀輸入），chip/checkbox 為值級樂觀更新＋失敗還原。
+- **右鍵語意**：抑制範圍限縮在「互動表格＋可直編程式碼區塊」內（單次右鍵也抑制，與 2026-08-06 已測試釘死的取捨一致）；豁免編輯中 textarea（保留原生貼上）；`e.defaultPrevented`（NoteOverlay 繪圖取消先吃掉的那下）不計入雙擊。
+- **檢視狀態**：localStorage `zonwiki:tableView:v1`，鍵＝noteId:表序號＋「剝尾碼表頭簽章」雙保險（照欄寬先例）；排序指示/漏斗 icon 一律 CSS pseudo-element（不進 th.textContent，否則簽章與欄寬比對被污染）；還原只在表格首次增強時執行一次，MutationObserver 回呼絕不主動套狀態。副作用：表頭顯示文字改變使既有欄寬紀錄一次性失效（可接受）。
+
+---
+
 ## 2026-08-06 ｜答題彈窗回答預設預覽＋雙右鍵切編輯；「彈出預覽」以 Document PiP 實現置頂（feature/qa-answer-preview-mode）
 
 - **背景**：使用者要求（便利貼／T 文字框「?」的回答）①打開彈窗時回答區預設是「預覽」、預覽中快速點兩下右鍵切回編輯、關閉瀏覽器預設右鍵選單；②「彈出預覽視窗要置頂，不要被其他視窗蓋掉」。
