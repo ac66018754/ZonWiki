@@ -11,6 +11,15 @@
  * MutationObserver 在重注入後重跑本函式；本函式再從 localStorage 還原欄寬，故重注入後欄寬會自動恢復。
  */
 
+import {
+  prepareHeaderControls,
+  setupInteractiveTable,
+  closeActiveTablePopover,
+  type ReadingTableInteractions,
+} from './readingTableInteractive';
+
+export type { ReadingTableInteractions } from './readingTableInteractive';
+
 /** localStorage 命名空間鍵（帶版本，之後資料結構若變可升版避免相容問題）。 */
 const STORAGE_KEY = 'zonwiki:tableColWidths:v1';
 
@@ -303,12 +312,24 @@ function enhanceSingleTable(
 }
 
 /**
- * 增強容器內所有尚未處理的表格：加上可拖曳調寬的把手，並依 localStorage 還原記住的欄寬。
+ * 增強容器內所有尚未處理的表格：
+ * 1) 可拖曳調寬的把手＋localStorage 記寬（既有功能）；
+ * 2) 互動表格（表頭尾碼宣告控件的 data-md-table 表）：radio/checkbox 控件、欄排序、欄篩選、
+ *    雙右鍵儲存格直編、右鍵選單抑制；排序/篩選狀態 localStorage 持久化並於首次增強時還原。
  * @param container 閱讀內文的容器（.markdown-prose）；null 時不動作。
- * @param noteId 目前筆記 id；為 null 時表格仍可即時拖曳，但不會還原也不會儲存欄寬。
+ * @param noteId 目前筆記 id；為 null 時表格仍可即時拖曳，但不會還原也不會儲存欄寬/檢視狀態。
+ * @param interactions 讀模式寫回介面；未提供時控件唯讀、不可直編（排序/篩選仍可用）。
  */
-export function enhanceReadingTables(container: HTMLElement | null, noteId: string | null): void {
+export function enhanceReadingTables(
+  container: HTMLElement | null,
+  noteId: string | null,
+  interactions?: ReadingTableInteractions,
+): void {
   if (!container) return;
+
+  // 整段 HTML 重注入後本函式會被 MutationObserver 重跑——先關掉舊表格開出的浮動選單
+  // （面板掛在 document.body、不會隨舊表被汰換，殘留的孤兒面板仍可觸發過期行號寫回——復審 HIGH）。
+  closeActiveTablePopover();
 
   // 以「容器內所有 table、依文件順序」的索引當持久化序號——重注入後表格順序不變，索引才能穩定對應。
   // 已包裝過的表格（有 ENHANCED_ATTR）仍計入索引以維持序號一致，但略過重複處理。
@@ -318,6 +339,15 @@ export function enhanceReadingTables(container: HTMLElement | null, noteId: stri
     if (table.getAttribute(ENHANCED_ATTR) === '1') return;
     // 先標記再處理：本函式為同步執行，MutationObserver 回呼在其後才觸發，故標記可攔下重入時的重複包裝。
     table.setAttribute(ENHANCED_ATTR, '1');
+    // 互動功能（含表頭尾碼剝除）只給後端標過 data-md-table 的表——存量筆記的舊 ContentHtml
+    // 沒有此標記，尾碼剝除也必須跳過（否則舊筆記表頭若恰有 {checkbox} 字樣會被靜默砍掉可見文字
+    // 而又沒有控件補上，違反相容性承諾——復審 HIGH）。
+    const isInteractive = table.hasAttribute('data-md-table');
+    // 表頭尾碼剝除與快照必須先於欄寬增強（欄寬的 headerTexts 取自 textContent，要拿「剝除後」的定版文字）。
+    const controls = isInteractive ? prepareHeaderControls(table) : [];
     enhanceSingleTable(table, tableIndex, noteId);
+    if (isInteractive) {
+      setupInteractiveTable(table, tableIndex, noteId, controls, interactions);
+    }
   });
 }

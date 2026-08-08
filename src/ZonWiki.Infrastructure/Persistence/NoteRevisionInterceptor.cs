@@ -32,7 +32,9 @@ namespace ZonWiki.Infrastructure.Persistence;
 /// - 快照歸屬（UserId）取 note.UserId 而非 CurrentUserId：背景服務（AI 精煉/框選提問）
 ///   沒有 HTTP 脈絡、CurrentUserId 為空，但快照仍須歸屬筆記擁有者，否則查詢過濾器會讓歷史隱形。
 /// - ⚠️ <c>ExecuteUpdate / ExecuteDelete</c> 不經過 SaveChanges、也就不觸發本攔截器——
-///   目前唯一使用處是 NoteEndpoints 的 LastOpenedDateTime（無內容變更，安全）。
+///   目前使用處僅兩個：NoteEndpoints 的 LastOpenedDateTime（最後打開時間）與
+///   NoteRenderMigrationService 的啟動一次性收斂（ContentHtml/RenderVersion；
+///   皆為衍生/中繼欄位、無內容變更，安全）。
 ///   日後**嚴禁**用 ExecuteUpdate 改 Title/ContentRaw，否則版本快照會靜默漏寫。
 /// - 同一請求內多次 SaveChanges（如 AI 整合的兩段式儲存）不會重複寫：第一次儲存後
 ///   實體狀態轉為 Unchanged，第二次掃描不到變更。

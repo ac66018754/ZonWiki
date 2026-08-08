@@ -9,6 +9,7 @@ import { parseToggleSegments } from "@/lib/toggleBlocks";
 import { toAbsoluteAttachmentUrl } from "@/lib/attachmentUrl";
 import { toggleTaskCheckbox } from "@/lib/markdownChecklist";
 import { parseCodeMeta, setCodeFenceMeta } from "@/lib/codeBlockMeta";
+import { parseHeaderSpec } from "@/lib/tableSpec";
 import { CodeBlock } from "@/components/CodeBlock";
 
 /**
@@ -114,11 +115,38 @@ export function ToggleAwareMarkdown({
     );
   };
 
+  // 表頭儲存格：互動表格語法（表頭尾碼 {radio:…}/{checkbox} 宣告控件欄）在「編輯預覽」只做
+  // 視覺上的尾碼隱藏（與讀模式顯示一致）；互動（勾選/排序/篩選/直編）依既有決策集中在讀模式。
+  // 合法性判斷直接用 lib/tableSpec.parseHeaderSpec（單一真相）——不自造正則，避免「編輯預覽
+  // 隱藏了、讀模式卻判非法原樣顯示」的不同構（如 {radio:} 空選項）。
+  // 已知限制：整格被行內格式包住（如 **狀態{checkbox}**）時 children 是單一元素、無字串可剝，
+  // 編輯預覽會顯示尾碼原文（讀模式因走 TreeWalker 仍能剝除）——僅視覺差異，發佈結果正確。
+  const renderTh = (props: ComponentPropsWithoutRef<"th"> & { node?: unknown }) => {
+    const { node: _node, children, ...rest } = props;
+    const stripFromString = (text: string): string => {
+      const trimmed = text.trim();
+      const spec = parseHeaderSpec(trimmed);
+      if (!spec.control) return text;
+      const suffix = trimmed.slice(spec.displayText.length);
+      return suffix ? text.replace(suffix, "") : text;
+    };
+    const stripSuffix = (value: ReactNode): ReactNode => {
+      if (typeof value === "string") return stripFromString(value);
+      if (Array.isArray(value)) {
+        const last = value[value.length - 1];
+        if (typeof last === "string") return [...value.slice(0, -1), stripFromString(last)];
+      }
+      return value;
+    };
+    return <th {...rest}>{stripSuffix(children)}</th>;
+  };
+
   // 互動模式才覆寫 input：把待辦核取方塊改成可點擊。點擊時從已提交 DOM 依文件順序算出
   // 「這是第幾個 checkbox」（不依賴 render 次數 → StrictMode/concurrent 皆正確），再切換原文對應項目。
   const components: Components = ctx
     ? {
         pre: renderPre,
+        th: renderTh,
         input: (props) => {
           const { node: _node, type, checked, disabled: _disabled, ...rest } =
             props as ComponentPropsWithoutRef<"input"> & { node?: unknown };
@@ -140,7 +168,7 @@ export function ToggleAwareMarkdown({
           );
         },
       }
-    : { pre: renderPre };
+    : { pre: renderPre, th: renderTh };
 
   const body = segments.map((seg, i) => {
     // 以「型別＋位置＋內容前綴」當 key：內容變動（如重排 toggle）時會換 key →

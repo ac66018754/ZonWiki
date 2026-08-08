@@ -212,7 +212,9 @@ public sealed class CalendarAndHomeEndpointsTests : IAsyncLifetime
             Content = "",
             Status = "todo",
             Priority = 1,
-            PlannedDateTime = now.AddDays(2),
+            // 錨定「本週中段」而非 now.AddDays(2)：原寫法在 UTC 週六/日執行時會跨進下週
+            //（例：週六+2＝下週一 ≥ weekEnd）而必然失敗——日期邊界 flake（2026-08-08 實測）。
+            PlannedDateTime = weekStart.AddDays(2).AddHours(12),
             DueDateTime = null,
             SortOrder = 0,
             CreatedDateTime = now,

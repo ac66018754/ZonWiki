@@ -358,6 +358,8 @@ public sealed class RefineService
             ContentRaw = contentRaw,
             ContentHtml = NoteContentHelpers.RenderToHtml(contentRaw),
             ContentHash = NoteContentHelpers.ComputeContentHash(contentRaw),
+            // 快取版本：與 ContentHtml 同步寫入現行管線版本（lazy 自癒比對基準）。
+            RenderVersion = NoteContentHelpers.CurrentRenderVersion,
             Kind = "note",
             CreatedUser = userKey,
             UpdatedUser = userKey,

@@ -143,6 +143,9 @@ public static class EntityLinkEndpoints
                 Slug = slug,
                 ContentRaw = "",
                 ContentHtml = "",
+                // 快取版本：空內容的空快取正是現行管線對空字串的輸出，直接標為現行版本，
+                // 避免這種「骨架筆記」一被打開就走一次無意義的 lazy 重渲染。
+                RenderVersion = NoteContentHelpers.CurrentRenderVersion,
                 ContentHash = "",
                 Kind = "note",
                 IsDraft = true,

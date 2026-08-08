@@ -162,6 +162,8 @@ public static class AiIntegrationEndpoints
                     ContentRaw = contentRaw,
                     ContentHtml = contentHtml,
                     ContentHash = contentHash,
+                    // 快取版本：與 ContentHtml 同步寫入現行管線版本（lazy 自癒比對基準）。
+                    RenderVersion = NoteContentHelpers.CurrentRenderVersion,
                     Kind = "note",
                     IsDraft = false,
                     CreatedUser = userKey,
@@ -177,6 +179,8 @@ public static class AiIntegrationEndpoints
                 note.ContentRaw = contentRaw;
                 note.ContentHtml = contentHtml;
                 note.ContentHash = contentHash;
+                // 快取版本同步為現行管線（與 ContentHtml 一起更新）。
+                note.RenderVersion = NoteContentHelpers.CurrentRenderVersion;
                 note.UpdatedUser = userKey;
 
                 // 重新解析 wiki 連結：先軟刪除舊連結。

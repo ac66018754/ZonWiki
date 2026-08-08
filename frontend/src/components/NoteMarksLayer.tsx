@@ -99,10 +99,15 @@ export function NoteMarksLayer({ noteId, containerRef, contentHtml, active, cont
     // fire-and-forget 失敗靜默。synced 記錄「已就此 hash 回寫過同值」避免每次重繪都重送（重試風暴）。
     if (contentHash) {
       const sync = detachedSync.current;
+      // 互動表格排序/篩選作用中（table 帶 data-zw-view-altered）＝DOM 非原始狀態：
+      // 此時「找不到」可能只是文字順序被前端重排所致，不可把 Detached=true 寫進 DB（假失效污染）。
+      // 「找得到 → 復活（false）」仍放行——復活永遠安全。全部解除後下次重套即恢復正常回寫。
+      const hasAlteredTable = !!el.querySelector('table[data-zw-view-altered]');
       for (const m of marks) {
         const found = foundMap.get(m.id);
         if (found === undefined) continue;
         const desired = !found; // found=true → detached 應為 false（復活）；反之標為失效
+        if (desired && hasAlteredTable) continue; // 標失效在排序/篩選中一律延後（見上）
         if (desired === m.detached) continue;
         if (sync.synced.get(m.id) === `${contentHash}:${desired}`) continue;
         if (sync.inFlight.has(m.id)) continue;
@@ -113,7 +118,12 @@ export function NoteMarksLayer({ noteId, containerRef, contentHtml, active, cont
           const batch = Array.from(sync.pending.entries());
           sync.pending.clear();
           sync.timer = null;
+          // 發射時再驗一次「排序/篩選作用中」：enqueue 時的檢查依賴 effect 與增強的 commit
+          // 順序（隱性耦合）；300ms 後 DOM 狀態已穩定，此時的判定才可靠——作用中一律丟棄
+          // 「標失效」項（復審 MEDIUM：時序保證不該只押在 JSX 順序上）。
+          const alteredNow = !!el.querySelector('table[data-zw-view-altered]');
           for (const [markId, desired] of batch) {
+            if (desired && alteredNow) continue;
             if (sync.inFlight.has(markId)) continue;
             sync.inFlight.add(markId);
             patchNoteMarkDetached(markId, desired, contentHash)
@@ -164,6 +174,14 @@ export function NoteMarksLayer({ noteId, containerRef, contentHtml, active, cont
         // 點到既有標註不視為新框選。
         const info = captureSelection(el);
         if (!info) return;
+        // 互動表格排序/篩選作用中＝渲染文字順序非原始狀態：此刻建立的錨點（位移＋前後文）
+        // 會以「重排後座標」入庫，還原順序後永久錯位——故整篇暫停「新建」標註並提示；
+        // 既有標註的顯示與跟隨不受影響。全部解除後即可正常標註。
+        if (el.querySelector('table[data-zw-view-altered]')) {
+          showToast('表格排序/篩選中，暫停新增標註——請先還原表格檢視', { type: 'info' });
+          window.getSelection()?.removeAllRanges();
+          return;
+        }
         const selection = window.getSelection();
         if (!selection || selection.rangeCount === 0) return;
         const range = selection.getRangeAt(0);

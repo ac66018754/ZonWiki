@@ -37,6 +37,16 @@ public class Note : AuditableEntity, IUserOwned
     public string ContentHash { get; set; } = string.Empty;
 
     /// <summary>
+    /// 渲染版本：<see cref="ContentHtml"/> 這份快取是由「第幾版渲染管線」產生的。
+    /// 預設 0（＝本欄位加入前的存量筆記）；目前版本號的單一真相是
+    /// NoteContentHelpers.CurrentRenderVersion（含版本史註解）。
+    /// GET 單篇筆記時若本值小於現行版本 → 以現行管線從 <see cref="ContentRaw"/> 重算、
+    /// 「只放進回應」（純記憶體自癒，絕不寫 DB——讀取不可推進 xmin 樂觀鎖，否則其他 session
+    /// 的 baseVersion 會過期撞假 409）；DB 收斂由 NoteRenderMigrationService 於啟動後一次性完成。
+    /// </summary>
+    public int RenderVersion { get; set; }
+
+    /// <summary>
     /// 匯入來源檔路徑（相對於 docs/notes-seed 根目錄；僅由 Markdown 匯入而來的筆記有值）。nullable。
     /// </summary>
     public string? SourceFilePath { get; set; }

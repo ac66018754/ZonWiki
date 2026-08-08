@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using ZonWiki.Api.Auth;
+using ZonWiki.Api.Notes;
 using ZonWiki.Domain.Common;
 using ZonWiki.Domain.Dtos;
 using ZonWiki.Infrastructure.Persistence;
@@ -238,6 +239,13 @@ public static class NoteEndpoints
     /// 依 NoteId 載入單篇筆記的完整 <see cref="NoteDetailDto"/>（含分類/標籤/留言數/樂觀鎖版本）。
     /// slug 解析的三條路徑（GUID 直達 / 活 slug / 別名）共用同一份投影，避免欄位遺漏或前後漂移。
     /// 全域查詢過濾已把範圍鎖在「本使用者的有效筆記」，故僅以 Id 比對即安全（跨使用者/軟刪列不會命中）。
+    ///
+    /// 另負責「渲染版本自癒・純記憶體」（互動表格設計 v2 修訂第 3 條；復審 HIGH-1 修訂）：
+    /// ContentHtml 是渲染快取，管線升級（表格行號/移除 GenericAttributes/GridTable）後存量筆記的
+    /// 快取形狀過時；此處於讀取時比對 <c>RenderVersion &lt; CurrentRenderVersion</c>，過時就以現行
+    /// 管線從 ContentRaw 重算——**只放進回應、絕不寫 DB**（讀取不可推進 xmin，否則其他 session
+    /// 早先載入的 baseVersion 會過期、存檔撞假 409）。DB 收斂由 NoteRenderMigrationService
+    /// 於啟動後背景一次性完成。
     /// </summary>
     /// <param name="db">資料庫內容。</param>
     /// <param name="noteId">筆記識別碼。</param>
@@ -279,9 +287,35 @@ public static class NoteEndpoints
                     // 內容雜湊：供包4 錨點保護的 Detached 回寫做「當次渲染基準」防過期比對。
                     n.ContentHash),
                 Version = EF.Property<uint>(n, "xmin"),
+                n.RenderVersion,
             })
             .FirstOrDefaultAsync(ct);
 
-        return row is null ? null : row.Dto with { Version = (long)row.Version };
+        if (row is null)
+        {
+            return null;
+        }
+
+        // 快取版本已是現行管線 → 直接回傳（收斂完成後的常態路徑，零額外成本）。
+        if (row.RenderVersion >= NoteContentHelpers.CurrentRenderVersion)
+        {
+            return row.Dto with { Version = (long)row.Version };
+        }
+
+        // ── 純記憶體重渲染（存量筆記顯示自癒；對抗式復審 HIGH-1 修訂）─────────────────────
+        // 快取過時（管線升級後的存量筆記）→ 以現行管線從 ContentRaw 重算，**只放進回應、絕不寫 DB**。
+        //
+        // 為什麼不能回存（初版曾照 /opened 先例走 ExecuteUpdate，實測翻案）：
+        // 任何回存——不管 SaveChanges 或 ExecuteUpdate——都會推進該列的 xmin 樂觀鎖版本。
+        // 「另一個在自癒發生前就載入筆記」的 session（別的分頁/裝置/MCP）手上的 baseVersion
+        // 因此立刻過期，存檔就撞假 409——「讀取」不可以改變併發權杖，這是跨 session 版的
+        // 「開啟即假衝突」（/opened 端點修過的同款坑，但這次連回讀 fresh xmin 都救不了別的 session）。
+        //
+        // 代價與收斂：記憶體重算代表每次 GET 過時筆記都要多付一次渲染；DB 收斂交給
+        // NoteRenderMigrationService（啟動後背景一次性掃描回存），記憶體自癒只需撐
+        // 「部署後、收斂完成前」的短暫窗口。DB 真相（ContentRaw）與併發權杖（xmin）在本函數
+        // 全程唯讀，天然滿足：不產生 NoteRevision、不記 ActivityLog、不動 UpdatedDateTime。
+        var refreshedHtml = NoteContentHelpers.RenderToHtml(row.Dto.ContentRaw);
+        return row.Dto with { ContentHtml = refreshedHtml, Version = (long)row.Version };
     }
 }
