@@ -24,6 +24,9 @@ import { getNotesNavTarget } from "@/lib/notesNavTarget";
  *   - 正在輸入（input/textarea/select/contentEditable）或按住 Ctrl/Cmd/Alt → 不觸發。
  *   - global 動作：直接執行（導覽 / 聚焦搜尋）。
  *   - tasks 動作：僅在 /tasks 派發 SHORTCUT_ACTION_EVENT，交給 Todo 頁自行處理。
+ *   - notes 動作：僅在 /notes 派發，交給監聽者（側欄的新增筆記、NoteOverlay 的目錄開關）。
+ *   - overlay 動作：在 /notes 與 /canvas 派發，交給 NoteOverlay / CanvasAnnotationLayer
+ *     （只在筆記「閱覽」預覽分頁／畫布掛載，編輯模式等場景天然無監聽者＝不生效）。
  *
  * 用 ref 保存最新 pathname 與 keymap，故 keydown 監聽器只註冊一次、不會反覆拆裝
  * （參考 CLAUDE.md #21：參考不穩定→迴圈）。
@@ -74,6 +77,9 @@ export function ShortcutRuntime() {
   // 全域 keydown 監聽（只註冊一次）。
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      // 忽略 OS 按鍵自動重複（按住不放的連發）：overlay 的新增類動作會打後端 API（非幂等），
+      // 長按 0.5 秒就會狂建一排便利貼；toggle 類（工具/目錄）也會開關閃爍。一鍵一動作。
+      if (event.repeat) return;
       // 保留瀏覽器 / 系統快捷鍵；只處理「純單鍵」。
       if (event.ctrlKey || event.metaKey || event.altKey) return;
       if (isTypingTarget(event.target)) return;
@@ -89,7 +95,8 @@ export function ShortcutRuntime() {
       const scoped = candidates.find(
         (a) =>
           (a.scope === "tasks" && path.startsWith("/tasks")) ||
-          (a.scope === "notes" && path.startsWith("/notes"))
+          (a.scope === "notes" && path.startsWith("/notes")) ||
+          (a.scope === "overlay" && (path.startsWith("/notes") || path.startsWith("/canvas")))
       );
       const action = scoped ?? candidates.find((a) => a.scope === "global");
       if (!action) return;
@@ -118,9 +125,21 @@ export function ShortcutRuntime() {
       }
 
       // notes 動作：僅在筆記頁觸發，派發 SHORTCUT_ACTION_EVENT 交給處理者
-      //（newNote 由側欄監聽 → 開「新增筆記」彈窗；側欄在所有頁面常駐）。
+      //（newNote 由側欄監聽 → 開「新增筆記」彈窗；toggleToc 由 NoteOverlay 監聽）。
       if (action.scope === "notes") {
         if (!(pathRef.current ?? "").startsWith("/notes")) return;
+        event.preventDefault();
+        window.dispatchEvent(
+          new CustomEvent(SHORTCUT_ACTION_EVENT, { detail: { actionId: action.id } })
+        );
+        return;
+      }
+
+      // overlay 動作（右下角浮層工具列）：筆記頁與畫布頁都派發，
+      // 由 NoteOverlay / CanvasAnnotationLayer 監聽執行；其餘頁面無監聽者＝無效果。
+      if (action.scope === "overlay") {
+        const p = pathRef.current ?? "";
+        if (!(p.startsWith("/notes") || p.startsWith("/canvas"))) return;
         event.preventDefault();
         window.dispatchEvent(
           new CustomEvent(SHORTCUT_ACTION_EVENT, { detail: { actionId: action.id } })

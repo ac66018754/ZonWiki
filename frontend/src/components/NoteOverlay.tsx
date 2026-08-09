@@ -45,6 +45,9 @@ import { QuestionAnswerPopup } from '@/components/questions/QuestionAnswerPopup'
 import { deriveQuestionTitle } from '@/lib/questionTitle';
 import { scrollToOverlayItem } from '@/lib/scrollToOverlayItem';
 import { createDragClickTracker } from '@/lib/overlayDragClick';
+import { SHORTCUT_ACTION_EVENT } from '@/lib/shortcuts';
+import { OVERLAY_SHORTCUT_COMMANDS } from '@/lib/overlayShortcutCommands';
+import { useShortcutKeyCaps } from '@/lib/useShortcutKeyCaps';
 
 /**
  * 事件：框選提問的答案要放進「就在原處旁邊」的便利貼（由 NoteMarksLayer 派發、NoteOverlay 接收建立）。
@@ -1508,6 +1511,62 @@ export function NoteOverlay({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
+  // ── 浮層工具快捷鍵（ShortcutRuntime 派發 SHORTCUT_ACTION_EVENT；本元件只在
+  //    筆記「閱覽」預覽分頁掛載，編輯模式／編輯彈窗分支整個卸載＝快捷鍵天然不生效）──
+  // 以 ref 鏡像最新動作，監聽器只掛一次；add/remove 對稱，StrictMode 雙掛載不會重複執行
+  //（addSticky 等會打後端 API、非幂等，重複註冊會「按一次建兩個」）。
+  const shortcutRef = useRef<{
+    selectTool: (t: Exclude<DrawTool, null>) => void;
+    addSticky: () => void;
+    addSlide: () => void;
+    addTextBox: () => void;
+    toggleToc: () => void;
+  }>(null!);
+  shortcutRef.current = {
+    selectTool,
+    addSticky,
+    addSlide,
+    addTextBox,
+    toggleToc: () => onToggleToc?.(),
+  };
+  useEffect(() => {
+    const onShortcut = (e: Event) => {
+      const actionId = (e as CustomEvent<{ actionId?: string }>).detail?.actionId;
+      if (!actionId) return;
+      const s = shortcutRef.current;
+      // 目錄開關（notes scope）：狀態在筆記頁，經既有 onToggleToc prop 轉交。
+      if (actionId === 'toggleToc') {
+        s.toggleToc();
+        return;
+      }
+      const cmd = OVERLAY_SHORTCUT_COMMANDS[actionId];
+      if (!cmd) return; // 其他動作（如 newNote）由各自的監聽者處理
+      switch (cmd.type) {
+        case 'tool':
+          s.selectTool(cmd.tool); // 與點按鈕同語意：再按同鍵＝關閉該工具
+          break;
+        case 'addSticky':
+          void s.addSticky();
+          break;
+        case 'addSlide':
+          void s.addSlide();
+          break;
+        case 'addText':
+          void s.addTextBox();
+          break;
+      }
+    };
+    window.addEventListener(SHORTCUT_ACTION_EVENT, onShortcut);
+    return () => window.removeEventListener(SHORTCUT_ACTION_EVENT, onShortcut);
+  }, []);
+
+  // 工具列鍵帽提示（隨使用者改鍵即時更新）。
+  const keyCaps = useShortcutKeyCaps([
+    'toolPen', 'toolHighlight', 'toolLine', 'toolRect', 'toolEllipse',
+    'addTextBox', 'eraseArea', 'eraseStroke', 'eraseBox',
+    'addSticky', 'addSlide', 'toggleToc',
+  ]);
+
   // 「剛畫完的形狀」缺少「點畫布外即取消」→ 選取可能一直殘留，之後一次無關的 Del 就會靜默刪掉它。
   // 比照文字框（見上方 selectedTextId 的 outside-pointerdown）：點在「繪圖 SVG／工具列／色盤」
   // 以外任何地方，即取消 selectedShapeIdx，把 Del 刪除的作用範圍收斂在「剛畫完、仍在畫布上操作」時。
@@ -1843,6 +1902,20 @@ export function NoteOverlay({
             active: tocOpen,
             testId: 'overlay-toggle-toc',
           }}
+          shortcutKeys={{
+            pen: keyCaps.toolPen,
+            highlight: keyCaps.toolHighlight,
+            line: keyCaps.toolLine,
+            rect: keyCaps.toolRect,
+            ellipse: keyCaps.toolEllipse,
+            'erase-area': keyCaps.eraseArea,
+            'erase-stroke': keyCaps.eraseStroke,
+            'erase-box': keyCaps.eraseBox,
+            text: keyCaps.addTextBox,
+            sticky: keyCaps.addSticky,
+            slide: keyCaps.addSlide,
+            leading: keyCaps.toggleToc,
+          }}
           onAddSticky={addSticky}
           onAddSlide={addSlide}
           onAddText={addTextBox}
@@ -1871,7 +1944,7 @@ export function NoteOverlay({
             // 浮層快照儲存鈕（Row1 常駐）：按下才記一筆——手動版本保護，避免自動記錄筆數爆炸。
             <button
               className="tk-btn"
-              style={{ cursor: snapshotState === 'saving' ? 'wait' : 'pointer' }}
+              style={{ cursor: snapshotState === 'saving' ? 'wait' : 'pointer', whiteSpace: 'nowrap' }}
               onClick={saveOverlaySnapshot}
               disabled={snapshotState === 'saving'}
               title="儲存浮層快照：把目前全部便利貼/文字框/塗鴉/畫記存成一份版本（筆記「歷史」分頁可見）"
