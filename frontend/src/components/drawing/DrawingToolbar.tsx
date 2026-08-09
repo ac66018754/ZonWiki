@@ -79,6 +79,7 @@ export function DrawingToolbar({
   persistentControls,
   topContent,
   testIdPrefix,
+  shortcutKeys,
 }: {
   /** 固定定位（兩端不同：筆記 bottom:24/right:24、開問啦 bottom:168/right:16）。 */
   position: { bottom: number; right: number };
@@ -125,6 +126,15 @@ export function DrawingToolbar({
   topContent?: React.ReactNode;
   /** data-testid 前綴（筆記＝overlay、開問啦＝canvas-anno）。 */
   testIdPrefix: string;
+  /**
+   * 各按鈕的快捷鍵鍵帽提示（顯示用大寫；未提供的鍵不顯示提示）。
+   * 鍵名：繪圖工具用 DrawTool id（pen/highlight/…/erase-box），
+   * 另有 text（T 文字框）、sticky（便利貼）、slide（圖片板）、leading（第一格）。
+   * 由父層以 useShortcutKeyCaps 算好傳入（隨使用者改鍵即時更新）。
+   */
+  shortcutKeys?: Partial<
+    Record<Exclude<DrawTool, null> | 'text' | 'sticky' | 'slide' | 'leading', string>
+  >;
 }) {
   const isHighlight = tool === 'highlight';
   const showColor = isColorTool(tool);
@@ -148,20 +158,34 @@ export function DrawingToolbar({
     ['erase-box', '⬚', '橡皮擦：框選擦除（框到哪、那裏消失，同一形狀不連帶整個刪除）'],
   ];
 
+  // 加上鍵帽提示後按鈕變寬：改成「整顆按鈕為單位換行」（wrap），
+  // 並在各按鈕上禁止內部斷行（whiteSpace:nowrap）——否則 CJK 標籤（如「儲存」）會被逐字拆行。
   const rowStyle: React.CSSProperties = {
-    display: 'flex', gap: 4, alignItems: 'center', justifyContent: 'flex-start', flexWrap: 'nowrap',
+    display: 'flex', gap: 4, alignItems: 'center', justifyContent: 'flex-start', flexWrap: 'wrap',
   };
+
+  /** 鍵帽提示樣式：縮小字級但「繼承按鈕文字色」（不降透明度，維持對比可讀）。 */
+  const keyCapStyle: React.CSSProperties = { fontSize: 10, lineHeight: 1, marginLeft: 1 };
+
+  /** 按鈕內的鍵帽提示，例如 (6)；沒有配鍵就不渲染。 */
+  const keyCapHint = (cap: string | undefined) =>
+    cap ? <span style={keyCapStyle}>({cap})</span> : null;
+
+  /** 滑鼠提示尾巴加上快捷鍵說明。 */
+  const withKeyTitle = (label: string, cap: string | undefined) =>
+    cap ? `${label}（快捷鍵 ${cap}）` : label;
 
   const renderToolBtn = ([t, icon, label]: [Exclude<DrawTool, null>, string, string]) => (
     <button
       key={t}
       className={`tk-btn ${tool === t ? 'tk-btn--primary' : ''}`}
-      style={{ cursor: 'pointer' }}
-      title={label}
+      style={{ cursor: 'pointer', whiteSpace: 'nowrap' }}
+      title={withKeyTitle(label, shortcutKeys?.[t])}
       onClick={() => onSelectTool(t)}
       data-testid={`${testIdPrefix}-tool-${t}`}
     >
       {icon}
+      {keyCapHint(shortcutKeys?.[t])}
     </button>
   );
 
@@ -205,15 +229,16 @@ export function DrawingToolbar({
         <div style={rowStyle}>
           <button
             className={`tk-btn ${leading.active ? 'tk-btn--primary' : ''}`}
-            style={{ cursor: 'pointer' }}
+            style={{ cursor: 'pointer', whiteSpace: 'nowrap' }}
             onClick={leading.onClick}
-            title={leading.title}
+            title={withKeyTitle(leading.title, shortcutKeys?.leading)}
             data-testid={leading.testId}
           >
             {leading.label}
+            {keyCapHint(shortcutKeys?.leading)}
           </button>
-          <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={onAddSticky} title="新增便利貼" data-testid={`${testIdPrefix}-add-sticky`}>＋便利貼</button>
-          <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={onAddSlide} title="新增圖片板（可放多張圖、手動切換）" data-testid={`${testIdPrefix}-add-slide`}>＋圖片板</button>
+          <button className="tk-btn" style={{ cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={onAddSticky} title={withKeyTitle('新增便利貼', shortcutKeys?.sticky)} data-testid={`${testIdPrefix}-add-sticky`}>＋便利貼{keyCapHint(shortcutKeys?.sticky)}</button>
+          <button className="tk-btn" style={{ cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={onAddSlide} title={withKeyTitle('新增圖片板（可放多張圖、手動切換）', shortcutKeys?.slide)} data-testid={`${testIdPrefix}-add-slide`}>＋圖片板{keyCapHint(shortcutKeys?.slide)}</button>
           {persistentControls}
         </div>
 
@@ -222,12 +247,13 @@ export function DrawingToolbar({
           {drawTools.map(renderToolBtn)}
           <button
             className="tk-btn"
-            style={{ cursor: 'pointer', fontWeight: 700 }}
+            style={{ cursor: 'pointer', fontWeight: 700, whiteSpace: 'nowrap' }}
             onClick={onAddText}
-            title="新增純文字框（可打字、設背景顏色/透明、旋轉縮放、調字級字色）"
+            title={withKeyTitle('新增純文字框（可打字、設背景顏色/透明、旋轉縮放、調字級字色）', shortcutKeys?.text)}
             data-testid={`${testIdPrefix}-add-text`}
           >
             T
+            {keyCapHint(shortcutKeys?.text)}
           </button>
         </div>
 
