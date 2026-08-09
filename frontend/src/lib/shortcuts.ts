@@ -53,14 +53,16 @@ export const SHORTCUT_ACTIONS: readonly ShortcutAction[] = [
   { id: "newNote", scope: "notes", label: "彈出「新增筆記」表單", defaultKey: "a" },
   { id: "toggleToc", scope: "notes", label: "開關章節目錄表（僅閱覽時）", defaultKey: "c" },
   // ── 浮層工具（筆記閱覽頁／開問啦畫布共用的右下角工具列）──
-  // 工具鍵依工具列排列順序用數字 1-9（好記；瀏覽器對無修飾數字鍵沒有預設行為）。
-  // 刻意「不」提供快捷鍵的功能：結束繪圖（滑鼠右鍵已可）、清除全部（破壞性、防誤觸）、儲存浮層快照（低頻）。
-  { id: "toolPen", scope: "overlay", label: "畫筆", defaultKey: "1" },
-  { id: "toolHighlight", scope: "overlay", label: "螢光筆", defaultKey: "2" },
-  { id: "toolLine", scope: "overlay", label: "直線", defaultKey: "3" },
-  { id: "toolRect", scope: "overlay", label: "矩形", defaultKey: "4" },
-  { id: "toolEllipse", scope: "overlay", label: "橢圓", defaultKey: "5" },
-  { id: "addTextBox", scope: "overlay", label: "新增純文字框", defaultKey: "6" },
+  // 數字鍵 1-9 依工具列「視覺順序」由上而下、由左而右排（2026-08-10 版面：
+  // Row1 文字框 T ／ Row2 五種繪圖工具 ／ Row3 三種橡皮擦）；瀏覽器對無修飾數字鍵沒有預設行為。
+  // 刻意「不」提供快捷鍵的功能：結束繪圖（滑鼠右鍵已可）、清除全部（破壞性、防誤觸）、
+  // 儲存浮層快照與歸位（低頻）。
+  { id: "addTextBox", scope: "overlay", label: "新增純文字框", defaultKey: "1" },
+  { id: "toolPen", scope: "overlay", label: "畫筆", defaultKey: "2" },
+  { id: "toolHighlight", scope: "overlay", label: "螢光筆", defaultKey: "3" },
+  { id: "toolLine", scope: "overlay", label: "直線", defaultKey: "4" },
+  { id: "toolRect", scope: "overlay", label: "矩形", defaultKey: "5" },
+  { id: "toolEllipse", scope: "overlay", label: "橢圓", defaultKey: "6" },
   { id: "eraseArea", scope: "overlay", label: "橡皮擦－局部擦除", defaultKey: "7" },
   { id: "eraseStroke", scope: "overlay", label: "橡皮擦－整體刪除", defaultKey: "8" },
   { id: "eraseBox", scope: "overlay", label: "橡皮擦－框選擦除", defaultKey: "9" },
