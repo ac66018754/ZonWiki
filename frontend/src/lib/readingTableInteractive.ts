@@ -135,6 +135,32 @@ function filterValueLabel(value: string): string {
 }
 
 /**
+ * 依 radio 控件的 colors 對照，把某元素（chip 或選單項）套上顏色。
+ * 調色盤鍵 → `data-zw-color` 屬性（走 globals.css 的 color-mix 規則、隨明暗主題自適應）；
+ * 十六進位 → 以 `--zw-chip-hex` 內聯變數 ＋ `data-zw-color="hex"` 呈現。
+ * 無對應顏色時清掉先前的著色（值改變後可能從有色變無色）。
+ * @param element 目標元素（chip 或 popover item）。
+ * @param colors 選項值 → 色鍵對照（可為 undefined＝此欄無配色）。
+ * @param value 目前選項值。
+ */
+function applyChipColor(
+  element: HTMLElement,
+  colors: Record<string, string> | undefined,
+  value: string,
+): void {
+  const color = colors?.[value];
+  element.removeAttribute('data-zw-color');
+  element.style.removeProperty('--zw-chip-hex');
+  if (!color) return;
+  if (color.startsWith('#')) {
+    element.style.setProperty('--zw-chip-hex', color);
+    element.dataset.zwColor = 'hex';
+  } else {
+    element.dataset.zwColor = color;
+  }
+}
+
+/**
  * 為單一互動表格（data-md-table）裝上全部互動能力。只在首次增強時執行一次
  * （呼叫端以 ENHANCED_ATTR 防重；檢視狀態還原也因此只在此執行一次、且不觸發持久化——
  * MutationObserver 回呼絕不主動套狀態）。
@@ -287,12 +313,15 @@ export function setupInteractiveTable(
         }
         cell.replaceChildren(box);
       } else {
+        // 此欄若在表頭宣告了各選項顏色（{radio:值=顏色,…}），chip 與選單項都據此著色。
+        const radioColors = control.colors;
         const chip = document.createElement('button');
         chip.type = 'button';
         chip.className = 'zw-cell-radio-chip' + (currentValue ? '' : ' zw-radio-unset');
         chip.textContent = currentValue || '未設定';
         chip.disabled = !canWrite;
         chip.setAttribute('aria-haspopup', 'menu');
+        applyChipColor(chip, radioColors, currentValue);
         if (canWrite && interactions && mdLine !== null) {
           chip.addEventListener('click', () => {
             const menu = document.createElement('div');
@@ -305,6 +334,7 @@ export function setupInteractiveTable(
                 'zw-popover-item' +
                 (option === cell.dataset.zwValue ? ' zw-popover-item-current' : '');
               item.textContent = option;
+              applyChipColor(item, radioColors, option);
               item.addEventListener('click', () => {
                 closePopover();
                 // 表格已被整段重注入汰換（孤兒面板殘留）→ 不寫回（行號可能已過期，會寫錯行）。
@@ -314,12 +344,14 @@ export function setupInteractiveTable(
                 cell.dataset.zwValue = option; // 樂觀更新；失敗還原
                 chip.textContent = option;
                 chip.classList.remove('zw-radio-unset');
+                applyChipColor(chip, radioColors, option);
                 chip.disabled = true;
                 interactions.saveCell(mdLine, columnIndex, option).then((ok) => {
                   if (!ok) {
                     cell.dataset.zwValue = previous;
                     chip.textContent = previous || '未設定';
                     chip.classList.toggle('zw-radio-unset', !previous);
+                    applyChipColor(chip, radioColors, previous);
                   }
                   // 成功也要恢復可互動（HTML 可能一字未變、不會有重注入——復審 HIGH）。
                   chip.disabled = false;

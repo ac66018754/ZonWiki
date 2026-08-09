@@ -17,10 +17,13 @@
 /**
  * 表頭控件描述。
  * null＝無控件（一般文字欄）；radio＝單選 chip 欄；checkbox＝勾選欄。
+ *
+ * radio 的 colors：選項值 → 已解析色鍵的對照（可選；只放「有指定顏色」的選項）。
+ * 值為調色盤鍵（如 `'red'`）或 6/3 碼十六進位（如 `'#16a34a'`）——渲染層據此上色。
  */
 export type HeaderControl =
   | null
-  | { kind: 'radio'; options: string[] }
+  | { kind: 'radio'; options: string[]; colors?: Record<string, string> }
   | { kind: 'checkbox' };
 
 /**
@@ -63,6 +66,61 @@ const HEADER_SUFFIX_PATTERN = /^(.*)\{([^{}]*)\}\s*$/;
 
 /** radio 尾碼內容的前導關鍵字（大小寫敏感，照設計文件寫法）。 */
 const RADIO_KEYWORD_PREFIX = 'radio:';
+
+/**
+ * 顏色別名 → 調色盤鍵。支援英文與常見中文（含「色」字尾變體），大小寫不敏感（比對前轉小寫）。
+ * 調色盤鍵須與 globals.css 的 `.zw-cell-radio-chip[data-zw-color="…"]` 規則對齊。
+ */
+const CHIP_COLOR_ALIASES: Record<string, string> = {
+  red: 'red', 紅: 'red', 紅色: 'red',
+  orange: 'orange', 橙: 'orange', 橘: 'orange', 橙色: 'orange', 橘色: 'orange',
+  amber: 'amber', yellow: 'amber', gold: 'amber', 黃: 'amber', 黃色: 'amber',
+  green: 'green', 綠: 'green', 綠色: 'green',
+  teal: 'teal', cyan: 'teal', 青: 'teal', 青色: 'teal',
+  blue: 'blue', 藍: 'blue', 藍色: 'blue',
+  purple: 'purple', violet: 'purple', 紫: 'purple', 紫色: 'purple',
+  pink: 'pink', 粉: 'pink', 粉紅: 'pink', 粉色: 'pink', 洋紅: 'pink',
+  gray: 'gray', grey: 'gray', 灰: 'gray', 灰色: 'gray',
+  slate: 'slate', 石板: 'slate',
+};
+
+/** 3 或 6 碼十六進位色。 */
+const HEX_COLOR_PATTERN = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+
+/**
+ * 把顏色字面解析成「調色盤鍵」或十六進位色；無法辨識回 null。
+ * 保守設計：無法辨識時回 null，讓呼叫端把整段當作純標籤（不硬拆 `=`）——
+ * 避免既有含 `=` 的選項（如 `價格=100`）被誤解成「標籤＋顏色」而改變其值。
+ *
+ * @param token 顏色字面（`=` 之後那段，通常已 trim）。
+ * @returns 調色盤鍵（如 `'green'`）／十六進位（小寫，如 `'#16a34a'`）／null。
+ */
+export function resolveChipColor(token: string): string | null {
+  const trimmed = token.trim();
+  if (trimmed === '') return null;
+  const alias = CHIP_COLOR_ALIASES[trimmed] ?? CHIP_COLOR_ALIASES[trimmed.toLowerCase()];
+  if (alias) return alias;
+  if (HEX_COLOR_PATTERN.test(trimmed)) return trimmed.toLowerCase();
+  return null;
+}
+
+/**
+ * 解析單一 radio 選項字面 `標籤` 或 `標籤=顏色`。
+ * 以「最後一個 `=`」切分（讓標籤本身可含 `=`，如 `a=b=green`→標籤 `a=b`）；
+ * 只有「`=` 後能解析成已知顏色」且「標籤非空」時才拆分，否則整段當標籤（無色）。
+ *
+ * @param rawOption 單一選項字面（通常已 trim）。
+ * @returns 標籤與色鍵（無色時 color=null）。
+ */
+function parseRadioOption(rawOption: string): { label: string; color: string | null } {
+  const separatorIndex = rawOption.lastIndexOf('=');
+  if (separatorIndex > 0) {
+    const label = rawOption.slice(0, separatorIndex).trim();
+    const color = resolveChipColor(rawOption.slice(separatorIndex + 1));
+    if (label !== '' && color !== null) return { label, color };
+  }
+  return { label: rawOption.trim(), color: null };
+}
 
 /** checkbox 尾碼內容（大小寫敏感）。 */
 const CHECKBOX_KEYWORD = 'checkbox';
@@ -253,15 +311,27 @@ export function parseHeaderSpec(rawHeaderText: string): ParsedHeaderSpec {
   }
 
   if (suffixBody.startsWith(RADIO_KEYWORD_PREFIX)) {
-    const options = suffixBody
+    // 每個選項可帶 `=顏色`（保守解析：顏色無法辨識時整段當標籤，不硬拆 `=`）。
+    const parsedOptions = suffixBody
       .slice(RADIO_KEYWORD_PREFIX.length)
       .split(',')
-      .map((option) => option.trim());
-    // 選項規則：至少一個、不得為空、不得含禁用字元 `|`（`,`／`{`／`}` 已由切分與正則排除）。
+      .map((option) => parseRadioOption(option.trim()));
+    // 選項規則：至少一個、標籤不得為空、不得含禁用字元 `|`（`,`／`{`／`}` 已由切分與正則排除）。
     const isValidOptions =
-      options.length > 0 && options.every((option) => option.length > 0 && !option.includes('|'));
+      parsedOptions.length > 0 &&
+      parsedOptions.every((parsed) => parsed.label.length > 0 && !parsed.label.includes('|'));
     if (isValidOptions) {
-      return { displayText, control: { kind: 'radio', options } };
+      const options = parsedOptions.map((parsed) => parsed.label);
+      const colors: Record<string, string> = {};
+      for (const parsed of parsedOptions) {
+        if (parsed.color) colors[parsed.label] = parsed.color;
+      }
+      // 只有「真的有指定顏色」時才帶 colors 鍵——無色時維持與舊行為位元一致（既有測試以 toEqual 鎖住）。
+      const control: HeaderControl =
+        Object.keys(colors).length > 0
+          ? { kind: 'radio', options, colors }
+          : { kind: 'radio', options };
+      return { displayText, control };
     }
   }
 

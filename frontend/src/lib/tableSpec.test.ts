@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import {
   parseHeaderSpec,
+  resolveChipColor,
   splitTableRowLine,
   replaceCellInLine,
   getCellRawFromContent,
@@ -128,6 +129,91 @@ describe('parseHeaderSpec：表頭尾碼解析', () => {
   test('雙層包裹 {{checkbox}}＝巢狀非法 → 無控件', () => {
     const raw = '{{checkbox}}';
     expect(parseHeaderSpec(raw)).toEqual({ displayText: raw, control: null });
+  });
+});
+
+describe('resolveChipColor：顏色字面解析', () => {
+  test('英文色名（大小寫不敏感）→ 調色盤鍵', () => {
+    expect(resolveChipColor('red')).toBe('red');
+    expect(resolveChipColor('GREEN')).toBe('green');
+    expect(resolveChipColor(' Amber ')).toBe('amber');
+  });
+
+  test('別名歸一：yellow/gold→amber、grey→gray、cyan→teal、violet→purple', () => {
+    expect(resolveChipColor('yellow')).toBe('amber');
+    expect(resolveChipColor('grey')).toBe('gray');
+    expect(resolveChipColor('cyan')).toBe('teal');
+    expect(resolveChipColor('violet')).toBe('purple');
+  });
+
+  test('中文色名 → 調色盤鍵', () => {
+    expect(resolveChipColor('紅')).toBe('red');
+    expect(resolveChipColor('綠色')).toBe('green');
+    expect(resolveChipColor('灰')).toBe('gray');
+  });
+
+  test('十六進位（3/6 碼）→ 小寫原樣；非法回 null', () => {
+    expect(resolveChipColor('#16A34A')).toBe('#16a34a');
+    expect(resolveChipColor('#abc')).toBe('#abc');
+    expect(resolveChipColor('#12g')).toBeNull();
+    expect(resolveChipColor('rgb(1,2,3)')).toBeNull();
+    expect(resolveChipColor('bright-red')).toBeNull();
+    expect(resolveChipColor('')).toBeNull();
+  });
+});
+
+describe('parseHeaderSpec：radio 選項顏色（{radio:值=顏色}）', () => {
+  test('每項可帶顏色，options 只留純標籤、colors 為「標籤→色鍵」對照', () => {
+    expect(
+      parseHeaderSpec('狀態{radio:未看=red,考慮中=amber,已投遞=green,已婉拒=gray,暫不考慮=slate}'),
+    ).toEqual({
+      displayText: '狀態',
+      control: {
+        kind: 'radio',
+        options: ['未看', '考慮中', '已投遞', '已婉拒', '暫不考慮'],
+        colors: { 未看: 'red', 考慮中: 'amber', 已投遞: 'green', 已婉拒: 'gray', 暫不考慮: 'slate' },
+      },
+    });
+  });
+
+  test('部分帶色、部分不帶：colors 只收有指定的項', () => {
+    expect(parseHeaderSpec('狀態{radio:未看=red,考慮中,已投遞=green}')).toEqual({
+      displayText: '狀態',
+      control: {
+        kind: 'radio',
+        options: ['未看', '考慮中', '已投遞'],
+        colors: { 未看: 'red', 已投遞: 'green' },
+      },
+    });
+  });
+
+  test('十六進位色：colors 存小寫十六進位字串', () => {
+    expect(parseHeaderSpec('欄{radio:甲=#16A34A,乙}')).toEqual({
+      displayText: '欄',
+      control: { kind: 'radio', options: ['甲', '乙'], colors: { 甲: '#16a34a' } },
+    });
+  });
+
+  test('保守解析：`=` 後非合法顏色 → 整段當標籤、不硬拆、不帶 colors 鍵', () => {
+    // 與舊行為位元一致（無 colors 鍵）——既有含 `=` 的選項（如 價格=100）不被誤拆。
+    expect(parseHeaderSpec('欄{radio:價格=100,數量=abc}')).toEqual({
+      displayText: '欄',
+      control: { kind: 'radio', options: ['價格=100', '數量=abc'] },
+    });
+  });
+
+  test('標籤可含 `=`（以最後一個 `=` 切色）：a=b=green → 標籤 a=b、色 green', () => {
+    expect(parseHeaderSpec('欄{radio:a=b=green}')).toEqual({
+      displayText: '欄',
+      control: { kind: 'radio', options: ['a=b'], colors: { 'a=b': 'green' } },
+    });
+  });
+
+  test('無顏色的 radio 維持原樣（不帶 colors 鍵，與既有測試相容）', () => {
+    expect(parseHeaderSpec('狀態{radio:未看,考慮中}')).toEqual({
+      displayText: '狀態',
+      control: { kind: 'radio', options: ['未看', '考慮中'] },
+    });
   });
 });
 

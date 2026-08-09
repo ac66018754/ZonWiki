@@ -12,15 +12,15 @@ export const PREVIEW_CHANNEL = "zonwiki:note-preview";
 
 /**
  * 「表格」按鈕插入的範例——展示互動表格控件語法，讓使用者照著改、不必背語法。
- * 表頭尾碼 {radio:選項…} → 該欄渲染成單選 chip；{checkbox} → 勾選框；
- * 存檔後在讀模式可直接點選、欄排序、欄篩選、雙擊右鍵改儲存格內容。
- * 備註欄用兩列把「怎麼寫」直接寫進範例，使用者刪掉說明即成自己的表格。
+ * 表頭尾碼 {radio:選項…} → 該欄渲染成單選 chip；選項可加 =顏色（如 未看=red）讓 chip 帶色；
+ * {checkbox} → 勾選框；存檔後在讀模式可直接點選、欄排序、欄篩選、雙擊右鍵改儲存格內容。
+ * 備註欄把「怎麼寫」直接寫進範例，使用者刪掉說明即成自己的表格。
  */
 const INTERACTIVE_TABLE_SNIPPET = [
-  "| 狀態{radio:待辦,進行中,完成} | 項目 | 完成{checkbox} | 備註 |",
+  "| 狀態{radio:未看=red,考慮中=amber,已投遞=green,已婉拒=gray,暫不考慮=slate} | 項目 | 完成{checkbox} | 備註 |",
   "| --- | --- | --- | --- |",
-  "| 待辦 | 範例一 | [ ] | 表頭加 {radio:甲,乙,丙} → 單選；加 {checkbox} → 勾選框 |",
-  "| 進行中 | 範例二 | [x] | 存檔後讀模式可直接點選、排序、篩選、雙擊右鍵改格 |",
+  "| 未看 | 範例一 | [ ] | 表頭 {radio:選項=顏色,…} → 單選 chip 帶色；顏色可用 red/orange/amber/green/teal/blue/purple/pink/gray/slate 或 #16a34a |",
+  "| 已投遞 | 範例二 | [x] | 不寫 =顏色就用預設色；{checkbox} → 勾選框；存檔後讀模式可直接點選、排序、篩選、雙擊右鍵改格 |",
 ].join("\n");
 
 /**
@@ -584,7 +584,7 @@ export function MarkdownEditor({
     { label: "❝", title: "引用", run: () => linePrefix("> ") },
     { label: "`", title: "行內程式碼", run: () => wrap("`", "`", "code") },
     { label: "</>", title: "程式碼區塊", run: codeBlock },
-    { label: "⊞", title: "表格（含互動控件範例：radio 單選／checkbox 勾選）", run: () => insertBlock(INTERACTIVE_TABLE_SNIPPET) },
+    { label: "⊞", title: "表格（含互動控件範例：radio 單選可帶色／checkbox 勾選）", run: () => insertBlock(INTERACTIVE_TABLE_SNIPPET) },
     { label: "▸", title: "摺疊區塊（Notion 式 toggle：點標題可摺疊／展開）", run: () => insertBlock(TOGGLE_SNIPPET) },
     { label: "🔒", title: "保護區塊（框住不想被 AI 重排的內容；重排時會原樣保留）", run: wrapProtect },
     { label: "🖼", title: "插入圖片（選檔上傳；也可直接貼上剪貼簿圖片）", run: () => fileInputRef.current?.click() },

@@ -4679,6 +4679,45 @@ html[data-route="time"] .sidebar-toggle {
   border-style: dashed;
 }
 
+/* radio chip 依表頭 {radio:值=顏色,…} 宣告的每項顏色上色。
+   以 color-mix 混合基色與透明/文字色 → 同一份定義在明暗主題都可讀（不必各寫一套）。
+   popover 選單項則用左側色條標示，讓「選什麼色」一目了然。 */
+.zw-cell-radio-chip[data-zw-color] {
+  background: color-mix(in srgb, var(--zw-chip) 16%, transparent);
+  color: color-mix(in srgb, var(--zw-chip) 78%, var(--text-primary));
+  border-color: color-mix(in srgb, var(--zw-chip) 42%, transparent);
+}
+.zw-cell-radio-chip[data-zw-color]:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--zw-chip) 24%, transparent);
+  filter: none;
+}
+.zw-popover-item[data-zw-color] {
+  border-left: 3px solid var(--zw-chip);
+}
+.zw-cell-radio-chip[data-zw-color='red'],
+.zw-popover-item[data-zw-color='red'] { --zw-chip: #ef4444; }
+.zw-cell-radio-chip[data-zw-color='orange'],
+.zw-popover-item[data-zw-color='orange'] { --zw-chip: #f97316; }
+.zw-cell-radio-chip[data-zw-color='amber'],
+.zw-popover-item[data-zw-color='amber'] { --zw-chip: #d97706; }
+.zw-cell-radio-chip[data-zw-color='green'],
+.zw-popover-item[data-zw-color='green'] { --zw-chip: #16a34a; }
+.zw-cell-radio-chip[data-zw-color='teal'],
+.zw-popover-item[data-zw-color='teal'] { --zw-chip: #0d9488; }
+.zw-cell-radio-chip[data-zw-color='blue'],
+.zw-popover-item[data-zw-color='blue'] { --zw-chip: #2563eb; }
+.zw-cell-radio-chip[data-zw-color='purple'],
+.zw-popover-item[data-zw-color='purple'] { --zw-chip: #7c3aed; }
+.zw-cell-radio-chip[data-zw-color='pink'],
+.zw-popover-item[data-zw-color='pink'] { --zw-chip: #db2777; }
+.zw-cell-radio-chip[data-zw-color='gray'],
+.zw-popover-item[data-zw-color='gray'] { --zw-chip: #6b7280; }
+.zw-cell-radio-chip[data-zw-color='slate'],
+.zw-popover-item[data-zw-color='slate'] { --zw-chip: #64748b; }
+/* 十六進位色（表頭寫 {radio:值=#rrggbb}）：色值走內聯 --zw-chip-hex。 */
+.zw-cell-radio-chip[data-zw-color='hex'],
+.zw-popover-item[data-zw-color='hex'] { --zw-chip: var(--zw-chip-hex, #6b7280); }
+
 /* checkbox 控件欄。 */
 .zw-cell-checkbox {
   width: 16px;
