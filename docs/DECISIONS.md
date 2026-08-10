@@ -510,3 +510,14 @@
   - 設定頁 scopes 陣列原寫死 ["global","tasks"]（notes 的 A 鍵一直沒列出＝既有缺口），本次一併補全四區。
 - **對抗式復審修正（合併前已修）**：①HIGH——OS 按鍵自動重複（長按）會對非幂等 API 連發、狂建便利貼；Runtime 開頭加 `event.repeat` 過濾（一鍵一動作），單元 B9＋E2E repeat 連發案例鎖住。②MEDIUM——鍵帽提示使 Row1 CJK 標籤（「儲存」）被逐字拆行；改「整顆按鈕為單位換行（wrap）＋按鈕內 nowrap」。
 - **驗證**：單元 30 例（鍵位規格、跨/同 scope 衝突、Runtime 派發矩陣含 repeat 過濾、對應完備性、鍵帽 hook 改鍵更新）；Playwright 對 production build 實測 20 例全過（含收合態啟用、編輯頁/編輯彈窗不觸發、畫布工具箱關閉按「1 文字框」不展開、改鍵後提示即時更新、repeat 連發不觸發、各列單行不斷行）；鍵帽提示對比實測 warmpaper 5.21:1、dark 5.62:1（≥4.5 AA）。v2 版面改版後全部重驗仍 20/20。
+
+## 2026-08-10 ｜ VS 風格滑鼠側鍵錨點導航：側鍵在「點擊下錨」堆疊穿梭、取代瀏覽器歷史
+
+- **背景**：使用者羨慕 Visual Studio 的滑鼠上/下一頁——按的不是瀏覽器歷史，而是「游標位置堆疊」（go-back markers）在錨點間穿梭。經查證 VS 機制確為此（View.NavigateBackward/Forward，游標大幅移動即自動留標記）；要求把同一套心智模型帶進 ZonWiki。
+- **技術可行性（先實測後動工）**：文獻對「網頁能否攔下滑鼠側鍵的歷史導航」無定論，遂以 Playwright＋CDP（`Input.dispatchMouseEvent` button back/forward＝真側鍵）對 Chromium 151 做位元組級實測：**preventDefault `pointerup` 或 `mouseup` 任一即可攔下**；`mousedown`/`pointerdown`/`auxclick` 單獨攔無效；且攔 `pointerdown` 會使相容性 mouse 事件整組消失。故以 pointerup 為行動點、mouseup/auxclick 作保險絲。Firefox（Windows）在 chrome 層處理側鍵、頁面看不到——明知的邊界，使用者用 Chrome。
+- **考慮過的選項**：①攔 popstate 玩瀏覽器歷史（會與 App Router 打架且污染真歷史）；②只做「筆記情境返回堆疊」的擴充（noteNav.ts 已有，但只有路由、無捲動位置、無 forward、與側鍵無關）；③獨立錨點堆疊＋全域事件執行器——選 ③，noteNav 原樣保留（返回鈕語意不同：只在筆記情境內移動）。
+- **設計**：錨點＝route（pathname+search）＋捲動位置。左鍵 pointerdown 下錨、路由（含 search-only）變更下錨；同 route 且捲動差 ≤120px 原地更新（類 VS「移動 11 行才留標記」）、否則 push＋截斷 forward 分支；上限 50、存 sessionStorage（分頁隔離，比照 noteNav）。**堆疊不可移動時不攔**——側鍵交還瀏覽器原生歷史，堆疊見底仍可離站。捲動容器：筆記閱覽頁＝.note-detail-page、其餘＝.main-content；還原多次重試（0/150/400/900ms，晚於筆記頁 250ms 續讀、錨點優先）、每次重新 querySelector（內文重掛也有效）、使用者輸入即取消。跨路由先過 confirmNavigation()（筆記未存守門），拒絕零副作用。
+- **測試計畫審查修正（tdd-guide sub-agent，動工前）**：①核心洞——goBack/goForward 若重用 recordAnchor 的 push 判斷，深捲 >120px 後按上一頁會被誤判成新錨點→「回同頁頂端＋砍前進歷史」；改為獨立的 syncLivePosition **永遠原地覆寫**。②不可移動時保證零副作用。③route 必須含 search（usePathname 不含 query——/tasks 換視圖、/search 換條件都是 search-only 變更），useSearchParams 需包 Suspense。④連按競態→in-flight 旗標吞連按。⑤保險絲旗標 per-press 生命週期（pointerup 先於 mouseup/auxclick 必然先覆寫）。
+- **對抗式復審修正（code-reviewer sub-agent，合併前已修）**：HIGH——confirmNavigation 鏈無 .catch、安全逾時排在 push 之後：守門 reject 或 push 同步拋錯會讓 in-flight 旗標永久卡死、側鍵整個 session 靜默失效。修法：安全逾時在設旗標當下排程、push 包 try/catch 且**成功才 commit 堆疊**（失敗下次可重試）、整鏈補 .catch；R11/R12 回歸鎖。其餘 8 項疑點（StrictMode 雙掛載、監聽器洩漏、與筆記頁 capture click／便利貼死區／畫布中右鍵平移的互動、sessionStorage 分頁隔離等）復審實測全過。
+- **明知的取捨**：只攔「滑鼠側鍵」一種輸入——鍵盤 Alt+←/→ 與觸控板手勢仍走瀏覽器原生歷史（不經堆疊也不經守門）；開問啦畫布位置＝viewport 平移非捲動，錨點只還原路由不還原視角（畫布自有 viewport 持久化）；觸控點擊也會下錨（無側鍵可用，僅多些去重後的 sessionStorage 寫入）。
+- **驗證**：單元 36 例（純邏輯 24＋Runtime 12）全綠；Playwright 對 production 實例以 CDP 真側鍵實測：同頁錨點往返（URL 不變＝未被瀏覽器歷史劫持）、跨頁返回＋捲動還原 5000px、堆疊見底交還瀏覽器（回 about:blank）、console 零錯誤，截圖存 zonwiki-ui-tests/2026-08-10-mouse-nav/。

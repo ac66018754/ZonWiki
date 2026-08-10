@@ -8,6 +8,7 @@ import { AuthGuard } from "@/components/AuthGuard";
 import { SessionExpiryPrompt } from "@/components/SessionExpiryPrompt";
 import { MobileNavOverlay } from "@/components/MobileNavOverlay";
 import { ShortcutRuntime } from "@/components/ShortcutRuntime";
+import { MouseNavRuntime } from "@/components/MouseNavRuntime";
 import { ToastHost } from "@/components/ToastHost";
 import { RouteAttr } from "@/components/RouteAttr";
 import { CanvasToolbarProvider } from "@/components/CanvasToolbarContext";
@@ -146,6 +147,12 @@ export default async function RootLayout({
 
             {/* 全域鍵盤快捷鍵執行器（無 UI）：導覽 / 聚焦搜尋 / Todo 頁檢視切換等 */}
             <ShortcutRuntime />
+
+            {/* VS 風格滑鼠側鍵錨點導航（無 UI）：側鍵上一頁/下一頁在「點擊下錨」的
+                位置堆疊中穿梭，取代瀏覽器歷史；用到 useSearchParams 故需包 Suspense */}
+            <Suspense fallback={null}>
+              <MouseNavRuntime />
+            </Suspense>
 
             {/* 左側欄 + 主內容 */}
             <div style={{ display: "flex", flex: 1 }}>

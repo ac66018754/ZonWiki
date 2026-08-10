@@ -345,6 +345,13 @@ GCP Compute Engine VM（e2-micro, Always Free）
 - **入口**：Header 的 🗑 圖示（手機則在側欄抽屜的「垃圾桶」）。
 - 後端：`GET /api/trash`、`POST /api/trash/{type}/{id}/restore`、`DELETE /api/trash/{type}/{id}`（查詢一律 `IgnoreQueryFilters()` 才看得到軟刪除列；節點經其 Canvas 判擁）。
 
+### 9. 滑鼠側鍵錨點導航（VS 風格，全站）
+- **滑鼠上一頁/下一頁側鍵不再走瀏覽器歷史**，而是在「app 內的位置錨點堆疊」穿梭——類 Visual Studio 的 View.NavigateBackward/Forward（go-back markers）。
+- **下錨時機**：左鍵點擊（＝在點擊當下的頁面＋捲動位置留錨點）與路由變更（含只換 query string）。同頁捲動差 ≤120px 的重複點擊原地更新、不灌爆堆疊；同頁捲得夠遠再點就是新錨點（同一篇長筆記可下多個錨點來回跳）。
+- **穿梭行為**：側鍵上一頁回到上一個錨點（同頁＝還原捲動位置；跨頁＝導航過去再還原捲動，會先過「未儲存變更」導頁守門）；下一頁回到出發時的即時位置。**堆疊見底時側鍵放行給瀏覽器**（仍可用側鍵離開網站）。
+- 邊界：只攔「滑鼠側鍵」；鍵盤 Alt+←/→ 與觸控板手勢仍走瀏覽器原生歷史。開問啦畫布頁錨點只還原路由（畫布視角自有持久化）。僅支援 Chromium 系瀏覽器（Firefox 在視窗層處理側鍵、網頁攔不到）。
+- 實作：`frontend/src/lib/mouseNav.ts`（純邏輯）＋`frontend/src/components/MouseNavRuntime.tsx`（全域執行器，掛已登入外殼）；堆疊存 sessionStorage（分頁隔離）。設計取捨詳見 docs/DECISIONS.md 2026-08-10。
+
 ---
 
 ## 本機啟動（完整步驟）
