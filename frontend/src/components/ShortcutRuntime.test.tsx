@@ -2,14 +2,16 @@
 /**
  * ShortcutRuntime 派發行為測試（對應測試計畫 B 組）。
  *
- * 鎖住「overlay scope 只在筆記頁與畫布頁派發」與既有 scope 解析不回歸：
- * B1: 筆記頁按 1 → 派發 toolPen 且 preventDefault。
- * B2: 畫布頁按 1 → 同上。
- * B3: 首頁按 1 → 不派發、不 preventDefault。
- * B4: Todo 頁按 1 → 不派發 overlay 動作。
- * B5: Ctrl+1 / Alt+1 → 不觸發（保留瀏覽器行為）。
+ * 鎖住「overlay scope 只在筆記頁與畫布頁派發」與既有 scope 解析不回歸
+ *（2026-08-10 版面改版後 toolPen 預設鍵＝2）：
+ * B1: 筆記頁按 2 → 派發 toolPen 且 preventDefault。
+ * B2: 畫布頁按 2 → 同上。
+ * B3: 首頁按 2 → 不派發、不 preventDefault。
+ * B4: Todo 頁按 2 → 不派發 overlay 動作。
+ * B5: Ctrl+2 / Alt+2 → 不觸發（保留瀏覽器行為）。
  * B5b: Shift+S 仍觸發 addSticky——記錄現況：系統只排除 Ctrl/Cmd/Alt、不排除 Shift。
- * B6: 輸入框聚焦時按 1 → 不觸發。
+ * B9: repeat=true（OS 按鍵自動重複）不派發。
+ * B6: 輸入框聚焦時按 2 → 不觸發。
  * B7: 筆記頁按 c → 派發 toggleToc（新動作走 notes scope 既有派發分支）。
  * B8: 一鍵多動作 scope 解析不回歸（筆記頁 a＝newNote、Todo 頁 a＝newTodo）。
  */
@@ -74,45 +76,45 @@ function pressKey(
   return evt;
 }
 
-describe('B1 筆記頁按 1', () => {
+describe('B1 筆記頁按 2', () => {
   it('派發 toolPen 且 preventDefault', async () => {
     await renderRuntime('/notes/test-note');
-    const evt = pressKey('1');
+    const evt = pressKey('2');
     expect(received).toEqual(['toolPen']);
     expect(evt.defaultPrevented).toBe(true);
   });
 });
 
-describe('B2 畫布頁按 1', () => {
+describe('B2 畫布頁按 2', () => {
   it('派發 toolPen', async () => {
     await renderRuntime('/canvas');
-    pressKey('1');
+    pressKey('2');
     expect(received).toEqual(['toolPen']);
   });
 });
 
-describe('B3 首頁按 1', () => {
+describe('B3 首頁按 2', () => {
   it('不派發、不 preventDefault', async () => {
     await renderRuntime('/');
-    const evt = pressKey('1');
+    const evt = pressKey('2');
     expect(received).toEqual([]);
     expect(evt.defaultPrevented).toBe(false);
   });
 });
 
-describe('B4 Todo 頁按 1', () => {
+describe('B4 Todo 頁按 2', () => {
   it('不派發 overlay 動作', async () => {
     await renderRuntime('/tasks');
-    pressKey('1');
+    pressKey('2');
     expect(received).toEqual([]);
   });
 });
 
 describe('B5 修飾鍵組合保留給瀏覽器', () => {
-  it('Ctrl+1 / Alt+1 都不觸發', async () => {
+  it('Ctrl+2 / Alt+2 都不觸發', async () => {
     await renderRuntime('/notes/test-note');
-    pressKey('1', { ctrlKey: true });
-    pressKey('1', { altKey: true });
+    pressKey('2', { ctrlKey: true });
+    pressKey('2', { altKey: true });
     expect(received).toEqual([]);
   });
 });
@@ -136,11 +138,11 @@ describe('B9 OS 按鍵自動重複不觸發', () => {
 });
 
 describe('B6 輸入元素聚焦時不觸發', () => {
-  it('在 input 上按 1 → 不派發', async () => {
+  it('在 input 上按 2 → 不派發', async () => {
     await renderRuntime('/notes/test-note');
     const input = document.createElement('input');
     document.body.appendChild(input);
-    pressKey('1', {}, input);
+    pressKey('2', {}, input);
     expect(received).toEqual([]);
     input.remove();
   });

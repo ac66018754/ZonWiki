@@ -37,10 +37,11 @@ export interface LeadingSlot {
 /**
  * 共用的右下角手繪工具列（筆記頁與開問啦畫布共用同一版面，避免兩份走樣）。
  *
- * 版面固定為三列（依使用者規格）：
- *   Row1：目錄/工具箱 ｜ 便利貼 ｜ 圖片板
- *   Row2：畫筆 ｜ 螢光筆 ｜ 直線 ｜ 矩形 ｜ 橢圓 ｜ 文字
+ * 版面固定為四列（依使用者規格，2026-08-10 改版：加鍵帽提示後原三列會跑版）：
+ *   Row1：文字框 T ｜ ＋便利貼 ｜ ＋圖片板（新增類）
+ *   Row2：畫筆 ｜ 螢光筆 ｜ 直線 ｜ 矩形 ｜ 橢圓
  *   Row3：局部橡皮擦 ｜ 整體橡皮擦 ｜ 框選橡皮擦 ｜ 清除全部手繪
+ *   Row4：目錄/工具箱（leading）｜ 各端常駐鈕（筆記＝歸位、儲存快照）
  * 之後是「情境控制列」（顏色/線寬/透明度/虛線/微調提示 + 各端專屬按鈕 + 完成），
  * 以及點顏色球球展開的完整色盤（往上開）。
  *
@@ -118,9 +119,9 @@ export function DrawingToolbar({
   /** 是否正在使用某個繪圖工具。 */
   drawingActive: boolean;
   onDone: () => void;
-  /** 各端專屬的額外控制（例如筆記的「歸位 / ＋高 / −高」）；有值才會出現情境控制列。 */
+  /** 各端專屬的額外控制（例如筆記的「＋高 / −高」）；有值才會出現情境控制列。 */
   extraControls?: React.ReactNode;
-  /** 常駐於 Row1 尾端的控制（例如筆記的「💾 儲存浮層快照」）；不影響情境控制列的條件渲染。 */
+  /** 常駐於 Row4 尾端（leading 之後）的控制（例如筆記的「↺ 歸位」「💾 儲存浮層快照」）；不影響情境控制列的條件渲染。 */
   persistentControls?: React.ReactNode;
   /** 疊在工具列「上方」的內容（例如選取文字框時的屬性面板）。 */
   topContent?: React.ReactNode;
@@ -143,7 +144,7 @@ export function DrawingToolbar({
   // 為純呈現元件的局部 UI 狀態，與繪圖/便利貼等業務狀態無關，故放元件內部即可。
   const [collapsed, setCollapsed] = useState(false);
 
-  /** Row2 的繪圖工具（含「文字」動作鈕）。 */
+  /** Row2 的繪圖工具（文字框 T 已移至 Row1）。 */
   const drawTools: [Exclude<DrawTool, null>, string, string][] = [
     ['pen', '✏️', '畫筆（自由筆）'],
     ['highlight', '🖍️', '螢光筆（半透明，可調透明度）'],
@@ -225,7 +226,43 @@ export function DrawingToolbar({
 
         {!collapsed && (
           <>
-        {/* Row1：目錄/工具箱 ｜ 便利貼 ｜ 圖片板 */}
+        {/* Row1：文字框 T ｜ ＋便利貼 ｜ ＋圖片板（新增類） */}
+        <div style={rowStyle}>
+          <button
+            className="tk-btn"
+            style={{ cursor: 'pointer', fontWeight: 700, whiteSpace: 'nowrap' }}
+            onClick={onAddText}
+            title={withKeyTitle('新增純文字框（可打字、設背景顏色/透明、旋轉縮放、調字級字色）', shortcutKeys?.text)}
+            data-testid={`${testIdPrefix}-add-text`}
+          >
+            T
+            {keyCapHint(shortcutKeys?.text)}
+          </button>
+          <button className="tk-btn" style={{ cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={onAddSticky} title={withKeyTitle('新增便利貼', shortcutKeys?.sticky)} data-testid={`${testIdPrefix}-add-sticky`}>＋便利貼{keyCapHint(shortcutKeys?.sticky)}</button>
+          <button className="tk-btn" style={{ cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={onAddSlide} title={withKeyTitle('新增圖片板（可放多張圖、手動切換）', shortcutKeys?.slide)} data-testid={`${testIdPrefix}-add-slide`}>＋圖片板{keyCapHint(shortcutKeys?.slide)}</button>
+        </div>
+
+        {/* Row2：畫筆 ｜ 螢光筆 ｜ 直線 ｜ 矩形 ｜ 橢圓 */}
+        <div style={rowStyle}>
+          {drawTools.map(renderToolBtn)}
+        </div>
+
+        {/* Row3：局部橡皮擦 ｜ 整體橡皮擦 ｜ 框選橡皮擦 ｜ 清除全部手繪 */}
+        <div style={rowStyle}>
+          {eraseTools.map(renderToolBtn)}
+          <button
+            className="tk-btn"
+            style={{ cursor: 'pointer', opacity: hasShapes ? 1 : 0.4, whiteSpace: 'nowrap' }}
+            onClick={onClear}
+            disabled={!hasShapes}
+            title="清除全部手繪（可 Ctrl+Z 復原）"
+            data-testid={`${testIdPrefix}-clear`}
+          >
+            清除全部
+          </button>
+        </div>
+
+        {/* Row4：目錄/工具箱（leading）｜ 各端常駐鈕（筆記＝歸位、儲存快照） */}
         <div style={rowStyle}>
           <button
             className={`tk-btn ${leading.active ? 'tk-btn--primary' : ''}`}
@@ -237,39 +274,7 @@ export function DrawingToolbar({
             {leading.label}
             {keyCapHint(shortcutKeys?.leading)}
           </button>
-          <button className="tk-btn" style={{ cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={onAddSticky} title={withKeyTitle('新增便利貼', shortcutKeys?.sticky)} data-testid={`${testIdPrefix}-add-sticky`}>＋便利貼{keyCapHint(shortcutKeys?.sticky)}</button>
-          <button className="tk-btn" style={{ cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={onAddSlide} title={withKeyTitle('新增圖片板（可放多張圖、手動切換）', shortcutKeys?.slide)} data-testid={`${testIdPrefix}-add-slide`}>＋圖片板{keyCapHint(shortcutKeys?.slide)}</button>
           {persistentControls}
-        </div>
-
-        {/* Row2：畫筆 ｜ 螢光筆 ｜ 直線 ｜ 矩形 ｜ 橢圓 ｜ 文字 */}
-        <div style={rowStyle}>
-          {drawTools.map(renderToolBtn)}
-          <button
-            className="tk-btn"
-            style={{ cursor: 'pointer', fontWeight: 700, whiteSpace: 'nowrap' }}
-            onClick={onAddText}
-            title={withKeyTitle('新增純文字框（可打字、設背景顏色/透明、旋轉縮放、調字級字色）', shortcutKeys?.text)}
-            data-testid={`${testIdPrefix}-add-text`}
-          >
-            T
-            {keyCapHint(shortcutKeys?.text)}
-          </button>
-        </div>
-
-        {/* Row3：局部橡皮擦 ｜ 整體橡皮擦 ｜ 框選橡皮擦 ｜ 清除全部手繪 */}
-        <div style={rowStyle}>
-          {eraseTools.map(renderToolBtn)}
-          <button
-            className="tk-btn"
-            style={{ cursor: 'pointer', opacity: hasShapes ? 1 : 0.4 }}
-            onClick={onClear}
-            disabled={!hasShapes}
-            title="清除全部手繪（可 Ctrl+Z 復原）"
-            data-testid={`${testIdPrefix}-clear`}
-          >
-            清除全部
-          </button>
         </div>
 
         {/* 情境控制列：顏色／線寬／透明度／虛線／微調提示 + 各端專屬鈕 + 完成 */}

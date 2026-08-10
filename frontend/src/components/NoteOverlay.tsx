@@ -1889,7 +1889,8 @@ export function NoteOverlay({
       )}
 
       {/* 工具列：portal 至 body 並 position:fixed → 捲動內文時固定不動。
-          使用與開問啦畫布共用的 DrawingToolbar（三列版面）；筆記專屬的「歸位 / ＋高 / −高」放在情境控制列。 */}
+          使用與開問啦畫布共用的 DrawingToolbar（四列版面，2026-08-10 改版）；
+          筆記專屬鈕的位置：「歸位／儲存快照」在 Row4 常駐列（persistentControls）、「＋高／−高」在情境控制列。 */}
       {mounted && createPortal(
         <DrawingToolbar
           testIdPrefix="overlay"
@@ -1941,31 +1942,32 @@ export function NoteOverlay({
           drawingActive={drawingActive}
           onDone={() => { setSelectedShapeIdx(null); setTool(null); }}
           persistentControls={(
-            // 浮層快照儲存鈕（Row1 常駐）：按下才記一筆——手動版本保護，避免自動記錄筆數爆炸。
-            <button
-              className="tk-btn"
-              style={{ cursor: snapshotState === 'saving' ? 'wait' : 'pointer', whiteSpace: 'nowrap' }}
-              onClick={saveOverlaySnapshot}
-              disabled={snapshotState === 'saving'}
-              title="儲存浮層快照：把目前全部便利貼/文字框/塗鴉/畫記存成一份版本（筆記「歷史」分頁可見）"
-              data-testid="overlay-snapshot-save"
-            >
-              {snapshotState === 'saving' && '⏳ 儲存中…'}
-              {snapshotState === 'saved' && '✓ 已儲存'}
-              {snapshotState === 'saved-partial' && '✓ 已儲存（未含拖曳中變更）'}
-              {snapshotState === 'error' && '⚠️ 失敗，請重試'}
-              {snapshotState === 'idle' && '💾 儲存'}
-            </button>
-          )}
-          extraControls={(items.some((i) => i.kind !== 'drawing') || drawingActive) ? (
+            // Row4 常駐鈕（2026-08-10 版面：目錄｜歸位｜儲存）：
+            // 歸位＝把跑丟的便利貼/圖片板/文字框拉回；儲存＝手動浮層快照（按下才記一筆，避免版本筆數爆炸）。
             <>
               {items.some((i) => i.kind !== 'drawing') && (
-                <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={gatherStrayItems} title="歸位：把所有便利貼/圖片板/文字框拉回左上角（救回被拖到看不見、抓不回來的）" data-testid="overlay-gather">↺ 歸位</button>
+                <button className="tk-btn" style={{ cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={gatherStrayItems} title="歸位：把所有便利貼/圖片板/文字框拉回左上角（救回被拖到看不見、抓不回來的）" data-testid="overlay-gather">↺ 歸位</button>
               )}
-              {drawingActive && (
-                <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={growCanvas} title="加高繪圖區（往下擴充，可放更多便利貼/塗鴉/輪播）" data-testid="overlay-grow">＋高</button>
-              )}
-              {drawingActive && extraHeight > 0 && (
+              <button
+                className="tk-btn"
+                style={{ cursor: snapshotState === 'saving' ? 'wait' : 'pointer', whiteSpace: 'nowrap' }}
+                onClick={saveOverlaySnapshot}
+                disabled={snapshotState === 'saving'}
+                title="儲存浮層快照：把目前全部便利貼/文字框/塗鴉/畫記存成一份版本（筆記「歷史」分頁可見）"
+                data-testid="overlay-snapshot-save"
+              >
+                {snapshotState === 'saving' && '⏳ 儲存中…'}
+                {snapshotState === 'saved' && '✓ 已儲存'}
+                {snapshotState === 'saved-partial' && '✓ 已儲存（未含拖曳中變更）'}
+                {snapshotState === 'error' && '⚠️ 失敗，請重試'}
+                {snapshotState === 'idle' && '💾 儲存'}
+              </button>
+            </>
+          )}
+          extraControls={drawingActive ? (
+            <>
+              <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={growCanvas} title="加高繪圖區（往下擴充，可放更多便利貼/塗鴉/輪播）" data-testid="overlay-grow">＋高</button>
+              {extraHeight > 0 && (
                 <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={shrinkCanvas} title="降低繪圖區高度" data-testid="overlay-shrink">−高</button>
               )}
             </>

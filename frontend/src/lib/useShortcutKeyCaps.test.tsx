@@ -24,13 +24,13 @@ afterEach(() => {
 });
 
 describe('D1 預設鍵帽', () => {
-  it('回傳大寫顯示鍵帽：toolPen→1、toggleToc→C、addSticky→S、addSlide→I', async () => {
+  it('回傳大寫顯示鍵帽：toolPen→2、toggleToc→C、addSticky→S、addSlide→I', async () => {
     const { result } = renderHook(() =>
       useShortcutKeyCaps(['toolPen', 'toggleToc', 'addSticky', 'addSlide']),
     );
     await waitFor(() => {
       expect(result.current).toEqual({
-        toolPen: '1',
+        toolPen: '2',
         toggleToc: 'C',
         addSticky: 'S',
         addSlide: 'I',
@@ -42,7 +42,7 @@ describe('D1 預設鍵帽', () => {
 describe('D2 改鍵後即時更新', () => {
   it('SHORTCUTS_UPDATED_EVENT 廣播後回傳新鍵', async () => {
     const { result } = renderHook(() => useShortcutKeyCaps(['toolPen']));
-    await waitFor(() => expect(result.current.toolPen).toBe('1'));
+    await waitFor(() => expect(result.current.toolPen).toBe('2'));
 
     // 模擬使用者把畫筆改成 x 並存檔：後端回新覆寫 → 廣播更新事件。
     getUserSettingsMock.mockResolvedValue({ shortcutsJson: JSON.stringify({ toolPen: 'x' }) });

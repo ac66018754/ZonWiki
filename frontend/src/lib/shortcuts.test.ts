@@ -34,15 +34,15 @@ function actionById(id: string) {
 }
 
 describe('A1 新動作齊全且預設鍵正確', () => {
-  it('overlay scope 的 11 個動作與預設鍵完全符合裁示（工具 1-9、便利貼 s、圖片板 i）', () => {
-    /** 使用者裁示的鍵位規格（id → 預設鍵）。 */
+  it('overlay scope 的 11 個動作與預設鍵完全符合裁示（數字照 2026-08-10 版面視覺順序、便利貼 s、圖片板 i）', () => {
+    /** 使用者裁示的鍵位規格（id → 預設鍵）：Row1 文字框=1、Row2 工具=2-6、Row3 橡皮擦=7-9。 */
     const expected: Record<string, string> = {
-      toolPen: '1',
-      toolHighlight: '2',
-      toolLine: '3',
-      toolRect: '4',
-      toolEllipse: '5',
-      addTextBox: '6',
+      addTextBox: '1',
+      toolPen: '2',
+      toolHighlight: '3',
+      toolLine: '4',
+      toolRect: '5',
+      toolEllipse: '6',
       eraseArea: '7',
       eraseStroke: '8',
       eraseBox: '9',
@@ -119,8 +119,8 @@ describe('A7 serializeOverrides 最小化', () => {
 });
 
 describe('A8 overlay 內部自撞＝衝突', () => {
-  it('toolLine 改成 toolRect 的預設鍵（4）→ 兩者互列衝突', () => {
-    const conflicts = findConflicts({ toolLine: '4' });
+  it('toolLine 改成 toolRect 的預設鍵（5）→ 兩者互列衝突', () => {
+    const conflicts = findConflicts({ toolLine: '5' });
     expect(conflicts.toolLine).toContain('toolRect');
     expect(conflicts.toolRect).toContain('toolLine');
   });
@@ -134,8 +134,8 @@ describe('A9 數字↔字母互換改鍵', () => {
     expect(findConflicts(parsed)).toEqual({});
   });
 
-  it('addSticky 改成 3（撞 toolLine）→ 衝突偵測照樣抓到', () => {
+  it('addSticky 改成 3（撞 toolHighlight）→ 衝突偵測照樣抓到', () => {
     const conflicts = findConflicts({ addSticky: '3' });
-    expect(conflicts.addSticky).toContain('toolLine');
+    expect(conflicts.addSticky).toContain('toolHighlight');
   });
 });
