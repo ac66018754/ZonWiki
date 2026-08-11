@@ -1065,7 +1065,9 @@ export function MarkdownEditor({
                       // 已摺疊者用穩定的 foldId 當 key（headerStart 會隨前方編輯位移，避免整批 remount）
                       key={m.foldId ?? `h${m.headerStart}`}
                       type="button"
-                      className="mde-fold-btn"
+                      // 兩態不同配色（使用者裁示 2026-08-11：灰階小鈕看不清楚）：
+                      // --open＝主色綠（點了摺疊）、--folded＝琥珀警示（提示這裡藏著內容，點了展開）
+                      className={`mde-fold-btn ${m.folded ? "mde-fold-btn--folded" : "mde-fold-btn--open"}`}
                       style={{ top: m.y }}
                       title={m.folded ? "展開此摺疊區塊" : "摺疊此 toggle 區塊（僅編輯畫面，不改內容）"}
                       aria-label={m.folded ? "展開摺疊區塊" : "摺疊區塊"}

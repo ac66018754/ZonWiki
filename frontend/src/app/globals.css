@@ -4021,22 +4021,38 @@ html[data-route="time"] .sidebar-toggle {
 .mde-fold-btn {
   pointer-events: auto;
   position: absolute;
-  left: 3px;
-  width: 18px;
-  height: 18px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
   padding: 0;
-  line-height: 16px;
+  line-height: 18px;
   text-align: center;
-  font-size: 10px;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-sm);
-  background: var(--bg-surface);
-  color: var(--text-secondary);
+  font-size: 11px;
+  border-radius: 999px;
   cursor: pointer;
 }
-.mde-fold-btn:hover {
-  color: var(--text-primary);
-  border-color: var(--action-primary-bg);
+/* 兩態不同配色（使用者裁示 2026-08-11：原灰階小鈕辨識度不足）。
+   對比皆以 contrast-check 實測四主題 AA（4.63:1～9.25:1）：
+   ─ ▾ 展開中（點了收合）＝主色綠實心，與全站 primary 按鈕同語彙；
+   ─ ▸ 已摺疊（點了展開）＝琥珀警示 chip，提示「這一行藏著內容」。 */
+.mde-fold-btn--open {
+  border: 1px solid var(--action-primary-bg);
+  background: var(--action-primary-bg);
+  color: var(--action-primary-fg);
+}
+.mde-fold-btn--open:hover {
+  filter: brightness(1.15);
+  box-shadow: 0 0 0 2px var(--action-secondary-bg);
+}
+.mde-fold-btn--folded {
+  border: 1px solid var(--status-warning-fg);
+  background: var(--status-warning-bg);
+  color: var(--status-warning-fg);
+  font-weight: 700;
+}
+.mde-fold-btn--folded:hover {
+  filter: brightness(1.08);
+  box-shadow: 0 0 0 2px var(--action-secondary-bg);
 }
 /* 觸控裝置：18px 按鈕加透明外擴命中區（不改視覺、比照 .zw-filter-btn 手法）。 */
 @media (hover: none) {
