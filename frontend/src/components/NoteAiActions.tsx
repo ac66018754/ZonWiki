@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { reformatNote, beautifyNote, type AiTransformResult } from '@/lib/api';
 import { splitByProtect } from '@/lib/toggleBlocks';
+import type { EditorFoldApi } from '@/components/MarkdownEditor';
 
 interface NoteAiActionsProps {
   /** 筆記 ID */
@@ -19,6 +20,11 @@ interface NoteAiActionsProps {
   onBusyChange?: (busy: boolean) => void;
   /** 編輯器 textarea 參考：供「局部排版（重排選取範圍）」讀取目前選取位置。 */
   taRef?: React.RefObject<HTMLTextAreaElement | null>;
+  /**
+   * 編輯器摺疊 API：編輯模式的 toggle 摺疊啟用時，textarea 選取座標＝「顯示座標」，
+   * 必須先映射回「完整文字座標」才能切 currentContent（否則會重排錯段＝內容毀損）。
+   */
+  foldApiRef?: React.RefObject<EditorFoldApi | null>;
 }
 
 /**
@@ -38,6 +44,7 @@ export function NoteAiActions({
   disabled = false,
   onBusyChange,
   taRef,
+  foldApiRef,
 }: NoteAiActionsProps) {
   const [isReformatting, setIsReformatting] = useState(false);
   const [isBeautifying, setIsBeautifying] = useState(false);
@@ -106,11 +113,23 @@ export function NoteAiActions({
       onError?.('無法取得編輯器選取範圍。');
       return;
     }
-    const start = ta.selectionStart;
-    const end = ta.selectionEnd;
+    let start = ta.selectionStart;
+    let end = ta.selectionEnd;
     if (start >= end) {
       onError?.('請先在編輯器反白選取要重排的範圍。');
       return;
+    }
+    // 編輯模式摺疊啟用時：textarea 座標是「顯示座標」，必須映射回完整文字座標。
+    // 範圍與摺疊徽章相交＝無法安全對應 → 請使用者先展開（不可猜、猜錯就是毀損內容）。
+    const foldApi = foldApiRef?.current;
+    if (foldApi) {
+      const mapped = foldApi.mapSelectionToFull(start, end);
+      if (!mapped) {
+        onError?.('選取範圍包含「已摺疊」的區塊，請先展開（點徽章或 ▾▾ 全部展開）再局部排版。');
+        return;
+      }
+      start = mapped.start;
+      end = mapped.end;
     }
     const selected = currentContent.slice(start, end);
     try {

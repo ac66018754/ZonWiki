@@ -679,9 +679,11 @@ function NoteSelectionPopover({
   }, [onClose]);
 
   // 第二步（渲染目標筆記預覽）需要較寬的面板；其餘維持窄面板。
-  const width = relateNote ? 440 : 280;
+  // 手機視口夾取：440px 面板在 393px 螢幕會算出負的 left（左側 60+px 被切出畫面外）——
+  // 面板寬先夾進視口，left 再至少保底 8px。
+  const width = Math.min(relateNote ? 440 : 280, window.innerWidth - 16);
   const top = Math.min(window.innerHeight - 160, rect.bottom + 6);
-  const left = Math.min(window.innerWidth - (width + 20), Math.max(8, rect.left));
+  const left = Math.max(8, Math.min(window.innerWidth - (width + 8), rect.left));
 
   return createPortal(
     <div

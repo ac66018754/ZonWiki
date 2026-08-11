@@ -51,6 +51,7 @@ export interface LeadingSlot {
 export function DrawingToolbar({
   position,
   maxWidth = 320,
+  defaultCollapsed = false,
   leading,
   onAddSticky,
   onAddSlide,
@@ -86,6 +87,11 @@ export function DrawingToolbar({
   position: { bottom: number; right: number };
   /** 面板最大寬度。 */
   maxWidth?: number;
+  /**
+   * 初始是否收合（預設 false＝展開）。筆記閱讀頁在手機（≤768px）傳 true——
+   * 四列工具列會蓋住 393px 螢幕下方約 1/3 的閱讀區；開問啦畫布（工具型頁面）不傳、維持展開。
+   */
+  defaultCollapsed?: boolean;
   leading: LeadingSlot;
   onAddSticky: () => void;
   onAddSlide: () => void;
@@ -140,9 +146,11 @@ export function DrawingToolbar({
   const isHighlight = tool === 'highlight';
   const showColor = isColorTool(tool);
 
-  // 整個工具列的「收合」狀態（預設展開）。收合後只剩右上角的展開鈕，省畫面、避免擋住內容。
+  // 整個工具列的「收合」狀態（預設展開；呼叫端可用 defaultCollapsed 覆寫初始值——
+  // 筆記閱讀頁在手機傳 true，開問啦畫布維持展開，見各呼叫端）。
+  // lazy 初始化只在首次 render 取一次 defaultCollapsed。
   // 為純呈現元件的局部 UI 狀態，與繪圖/便利貼等業務狀態無關，故放元件內部即可。
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => defaultCollapsed);
 
   /** Row2 的繪圖工具（文字框 T 已移至 Row1）。 */
   const drawTools: [Exclude<DrawTool, null>, string, string][] = [
@@ -201,7 +209,9 @@ export function DrawingToolbar({
       <div style={{
         display: 'flex', flexDirection: 'column', gap: 4,
         background: 'var(--bg-surface)', border: '1px solid var(--border-default)',
-        borderRadius: 'var(--radius-md)', padding: 4, boxShadow: 'var(--shadow-md)', maxWidth,
+        borderRadius: 'var(--radius-md)', padding: 4, boxShadow: 'var(--shadow-md)',
+        // 手機視口夾取：380px 面板＋右緣 24px 在 393px 螢幕會把左緣切出畫面外。
+        maxWidth: `min(${maxWidth}px, calc(100vw - ${position.right + 12}px))`,
       }}>
         {/* 右上角：收合／展開整個工具列（預設展開）。收合時順手結束繪圖，避免工具列收起、畫布卻仍鎖住。 */}
         <div style={{ display: 'flex', justifyContent: 'flex-end' }}>

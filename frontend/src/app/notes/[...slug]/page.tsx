@@ -37,6 +37,7 @@ import { formatFullDateTime, formatDateTime as formatDateTimeUtil } from '@/lib/
 import { DEFAULT_TIMEZONE } from '@/lib/constants';
 import { SkeletonCard } from '@/components/Skeleton';
 import { NoteAiActions } from '@/components/NoteAiActions';
+import type { EditorFoldApi } from '@/components/MarkdownEditor';
 import { NoteEditHistory } from '@/components/NoteEditHistory';
 import { NoteBacklinks } from '@/components/NoteBacklinks';
 import { NoteDisambiguation } from '@/components/NoteDisambiguation';
@@ -191,6 +192,8 @@ export default function NotesDetailPage() {
   const previewRef = useRef<HTMLDivElement | null>(null);
   // 編輯器 textarea 參考：供「局部排版（重排選取範圍）」讀取目前選取位置。
   const editorTaRef = useRef<HTMLTextAreaElement | null>(null);
+  // 編輯模式摺疊 API：MarkdownEditor 填入、NoteAiActions（局部排版）用它把顯示座標映射回完整座標。
+  const editorFoldApiRef = useRef<EditorFoldApi | null>(null);
   // 編輯彈窗：開啟時筆記頁改顯示「即時預覽（彈窗目前內容）」；null＝彈窗未開、顯示存檔版閱讀畫面。
   const [editPopoutContent, setEditPopoutContent] = useState<string | null>(null);
   const editChannelRef = useRef<BroadcastChannel | null>(null);
@@ -1242,22 +1245,10 @@ export default function NotesDetailPage() {
   return (
     <div className="note-detail-page" ref={noteScrollRef} onScroll={handleNoteScroll}>
       <div className="note-detail__container">
-        {/* 置頂工具列（sticky，不隨內文捲走）：返回 + 標題 + 編輯 / 匯出 PDF / 刪除，同一行。 */}
-        <div
-          style={{
-            position: 'sticky',
-            top: 0,
-            zIndex: 30,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 'var(--spacing-3)',
-            marginBottom: 'var(--spacing-3)',
-            paddingTop: 'var(--spacing-2)',
-            paddingBottom: 'var(--spacing-2)',
-            background: 'var(--bg-canvas)',
-            borderBottom: '1px solid var(--border-default)',
-          }}
-        >
+        {/* 置頂工具列（sticky，不隨內文捲走）：返回 + 標題 + 編輯 / 匯出 PDF / 刪除，同一行。
+            樣式集中在 globals.css 的 .note-topbar（手機 ≤768px 改為可換行、不 sticky——
+            六顆按鈕在 393px 塞不下一行，硬撐會把整頁撐出水平捲動）。 */}
+        <div className="note-topbar">
           <button
             onClick={async () => {
               // 編輯中：先確認未儲存變更（#16），放棄才退出編輯、切回閱讀（不走返回堆疊、不離開本頁）。
@@ -1285,24 +1276,12 @@ export default function NotesDetailPage() {
           >
             ← 返回
           </button>
-          <h1
-            style={{
-              margin: 0,
-              flex: 1,
-              minWidth: 0,
-              fontSize: 'var(--text-xl)',
-              fontWeight: 700,
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-            }}
-            title={note.title}
-          >
+          <h1 className="note-topbar__title" title={note.title}>
             {note.title}
           </h1>
           {/* 編輯中時隱藏「編輯 / 匯出 / 刪除」（避免與下方編輯區的取消/保存混淆）；編輯區自有取消/保存。 */}
           {!isEditing && (
-            <div style={{ display: 'flex', gap: 'var(--spacing-2)', flexShrink: 0 }}>
+            <div className="note-topbar__actions">
               {/* 問題清單（只在預覽分頁顯示，因浮層問題只在預覽渲染）：點擊開/關由 NoteOverlay 渲染的問題面板。 */}
               {activeTab === 'preview' && (
                 <button
@@ -1657,6 +1636,7 @@ export default function NotesDetailPage() {
                 disabled={isSaving || uploadingCount > 0}
                 onBusyChange={setAiBusy}
                 taRef={editorTaRef}
+                foldApiRef={editorFoldApiRef}
               />
             </div>
 
@@ -1667,6 +1647,7 @@ export default function NotesDetailPage() {
               minHeight={400}
               placeholder="用 Markdown 撰寫內容…（可用工具列套用格式；🔒 可框住不想被 AI 重排的內容）"
               taRef={editorTaRef}
+              foldApiRef={editorFoldApiRef}
               onUploadingChange={setUploadingCount}
             />
           </div>
@@ -1678,7 +1659,8 @@ export default function NotesDetailPage() {
               style={{
                 marginBottom: 'var(--spacing-3)',
                 display: 'flex',
-                gap: 'var(--spacing-4)',
+                flexWrap: 'wrap', // 手機窄幅：兩個完整日期時間塞不進一行，允許換行避免撐寬頁面
+                gap: 'var(--spacing-2) var(--spacing-4)',
                 fontSize: 'var(--text-sm)',
                 color: 'var(--text-secondary)',
               }}
@@ -1939,7 +1921,8 @@ export default function NotesDetailPage() {
                   className="markdown-prose"
                   style={{
                     background: 'var(--bg-surface)',
-                    padding: 'var(--spacing-6)',
+                    // 手機（≤768px）由 .note-detail__container 覆寫 --note-prose-pad 縮小內距。
+                    padding: 'var(--note-prose-pad, var(--spacing-6))',
                     borderRadius: 'var(--radius-lg)',
                     border: '1px solid var(--border-default)',
                   }}
@@ -2161,7 +2144,12 @@ export default function NotesDetailPage() {
         .note-detail-page {
           width: 100%;
           height: calc(100vh - var(--header-height));
+          /* iOS Safari 的 100vh 含瀏覽器工具列高度會裁到內容；支援 dvh 的瀏覽器用動態視口高度。 */
+          height: calc(100dvh - var(--header-height));
           overflow-y: auto;
+          /* overflow-y:auto 會讓 overflow-x 計算成 auto——任何過寬子元素都會讓整頁可左右橫移
+             （手機閱讀抱怨的元兇之一）。明確關掉：過寬內容一律由各自的捲動容器（表格 wrapper、pre）承接。 */
+          overflow-x: clip;
         }
 
         .note-detail__container {
@@ -2262,7 +2250,10 @@ export default function NotesDetailPage() {
 
         @media (max-width: 768px) {
           .note-detail__container {
-            padding: var(--spacing-4) var(--spacing-3);
+            /* 手機：外框與內文 padding 都縮小，把可讀寬度留給內容（393px 螢幕上每 px 都珍貴）。
+               --note-prose-pad 由內文區的 inline style 引用（var 預設 --spacing-6）。 */
+            padding: var(--spacing-3) var(--spacing-2);
+            --note-prose-pad: var(--spacing-3);
           }
         }
       `}</style>

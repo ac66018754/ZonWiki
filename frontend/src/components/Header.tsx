@@ -259,8 +259,10 @@ export function Header({ user }: { user: CurrentUser | null }) {
           僅登入後顯示（提問佇列 API 需驗證）。 */}
       {user && <AiProcessingMenu />}
 
-      {/* 中央：搜尋框 */}
-      <div className="search-box" style={{ flex: 1, maxWidth: "400px", margin: "0 var(--spacing-6)" }}>
+      {/* 中央：搜尋框（尺寸/邊距移到 globals.css 的 .header .search-box——
+          先前 inline style 的固定 max-width 與左右 24px margin 會蓋掉 640px 斷點的
+          手機規則，讓 Header 在 393px 有溢出風險）。 */}
+      <div className="search-box">
         <GlobalSearch />
       </div>
 

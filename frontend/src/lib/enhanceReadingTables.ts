@@ -29,6 +29,30 @@ const MIN_COL_WIDTH = 48;
 /** 標記表格「已處理」的 data 屬性，避免 MutationObserver 重跑時重複包裝。 */
 const ENHANCED_ATTR = 'data-zw-table-enhanced';
 
+/** 「窄視口」判定（px）：小於此寬不還原桌機存的像素欄寬（避免把手機表格鎖成遠寬於螢幕的固定佈局）。 */
+const NARROW_VIEWPORT_PX = 768;
+
+/**
+ * 是否為「窄視口」：在手機寬度下，桌機拖出來的像素欄寬（如 4 欄 × 300px）
+ * 會以 table-layout:fixed 塞進 361px 的容器，逼使用者整張表全靠橫捲——不還原、改用自然欄寬。
+ * （欄寬記憶仍保留在 localStorage，回到桌機寬度會照常還原。）
+ */
+function isNarrowViewport(): boolean {
+  return typeof window !== 'undefined' && window.innerWidth < NARROW_VIEWPORT_PX;
+}
+
+/**
+ * 是否為「純觸控」裝置（無 hover、粗指標＝手機/平板）：
+ * 拖曳把手帶 touch-action:none，手指落在欄邊界會變成拉欄寬而非捲動表格——觸控裝置不掛把手。
+ */
+function isCoarseTouchDevice(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(hover: none) and (pointer: coarse)').matches
+  );
+}
+
 /**
  * 單一表格已儲存的欄寬紀錄。
  * 同時存表頭文字與欄數，還原時用來比對「筆記內容是否被改過」——只要對不上就自動失效回預設，不套錯表。
@@ -232,7 +256,9 @@ function enhanceSingleTable(
   };
 
   // ── 3) 若有已存欄寬且比對吻合（欄數＋表頭文字都對）→ 立即還原，達成「記住寬度」 ──────
-  if (noteId) {
+  // 窄視口（手機）不還原：桌機拖出的像素寬會把表格鎖成遠寬於螢幕的固定佈局，
+  // 改用 CSS 的自然欄寬＋容器橫捲（記憶仍在，回桌機寬度照常還原）。
+  if (noteId && !isNarrowViewport()) {
     const stored = readWidthsMap()[buildEntryKey(noteId, tableIndex)];
     if (stored && isStoredWidthsApplicable(stored, headerTexts)) {
       applyFixedWidths(table, cols, stored.widths);
@@ -240,6 +266,9 @@ function enhanceSingleTable(
   }
 
   // ── 4) 每個表頭儲存格右緣加一個拖曳把手 ─────────────────────────────────────────
+  // 純觸控裝置不掛把手：touch-action:none 的把手會把「捲動表格」劫持成「拉欄寬」，
+  // 且一放手就把誤拖的欄寬永久寫進 localStorage。
+  if (isCoarseTouchDevice()) return;
   headerCells.forEach((cell, columnIndex) => {
     cell.classList.add('zw-th-resizable'); // CSS 給 position:relative，讓把手可絕對定位
 
