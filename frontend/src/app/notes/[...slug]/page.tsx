@@ -2255,6 +2255,15 @@ export default function NotesDetailPage() {
             padding: var(--spacing-3) var(--spacing-2);
             --note-prose-pad: var(--spacing-3);
           }
+          .markdown-prose h1,
+          .markdown-prose h2,
+          .markdown-prose h3,
+          .markdown-prose h4,
+          .markdown-prose h5,
+          .markdown-prose h6 {
+            /* 手機置頂工具列是兩列式（較高），目錄點擊捲動的預留高度要跟著加大 */
+            scroll-margin-top: 116px;
+          }
         }
       `}</style>
     </div>
