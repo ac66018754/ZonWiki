@@ -264,6 +264,10 @@ body {
   color: var(--text-primary);
   font-size: var(--text-base);
   line-height: var(--line-height-normal);
+  /* 頁面層級的水平溢出兜底：任何過寬元素都不得把整頁撐出左右橫移
+     （iOS Safari 對 body 的 overflow-x:hidden 有歷史怪癖，clip 是現代且不產生捲動容器的關法；
+     過寬內容一律由各自的捲動容器承接——表格 .md-table-wrap、程式碼 pre 等）。 */
+  overflow-x: clip;
 }
 
 a {
@@ -337,6 +341,15 @@ a:hover {
 /* 搜尋框可隨空間縮小，避免把右側主題/帳號擠到換行 */
 .header .search-box {
   min-width: 0;
+  /* 桌機尺寸（原為 Header.tsx 的 inline style；inline 會蓋掉 640px 手機規則故移到這裡）。 */
+  max-width: 400px;
+  margin: 0 var(--spacing-6);
+}
+@media (max-width: 640px) {
+  .header .search-box {
+    margin: 0; /* 393px 上左右各 24px 的固定 margin 太奢侈，交給 .header 的 gap */
+    max-width: 100%;
+  }
 }
 
 /* 左側欄 */
@@ -1595,6 +1608,129 @@ th {
   background: var(--action-primary-bg);
   opacity: 1;
   width: 3px;
+}
+
+/* ── 閱讀內容的長字串保護（全寬皆適用；手機 393px 特別關鍵）──────────────────
+   長網址、長英數 token、行內 code 沒有斷行機會時會直接把版面撐爆。 */
+.markdown-prose {
+  overflow-wrap: break-word;
+}
+.markdown-prose a,
+.md-preview a {
+  /* overflow-wrap:anywhere 已足以在必要時斷開長網址；不疊 word-break:break-all——
+     那會讓「英文描述性連結文字」在任意字元處被切斷（復審 LOW）。 */
+  overflow-wrap: anywhere;
+}
+.markdown-prose :not(pre) > code,
+.md-preview :not(pre) > code {
+  overflow-wrap: anywhere;
+}
+
+/* 表格捲動容器：觸控慣性捲動（iOS）。 */
+.md-table-wrap {
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ── 筆記閱讀頁置頂工具列（.note-topbar；JSX 在 notes/[...slug]/page.tsx）────────
+   桌機：單行 sticky。手機（≤768px）：六顆按鈕塞不下一行 → 允許換行、取消 sticky
+   （兩三行的 sticky 列會吃掉 1/3 螢幕）、按鈕縮小內距。 */
+.note-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-3);
+  margin-bottom: var(--spacing-3);
+  padding-top: var(--spacing-2);
+  padding-bottom: var(--spacing-2);
+  background: var(--bg-canvas);
+  border-bottom: 1px solid var(--border-default);
+}
+.note-topbar__title {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-xl);
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.note-topbar__actions {
+  display: flex;
+  gap: var(--spacing-2);
+  flex-shrink: 0;
+}
+
+@media (max-width: 768px) {
+  .note-topbar {
+    position: static; /* 手機不 sticky：多行工具列會吃掉太多可讀高度 */
+    flex-wrap: wrap;
+  }
+  .note-topbar__actions {
+    flex-wrap: wrap;
+    flex-shrink: 1;
+  }
+  /* 手機上按鈕縮小內距讓一行擠得下更多顆（維持 ≥44px 觸控高度）。 */
+  .note-topbar__actions > button,
+  .note-topbar__actions button {
+    padding: var(--spacing-2) var(--spacing-3);
+    min-height: 44px;
+  }
+}
+
+/* ── 手機（≤768px）閱讀：表格改「容器內橫捲」而非壓縮欄寬 ─────────────────────
+   六欄表格硬塞 393px 會把中文擠成一行一字的直式排版（實測截圖），完全不可讀。
+   改法：表格取自然欄寬（width:max-content）、過寬時在 .md-table-wrap 內左右滑。 */
+@media (max-width: 768px) {
+  .markdown-prose .md-table-wrap table {
+    width: max-content; /* 自然欄寬（不硬壓進容器） */
+    max-width: none;
+    min-width: 100%; /* 窄表格仍撐滿可讀寬，不縮成小豆腐 */
+  }
+  .markdown-prose th,
+  .markdown-prose td {
+    padding: var(--spacing-2);
+    min-width: 4em; /* 每欄至少放得下 3–4 個中文字，杜絕一行一字 */
+  }
+  .markdown-prose th {
+    white-space: nowrap; /* 表頭不折行（橫捲承接寬度） */
+  }
+  /* JS 尚未包 .md-table-wrap 的瞬間（或包裝失敗）：表格自帶橫捲，絕不撐爆頁面。 */
+  .markdown-prose table:not(.md-table-wrap table) {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  /* 編輯器預覽（.md-preview）沒有 enhanceReadingTables 包裝 → 一律自帶橫捲。 */
+  .md-preview table {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  /* 摺疊區塊縮排在窄螢幕減半：巢狀多層才不會把可讀寬度吃光。 */
+  .md-toggle-body {
+    padding-left: 12px;
+    margin-left: 4px;
+  }
+}
+
+/* 觸控裝置：表格內微型控件加大命中區（不改視覺大小，用透明外擴層達到 ~44px）。 */
+@media (hover: none) {
+  .zw-filter-btn,
+  .zw-cell-checkbox {
+    position: relative;
+  }
+  .zw-filter-btn::after,
+  .zw-cell-checkbox::after {
+    content: '';
+    position: absolute;
+    inset: -12px;
+  }
+  .zw-cell-radio-chip {
+    padding: 6px 12px; /* chip 本身加大即可（在儲存格內不致爆版） */
+  }
 }
 
 /* ============================================================================
@@ -3816,6 +3952,65 @@ html[data-route="time"] .sidebar-toggle {
   outline: none;
   box-sizing: border-box;
 }
+/* 編輯模式摺疊（editor folding）：textarea 左側的摺疊鈕 gutter。
+   結構：.mde-editor-wrap（相對定位容器）> .mde-fold-gutter（絕對定位、裁切）>
+   .mde-fold-gutter-inner（隨 textarea 捲動 translateY）> .mde-fold-btn（各 toggle 標頭行的 ▾/▸）。 */
+.mde-editor-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.mde-fold-gutter {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 24px;
+  overflow: hidden;
+  pointer-events: none; /* 只有按鈕本身可點，不擋 textarea 的點擊/選取 */
+}
+.mde-fold-gutter-inner {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  will-change: transform;
+}
+.mde-fold-btn {
+  pointer-events: auto;
+  position: absolute;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  line-height: 16px;
+  text-align: center;
+  font-size: 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.mde-fold-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--action-primary-bg);
+}
+/* 觸控裝置：18px 按鈕加透明外擴命中區（不改視覺、比照 .zw-filter-btn 手法）。 */
+@media (hover: none) {
+  .mde-fold-btn::after {
+    content: '';
+    position: absolute;
+    inset: -12px;
+  }
+}
+/* 有 toggle 區塊時，textarea 左側讓出 gutter 空間 */
+.mde-textarea--fold-gutter {
+  padding-left: 28px;
+}
+
 .mde-preview {
   padding: var(--spacing-3);
   overflow-y: auto;

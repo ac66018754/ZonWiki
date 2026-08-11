@@ -1896,6 +1896,13 @@ export function NoteOverlay({
           testIdPrefix="overlay"
           position={{ bottom: 24, right: 24 }}
           maxWidth={380}
+          // 手機（≤768px）預設收合：四列工具列會蓋住小螢幕下方約 1/3 的「閱讀」區，
+          // 需要時點右上角 ▴ 展開（只影響筆記閱讀端；開問啦畫布端維持展開）。
+          defaultCollapsed={
+            typeof window !== 'undefined' &&
+            typeof window.matchMedia === 'function' &&
+            window.matchMedia('(max-width: 768px)').matches
+          }
           leading={{
             label: '📖 目錄',
             title: tocOpen ? '關閉章節目錄表' : '開啟章節目錄表',

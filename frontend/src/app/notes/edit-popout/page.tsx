@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { MarkdownEditor } from "@/components/MarkdownEditor";
+import { MarkdownEditor, type EditorFoldApi } from "@/components/MarkdownEditor";
 import { NoteAiActions } from "@/components/NoteAiActions";
 import { SearchableMultiSelect } from "@/components/SearchableMultiSelect";
 import { noteEditChannelName, type NoteEditInit, type NoteEditMessage } from "@/lib/noteEditChannel";
@@ -49,6 +49,8 @@ export default function NoteEditPopoutPage() {
   const [savedNote, setSavedNote] = useState<string | null>(null);
   const channelRef = useRef<BroadcastChannel | null>(null);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
+  // 編輯模式摺疊 API：MarkdownEditor 填入、NoteAiActions（重排選取）用它映射座標。
+  const foldApiRef = useRef<EditorFoldApi | null>(null);
   const confirm = useConfirm();
 
   // 頻道：postMessage 型別安全的小包裝。
@@ -221,6 +223,7 @@ export default function NoteEditPopoutPage() {
           disabled={isSaving || uploadingCount > 0}
           onBusyChange={setAiBusy}
           taRef={taRef}
+          foldApiRef={foldApiRef}
         />
 
         {/* Markdown 工具列 + 內容區（不含 並排／預覽／彈出預覽） */}
@@ -230,6 +233,7 @@ export default function NoteEditPopoutPage() {
           minHeight={400}
           placeholder="用 Markdown 撰寫內容…（🔒 可框住不想被 AI 重排的內容）"
           taRef={taRef}
+          foldApiRef={foldApiRef}
           onUploadingChange={setUploadingCount}
         />
       </div>

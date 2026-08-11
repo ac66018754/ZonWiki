@@ -1,11 +1,58 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ToggleAwareMarkdown } from "@/components/MarkdownPreview";
 import { TOGGLE_SNIPPET, PROTECT_SNIPPET } from "@/lib/toggleBlocks";
+import {
+  emptyFoldState,
+  expandDisplay,
+  findBadgeAt,
+  foldAll,
+  foldBlockAt,
+  listToggleBlocks,
+  mapDisplayRangeToFull,
+  unfoldAll,
+  unfoldBlock,
+  validateEdit,
+  type FoldState,
+} from "@/lib/editorFolding";
 import { uploadAttachment } from "@/lib/api";
 import { showToast } from "@/lib/toast";
+
+/**
+ * 編輯模式摺疊（editor folding）對外 API：
+ * 供 NoteAiActions（局部排版）等「直接讀 textarea 選取座標」的外部元件，
+ * 把「顯示座標」映射回「完整文字座標」——摺疊啟用時兩者不相等，直接切字串會毀損內容。
+ */
+export interface EditorFoldApi {
+  /** 把 textarea 顯示座標範圍映射回完整文字座標；範圍與摺疊徽章嚴格相交時回 null。 */
+  mapSelectionToFull: (start: number, end: number) => { start: number; end: number } | null;
+  /** 目前是否有任何摺疊中的區塊。 */
+  hasFolds: () => boolean;
+  /** 展開全部摺疊。 */
+  unfoldAll: () => void;
+}
+
+/** 摺疊視圖快照：顯示文字＋摺疊狀態（單一 state，確保兩者永遠一致更新）。 */
+interface FoldSnapshot {
+  /** textarea 顯示的文字（＝完整文字，但摺疊區塊只剩標頭＋徽章）。 */
+  display: string;
+  /** 摺疊狀態（隱藏內文與墓碑）。 */
+  state: FoldState;
+}
+
+/** 摺疊 gutter 的單一按鈕位置資訊。 */
+interface GutterMark {
+  /** 對應區塊的標頭行行首（display 座標）。 */
+  headerStart: number;
+  /** 按鈕在內容座標的 Y 位置（px，含 padding-top）。 */
+  y: number;
+  /** 該區塊是否已摺疊。 */
+  folded: boolean;
+  /** 已摺疊時的紀錄 id。 */
+  foldId?: string;
+}
 
 /** 彈出預覽視窗與編輯器之間的即時同步頻道名稱（同源 BroadcastChannel）。 */
 export const PREVIEW_CHANNEL = "zonwiki:note-preview";
@@ -33,6 +80,9 @@ const DOUBLE_RIGHT_CLICK_MS = 500;
 /** PiP 置頂預覽視窗的預設尺寸（px；與既有 window.open 彈出預覽相同）。 */
 const PIP_WIDTH = 780;
 const PIP_HEIGHT = 920;
+
+/** 摺疊 gutter 量測的 debounce（毫秒）：停止輸入這麼久後才重量測（大筆記每鍵重量測會拖慢輸入）。 */
+const GUTTER_MEASURE_DEBOUNCE_MS = 120;
 
 /** 右鍵定位時，往上找到的「區塊級」元素標籤（與 /notes/preview-popout 頁的清單一致）。 */
 const PIP_BLOCK_TAGS = new Set(["P", "LI", "H1", "H2", "H3", "H4", "H5", "H6", "SUMMARY", "TD", "TH", "PRE", "BLOCKQUOTE"]);
@@ -73,6 +123,7 @@ export function MarkdownEditor({
   textareaClassName,
   ariaLabel = "Markdown 編輯器",
   taRef,
+  foldApiRef,
   onUploadingChange,
 }: {
   value: string;
@@ -105,6 +156,11 @@ export function MarkdownEditor({
   /** 上層若需讀取目前選取範圍（如「局部排版」），可傳入 ref 取得 textarea 元素。 */
   taRef?: React.RefObject<HTMLTextAreaElement | null>;
   /**
+   * 編輯模式摺疊 API（選配）：外部元件要用 textarea 選取座標切內容時，
+   * 必須經由此 API 把顯示座標映射回完整文字座標（摺疊時兩者不相等）。
+   */
+  foldApiRef?: React.RefObject<EditorFoldApi | null>;
+  /**
    * 圖片上傳進行中數量變動時回呼（0 = 全部完成）。
    * 上層應在數量 > 0 時 disable「保存」與 AI 重排等會覆寫內容的動作，
    * 避免把「〔圖片上傳中 #xxx〕」佔位文字永久存進資料庫。
@@ -133,6 +189,85 @@ export function MarkdownEditor({
   const valueRef = useRef(value);
   useEffect(() => { valueRef.current = value; }, [value]);
 
+  // ─── 編輯模式摺疊（editor folding）───────────────────────────────────
+  // textarea 顯示「display 文字」（摺疊區塊只剩標頭＋徽章）；對外 onChange 永遠送
+  // expandDisplay 後的完整文字。摺疊/展開本身不改內容、不觸發 onChange。
+  const [fold, setFold] = useState<FoldSnapshot>({ display: value, state: emptyFoldState });
+  // 最後一次「本編輯器發出（或同步過）」的完整文字：value prop 與它不同＝外部變更
+  //（AI 重排、預覽勾核取方塊等）→ 重設摺疊（全展開），避免徽章對不上內容。
+  // 用 state（非 ref）做 render 期間比較——React 官方「調整衍生 state」模式，立即以新值重繪不閃舊畫面。
+  const [lastSyncedFull, setLastSyncedFull] = useState(value);
+  if (value !== lastSyncedFull) {
+    setLastSyncedFull(value);
+    setFold({ display: value, state: emptyFoldState });
+  }
+  // 非同步回呼（貼圖上傳完成等）需要最新摺疊快照（effect 於 commit 後同步；事件都在 commit 後發生）。
+  const foldRef = useRef(fold);
+  useEffect(() => {
+    foldRef.current = fold;
+  }, [fold]);
+  const display = fold.display;
+  // 最近一次已知良好的選取範圍（驗證拒絕還原時把游標放回原位）。
+  const lastGoodSelRef = useRef<[number, number]>([0, 0]);
+
+  /**
+   * 套用一次「內容編輯」（使用者打字、工具列、貼圖佔位…都走這裡）：
+   * 驗證徽章完整性 → 展開成完整文字 → onChange 對外。驗證失敗＝拒絕（還原顯示、toast）。
+   */
+  const applyEdit = (newDisplay: string) => {
+    const f = foldRef.current;
+    const v = validateEdit(newDisplay, f.state);
+    if (!v.ok) {
+      showToast(
+        v.reason === "duplicated"
+          ? "摺疊徽章被複製成多份，這次編輯已還原（請先展開再複製該區塊）"
+          : "摺疊徽章被改壞，這次編輯已還原（點徽章可展開區塊）",
+        { type: "error" },
+      );
+      // 受控 textarea：state 沒變 React 不會重繪 → 觸發一次重繪把 DOM 值拉回，游標回原位。
+      setFold((prev) => ({ ...prev }));
+      const [s, e] = lastGoodSelRef.current;
+      restore(s, e);
+      return;
+    }
+    if (v.deletedIds.length > 0) {
+      showToast("已刪除摺疊區塊（含其隱藏內容）；Ctrl+Z 可復原", { type: "info" });
+    }
+    const full = expandDisplay(newDisplay, v.state);
+    setLastSyncedFull(full);
+    setFold({ display: newDisplay, state: v.state });
+    onChange(full);
+  };
+
+  // 目前 display 中的 toggle 區塊（含已摺疊者）；驅動 gutter 與工具列摺疊鈕。
+  const toggleBlocks = useMemo(() => listToggleBlocks(fold.display, fold.state), [fold]);
+  const hasToggleBlocks = toggleBlocks.length > 0;
+
+  // 摺疊 gutter：各 toggle 標頭行的 Y 位置（鏡像量測），與 textarea 捲動同步。
+  const [gutterMarks, setGutterMarks] = useState<GutterMark[]>([]);
+  const [measureTick, setMeasureTick] = useState(0);
+  const gutterInnerRef = useRef<HTMLDivElement>(null);
+
+  /** 摺疊/展開等「純視圖」變更（內容不變、不觸發 onChange）。 */
+  const applyFoldView = (next: FoldSnapshot) => setFold(next);
+
+  /** 展開全部（工具列鈕與 fold API 共用）。 */
+  const unfoldAllView = () => setFold((f) => unfoldAll(f.display, f.state));
+
+  // 對外曝露摺疊 API（每次 render 更新，unmount 清空）。
+  useEffect(() => {
+    if (!foldApiRef) return;
+    foldApiRef.current = {
+      mapSelectionToFull: (s, e) =>
+        mapDisplayRangeToFull(foldRef.current.display, foldRef.current.state, s, e),
+      hasFolds: () => foldRef.current.state.records.length > 0,
+      unfoldAll: unfoldAllView,
+    };
+    return () => {
+      foldApiRef.current = null;
+    };
+  });
+
   // 把內部 textarea 元素同步到（可選的）外部 taRef，供上層讀取選取範圍（局部排版）。
   useEffect(() => {
     if (taRef) taRef.current = ref.current;
@@ -154,7 +289,16 @@ export function MarkdownEditor({
     const target = text.trim();
     if (!ta || !target) return;
     const idx = ta.value.indexOf(target);
-    if (idx < 0) return;
+    if (idx < 0) {
+      // 目標可能藏在「已摺疊」區塊內：確認完整文字找得到才展開全部、下一幀重試一次
+      //（展開後 records 清空，重試不會再走進這個分支——天然防遞迴）。
+      const f = foldRef.current;
+      if (f.state.records.length > 0 && expandDisplay(f.display, f.state).includes(target)) {
+        unfoldAllView();
+        requestAnimationFrame(() => scrollEditorToText(text));
+      }
+      return;
+    }
     const cs = window.getComputedStyle(ta);
     const padL = parseFloat(cs.paddingLeft) || 0;
     const padR = parseFloat(cs.paddingRight) || 0;
@@ -379,14 +523,16 @@ export function MarkdownEditor({
     });
   };
 
-  /** 以 before/after 包住選取（無選取時插入 placeholder 並選起來，方便直接覆寫）。 */
+  /** 以 before/after 包住選取（無選取時插入 placeholder 並選起來，方便直接覆寫）。
+   *  註：所有工具列操作都在「display 文字」上運算（textarea 選取座標＝display 座標），
+   *  再經 applyEdit 展開成完整文字對外——摺疊啟用時直接用 value 會座標錯位。 */
   const wrap = (before: string, after: string, placeholder: string) => {
     const ta = ref.current;
     if (!ta) return;
     const s = ta.selectionStart;
     const e = ta.selectionEnd;
-    const sel = value.slice(s, e) || placeholder;
-    onChange(value.slice(0, s) + before + sel + after + value.slice(e));
+    const sel = display.slice(s, e) || placeholder;
+    applyEdit(display.slice(0, s) + before + sel + after + display.slice(e));
     restore(s + before.length, s + before.length + sel.length);
   };
 
@@ -396,13 +542,13 @@ export function MarkdownEditor({
     if (!ta) return;
     const s = ta.selectionStart;
     const e = ta.selectionEnd;
-    const lineStart = value.lastIndexOf("\n", s - 1) + 1;
-    const segment = value.slice(lineStart, e);
+    const lineStart = display.lastIndexOf("\n", s - 1) + 1;
+    const segment = display.slice(lineStart, e);
     const prefixed = segment
       .split("\n")
       .map((line) => prefix + line)
       .join("\n");
-    onChange(value.slice(0, lineStart) + prefixed + value.slice(e));
+    applyEdit(display.slice(0, lineStart) + prefixed + display.slice(e));
     restore(lineStart, e + (prefixed.length - segment.length));
   };
 
@@ -412,13 +558,13 @@ export function MarkdownEditor({
     if (!ta) return;
     const s = ta.selectionStart;
     const e = ta.selectionEnd;
-    const sel = value.slice(s, e) || "程式碼";
-    const before = value.slice(0, s);
-    const after = value.slice(e);
+    const sel = display.slice(s, e) || "程式碼";
+    const before = display.slice(0, s);
+    const after = display.slice(e);
     const nlBefore = before.length > 0 && !before.endsWith("\n");
     const nlAfter = after.length > 0 && !after.startsWith("\n");
     const fence = `${nlBefore ? "\n" : ""}\`\`\`\n${sel}\n\`\`\`${nlAfter ? "\n" : ""}`;
-    onChange(before + fence + after);
+    applyEdit(before + fence + after);
     const start = s + (nlBefore ? 1 : 0) + 4; // 跳過（換行+）```\n
     restore(start, start + sel.length);
   };
@@ -442,32 +588,54 @@ export function MarkdownEditor({
    * 極端情況被存入也只是無害文字）→ 背景上傳 → 成功後在「最新內容」中把佔位換成
    * `![圖片](/api/attachments/{id})`；失敗則移除佔位並以 Toast 告知。
    */
+  /**
+   * 把佔位標記換成上傳結果（或移除）。佔位可能在 display、也可能已被摺進某個
+   * hiddenText（使用者上傳期間摺疊了該區塊）——兩處都找；都沒有＝已被移除。
+   * 一律以 split/join 代換（非 String.replace 樣板，$ 序列安全）。
+   * @returns 是否有找到並替換。
+   */
+  const replaceUploadingMark = (uploadingMark: string, replacement: string): boolean => {
+    const f = foldRef.current;
+    if (f.display.includes(uploadingMark)) {
+      applyEdit(f.display.split(uploadingMark).join(replacement));
+      return true;
+    }
+    const recIdx = f.state.records.findIndex((r) => r.hiddenText.includes(uploadingMark));
+    if (recIdx >= 0) {
+      const rec = f.state.records[recIdx];
+      const records = f.state.records.map((r, i) =>
+        i === recIdx ? { ...r, hiddenText: rec.hiddenText.split(uploadingMark).join(replacement) } : r,
+      );
+      const nextState: FoldState = { records, graveyard: f.state.graveyard };
+      const full = expandDisplay(f.display, nextState);
+      setLastSyncedFull(full);
+      setFold({ display: f.display, state: nextState });
+      onChange(full);
+      return true;
+    }
+    return false;
+  };
+
   const insertImageFile = (file: File, pos: number) => {
     if (!file.type.startsWith("image/")) return;
     const token = Math.random().toString(36).slice(2, 8);
     const uploadingMark = `〔圖片上傳中 #${token}〕`;
-    const current = valueRef.current;
-    onChange(current.slice(0, pos) + uploadingMark + current.slice(pos));
+    // pos 是 textarea（display）座標：在 display 上插佔位，applyEdit 展開後對外。
+    const currentDisplay = foldRef.current.display;
+    applyEdit(currentDisplay.slice(0, pos) + uploadingMark + currentDisplay.slice(pos));
     restore(pos + uploadingMark.length, pos + uploadingMark.length);
 
     bumpUploading(1);
     uploadAttachment(file)
       .then((uploaded) => {
-        const md = `![圖片](${uploaded.url})`;
-        const latest = valueRef.current;
-        if (latest.includes(uploadingMark)) {
-          onChange(latest.replace(uploadingMark, md));
-        } else {
+        if (!replaceUploadingMark(uploadingMark, `![圖片](${uploaded.url})`)) {
           // 佔位標記已被使用者（或 AI 重排）移除 → 視同取消，不強行插入；
           // 已上傳的孤兒附件會由後端定期掃描回收。
           showToast("圖片已上傳，但插入點已被移除；需要時請重新貼上", { type: "info" });
         }
       })
       .catch((error: unknown) => {
-        const latest = valueRef.current;
-        if (latest.includes(uploadingMark)) {
-          onChange(latest.replace(uploadingMark, ""));
-        }
+        replaceUploadingMark(uploadingMark, "");
         const message = error instanceof Error ? error.message : "圖片上傳失敗";
         showToast(message, { type: "error" });
       })
@@ -485,7 +653,7 @@ export function MarkdownEditor({
     if (!file) return;
     e.preventDefault();
     const ta = ref.current;
-    insertImageFile(file, ta ? ta.selectionStart : value.length);
+    insertImageFile(file, ta ? ta.selectionStart : display.length);
   };
 
   /** 在游標處插入一段獨立區塊（前後自動補換行；如表格、分隔線）。 */
@@ -494,12 +662,12 @@ export function MarkdownEditor({
     if (!ta) return;
     const s = ta.selectionStart;
     const e = ta.selectionEnd;
-    const before = value.slice(0, s);
-    const after = value.slice(e);
+    const before = display.slice(0, s);
+    const after = display.slice(e);
     const nlBefore = before.length > 0 && !before.endsWith("\n") ? "\n" : "";
     const nlAfter = after.length > 0 && !after.startsWith("\n") ? "\n" : "";
     const text = nlBefore + block + nlAfter;
-    onChange(before + text + after);
+    applyEdit(before + text + after);
     const pos = s + text.length;
     restore(pos, pos);
   };
@@ -510,15 +678,15 @@ export function MarkdownEditor({
     if (!ta) return;
     const s = ta.selectionStart;
     const e = ta.selectionEnd;
-    const sel = value.slice(s, e);
+    const sel = display.slice(s, e);
     if (!sel.trim()) { insertBlock(PROTECT_SNIPPET); return; }
-    const before = value.slice(0, s);
-    const after = value.slice(e);
+    const before = display.slice(0, s);
+    const after = display.slice(e);
     const nlBefore = before.length > 0 && !before.endsWith("\n") ? "\n" : "";
     const nlAfter = after.length > 0 && !after.startsWith("\n") ? "\n" : "";
     const openTag = ":::protect\n";
     const block = `${nlBefore}${openTag}${sel}\n:::${nlAfter}`;
-    onChange(before + block + after);
+    applyEdit(before + block + after);
     const start = s + nlBefore.length + openTag.length;
     restore(start, start + sel.length);
   };
@@ -526,27 +694,76 @@ export function MarkdownEditor({
   /** 縮排單位（兩個空白，符合 Markdown 巢狀清單慣例）。 */
   const INDENT_UNIT = "  ";
 
+  /**
+   * 摺疊手勢（keydown 層）：在「會改動徽章」的輸入落地前先自動展開，
+   * 讓使用者永遠不會被驗證拒絕纏住——
+   * ① 選取範圍嚴格跨到徽章＋任何編輯鍵 → 展開所有相交的摺疊（本次輸入不執行）；
+   * ② 游標嚴格在徽章內打字/Enter/Backspace/Delete → 展開該塊；
+   * ③ 游標貼齊徽章後緣按 Backspace／前緣按 Delete → 展開該塊（不逐字啃徽章）。
+   * @returns 是否已處理（true＝吃掉本次按鍵）。
+   */
+  const handleFoldGestureKeys = (e: React.KeyboardEvent<HTMLTextAreaElement>, ta: HTMLTextAreaElement): boolean => {
+    const f = foldRef.current;
+    if (f.state.records.length === 0) return false;
+    const isPrintable = e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey;
+    const isEditKey = isPrintable || e.key === "Enter" || e.key === "Backspace" || e.key === "Delete";
+    if (!isEditKey) return false;
+    const s = ta.selectionStart;
+    const en = ta.selectionEnd;
+
+    if (s !== en) {
+      // 選取嚴格跨入任一徽章 → 展開相交的摺疊
+      const overlapping = f.state.records.filter((r) => {
+        const idx = f.display.indexOf(r.badge);
+        return idx !== -1 && s < idx + r.badge.length && en > idx;
+      });
+      if (overlapping.length > 0) {
+        e.preventDefault();
+        let cur: FoldSnapshot = { display: f.display, state: f.state };
+        for (const r of overlapping) cur = unfoldBlock(cur.display, cur.state, r.id);
+        applyFoldView(cur);
+        return true;
+      }
+      return false;
+    }
+
+    const hit = findBadgeAt(f.display, f.state, s);
+    if (!hit) return false;
+    const shouldUnfold =
+      hit.touching === "inside" ||
+      (hit.touching === "atEnd" && e.key === "Backspace") ||
+      (hit.touching === "atStart" && e.key === "Delete");
+    if (!shouldUnfold) return false;
+    e.preventDefault();
+    applyFoldView(unfoldBlock(f.display, f.state, hit.foldId));
+    restore(hit.badgeStart, hit.badgeStart);
+    return true;
+  };
+
   /** Tab 縮排 / Shift+Tab 退縮排（取代預設「跳離輸入框」）。單行則於游標處插入/移除；多行則整段行首增減。 */
   const onEditorKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key !== "Tab") return;
     const ta = ref.current;
     if (!ta) return;
+    // 記住編輯前的選取（驗證拒絕還原時把游標放回原位）。
+    lastGoodSelRef.current = [ta.selectionStart, ta.selectionEnd];
+    if (handleFoldGestureKeys(e, ta)) return;
+    if (e.key !== "Tab") return;
     e.preventDefault();
     const s = ta.selectionStart;
     const en = ta.selectionEnd;
 
     // 無選取 + Tab：直接在游標處插入縮排。
     if (s === en && !e.shiftKey) {
-      onChange(value.slice(0, s) + INDENT_UNIT + value.slice(en));
+      applyEdit(display.slice(0, s) + INDENT_UNIT + display.slice(en));
       restore(s + INDENT_UNIT.length, s + INDENT_UNIT.length);
       return;
     }
 
     // 有選取 或 Shift+Tab：對「選取涵蓋的每一行」行首增減縮排。
-    const lineStart = value.lastIndexOf("\n", s - 1) + 1;
-    let lineEnd = value.indexOf("\n", en > s ? en - 1 : en);
-    if (lineEnd === -1) lineEnd = value.length;
-    const lines = value.slice(lineStart, lineEnd).split("\n");
+    const lineStart = display.lastIndexOf("\n", s - 1) + 1;
+    let lineEnd = display.indexOf("\n", en > s ? en - 1 : en);
+    if (lineEnd === -1) lineEnd = display.length;
+    const lines = display.slice(lineStart, lineEnd).split("\n");
 
     if (e.shiftKey) {
       // 退縮排：每行移除開頭最多 2 個空白（或 1 個 tab）。
@@ -559,15 +776,154 @@ export function MarkdownEditor({
         removedTotal += rm;
         return line.slice(rm);
       });
-      onChange(value.slice(0, lineStart) + out.join("\n") + value.slice(lineEnd));
+      applyEdit(display.slice(0, lineStart) + out.join("\n") + display.slice(lineEnd));
       restore(Math.max(lineStart, s - removedFirst), Math.max(lineStart, en - removedTotal));
     } else {
       // 縮排：每行行首加縮排。
       const out = lines.map((line) => INDENT_UNIT + line);
-      onChange(value.slice(0, lineStart) + out.join("\n") + value.slice(lineEnd));
+      applyEdit(display.slice(0, lineStart) + out.join("\n") + display.slice(lineEnd));
       restore(s + INDENT_UNIT.length, en + INDENT_UNIT.length * lines.length);
     }
   };
+
+  /** 點擊落在徽章內＝展開該摺疊區塊（點一下徽章即展開）。 */
+  const onEditorClick = () => {
+    const ta = ref.current;
+    if (!ta) return;
+    lastGoodSelRef.current = [ta.selectionStart, ta.selectionEnd];
+    if (ta.selectionStart !== ta.selectionEnd) return;
+    const f = foldRef.current;
+    const hit = findBadgeAt(f.display, f.state, ta.selectionStart);
+    if (hit && hit.touching === "inside") {
+      applyFoldView(unfoldBlock(f.display, f.state, hit.foldId));
+      restore(hit.badgeStart, hit.badgeStart);
+    }
+  };
+
+  /** 追蹤最近一次已知良好的選取範圍（供驗證拒絕時還原游標）。 */
+  const onEditorSelect = () => {
+    const ta = ref.current;
+    if (!ta) return;
+    lastGoodSelRef.current = [ta.selectionStart, ta.selectionEnd];
+  };
+
+  /**
+   * IME 組字開始：游標／選取落在徽章上時先自動展開（與 keydown 手勢同款防護）。
+   * CJK 組字期間 keydown.key 是 "Process"（接不到可列印字元判斷），若放行到 onChange
+   * 會走進驗證拒絕→受控 textarea 被程式化改值→打斷組字（對抗式復審 MEDIUM）；從源頭避免。
+   */
+  const onEditorCompositionStart = () => {
+    const ta = ref.current;
+    if (!ta) return;
+    const f = foldRef.current;
+    if (f.state.records.length === 0) return;
+    const s = ta.selectionStart;
+    const en = ta.selectionEnd;
+    if (s !== en) {
+      const overlapping = f.state.records.filter((r) => {
+        const idx = f.display.indexOf(r.badge);
+        return idx !== -1 && s < idx + r.badge.length && en > idx;
+      });
+      if (overlapping.length > 0) {
+        let cur: FoldSnapshot = { display: f.display, state: f.state };
+        for (const r of overlapping) cur = unfoldBlock(cur.display, cur.state, r.id);
+        applyFoldView(cur);
+      }
+      return;
+    }
+    const hit = findBadgeAt(f.display, f.state, s);
+    if (hit && hit.touching === "inside") {
+      applyFoldView(unfoldBlock(f.display, f.state, hit.foldId));
+      restore(hit.badgeStart, hit.badgeStart);
+    }
+  };
+
+  /** textarea 捲動時同步 gutter（直接動 DOM，不經 state，避免捲動掉幀）。 */
+  const onEditorScroll = () => {
+    const ta = ref.current;
+    if (ta && gutterInnerRef.current) {
+      gutterInnerRef.current.style.transform = `translateY(${-ta.scrollTop}px)`;
+    }
+  };
+
+  // 摺疊 gutter 量測：以鏡像 div（同字體/寬度/換行）搭配 Range 量各 toggle 標頭行的 Y。
+  // jsdom 沒有真排版（回 0）也不會壞——按鈕仍渲染，只是疊在一起，不影響邏輯測試。
+  // 節流：fold 每個按鍵都變動，鏡像量測（整篇 textContent＋每區塊一次 layout）不可
+  // 每鍵同步重跑（大筆記會拖慢輸入，對抗式復審 MEDIUM）——debounce 至停止輸入後才量。
+  useEffect(() => {
+    const ta = ref.current;
+    if (!ta || !hasToggleBlocks) {
+      setGutterMarks((m) => (m.length ? [] : m));
+      return;
+    }
+    const timer = window.setTimeout(() => measureGutter(ta), GUTTER_MEASURE_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+    // 依賴 view/poppedOut（而非其後才宣告的 showEditor）：檢視切換會改變編輯區的顯示與寬度。
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- measureGutter 每次 render 重建，列入依賴會使 debounce 失效
+  }, [fold, toggleBlocks, hasToggleBlocks, measureTick, view, poppedOut]);
+
+  /** 實際執行 gutter 量測（由上方 debounce effect 呼叫）。 */
+  const measureGutter = (ta: HTMLTextAreaElement) => {
+    const cs = window.getComputedStyle(ta);
+    const padL = parseFloat(cs.paddingLeft) || 0;
+    const padR = parseFloat(cs.paddingRight) || 0;
+    const padT = parseFloat(cs.paddingTop) || 0;
+    const mirror = document.createElement("div");
+    mirror.style.position = "absolute";
+    mirror.style.visibility = "hidden";
+    mirror.style.whiteSpace = "pre-wrap";
+    mirror.style.wordBreak = "break-word";
+    mirror.style.boxSizing = "content-box";
+    mirror.style.width = `${Math.max(0, ta.clientWidth - padL - padR)}px`;
+    mirror.style.fontFamily = cs.fontFamily;
+    mirror.style.fontSize = cs.fontSize;
+    mirror.style.fontWeight = cs.fontWeight;
+    mirror.style.lineHeight = cs.lineHeight;
+    mirror.style.letterSpacing = cs.letterSpacing;
+    mirror.textContent = fold.display.length > 0 ? fold.display : " ";
+    document.body.appendChild(mirror);
+    const marks: GutterMark[] = [];
+    const textNode = mirror.firstChild;
+    if (textNode && textNode.nodeType === Node.TEXT_NODE) {
+      const mirrorTop = mirror.getBoundingClientRect().top;
+      const range = document.createRange();
+      const maxOffset = (textNode as Text).length;
+      for (const b of toggleBlocks) {
+        // 量測失敗（jsdom 未實作 Range.getBoundingClientRect 等）→ 退回 y=0：
+        // 按鈕仍渲染、功能不缺，只是位置不準（真瀏覽器不會走到 fallback）。
+        let y = padT;
+        try {
+          range.setStart(textNode, Math.min(b.headerStart, maxOffset));
+          range.setEnd(textNode, Math.min(b.headerStart + 1, maxOffset));
+          const rect = range.getBoundingClientRect();
+          y = rect.top - mirrorTop + padT;
+        } catch {
+          // 保留 fallback y
+        }
+        marks.push({
+          headerStart: b.headerStart,
+          y,
+          folded: b.folded,
+          foldId: b.foldId,
+        });
+      }
+    }
+    document.body.removeChild(mirror);
+    setGutterMarks(marks);
+    // 捲動位置同步（初次量測與內容變動後）。
+    if (gutterInnerRef.current) {
+      gutterInnerRef.current.style.transform = `translateY(${-ta.scrollTop}px)`;
+    }
+  };
+
+  // 編輯區尺寸變化（拉高、視窗縮放改變換行）→ 重量測 gutter 位置。
+  useEffect(() => {
+    const ta = ref.current;
+    if (!ta || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => setMeasureTick((t) => t + 1));
+    observer.observe(ta);
+    return () => observer.disconnect();
+  }, [view, poppedOut]);
 
   // 工具列：常用的 Markdown 格式都備齊（標題 1~3、粗/斜/刪除線、清單/編號/待辦、引用、
   // 行內/區塊程式碼、表格、摺疊、保護、圖片、分隔線、連結）。
@@ -617,6 +973,32 @@ export function MarkdownEditor({
             {t.label}
           </button>
         ))}
+        {hasToggleBlocks && (
+          <>
+            <button
+              type="button"
+              className="mde-btn"
+              title="全部摺疊（把編輯區所有 toggle 區塊收起，僅影響編輯畫面、不改內容）"
+              aria-label="全部摺疊"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => applyFoldView(foldAll(fold.display, fold.state))}
+              tabIndex={-1}
+            >
+              ▸▸
+            </button>
+            <button
+              type="button"
+              className="mde-btn"
+              title="全部展開（還原編輯區所有已摺疊的 toggle 區塊）"
+              aria-label="全部展開"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={unfoldAllView}
+              tabIndex={-1}
+            >
+              ▾▾
+            </button>
+          </>
+        )}
         {withPreview && (
           <div className="mde-views">
             {(["edit", "split", "preview"] as ViewMode[]).map((m) => (
@@ -674,18 +1056,54 @@ export function MarkdownEditor({
 
       <div className={`mde-body ${showEditor && showPreview ? "mde-body--split" : ""}`}>
         {showEditor && (
-          <textarea
-            ref={ref}
-            className={`mde-textarea ${textareaClassName || ""}`}
-            style={{ minHeight }}
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            onBlur={onBlur}
-            onPaste={onPasteImage}
-            onKeyDown={onEditorKeyDown}
-            placeholder={placeholder}
-            aria-label={ariaLabel}
-          />
+          <div className="mde-editor-wrap">
+            {hasToggleBlocks && (
+              <div className="mde-fold-gutter">
+                <div className="mde-fold-gutter-inner" ref={gutterInnerRef}>
+                  {gutterMarks.map((m) => (
+                    <button
+                      // 已摺疊者用穩定的 foldId 當 key（headerStart 會隨前方編輯位移，避免整批 remount）
+                      key={m.foldId ?? `h${m.headerStart}`}
+                      type="button"
+                      className="mde-fold-btn"
+                      style={{ top: m.y }}
+                      title={m.folded ? "展開此摺疊區塊" : "摺疊此 toggle 區塊（僅編輯畫面，不改內容）"}
+                      aria-label={m.folded ? "展開摺疊區塊" : "摺疊區塊"}
+                      // 防止奪走焦點（同工具列按鈕）。
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => {
+                        if (m.folded && m.foldId) {
+                          applyFoldView(unfoldBlock(fold.display, fold.state, m.foldId));
+                        } else {
+                          const next = foldBlockAt(fold.display, fold.state, m.headerStart);
+                          if (next) applyFoldView(next);
+                        }
+                      }}
+                      tabIndex={-1}
+                    >
+                      {m.folded ? "▸" : "▾"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            <textarea
+              ref={ref}
+              className={`mde-textarea ${hasToggleBlocks ? "mde-textarea--fold-gutter" : ""} ${textareaClassName || ""}`}
+              style={{ minHeight }}
+              value={display}
+              onChange={(e) => applyEdit(e.target.value)}
+              onBlur={onBlur}
+              onPaste={onPasteImage}
+              onKeyDown={onEditorKeyDown}
+              onClick={onEditorClick}
+              onSelect={onEditorSelect}
+              onScroll={onEditorScroll}
+              onCompositionStart={onEditorCompositionStart}
+              placeholder={placeholder}
+              aria-label={ariaLabel}
+            />
+          </div>
         )}
         {showPreview && (
           <div

@@ -257,6 +257,12 @@ export function setupInteractiveTable(
     panel.style.left = `${Math.round(rect.left)}px`;
     panel.style.top = `${Math.round(rect.bottom + 4)}px`;
     document.body.appendChild(panel);
+    // 右邊界夾取：靠右欄（尤其手機 393px）開面板會被切出畫面外——掛上後量實寬再往左收。
+    const panelWidth = panel.getBoundingClientRect().width;
+    const maxLeft = window.innerWidth - panelWidth - 8;
+    if (rect.left > maxLeft) {
+      panel.style.left = `${Math.max(8, Math.round(maxLeft))}px`;
+    }
     const onDocumentPointerDown = (event: PointerEvent): void => {
       if (event.target instanceof Node && panel.contains(event.target)) return;
       closeActiveTablePopover();
@@ -508,21 +514,28 @@ export function setupInteractiveTable(
     editor.setSelectionRange(editor.value.length, editor.value.length);
   };
 
-  const tracker = createDoubleRightClickTracker((event: Event) => {
-    const target = event.target;
-    if (!(target instanceof Element)) return;
-    const cell = target.closest('td');
-    if (cell instanceof HTMLTableCellElement && table.contains(cell)) openCellEditor(cell);
-  });
-  wrap.addEventListener('contextmenu', (event) => {
-    // 直編中的 textarea 保留原生右鍵（貼上/拼字修正）。
-    if (event.target instanceof Element && event.target.closest('textarea')) return;
-    // 順序關鍵：先餵 tracker 再 preventDefault——tracker 依規格會忽略「已被別人 preventDefault」
-    // 的事件（NoteOverlay 繪圖取消那一下），若自己先 preventDefault 等於把每一擊都標成該忽略、
-    // 雙右鍵永遠不會觸發。
-    tracker.handleContextMenu(event);
-    event.preventDefault(); // 表格內一律抑制原生選單（單次右鍵也抑制，與全站既有慣例一致）
-  });
+  // 純觸控裝置（手機/平板）不綁「雙右鍵直編」：觸控根本打不出右鍵，綁了只會因
+  // preventDefault 把 iOS 長按（選字/複製）整個吃掉，讓表格文字在手機上選不起來。
+  const isCoarseTouch =
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(hover: none) and (pointer: coarse)').matches;
+  if (!isCoarseTouch) {
+    const tracker = createDoubleRightClickTracker((event: Event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const cell = target.closest('td');
+      if (cell instanceof HTMLTableCellElement && table.contains(cell)) openCellEditor(cell);
+    });
+    wrap.addEventListener('contextmenu', (event) => {
+      // 直編中的 textarea 保留原生右鍵（貼上/拼字修正）。
+      if (event.target instanceof Element && event.target.closest('textarea')) return;
+      // 順序關鍵：先餵 tracker 再 preventDefault——tracker 依規格會忽略「已被別人 preventDefault」
+      // 的事件（NoteOverlay 繪圖取消那一下），若自己先 preventDefault 等於把每一擊都標成該忽略、
+      // 雙右鍵永遠不會觸發。
+      tracker.handleContextMenu(event);
+      event.preventDefault(); // 表格內一律抑制原生選單（單次右鍵也抑制，與全站既有慣例一致）
+    });
+  }
 
   // ── 檢視狀態還原：只在首次增強時執行一次（ENHANCED_ATTR 防線內），不觸發持久化 ─────────
   if (noteId) {

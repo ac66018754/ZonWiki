@@ -5,6 +5,37 @@
 
 ---
 
+## 2026-08-11 ｜編輯模式 toggle 摺疊：徽章視圖層（不換 CodeMirror）＋墓碑復活；手機閱讀：表格自然欄寬容器橫捲＋overflow-x 兜底（feat/edit-toggle-fold-and-mobile-reading）
+
+### A. 編輯模式 toggle 摺疊（`:::toggle` 不用切預覽就能收合）
+
+- **背景**：使用者撰寫長筆記時大量使用 `:::toggle`，但摺疊只在渲染後（預覽/閱讀）生效，編輯 textarea 裡整片攤開、捲動負擔大。要求「編輯模式下 toggle 也能折疊」。
+- **考慮過的選項**：
+  1. **換 CodeMirror 6**（原生 code folding）——正解但代價大：MarkdownEditor 的 textarea 被十多個呼叫端依賴（taRef 選取座標、貼圖、Tab、鏡像量測、彈出預覽定位…），全面遷移回歸面過大，且行動端/IME 行為要重新驗證。
+  2. **分段塊狀編輯器**（toggle 段各自獨立 textarea）——破壞跨段選取/搜尋/AI 整篇重排，不採。
+  3. **【採用】徽章視圖層**：textarea 顯示「display 文字」＝完整文字，但已摺疊區塊的「內文＋結尾 `:::`」被單行徽章（`` ⋯〔已摺疊 N 行 #gk7q〕``）取代；隱藏原文存 React state（`FoldRecord.hiddenText`）。
+- **資料安全不變式（本功能的憲法）**：
+  - `onChange`／存檔對外**永遠**送 `expandDisplay()` 後的完整文字——摺疊純屬視圖，徽章永不入 DB、隱藏內文永不缺席（round-trip 由 37 條單元測試鎖住，含 `$&` 替換陷阱、CRLF、巢狀、未閉合區塊）。
+  - 每次編輯過驗證：徽章 1 份＝正常；**0 份＝整塊刪除**（紀錄進 graveyard，undo 徽章重現時自動「復活」——堵死「刪除→Ctrl+Z→孤兒徽章存進 DB」路徑，這是測試計畫對抗式審查抓到的 CRITICAL）；壞掉（id 殘片仍在）或 ≥2 份＝**拒絕該次編輯**（還原＋toast）。
+  - 徽章 id 字母集**排除十六進位字元**（避免與內容中 `#a3f2` 色碼撞名誤判 damaged）。
+  - 「會動到徽章」的輸入手勢一律**先自動展開**（點徽章、徽章內打字、緊鄰 Backspace/Delete、選取跨徽章）——使用者永遠不會被拒絕迴圈纏住。
+- **座標系鐵律**：textarea 選取座標＝display 座標。編輯器內部全部操作 display；**外部**要用選取座標切完整內容者（NoteAiActions 局部排版）必須經 `foldApiRef.mapSelectionToFull()` 映射，映射不到（跨徽章）就擋下——否則會重排錯段＝靜默毀損。
+- **外部變更語意**：value prop ≠ 最後一次自家發出的完整文字 → 視為外部變更（AI 重排、預覽勾 checkbox 等）→ 重設摺疊（全展開）。取捨：AI 重排後要重新摺，換取「徽章絕不對到錯誤內容」。
+- **已知限制**：textarea 原生 undo 在程式化改值（摺疊/展開）後會重置（既有工具列行為相同）；IME 正常組字不受影響（拒絕路徑只在破壞徽章時觸發）。
+
+### B. 手機閱讀優化（iPhone 393px；使用者「電腦編輯、手機閱讀」）
+
+- **背景（實測盤點）**：①閱讀頁可左右橫移——根因＝`.note-detail-page` 因 `overflow-y:auto` 使 overflow-x 計算成 auto，而置頂工具列 6 顆 `flexShrink:0` 按鈕最小寬 ~700px、長網址無斷行把它撐寬；②表格難讀——全域 `table{width:100%}` 在 393px 把六欄表擠成「一行一字」直式排版（截圖存證），且桌機拖的像素欄寬會以 `table-layout:fixed` 無條件還原；③浮動繪圖工具列蓋掉下方 1/3 螢幕。
+- **決定**：
+  - **溢出兜底**：`body` 與 `.note-detail-page` 皆 `overflow-x: clip`（clip 不產生捲動容器、iOS 對 body hidden 的歷史怪癖也繞開）；過寬內容一律由各自捲動容器（`.md-table-wrap`、`pre`）承接。**此後任何元素都不准把頁面撐寬**。
+  - **表格策略＝「容器內橫捲」而非「壓縮欄寬」**：≤768px 時 `.md-table-wrap table { width:max-content; min-width:100% }`＋儲存格 `min-width:4em`、表頭 nowrap；未包 wrapper 的表（JS 前瞬間/編輯預覽）以 `display:block; overflow-x:auto` fallback。**不採**卡片化堆疊（互動表格的 radio/checkbox/排序/篩選語意在卡片化下全要重做）。
+  - **欄寬記憶在窄視口（<768px）不還原**、**純觸控裝置不掛拖寬把手**（touch-action:none 的把手會把捲表格劫持成拉欄寬並永久寫入 localStorage）；記憶保留、回桌機照常還原。
+  - **觸控不綁「雙右鍵直編」**（觸控打不出右鍵，綁了只會因 preventDefault 吃掉 iOS 長按選字）。
+  - 置頂工具列 ≤768px 改「可換行＋不 sticky」（多行 sticky 會吃掉 1/3 可讀高度）；繪圖工具列手機**預設收合**；Header 搜尋框樣式自 inline 移到 CSS（inline 蓋掉 640px 斷點是既有失效原因）；長網址/行內 code `overflow-wrap:anywhere`；`100dvh` 取代 `100vh`（iOS 工具列高度）。
+- **驗證**：Playwright iPhone 視口實測——修復前後對照截圖存 tmp/playwright/edit-fold-mobile/；修復後全站四頁 doc.scrollWidth=393、表格橫排可讀。真機（iOS Safari）最終確認由使用者進行。
+
+---
+
 ## 2026-08-08 ｜讀模式互動表格（表頭宣告控件）＋儲存格/程式碼區塊直編；移除 GenericAttributes（修 stored XSS）＋渲染版本 lazy 自癒（feature/interactive-tables）
 
 - **背景**：使用者要（104 職缺追蹤筆記）表格支援 RadioBox/CheckBox 且**非編輯模式**滑鼠直接勾選、欄排序、欄篩選、雙右鍵直編儲存格、禁用預設右鍵、程式碼區塊雙右鍵直編＋右上 💾、全部進 NoteRevision 歷史；並明點「畫記/便利貼在篩選（要跟著看不到）與排序（要跟著移動）下不可出 bug」。
