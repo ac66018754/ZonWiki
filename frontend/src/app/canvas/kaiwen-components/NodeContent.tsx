@@ -11,6 +11,7 @@
 import { useLayoutEffect, type RefObject } from 'react'
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import remarkBreaks from 'remark-breaks'
 import { applyAnnotations, type AnnoHighlight, type AnnoLink } from '../lib/annotate'
 import { toAbsoluteAttachmentUrl } from '@/lib/attachmentUrl'
 
@@ -117,7 +118,8 @@ export function NodeContent({
         </div>
       ) : (
         // Markdown 渲染（加 key 避免 React 複用舊 DOM）
-        <ReactMarkdown key={content} remarkPlugins={[remarkGfm]} urlTransform={attachmentUrlTransform}>
+        // remarkBreaks：單一換行＝硬換行（與筆記本文一致，2026-08-13 全站裁示）
+        <ReactMarkdown key={content} remarkPlugins={[remarkGfm, remarkBreaks]} urlTransform={attachmentUrlTransform}>
           {content || '（雙擊以編輯）'}
         </ReactMarkdown>
       )}

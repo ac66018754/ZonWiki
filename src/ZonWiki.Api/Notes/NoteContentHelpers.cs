@@ -26,12 +26,14 @@ internal static class NoteContentHelpers
     /// - 2：表格權威行號（data-md-table / data-md-line）＋移除 GenericAttributes
     ///      （表頭 {…} 尾碼以字面文字存活；修掉 {onclick=…} stored XSS）＋移除 GridTable
     ///      （+---+ 語法退回字面文字，防多行列的直編座標錯位）。2026-08-08。
+    /// - 3：全域「單一換行＝硬換行」（UseSoftlineBreakAsHardlineBreak；Notion 式，使用者裁示
+    ///      2026-08-13：Enter 即換行，既有筆記 reflow 視為修正）。
     ///
     /// 用法：所有「重算 ContentHtml」的寫入路徑都同步寫入此值；GET 單篇筆記時
     /// RenderVersion &lt; 此值 → 純記憶體重渲染（不落 DB，見 NoteEndpoints.LoadNoteDetailByIdAsync）；
     /// DB 收斂由啟動一次性遷移負責（見 NoteRenderMigrationService）。
     /// </summary>
-    public const int CurrentRenderVersion = 2;
+    public const int CurrentRenderVersion = 3;
 
     /// <summary>
     /// Markdown 渲染管線（禁用 raw HTML 以防 XSS）。
@@ -76,7 +78,12 @@ internal static class NoteContentHelpers
             .UseAutoLinks()
             .UseZonWikiToggles()
             .DisableHtml()
-            .UseZonWikiLineBreaks();
+            .UseZonWikiLineBreaks()
+            // 全域「單一換行＝硬換行」（RenderVersion 3；與前端 remark-breaks 對齊）：
+            // 段落內按一次 Enter 即渲染成 <br />，不再需要行尾兩空白。
+            // 程式碼區塊／inline code 不走一般 inline 解析，天然不受影響；
+            // GFM 表格一列一行、格內無軟換行，亦不受影響。
+            .UseSoftlineBreakAsHardlineBreak();
 
         // OrderedList<T> 繼承 List<T>，可直接以述詞移除；用型別比對而非索引，
         // 不依賴 UseAdvancedExtensions 的內部掛載順序。

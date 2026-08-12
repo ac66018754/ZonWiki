@@ -426,4 +426,115 @@ public sealed class NoteContentHelpersTests
         System.Text.RegularExpressions.Regex.Matches(html, "data-fence-line=").Count.Should().Be(1);
         html.Should().Contain("data-fence-line=\"5\"");
     }
+
+    // ─── 全域「單一換行＝硬換行」（2026-08-13 使用者裁示：Enter 即換行，Notion 式）───
+    // 對應測試計畫 docs/design/測試計畫-Enter硬換行與表格br視圖層.md B1 組。
+
+    [Fact]
+    public void SoftLineBreak_RendersAsHardLineBreak_B1_1()
+    {
+        // Arrange：段落內單一換行（過去是 soft break 渲染成空白，使用者常忘記補兩空白）。
+        var markdown = "第一行\n第二行";
+
+        // Act
+        var html = ToHtml(markdown);
+
+        // Assert：單一 <p> 內含 <br />（不再需要行尾兩空白）。
+        System.Text.RegularExpressions.Regex.Matches(html, "<p>").Count.Should().Be(1);
+        html.Should().Contain("<br />");
+    }
+
+    [Fact]
+    public void BlankLine_StillSplitsParagraphs_B1_2()
+    {
+        // Arrange：空行仍是段落分隔（硬換行設定不可影響段落切分）。
+        var markdown = "段一\n\n段二";
+
+        // Act
+        var html = ToHtml(markdown);
+
+        // Assert
+        System.Text.RegularExpressions.Regex.Matches(html, "<p>").Count.Should().Be(2);
+        html.Should().NotContain("<br />");
+    }
+
+    [Fact]
+    public void FencedCode_MultiLine_NotAffectedByHardLineBreak_B1_3()
+    {
+        // Arrange：程式碼區塊內的換行不得被轉成 <br />。
+        var markdown = "```\nline1\nline2\n```";
+
+        // Act
+        var html = ToHtml(markdown);
+
+        // Assert
+        html.Should().NotContain("<br />");
+        html.Should().Contain("line1\nline2");
+    }
+
+    [Fact]
+    public void ToggleBody_SoftLineBreak_RendersHardLineBreak_B1_4()
+    {
+        // Arrange：:::toggle 內文的單一換行也要換行（與一般段落一致）。
+        var markdown = ":::toggle 標題\n內文一\n內文二\n:::";
+
+        // Act
+        var html = ToHtml(markdown);
+
+        // Assert
+        html.Should().Contain("<details");
+        html.Should().Contain("<br />");
+    }
+
+    [Fact]
+    public void Table_WithBrCell_StillRendersTable_B1_5()
+    {
+        // Arrange：回歸鎖——硬換行設定不可破壞 GFM 表格結構與格內 <br>。
+        var markdown =
+            "| 日期 | 待辦 |\n" +
+            "| --- | --- |\n" +
+            "| 2026/08/12 | 設好 API<br>設定好 Slack |\n";
+
+        // Act
+        var html = ToHtml(markdown);
+
+        // Assert
+        html.Should().Contain("<table");
+        html.Should().Contain("設好 API<br />");
+        html.Should().NotContain("&lt;br&gt;");
+    }
+
+    [Fact]
+    public void ListItem_LazyContinuation_RendersHardLineBreak_B1_6()
+    {
+        // Arrange：清單項的接續行（lazy continuation）在硬換行下項內換行（鎖定新行為）。
+        var markdown = "- 項目一\n  接續文字";
+
+        // Act
+        var html = ToHtml(markdown);
+
+        // Assert
+        html.Should().Contain("<li>");
+        html.Should().Contain("<br />");
+    }
+
+    [Fact]
+    public void CurrentRenderVersion_IsBumpedTo3_B1_7()
+    {
+        // 管線行為變更（軟換行→硬換行）必須 bump 渲染快取版本，否則舊筆記永遠是舊渲染。
+        NoteContentHelpers.CurrentRenderVersion.Should().Be(3);
+    }
+
+    [Theory]
+    [InlineData("第一行  \n第二行")] // 行尾兩空白
+    [InlineData("第一行\\\n第二行")] // 行尾反斜線
+    public void ExistingHardBreakSyntax_StillWorks_B1_8(string markdown)
+    {
+        // Arrange/Act：既有的硬換行寫法不得退化。
+        var html = ToHtml(markdown);
+
+        // Assert
+        html.Should().Contain("<br />");
+        System.Text.RegularExpressions.Regex.Matches(html, "<p>").Count.Should().Be(1);
+    }
 }
