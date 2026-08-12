@@ -8,7 +8,11 @@ import {
   setCellValueInContent,
   isCheckedValue,
   serializeCheckedValue,
+  unescapeCellBr,
+  toggleCellCheckbox,
+  countCellCheckboxes,
 } from './tableSpec';
+import { BR_PATTERN } from './remarkHtmlLineBreak';
 
 /**
  * 表格語法核心（tableSpec）的單元測試。
@@ -482,5 +486,78 @@ describe('checkbox 值域 helper', () => {
   test('serializeCheckedValue：true → [x]、false → [ ]', () => {
     expect(serializeCheckedValue(true)).toBe('[x]');
     expect(serializeCheckedValue(false)).toBe('[ ]');
+  });
+});
+
+describe('toggleCellCheckbox：儲存格內多 checkbox（A6，測試計畫 B7-1/B7-2）', () => {
+  test('B7-1: 切換第 k 個標記、其餘位元組不動', () => {
+    expect(toggleCellCheckbox('[ ] 甲<br>[x] 乙', 0)).toBe('[x] 甲<br>[x] 乙');
+    expect(toggleCellCheckbox('[ ] 甲<br>[x] 乙', 1)).toBe('[ ] 甲<br>[ ] 乙');
+    expect(toggleCellCheckbox('[X] 大寫', 0)).toBe('[ ] 大寫');
+    expect(toggleCellCheckbox('[ ]', 0)).toBe('[x]'); // 無後綴文字也算
+  });
+
+  test('B7-2: 段首以外的 [ ] 不算標記（不誤切）', () => {
+    expect(countCellCheckboxes('昨天 [ ] 甲')).toBe(0);
+    expect(countCellCheckboxes('[ ] 甲<br>昨天 [x] 乙')).toBe(1);
+    expect(countCellCheckboxes('`[ ]` 程式碼')).toBe(0); // 段首不是字面 [ ]
+    expect(countCellCheckboxes('[y] 非法標記')).toBe(0);
+    expect(countCellCheckboxes('[ ]x 後面黏字不算')).toBe(0);
+  });
+
+  test('段首允許前導空白；<br> 變體也是段界', () => {
+    expect(countCellCheckboxes(' [ ] 甲<br/> [x] 乙')).toBe(2);
+    expect(toggleCellCheckbox(' [ ] 甲<br/> [x] 乙', 1)).toBe(' [ ] 甲<br/> [ ] 乙');
+  });
+
+  test('索引越界回 null', () => {
+    expect(toggleCellCheckbox('[ ] 甲', 1)).toBeNull();
+    expect(toggleCellCheckbox('沒有標記', 0)).toBeNull();
+  });
+});
+
+describe('unescapeCellBr：直編顯示對稱（<br> 家族 → 真實換行）', () => {
+  // 對應測試計畫 B4-1/B4-2/B4-7：與後端 HtmlLineBreakInlineExtension 同款白名單
+  //（<br>/<br/>/<br />，大小寫不敏感、標籤內允許空白／Tab）。
+
+  test('B4-1: <br> 家族各變體皆轉成 \\n', () => {
+    expect(unescapeCellBr('a<br>b')).toBe('a\nb');
+    expect(unescapeCellBr('a<br/>b')).toBe('a\nb');
+    expect(unescapeCellBr('a<br />b')).toBe('a\nb');
+    expect(unescapeCellBr('a<BR>b')).toBe('a\nb');
+    expect(unescapeCellBr('a<br >b')).toBe('a\nb');
+    expect(unescapeCellBr('a<br  />b')).toBe('a\nb');
+    expect(unescapeCellBr('a<br>b<br>c')).toBe('a\nb\nc');
+  });
+
+  test('B4-2: 非白名單標籤維持字面（不擴大轉換面）', () => {
+    expect(unescapeCellBr('a<brs>b')).toBe('a<brs>b');
+    expect(unescapeCellBr('a<br x>b')).toBe('a<br x>b');
+    expect(unescapeCellBr('a<div>b')).toBe('a<div>b');
+    expect(unescapeCellBr('沒有標籤')).toBe('沒有標籤');
+  });
+
+  test('B4-7: 白名單與 remarkHtmlLineBreak 的 BR_PATTERN 同步（防拷貝漂移）', () => {
+    const accepted = ['<br>', '<br/>', '<br />', '<BR>', '<br >', '<br  />'];
+    const rejected = ['<brs>', '<br x>', '<br"', '<b r>'];
+    for (const token of accepted) {
+      expect(unescapeCellBr(`a${token}b`)).toBe('a\nb');
+      expect(BR_PATTERN.test(token)).toBe(true);
+      BR_PATTERN.lastIndex = 0; // 全域旗標正則：歸零避免測試間污染
+    }
+    for (const token of rejected) {
+      expect(unescapeCellBr(`a${token}b`)).toBe(`a${token}b`);
+      expect(BR_PATTERN.test(token)).toBe(false);
+      BR_PATTERN.lastIndex = 0;
+    }
+  });
+
+  test('round-trip：unescape 後照直編存檔路徑 escape 回去，得回正規形 <br>', () => {
+    // 直編開啟（unescape）→ 使用者未改 → 不存檔（無變更判斷在 readingTableInteractive）；
+    // 若有改，escapeCellText（經 replaceCellInLine）會把 \n 轉回 <br>。
+    const line = '| a<br>b | c |';
+    const cell = splitTableRowLine(line).cells[0];
+    const edited = unescapeCellBr(cell); // 'a\nb'
+    expect(replaceCellInLine(line, 0, edited)).toBe('| a<br>b | c |');
   });
 });

@@ -12,6 +12,8 @@
  * - CRLF：逐行剝 `\r` 處理、寫回時還原各行原本的行尾風格（v2 修訂第 9 條）。
  */
 
+import { BR_PATTERN } from './remarkHtmlLineBreak';
+
 // ────────────────────────── 型別 ──────────────────────────
 
 /**
@@ -175,6 +177,71 @@ function escapeCellText(newValue: string): string {
     .replace(/\r\n|\r|\n/g, '<br>')
     .replace(/\\/g, '\\\\')
     .replace(/\|/g, '\\|');
+}
+
+/**
+ * 直編「顯示對稱」還原：把儲存格值內的字面 `<br>` 家族轉成真實換行 `\n`。
+ *
+ * 用途：開啟儲存格直編時，textarea 初值不再出現字面 `<br>`（使用者第一次用 Shift+Enter
+ * 打的是真換行、存檔被 escape 成 `<br>`；重開時本函式把它還原，開↔存來回對稱）。
+ * 白名單與渲染端完全同款（remarkHtmlLineBreak.BR_PATTERN＝後端 HtmlLineBreakInlineExtension
+ * 的前端鏡像）：`<br>`/`<br/>`/`<br />`，大小寫不敏感、標籤內允許空白／Tab；
+ * 其餘標籤（`<brs>`、`<br x>`…）維持字面。
+ *
+ * 已知顯示不精確（可接受）：儲存格 inline code 內的字面 `<br>` 也會被還原顯示成換行，
+ * 但未改字＝不存檔、有改字＝escape 會把 `\n` 轉回 `<br>`，round-trip 後原文不變。
+ *
+ * @param value 儲存格原始值（splitTableRowLine 還原跳脫後的值）。
+ * @returns `<br>` 家族轉成 `\n` 後的顯示用文字。
+ */
+export function unescapeCellBr(value: string): string {
+  return value.replace(BR_PATTERN, '\n');
+}
+
+/**
+ * 儲存格內「多 checkbox」的標記樣式（A6；一格多待辦，像 OneNote）：
+ * 「段首」（值開頭或 `<br>` 家族之後）＋可選空白＋字面 `[ ]`/`[x]`/`[X]`＋
+ * 後面必須是空白、`<br>` 家族或值結尾（`[ ]x` 黏字不算）。
+ * 以 BR_PATTERN.source 組裝，白名單與渲染端同一份（不另抄一份變體規則）。
+ */
+function createCellCheckboxPattern(): RegExp {
+  const br = BR_PATTERN.source;
+  return new RegExp(`(^|${br})([ \\t]*)\\[( |x|X)\\](?=$|[ \\t]|${br})`, 'gi');
+}
+
+/**
+ * 數儲存格值內的多 checkbox 標記數（供讀模式增強前的「DOM ↔ raw 同構」安全比對）。
+ * @param cellValue 儲存格原始值（含字面 `<br>`）。
+ * @returns 段首標記數。
+ */
+export function countCellCheckboxes(cellValue: string): number {
+  const pattern = createCellCheckboxPattern();
+  let count = 0;
+  while (pattern.exec(cellValue) !== null) count += 1;
+  return count;
+}
+
+/**
+ * 切換儲存格值內「第 checkboxIndex 個」（0 起算）多 checkbox 標記的勾選狀態，
+ * 其餘位元組原樣保留。
+ * @param cellValue 儲存格原始值（含字面 `<br>`）。
+ * @param checkboxIndex 目標標記索引（0 起算）。
+ * @returns 切換後的新值；索引越界（含值內無標記）回 null（不丟例外）。
+ */
+export function toggleCellCheckbox(cellValue: string, checkboxIndex: number): string | null {
+  const pattern = createCellCheckboxPattern();
+  let index = 0;
+  for (let match = pattern.exec(cellValue); match !== null; match = pattern.exec(cellValue)) {
+    if (index !== checkboxIndex) {
+      index += 1;
+      continue;
+    }
+    // 標記字元（[ 之後那格）的絕對位置＝段界長＋前導空白長＋1（跳過 `[`）。
+    const markPos = match.index + match[1].length + match[2].length + 1;
+    const nextMark = match[3] === ' ' ? 'x' : ' ';
+    return cellValue.slice(0, markPos) + nextMark + cellValue.slice(markPos + 1);
+  }
+  return null;
 }
 
 /**

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import { prepareHeaderControls, setupInteractiveTable } from './readingTableInteractive';
 
 /**
@@ -100,5 +100,162 @@ describe('readingTableInteractive：radio chip 依表頭宣告著色', () => {
     const chips = statusChips(table);
     expect(chips).toHaveLength(2);
     expect(chips.every((chip) => chip.dataset.zwColor === undefined)).toBe(true);
+  });
+});
+
+// ─── 直編顯示對稱：<br> → 真實換行（測試計畫 B4-3~B4-6）────────────────────
+
+/** 對指定儲存格連點兩下右鍵開啟直編，回傳建立出的 textarea（找不到＝null）。 */
+function openEditorOn(cell: HTMLTableCellElement): HTMLTextAreaElement | null {
+  cell.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+  cell.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+  return cell.querySelector('textarea.zw-cell-editor');
+}
+
+/** 觸發 blur → save 流程並讓 saveCell 的 promise 走完。 */
+async function blurAndSettle(editor: HTMLTextAreaElement): Promise<void> {
+  editor.dispatchEvent(new FocusEvent('blur'));
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+// ─── 儲存格內多 checkbox（A6，測試計畫 B7-3~B7-6）────────────────────────
+
+/**
+ * 建「兩欄、一列」的表：第二格由 (string | 'br')[] 組成（模擬後端渲染的 文字＋<br> 結構）。
+ * @param segments 第二格的節點序列。
+ * @param withLine 是否標 data-md-line（可寫回）。
+ * @param headerCell 第二欄表頭文字（預設無控件）。
+ */
+function buildChecklistTable(
+  segments: (string | 'br')[],
+  withLine = true,
+  headerCell = '待辦',
+): { table: HTMLTableElement; td: HTMLTableCellElement } {
+  const table = document.createElement('table');
+  table.setAttribute('data-md-table', '');
+  const headerRow = table.createTHead().insertRow();
+  for (const text of ['項目', headerCell]) {
+    const th = document.createElement('th');
+    th.textContent = text;
+    headerRow.appendChild(th);
+  }
+  const tr = table.createTBody().insertRow();
+  if (withLine) tr.setAttribute('data-md-line', '3');
+  tr.insertCell().textContent = '甲';
+  const td = tr.insertCell();
+  for (const seg of segments) {
+    td.appendChild(seg === 'br' ? document.createElement('br') : document.createTextNode(seg));
+  }
+  document.body.appendChild(table);
+  return { table, td };
+}
+
+describe('儲存格內多 checkbox（一格多待辦，像 OneNote）', () => {
+  function setupChecklist(
+    segments: (string | 'br')[],
+    raw: string | null,
+    withLine = true,
+    headerCell = '待辦',
+  ) {
+    const interactions = {
+      getCellRaw: vi.fn((): string | null => raw),
+      saveCell: vi.fn(async (): Promise<boolean> => true),
+    };
+    const { table, td } = buildChecklistTable(segments, withLine, headerCell);
+    const controls = prepareHeaderControls(table);
+    setupInteractiveTable(table, 0, 'note-checklist', controls, interactions);
+    return { interactions, td };
+  }
+
+  test('B7-3: 段首 [ ]/[x] 渲染成核取方塊、勾選狀態正確', () => {
+    const { td } = setupChecklist(['[ ] 設好 API', 'br', '[x] 設定 Slack'], '[ ] 設好 API<br>[x] 設定 Slack');
+    const boxes = td.querySelectorAll<HTMLInputElement>('input.zw-cell-cbx');
+    expect(boxes).toHaveLength(2);
+    expect(boxes[0].checked).toBe(false);
+    expect(boxes[1].checked).toBe(true);
+    expect(td.textContent).toContain('設好 API'); // 文字保留、只剝掉 [ ] 字面
+    expect(td.textContent).not.toContain('[ ]');
+  });
+
+  test('B7-4: 點擊第 k 個 → saveCell 收到切換後的完整 raw', async () => {
+    const { interactions, td } = setupChecklist(
+      ['[ ] 設好 API', 'br', '[x] 設定 Slack'],
+      '[ ] 設好 API<br>[x] 設定 Slack',
+    );
+    const boxes = td.querySelectorAll<HTMLInputElement>('input.zw-cell-cbx');
+    boxes[0].click();
+    await Promise.resolve();
+    expect(interactions.saveCell).toHaveBeenCalledWith(3, 1, '[x] 設好 API<br>[x] 設定 Slack');
+  });
+
+  test('B7-5: {checkbox} 控件欄不套多 checkbox（維持整格單一勾選）', () => {
+    const { td } = setupChecklist(['[ ]'], '[ ]', true, '完成{checkbox}');
+    expect(td.querySelectorAll('input.zw-cell-cbx')).toHaveLength(0);
+    expect(td.querySelectorAll('input.zw-cell-checkbox')).toHaveLength(1); // 既有控件仍在
+  });
+
+  test('B7-6: 無 data-md-line（不可寫回）→ 不渲染互動 checkbox', () => {
+    const { td } = setupChecklist(['[ ] 甲'], '[ ] 甲', false);
+    expect(td.querySelectorAll('input.zw-cell-cbx')).toHaveLength(0);
+  });
+
+  test('安全比對：DOM 偵測數 ≠ raw 標記數 → 整格放棄（不錯切）', () => {
+    // raw 只有 0 個標記（例如 \[ ] 跳脫造成 DOM 與 raw 不同構）→ 不增強。
+    const { td } = setupChecklist(['[ ] 甲'], '\\[ ] 甲');
+    expect(td.querySelectorAll('input.zw-cell-cbx')).toHaveLength(0);
+  });
+});
+
+describe('讀模式直編：開啟編輯器時 <br> 還原成真實換行', () => {
+  /** 建含一列兩欄（無控件表頭）的表，第二欄為直編目標。 */
+  function buildEditableTable(interactions: Parameters<typeof setupInteractiveTable>[4]): HTMLTableCellElement {
+    const table = buildStatusTable('狀態{radio:未看}', ['未看']);
+    const controls = prepareHeaderControls(table);
+    setupInteractiveTable(table, 0, 'note-unescape', controls, interactions);
+    return table.tBodies[0].rows[0].cells[1];
+  }
+
+  test('B4-3: 格值 a<br>b → textarea 初值 a\\nb、rows=2（不再看到字面 <br>）', () => {
+    const interactions = {
+      getCellRaw: vi.fn((): string | null => 'a<br>b'),
+      saveCell: vi.fn(async (): Promise<boolean> => true),
+    };
+    const editor = openEditorOn(buildEditableTable(interactions));
+    expect(editor).not.toBeNull();
+    expect(editor!.value).toBe('a\nb');
+    expect(editor!.rows).toBe(2);
+  });
+
+  test('B4-4: 開啟後未改直接 blur → 不呼叫 saveCell（無變更比較用還原後值）', async () => {
+    const interactions = {
+      getCellRaw: vi.fn((): string | null => 'a<br>b'),
+      saveCell: vi.fn(async (): Promise<boolean> => true),
+    };
+    const editor = openEditorOn(buildEditableTable(interactions))!;
+    await blurAndSettle(editor);
+    expect(interactions.saveCell).not.toHaveBeenCalled();
+  });
+
+  test('B4-5: 格值含變體 a<br/>b 開啟未改 blur → 不存檔（變體不因開關而被正規化）', async () => {
+    const interactions = {
+      getCellRaw: vi.fn((): string | null => 'a<br/>b'),
+      saveCell: vi.fn(async (): Promise<boolean> => true),
+    };
+    const editor = openEditorOn(buildEditableTable(interactions))!;
+    expect(editor.value).toBe('a\nb');
+    await blurAndSettle(editor);
+    expect(interactions.saveCell).not.toHaveBeenCalled();
+  });
+
+  test('B4-6: 改字後 blur → saveCell 收到含真實換行的新值（\\n→<br> 由既有 escape 處理）', async () => {
+    const interactions = {
+      getCellRaw: vi.fn((): string | null => 'a<br>b'),
+      saveCell: vi.fn(async (): Promise<boolean> => true),
+    };
+    const editor = openEditorOn(buildEditableTable(interactions))!;
+    editor.value = 'a\nb\nc';
+    await blurAndSettle(editor);
+    expect(interactions.saveCell).toHaveBeenCalledWith(3, 1, 'a\nb\nc');
   });
 });

@@ -41,8 +41,13 @@ interface MdastNode {
  * 白名單：字面 `<br>` 家族。
  * `<br` 後允許空白／Tab、可選一個自結束 `/`（其前後亦允許空白／Tab），最後為 `>`。
  * 全域旗標供 String.prototype.split 一次切開全部（split 不受 lastIndex 影響）。
+ *
+ * 匯出供 lib/tableSpec 的 `unescapeCellBr`（直編顯示對稱）共用——與後端
+ * HtmlLineBreakInlineExtension 同款白名單的「前端單一真相」，避免第三份拷貝漂移
+ * （對抗式復審 M-3）。注意這是帶 g 旗標的共用正則：用 `.test()` 後請自行歸零 lastIndex，
+ * 或改用 `split`／`replace`（兩者不受 lastIndex 影響）。
  */
-const BR_PATTERN = /<br[ \t]*\/?[ \t]*>/gi;
+export const BR_PATTERN = /<br[ \t]*\/?[ \t]*>/gi;
 
 /**
  * 白名單（錨定整串版）：判斷一個 `html` 節點的 value 是否「整串就是」`<br>` 家族。

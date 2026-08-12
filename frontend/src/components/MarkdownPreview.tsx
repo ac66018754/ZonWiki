@@ -3,6 +3,7 @@
 import { useMemo, useRef, type ComponentPropsWithoutRef, type ReactElement, type ReactNode } from "react";
 import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
 import remarkHtmlLineBreak from "@/lib/remarkHtmlLineBreak";
 import remarkMarkFenced from "@/lib/remarkMarkFenced";
 import { parseToggleSegments } from "@/lib/toggleBlocks";
@@ -195,7 +196,10 @@ export function ToggleAwareMarkdown({
     return (
       <ReactMarkdown
         key={key}
-        remarkPlugins={[remarkGfm, remarkHtmlLineBreak, remarkMarkFenced]}
+        // remarkBreaks＝「單一換行＝硬換行」（與後端 UseSoftlineBreakAsHardlineBreak 對齊，
+        // 2026-08-13 使用者裁示 Notion 式換行）；只切 text 節點內的換行，與攔字面 <br>
+        // 的 remarkHtmlLineBreak（html 節點）互不重疊。
+        remarkPlugins={[remarkGfm, remarkBreaks, remarkHtmlLineBreak, remarkMarkFenced]}
         components={components}
         urlTransform={attachmentUrlTransform}
       >
