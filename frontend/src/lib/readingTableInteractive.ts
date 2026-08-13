@@ -227,6 +227,40 @@ function applyChipColor(
 const SEGMENT_CHECKBOX_TEXT_PATTERN = /^([ \t]*)\[( |x|X)\](?=$|[ \t])/;
 
 /**
+ * 是否為「整格單一勾選」的純值（`[ ]`/`[x]`/`[X]`/空）——`{checkbox}` 控件欄只有這種格
+ * 走既有的整格單勾渲染；帶標籤或多段的格（如 `[ ] 甲<br>[x] 乙`）改走多 checkbox 增強，
+ * 否則整格被換成一顆孤零零的勾選框、標籤文字全被吃掉（使用者 2026-08-13 實際回報）。
+ * @param value 儲存格文字值（textContent／zwValue）。
+ * @returns 純值＝true。
+ */
+function isWholeCellCheckboxValue(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed === '' || /^\[( |x|X)\]$/.test(trimmed);
+}
+
+/**
+ * 掃描儲存格的多 checkbox 候選文字節點（不動 DOM）：段首（起頭或 `<br>` 之後）的
+ * 文字節點且以標記樣式開頭。供控件欄分流判斷與 enhanceCellChecklist 共用。
+ * @param cell 目標儲存格。
+ * @returns 候選文字節點（依文件順序）。
+ */
+function collectChecklistCandidates(cell: HTMLTableCellElement): Text[] {
+  const candidates: Text[] = [];
+  let atSegmentStart = true;
+  for (const node of Array.from(cell.childNodes)) {
+    if (node instanceof HTMLBRElement) {
+      atSegmentStart = true;
+      continue;
+    }
+    const isStart = atSegmentStart;
+    atSegmentStart = false;
+    if (!isStart || !(node instanceof Text)) continue;
+    if (SEGMENT_CHECKBOX_TEXT_PATTERN.test(node.textContent ?? '')) candidates.push(node);
+  }
+  return candidates;
+}
+
+/**
  * 儲存格內多 checkbox 增強（A6）：以 `<br>` 分「段」，把段首字面 `[ ]`/`[x]` 換成
  * 可點擊核取方塊；點擊＝以 tableSpec.toggleCellCheckbox 切換 raw 第 k 個標記後走
  * 既有 saveCell 寫回。
@@ -248,18 +282,7 @@ function enhanceCellChecklist(
   interactions: ReadingTableInteractions,
 ): void {
   // 先蒐集候選（不動 DOM）：段首（起頭或 <br> 之後）的文字節點且以標記樣式開頭。
-  const candidates: Text[] = [];
-  let atSegmentStart = true;
-  for (const node of Array.from(cell.childNodes)) {
-    if (node instanceof HTMLBRElement) {
-      atSegmentStart = true;
-      continue;
-    }
-    const isStart = atSegmentStart;
-    atSegmentStart = false;
-    if (!isStart || !(node instanceof Text)) continue;
-    if (SEGMENT_CHECKBOX_TEXT_PATTERN.test(node.textContent ?? '')) candidates.push(node);
-  }
+  const candidates = collectChecklistCandidates(cell);
   if (candidates.length === 0) return;
 
   const raw = interactions.getCellRaw(mdLine, columnIndex);
@@ -438,6 +461,12 @@ export function setupInteractiveTable(
       const canWrite = !!interactions && mdLine !== null;
 
       if (control.kind === 'checkbox') {
+        // 多段/帶標籤的格（[ ] 甲<br>[x] 乙）→ 留給下方「多 checkbox 增強」處理——
+        // 整格單勾會把內容換成一顆勾選框、標籤全被吃掉（使用者 2026-08-13 回報）。
+        // 純 [ ]/[x]/空 格才走整格單勾（維持既有欄語意與測試）。
+        if (!isWholeCellCheckboxValue(currentValue) && collectChecklistCandidates(cell).length > 0) {
+          continue;
+        }
         const box = document.createElement('input');
         box.type = 'checkbox';
         box.className = 'zw-cell-checkbox';
@@ -523,14 +552,17 @@ export function setupInteractiveTable(
   });
 
   // ── 儲存格內多 checkbox（一格多待辦，像 OneNote；2026-08-13 使用者追加）──────────
-  // 非控件欄的儲存格：以 <br> 分「段」，段首的字面 [ ]/[x] 換成可點擊核取方塊；
+  // 以 <br> 分「段」，段首的字面 [ ]/[x] 換成可點擊核取方塊；
   // 點擊＝切換 raw 中對應第 k 個標記後走既有 saveCell 寫回（樂觀 UI、失敗還原）。
+  // 適用範圍：一般欄＋「{checkbox} 控件欄的多段/帶標籤格」（純 [ ]/[x] 格已由上方整格單勾
+  // 渲染並 replaceChildren，這裡掃不到候選、天然跳過）；radio 等其他控件欄一律不套。
   if (interactions) {
     for (const row of originalRows) {
       const mdLine = editableRowLine(row);
       if (mdLine === null) continue; // 不可寫回的列不增強（唯讀 checkbox 只會誤導）
       Array.from(row.cells).forEach((cell, columnIndex) => {
-        if (controls[columnIndex]) return; // 控件欄有自己的整格語意（chip／單一勾選）
+        const control = controls[columnIndex];
+        if (control && control.kind !== 'checkbox') return; // chip 欄有自己的整格語意
         enhanceCellChecklist(cell, mdLine, columnIndex, table, interactions);
       });
     }

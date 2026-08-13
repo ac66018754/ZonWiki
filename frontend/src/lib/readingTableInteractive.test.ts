@@ -189,10 +189,36 @@ describe('儲存格內多 checkbox（一格多待辦，像 OneNote）', () => {
     expect(interactions.saveCell).toHaveBeenCalledWith(3, 1, '[x] 設好 API<br>[x] 設定 Slack');
   });
 
-  test('B7-5: {checkbox} 控件欄不套多 checkbox（維持整格單一勾選）', () => {
+  test('B7-5: {checkbox} 控件欄的「純 [ ] 格」維持整格單一勾選', () => {
     const { td } = setupChecklist(['[ ]'], '[ ]', true, '完成{checkbox}');
     expect(td.querySelectorAll('input.zw-cell-cbx')).toHaveLength(0);
     expect(td.querySelectorAll('input.zw-cell-checkbox')).toHaveLength(1); // 既有控件仍在
+  });
+
+  test('B7-5b: {checkbox} 控件欄的「多段/帶標籤格」→ 多 checkbox、標籤可見（使用者 2026-08-13 回報案例）', async () => {
+    const { interactions, td } = setupChecklist(
+      ['[ ] 甲', 'br', '[x] 乙'],
+      '[ ] 甲<br>[x] 乙',
+      true,
+      '完成{checkbox}',
+    );
+    const boxes = td.querySelectorAll<HTMLInputElement>('input.zw-cell-cbx');
+    expect(boxes).toHaveLength(2);
+    expect(td.querySelectorAll('input.zw-cell-checkbox')).toHaveLength(0); // 不再被整格單勾吃掉
+    expect(td.textContent).toContain('甲');
+    expect(td.textContent).toContain('乙');
+    expect(boxes[1].checked).toBe(true);
+    // 點擊寫回照常（同一條 saveCell 路徑）。
+    boxes[0].click();
+    await Promise.resolve();
+    expect(interactions.saveCell).toHaveBeenCalledWith(3, 1, '[x] 甲<br>[x] 乙');
+  });
+
+  test('B7-5c: {checkbox} 控件欄的「帶標籤單段格」（[ ] 甲）→ 一顆多 checkbox＋標籤可見', () => {
+    const { td } = setupChecklist(['[ ] 甲'], '[ ] 甲', true, '完成{checkbox}');
+    expect(td.querySelectorAll('input.zw-cell-cbx')).toHaveLength(1);
+    expect(td.querySelectorAll('input.zw-cell-checkbox')).toHaveLength(0);
+    expect(td.textContent).toContain('甲');
   });
 
   test('B7-6: 無 data-md-line（不可寫回）→ 不渲染互動 checkbox', () => {
