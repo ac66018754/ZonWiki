@@ -5,6 +5,42 @@
 
 ---
 
+## 2026-08-13 ｜換行體系重整：全域「Enter＝硬換行」＋表格 `<br>` 編輯視圖層（↳ 續行）＋直編對稱＋儲存格多 checkbox＋管線上色（feat/enter-hard-break-and-table-br-view）
+
+### A. 全域「單一換行＝硬換行」（Notion 式）
+
+- **背景**：使用者受夠兩套換行機制——行尾兩空白常忘記打（看起來沒換行超醜）、表格 `<br>` 有學習成本。裁示「渲染上本來就該換行」，既有筆記 reflow 視為修正、不需影響面掃描。
+- **考慮過的選項**：①Shift+Enter 自動塞兩空白（不治本，一般 Enter 仍不換行）；②零寬字元標記（搜尋斷裂/隱形垃圾，否決）；③**【採用】改渲染規則**：後端 Markdig `UseSoftlineBreakAsHardlineBreak`＋前端三個 ReactMarkdown 點（MarkdownPreview／StickyBody／NodeContent）加 `remark-breaks`。
+- **關鍵配套**：`CurrentRenderVersion` 2→3——ContentHtml 有 DB 快取，不 bump 舊筆記永遠舊渲染；收斂走既有 lazy 重渲染＋啟動一次性遷移。
+- **部署注意**：①啟動遷移以 ExecuteUpdate 推進全部筆記 xmin → 部署瞬間跨版開著的編輯 session 會各吃一次 409（既知行為）；②全站 reflow 可能使 NoteOverlay「手繪筆跡」與舊版面錯位（文字錨點畫記不受影響——NoteMarksLayer 走 textAnchor 重錨）；③收斂完成前 GET 過時筆記走記憶體重渲染（短暫 CPU 稅）。
+- **互通性取捨**：ZonWiki 內單換行＝換行，貼到「嚴格標準」渲染器（GitHub README、pandoc）會被接回同一行——與 GitHub 留言區／Obsidian／Notion 同陣營，使用者已知悉接受。
+
+### B. 表格儲存格換行：`<br>` 儲存不變＋「編輯視圖層」展開（lib/tableBreakView.ts）
+
+- **背景**：儲存格內換行只能寫 `<br>`，編輯頁一行拉到天邊、重開直編還看到字面 `<br>`。使用者要求編輯頁像多行表格（圖一），但接受「儲存維持 `<br>` 單行＝合法 GFM 跨平台互通」。
+- **決定**：沿用 toggle 摺疊的「視圖層」先例——display 把真表格列內的正規形 `<br>` 展開成「換行＋對齊墊片＋`↳ `」，onChange 收斂回單行。分層：full →（表格展開）→ expanded →（摺疊）→ display；**映射順序先徽章、再 join**（對抗式復審 C-1，反了會讓局部排版切錯段）。
+- **安全設計（對抗式復審全數採納）**：
+  - 不變式 `collapse(expand(x))===x`；round-trip 驗證失敗（病態內容如字面 `↳` 行接在表格列後）＝**整個視圖層 per-instance 停用**（C-2：不只初始化，applyEdit/Shift+Enter/複製全關）。
+  - 「真表格脈絡」才展開/收斂：區塊第 2 列須為分隔列；分隔列本身、散文含管線、圍欄內、CRLF 行一律不動（H-4/M-1）。
+  - **斷行守門**：斷點前的首段必須仍是合法列且不像分隔列，否則該 `<br>` 維持字面（round-trip 保障）。
+  - join 原子區手勢：墊片/標記區內打字→貼齊內容起點；Backspace/Delete→整段刪；選取編輯→範圍擴張覆蓋 join（H-2 防 `↳` 外漏入庫）。
+  - 複製/剪下跨 join→剪貼簿放「收斂後完整文字」切片（座標映射、不用正則猜；H-1）；拖放含 join 樣式→擋下提示。
+  - Shift+Enter／join 刪除優先走 `document.execCommand`（保留原生 undo；Ctrl+Z 已在真瀏覽器 E2E 驗證）；jsdom/舊瀏覽器退回 applyEdit。
+  - 只認**正規形 `<br>`**（小寫無空白）：變體展開會被收斂正規化成幽靈 diff，維持字面。
+- **直編對稱**：開儲存格編輯器時 `unescapeCellBr`（白名單共用 remarkHtmlLineBreak.BR_PATTERN，防第三份拷貝漂移）把 `<br>` 家族還原成真換行；「無變更」比較用還原後初值——變體格開了沒改不會被悄悄正規化存檔。
+- **已知限制（文件化）**：行動裝置無 Shift+Enter（儲存格插換行僅桌機）；編輯中貼入字面 `<br>` 到下次載入才展開；墊片對齊是視覺寬 heuristic（CJK=2 欄，非等寬字型會偏）。
+
+### C. 儲存格內多 checkbox（一格多待辦，像 OneNote）
+
+- 讀模式（互動集中讀模式＝既有決策）：儲存格以 `<br>` 分段，段首字面 `[ ]`/`[x]` 由 DOM 端換成可點擊核取方塊；點第 k 個→`toggleCellCheckbox` 切 raw 第 k 個標記→既有 `saveCell` 寫回。
+- **同構安全比對**：DOM 偵測數必須等於 raw 標記數（`\[ ]` 跳脫等會造成不同構）→ 不等＝整格放棄增強，寧可不互動、不可切錯。`{checkbox}` 控件欄維持整格單一勾選語意、不套用。
+
+### D. 編輯頁表格管線 `|` 上色
+
+- textarea 無法對單字元上色 → 疊「管線標示背景層」（同字體/排版鏡像、文字透明，僅真表格行的未跳脫 `|` 畫 `color-mix(--focus-ring)` 色塊；同 StickyBody 重點底圖先例）。textarea 文字/游標/IME 完全不受影響；寬度以 clientWidth 同步對齊自動換行、捲動同步 translateY。
+
+---
+
 ## 2026-08-11 ｜編輯模式 toggle 摺疊：徽章視圖層（不換 CodeMirror）＋墓碑復活；手機閱讀：表格自然欄寬容器橫捲＋overflow-x 兜底（feat/edit-toggle-fold-and-mobile-reading）
 
 ### A. 編輯模式 toggle 摺疊（`:::toggle` 不用切預覽就能收合）

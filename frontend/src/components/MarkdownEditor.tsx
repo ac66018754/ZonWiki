@@ -17,6 +17,17 @@ import {
   validateEdit,
   type FoldState,
 } from "@/lib/editorFolding";
+import {
+  CONTINUATION_LINE_PATTERN,
+  collapseTableRowBreaks,
+  continuationInsertFor,
+  listJoinRegions,
+  listTableLineFlags,
+  mapExpandedRangeToCollapsed,
+  safeExpandTableRowBreaks,
+  unescapedPipePositions,
+  type JoinRegion,
+} from "@/lib/tableBreakView";
 import { uploadAttachment } from "@/lib/api";
 import { showToast } from "@/lib/toast";
 
@@ -34,12 +45,52 @@ export interface EditorFoldApi {
   unfoldAll: () => void;
 }
 
-/** 摺疊視圖快照：顯示文字＋摺疊狀態（單一 state，確保兩者永遠一致更新）。 */
+/** 摺疊視圖快照：顯示文字＋摺疊狀態＋表格視圖層旗標（單一 state，確保永遠一致更新）。 */
 interface FoldSnapshot {
-  /** textarea 顯示的文字（＝完整文字，但摺疊區塊只剩標頭＋徽章）。 */
+  /** textarea 顯示的文字（＝完整文字，但摺疊區塊只剩標頭＋徽章、表格列 <br> 展開成 ↳ 續行）。 */
   display: string;
   /** 摺疊狀態（隱藏內文與墓碑）。 */
   state: FoldState;
+  /**
+   * 表格 <br> 視圖層是否啟用。safeExpandTableRowBreaks round-trip 驗證失敗（病態內容，
+   * 如原文本來就有「表格列＋次行行首 ↳」）＝停用：applyEdit 不做 collapse、Shift+Enter
+   * 不攔、複製不轉換——安全網涵蓋整個編輯生命週期，不只初始化（對抗式復審 C-2）。
+   */
+  tableViewOn: boolean;
+}
+
+/**
+ * 以「完整文字」建立視圖快照：表格列 <br> 展開成續行顯示形（round-trip 驗證失敗＝停用
+ * 視圖層、display=原文），摺疊一律歸零（外部變更後徽章對不上內容）。
+ * 分層順序：full →（表格展開）→ expanded →（摺疊收合）→ display；摺疊是外層。
+ * @param full 完整文字（onChange 對外的形）。
+ * @returns 新的視圖快照。
+ */
+function makeViewSnapshot(full: string): FoldSnapshot {
+  const { display, enabled } = safeExpandTableRowBreaks(full);
+  return { display, state: emptyFoldState, tableViewOn: enabled };
+}
+
+/**
+ * 把選取範圍擴張到「完整覆蓋」所有相交的 join 區（換行＋墊片＋↳＋可選空白），
+ * 避免選取式編輯（刪除/取代/剪下）留下半殘標記外漏進完整文字（對抗式復審 H-2）。
+ * @param regions display 的 join 區清單。
+ * @param start 選取起點。
+ * @param end 選取終點。
+ * @returns 擴張後的範圍（未相交＝原樣）。
+ */
+function extendRangeOverJoins(
+  regions: JoinRegion[],
+  start: number,
+  end: number,
+): { start: number; end: number } {
+  let s = start;
+  let e = end;
+  for (const region of regions) {
+    if (s > region.start && s < region.contentStart) s = region.start;
+    if (e > region.start && e < region.contentStart) e = region.contentStart;
+  }
+  return { start: s, end: e };
 }
 
 /** 摺疊 gutter 的單一按鈕位置資訊。 */
@@ -189,17 +240,18 @@ export function MarkdownEditor({
   const valueRef = useRef(value);
   useEffect(() => { valueRef.current = value; }, [value]);
 
-  // ─── 編輯模式摺疊（editor folding）───────────────────────────────────
-  // textarea 顯示「display 文字」（摺疊區塊只剩標頭＋徽章）；對外 onChange 永遠送
-  // expandDisplay 後的完整文字。摺疊/展開本身不改內容、不觸發 onChange。
-  const [fold, setFold] = useState<FoldSnapshot>({ display: value, state: emptyFoldState });
+  // ─── 編輯模式視圖層（摺疊＋表格 <br> 展開）───────────────────────────
+  // textarea 顯示「display 文字」（摺疊區塊只剩標頭＋徽章、表格列 <br> 展開成 ↳ 續行）；
+  // 對外 onChange 永遠送「先展徽章、再收斂表格」後的完整文字。
+  // 視圖操作（摺疊/展開）本身不改內容、不觸發 onChange。
+  const [fold, setFold] = useState<FoldSnapshot>(() => makeViewSnapshot(value));
   // 最後一次「本編輯器發出（或同步過）」的完整文字：value prop 與它不同＝外部變更
-  //（AI 重排、預覽勾核取方塊等）→ 重設摺疊（全展開），避免徽章對不上內容。
+  //（AI 重排、預覽勾核取方塊等）→ 重設視圖（摺疊歸零、表格重新展開），避免徽章對不上內容。
   // 用 state（非 ref）做 render 期間比較——React 官方「調整衍生 state」模式，立即以新值重繪不閃舊畫面。
   const [lastSyncedFull, setLastSyncedFull] = useState(value);
   if (value !== lastSyncedFull) {
     setLastSyncedFull(value);
-    setFold({ display: value, state: emptyFoldState });
+    setFold(makeViewSnapshot(value));
   }
   // 非同步回呼（貼圖上傳完成等）需要最新摺疊快照（effect 於 commit 後同步；事件都在 commit 後發生）。
   const foldRef = useRef(fold);
@@ -233,9 +285,12 @@ export function MarkdownEditor({
     if (v.deletedIds.length > 0) {
       showToast("已刪除摺疊區塊（含其隱藏內容）；Ctrl+Z 可復原", { type: "info" });
     }
-    const full = expandDisplay(newDisplay, v.state);
+    // 分層順序不可反（對抗式復審 C-1）：先展徽章（hiddenText 可能藏著展開形的表格列）、
+    // 再收斂表格續行。視圖層停用（tableViewOn=false）＝不 collapse，保住使用者的字面 ↳ 行。
+    const expanded = expandDisplay(newDisplay, v.state);
+    const full = f.tableViewOn ? collapseTableRowBreaks(expanded) : expanded;
     setLastSyncedFull(full);
-    setFold({ display: newDisplay, state: v.state });
+    setFold({ display: newDisplay, state: v.state, tableViewOn: f.tableViewOn });
     onChange(full);
   };
 
@@ -247,19 +302,30 @@ export function MarkdownEditor({
   const [gutterMarks, setGutterMarks] = useState<GutterMark[]>([]);
   const [measureTick, setMeasureTick] = useState(0);
   const gutterInnerRef = useRef<HTMLDivElement>(null);
+  // 表格管線標示背景層的內容容器（捲動時與 textarea 同步 translateY）。
+  const pipeInnerRef = useRef<HTMLDivElement>(null);
 
-  /** 摺疊/展開等「純視圖」變更（內容不變、不觸發 onChange）。 */
-  const applyFoldView = (next: FoldSnapshot) => setFold(next);
+  /** 摺疊/展開等「純視圖」變更（內容不變、不觸發 onChange；表格視圖旗標原樣保留）。 */
+  const applyFoldView = (next: { display: string; state: FoldState }) =>
+    setFold((prev) => ({ ...next, tableViewOn: prev.tableViewOn }));
 
   /** 展開全部（工具列鈕與 fold API 共用）。 */
-  const unfoldAllView = () => setFold((f) => unfoldAll(f.display, f.state));
+  const unfoldAllView = () =>
+    setFold((f) => ({ ...unfoldAll(f.display, f.state), tableViewOn: f.tableViewOn }));
 
   // 對外曝露摺疊 API（每次 render 更新，unmount 清空）。
   useEffect(() => {
     if (!foldApiRef) return;
     foldApiRef.current = {
-      mapSelectionToFull: (s, e) =>
-        mapDisplayRangeToFull(foldRef.current.display, foldRef.current.state, s, e),
+      // 映射順序（對抗式復審 C-1）：先徽章映射（display → 徽章展開形），再 join 收斂映射
+      //（徽章展開形 → 完整文字）——分層是 full →表格展開→ expanded →摺疊→ display。
+      mapSelectionToFull: (s, e) => {
+        const f = foldRef.current;
+        const badgeMapped = mapDisplayRangeToFull(f.display, f.state, s, e);
+        if (!badgeMapped || !f.tableViewOn) return badgeMapped;
+        const expanded = expandDisplay(f.display, f.state);
+        return mapExpandedRangeToCollapsed(expanded, badgeMapped.start, badgeMapped.end);
+      },
       hasFolds: () => foldRef.current.state.records.length > 0,
       unfoldAll: unfoldAllView,
     };
@@ -546,7 +612,12 @@ export function MarkdownEditor({
     const segment = display.slice(lineStart, e);
     const prefixed = segment
       .split("\n")
-      .map((line) => prefix + line)
+      .map((line) => {
+        // 表格續行：前綴落在「內容起點」（↳ 之後）——插在 ↳ 前該行就不再是續行，
+        // 標記會外漏進完整文字（對抗式復審 H-2）。
+        const cont = foldRef.current.tableViewOn ? line.match(CONTINUATION_LINE_PATTERN) : null;
+        return cont ? line.slice(0, cont[0].length) + prefix + line.slice(cont[0].length) : prefix + line;
+      })
       .join("\n");
     applyEdit(display.slice(0, lineStart) + prefixed + display.slice(e));
     restore(lineStart, e + (prefixed.length - segment.length));
@@ -607,9 +678,10 @@ export function MarkdownEditor({
         i === recIdx ? { ...r, hiddenText: rec.hiddenText.split(uploadingMark).join(replacement) } : r,
       );
       const nextState: FoldState = { records, graveyard: f.state.graveyard };
-      const full = expandDisplay(f.display, nextState);
+      const expanded = expandDisplay(f.display, nextState);
+      const full = f.tableViewOn ? collapseTableRowBreaks(expanded) : expanded;
       setLastSyncedFull(full);
-      setFold({ display: f.display, state: nextState });
+      setFold({ display: f.display, state: nextState, tableViewOn: f.tableViewOn });
       onChange(full);
       return true;
     }
@@ -695,6 +767,130 @@ export function MarkdownEditor({
   const INDENT_UNIT = "  ";
 
   /**
+   * 在選取範圍插入文字，優先走 document.execCommand('insertText') 以保留瀏覽器原生
+   * undo 堆疊（Ctrl+Z 可復原；對抗式復審 H-3）——execCommand 會改 DOM 值並發 input 事件，
+   * React onChange → applyEdit 照常收斂。不支援（jsdom／舊瀏覽器）時退回 applyEdit 手動路徑。
+   * @param ta 目標 textarea。
+   * @param text 要插入的文字。
+   * @param start 取代範圍起點（display 座標）。
+   * @param end 取代範圍終點（display 座標）。
+   */
+  const insertTextPreservingUndo = (
+    ta: HTMLTextAreaElement,
+    text: string,
+    start: number,
+    end: number,
+  ) => {
+    ta.focus();
+    ta.setSelectionRange(start, end);
+    let inserted = false;
+    try {
+      inserted = document.execCommand("insertText", false, text);
+    } catch {
+      inserted = false;
+    }
+    if (!inserted) {
+      const d = foldRef.current.display;
+      applyEdit(d.slice(0, start) + text + d.slice(end));
+      restore(start + text.length, start + text.length);
+    }
+  };
+
+  /**
+   * 刪除指定範圍，優先走 execCommand('delete') 保留原生 undo；退路同上。
+   * @param ta 目標 textarea。
+   * @param start 刪除起點（display 座標）。
+   * @param end 刪除終點（display 座標）。
+   */
+  const deleteRangePreservingUndo = (ta: HTMLTextAreaElement, start: number, end: number) => {
+    ta.focus();
+    ta.setSelectionRange(start, end);
+    let deleted = false;
+    try {
+      deleted = document.execCommand("delete");
+    } catch {
+      deleted = false;
+    }
+    if (!deleted) {
+      const d = foldRef.current.display;
+      applyEdit(d.slice(0, start) + d.slice(end));
+      restore(start, start);
+    }
+  };
+
+  /**
+   * 表格續行 join 原子區手勢（keydown 層；對抗式復審 H-2）：
+   * ① 選取編輯鍵＋範圍與 join 區部分相交 → 選取擴張成完整覆蓋（不留半殘標記）；
+   * ② 游標嚴格在 join 區內（墊片/標記）打字 → 先貼齊內容起點再讓字落下；
+   * ③ Backspace 於區內或內容起點／Delete 於區內或區起點 → 整個 join 一次刪（＝移除該 <br>）。
+   * @returns 是否已處理（true＝吃掉本次按鍵）。
+   */
+  const handleJoinGestureKeys = (
+    e: React.KeyboardEvent<HTMLTextAreaElement>,
+    ta: HTMLTextAreaElement,
+  ): boolean => {
+    const f = foldRef.current;
+    if (!f.tableViewOn) return false;
+    const isPrintable = e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey;
+    const isEditKey = isPrintable || e.key === "Enter" || e.key === "Backspace" || e.key === "Delete";
+    if (!isEditKey) return false;
+    const regions = listJoinRegions(f.display);
+    if (regions.length === 0) return false;
+    const s = ta.selectionStart;
+    const en = ta.selectionEnd;
+
+    if (s !== en) {
+      // 選取式編輯：擴張選取覆蓋整個 join 區，預設行為（刪除/取代）作用於擴張後範圍。
+      const ext = extendRangeOverJoins(regions, s, en);
+      if (ext.start !== s || ext.end !== en) ta.setSelectionRange(ext.start, ext.end);
+      return false;
+    }
+
+    const inside = regions.find((r) => s > r.start && s < r.contentStart);
+    if (e.key === "Backspace") {
+      const target = inside ?? regions.find((r) => s === r.contentStart);
+      if (!target) return false;
+      e.preventDefault();
+      deleteRangePreservingUndo(ta, target.start, target.contentStart);
+      return true;
+    }
+    if (e.key === "Delete") {
+      const target = inside ?? regions.find((r) => s === r.start);
+      if (!target) return false;
+      e.preventDefault();
+      deleteRangePreservingUndo(ta, target.start, target.contentStart);
+      return true;
+    }
+    // 可列印鍵／Enter 落在區內：貼齊內容起點（字不會插進墊片/標記），按鍵照常落下。
+    if (inside) ta.setSelectionRange(inside.contentStart, inside.contentStart);
+    return false;
+  };
+
+  /**
+   * Shift+Enter（keydown 層）：游標在真表格的儲存格內 → 插入「\n＋墊片＋↳ 」
+   * （對外收斂成該格的 <br>）；其餘情境放行預設換行（全域 Enter=硬換行已覆蓋）。
+   * IME 組字中不攔（isComposing）；視圖層停用時不攔。
+   * @returns 是否已處理。
+   */
+  const handleShiftEnterKey = (
+    e: React.KeyboardEvent<HTMLTextAreaElement>,
+    ta: HTMLTextAreaElement,
+  ): boolean => {
+    if (e.key !== "Enter" || !e.shiftKey) return false;
+    if (e.nativeEvent.isComposing) return false;
+    const f = foldRef.current;
+    if (!f.tableViewOn) return false;
+    const s = ta.selectionStart;
+    const insert = continuationInsertFor(f.display, s);
+    if (!insert) return false;
+    e.preventDefault();
+    // 有選取＝取代：範圍先擴張覆蓋相交的 join 區，避免半殘標記。
+    const ext = extendRangeOverJoins(listJoinRegions(f.display), s, ta.selectionEnd);
+    insertTextPreservingUndo(ta, insert, Math.min(s, ext.start), ext.end);
+    return true;
+  };
+
+  /**
    * 摺疊手勢（keydown 層）：在「會改動徽章」的輸入落地前先自動展開，
    * 讓使用者永遠不會被驗證拒絕纏住——
    * ① 選取範圍嚴格跨到徽章＋任何編輯鍵 → 展開所有相交的摺疊（本次輸入不執行）；
@@ -719,7 +915,7 @@ export function MarkdownEditor({
       });
       if (overlapping.length > 0) {
         e.preventDefault();
-        let cur: FoldSnapshot = { display: f.display, state: f.state };
+        let cur: { display: string; state: FoldState } = { display: f.display, state: f.state };
         for (const r of overlapping) cur = unfoldBlock(cur.display, cur.state, r.id);
         applyFoldView(cur);
         return true;
@@ -747,6 +943,8 @@ export function MarkdownEditor({
     // 記住編輯前的選取（驗證拒絕還原時把游標放回原位）。
     lastGoodSelRef.current = [ta.selectionStart, ta.selectionEnd];
     if (handleFoldGestureKeys(e, ta)) return;
+    if (handleJoinGestureKeys(e, ta)) return;
+    if (handleShiftEnterKey(e, ta)) return;
     if (e.key !== "Tab") return;
     e.preventDefault();
     const s = ta.selectionStart;
@@ -825,7 +1023,7 @@ export function MarkdownEditor({
         return idx !== -1 && s < idx + r.badge.length && en > idx;
       });
       if (overlapping.length > 0) {
-        let cur: FoldSnapshot = { display: f.display, state: f.state };
+        let cur: { display: string; state: FoldState } = { display: f.display, state: f.state };
         for (const r of overlapping) cur = unfoldBlock(cur.display, cur.state, r.id);
         applyFoldView(cur);
       }
@@ -838,13 +1036,122 @@ export function MarkdownEditor({
     }
   };
 
-  /** textarea 捲動時同步 gutter（直接動 DOM，不經 state，避免捲動掉幀）。 */
-  const onEditorScroll = () => {
+  /**
+   * 複製/剪下：選取跨到表格續行 join 區時，剪貼簿改放「收斂後完整文字」的切片
+   * （單行 <br> 形＝合法 GFM，貼到外部平台表格不會壞）。座標映射走正確順序
+   * （先徽章、再 join；對抗式復審 C-1/H-1——不用正則猜，跨徽章選取則放行原生複製）。
+   */
+  const transformClipboardForJoins = (e: React.ClipboardEvent<HTMLTextAreaElement>): void => {
+    const f = foldRef.current;
+    if (!f.tableViewOn) return;
     const ta = ref.current;
-    if (ta && gutterInnerRef.current) {
-      gutterInnerRef.current.style.transform = `translateY(${-ta.scrollTop}px)`;
+    if (!ta) return;
+    const s = ta.selectionStart;
+    const en = ta.selectionEnd;
+    if (s === en) return;
+    const regions = listJoinRegions(f.display);
+    if (!regions.some((r) => s < r.contentStart && en > r.start)) return; // 未跨 join → 原生複製
+    // 端點「各自」過徽章映射（(p,p) 空範圍只在 p 嚴格位於徽章內時回 null）——
+    // 選取「完整包住」徽章不再整段放棄（對抗式復審 HIGH-1：Ctrl+A 全選複製的
+    // 剪貼簿會外流 ↳ 字面與徽章原文）；被包住的徽章由 expandDisplay 正確展開成隱藏內文。
+    const startMapped = mapDisplayRangeToFull(f.display, f.state, s, s);
+    const endMapped = mapDisplayRangeToFull(f.display, f.state, en, en);
+    if (!startMapped || !endMapped) return; // 端點嚴格在徽章內 → 放行原生（後續編輯由徽章驗證守門）
+    const expanded = expandDisplay(f.display, f.state);
+    const range = mapExpandedRangeToCollapsed(expanded, startMapped.start, endMapped.end);
+    const full = collapseTableRowBreaks(expanded);
+    e.preventDefault();
+    e.clipboardData.setData("text/plain", full.slice(range.start, range.end));
+  };
+
+  /** 剪下＝複製轉換＋刪除選取（範圍擴張覆蓋 join 區，不留半殘標記）。 */
+  const onEditorCut = (e: React.ClipboardEvent<HTMLTextAreaElement>): void => {
+    transformClipboardForJoins(e);
+    if (!e.defaultPrevented) return; // 未轉換 → 原生剪下
+    const ta = ref.current;
+    if (!ta) return;
+    const ext = extendRangeOverJoins(
+      listJoinRegions(foldRef.current.display),
+      ta.selectionStart,
+      ta.selectionEnd,
+    );
+    deleteRangePreservingUndo(ta, ext.start, ext.end);
+  };
+
+  /**
+   * 拖放守門：拖進來的文字帶「續行標記」樣式（多半是從本編輯器拖移含 join 的選取）
+   * 落點若不在表格脈絡會讓 ↳ 字面外漏入庫（對抗式復審 H-2 反例 2）→ 一律擋下並提示。
+   */
+  const onEditorDrop = (e: React.DragEvent<HTMLTextAreaElement>): void => {
+    if (!foldRef.current.tableViewOn) return;
+    let text = "";
+    try {
+      text = e.dataTransfer?.getData("text/plain") ?? "";
+    } catch {
+      text = "";
+    }
+    if (/(^|\n) *↳ ?/.test(text)) {
+      e.preventDefault();
+      showToast("拖放內容含表格續行標記，請改用複製貼上（複製會自動轉成 <br> 單行格式）", { type: "info" });
     }
   };
+
+  /** textarea 捲動時同步 gutter 與管線標示背景層（直接動 DOM，不經 state，避免捲動掉幀）。 */
+  const onEditorScroll = () => {
+    const ta = ref.current;
+    if (!ta) return;
+    if (gutterInnerRef.current) {
+      gutterInnerRef.current.style.transform = `translateY(${-ta.scrollTop}px)`;
+    }
+    if (pipeInnerRef.current) {
+      pipeInnerRef.current.style.transform = `translateY(${-ta.scrollTop}px)`;
+    }
+  };
+
+  // ─── 表格管線標示背景層（| 上色；使用者 2026-08-13 追加）──────────────
+  // textarea 無法對單一字元上色 → 疊一層同字體/同排版的背景層（文字透明），
+  // 只在「真表格行」的未跳脫 | 位置畫色塊；textarea 文字在其上，IME/選取不受影響
+  //（同 StickyBody「重點底圖」先例）。
+  const pipeBackdrop = useMemo(() => {
+    if (!display.includes("|")) return null;
+    const flags = listTableLineFlags(display);
+    if (!flags.some(Boolean)) return null;
+    const nodes: React.ReactNode[] = [];
+    display.split("\n").forEach((line, lineIndex) => {
+      if (lineIndex > 0) nodes.push("\n");
+      if (!flags[lineIndex]) {
+        nodes.push(line);
+        return;
+      }
+      const noCr = line.endsWith("\r") ? line.slice(0, -1) : line;
+      let cursor = 0;
+      for (const pipePos of unescapedPipePositions(noCr)) {
+        if (pipePos > cursor) nodes.push(line.slice(cursor, pipePos));
+        nodes.push(
+          <span key={`${lineIndex}-${pipePos}`} className="mde-pipe-mark">
+            |
+          </span>,
+        );
+        cursor = pipePos + 1;
+      }
+      nodes.push(line.slice(cursor));
+    });
+    return nodes;
+  }, [display]);
+
+  // 背景層排版寬度＝textarea 內容寬（clientWidth 已扣捲軸）——出現垂直捲軸時
+  // 兩層的自動換行才會斷在同一處；捲動位置一併對齊。
+  useEffect(() => {
+    const ta = ref.current;
+    const inner = pipeInnerRef.current;
+    if (!ta || !inner) return;
+    const cs = window.getComputedStyle(ta);
+    const padL = parseFloat(cs.paddingLeft) || 0;
+    const padR = parseFloat(cs.paddingRight) || 0;
+    const width = Math.max(0, ta.clientWidth - padL - padR);
+    inner.style.width = width > 0 ? `${width}px` : "";
+    inner.style.transform = `translateY(${-ta.scrollTop}px)`;
+  }, [pipeBackdrop, measureTick, view, poppedOut, minHeight]);
 
   // 摺疊 gutter 量測：以鏡像 div（同字體/寬度/換行）搭配 Range 量各 toggle 標頭行的 Y。
   // jsdom 沒有真排版（回 0）也不會壞——按鈕仍渲染，只是疊在一起，不影響邏輯測試。
@@ -1089,6 +1396,16 @@ export function MarkdownEditor({
                 </div>
               </div>
             )}
+            {pipeBackdrop && (
+              <div
+                className={`mde-pipe-backdrop ${hasToggleBlocks ? "mde-pipe-backdrop--fold-gutter" : ""}`}
+                aria-hidden="true"
+              >
+                <div className="mde-pipe-backdrop-inner" ref={pipeInnerRef}>
+                  {pipeBackdrop}
+                </div>
+              </div>
+            )}
             <textarea
               ref={ref}
               className={`mde-textarea ${hasToggleBlocks ? "mde-textarea--fold-gutter" : ""} ${textareaClassName || ""}`}
@@ -1097,6 +1414,9 @@ export function MarkdownEditor({
               onChange={(e) => applyEdit(e.target.value)}
               onBlur={onBlur}
               onPaste={onPasteImage}
+              onCopy={transformClipboardForJoins}
+              onCut={onEditorCut}
+              onDrop={onEditorDrop}
               onKeyDown={onEditorKeyDown}
               onClick={onEditorClick}
               onSelect={onEditorSelect}

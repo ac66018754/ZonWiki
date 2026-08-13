@@ -4024,6 +4024,10 @@ html[data-route="time"] .sidebar-toggle {
   resize: vertical;
   outline: none;
   box-sizing: border-box;
+  /* 斷行規則「明示」與 .mde-pipe-backdrop 完全一致（別依賴 UA 預設）——
+     背景層是 textarea 的排版鏡像，兩層斷行點不同就會讓 | 色塊疊錯位置。 */
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 /* 編輯模式摺疊（editor folding）：textarea 左側的摺疊鈕 gutter。
    結構：.mde-editor-wrap（相對定位容器）> .mde-fold-gutter（絕對定位、裁切）>
@@ -4098,6 +4102,36 @@ html[data-route="time"] .sidebar-toggle {
 /* 有 toggle 區塊時，textarea 左側讓出 gutter 空間 */
 .mde-textarea--fold-gutter {
   padding-left: 28px;
+}
+
+/* 表格管線標示背景層：疊在 textarea「底下」的同字體/同排版鏡像（文字透明），
+   只在真表格行的未跳脫 | 位置畫色塊——textarea 本身文字/游標/IME 完全不受影響。
+   寬度由 JS 同步為 textarea 的 clientWidth（扣捲軸）以對齊自動換行；捲動同步 translateY。 */
+.mde-pipe-backdrop {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+  color: transparent;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-sm);
+  line-height: var(--line-height-normal);
+  padding: var(--spacing-3);
+  box-sizing: border-box;
+  white-space: pre-wrap;
+  /* 與 .mde-textarea 明示同一組斷行規則（兩層排版鏡像的不變式）。 */
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+.mde-pipe-backdrop--fold-gutter {
+  padding-left: 28px;
+}
+.mde-pipe-mark {
+  /* 半透明主題色色塊：白色的 | 疊在其上（各主題 --focus-ring 皆與底色有足夠色差；
+     這是視覺輔助、非文字資訊載體，不受 4.5:1 內文對比門檻約束）。 */
+  background: color-mix(in srgb, var(--focus-ring) 34%, transparent);
+  border-radius: 2px;
 }
 
 .mde-preview {
@@ -5010,6 +5044,20 @@ html[data-route="time"] .sidebar-toggle {
   accent-color: var(--action-primary-bg);
 }
 .zw-cell-checkbox:disabled {
+  cursor: default;
+}
+
+/* 儲存格內多 checkbox（一格多待辦；段首 [ ]/[x] 轉成的核取方塊）：
+   跟在後面的文字是同一行的標籤，右側留一點呼吸空間、垂直置中對齊文字。 */
+.zw-cell-cbx {
+  width: 15px;
+  height: 15px;
+  margin-right: 6px;
+  vertical-align: -2px;
+  cursor: pointer;
+  accent-color: var(--action-primary-bg);
+}
+.zw-cell-cbx:disabled {
   cursor: default;
 }
 

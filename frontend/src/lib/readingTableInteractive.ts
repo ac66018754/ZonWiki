@@ -12,7 +12,14 @@
  *   回寫並暫停新建標註（DOM 非原始狀態時的座標不可入庫）。
  * - 任何版面變動後派發 `zonwiki:layout-changed`，讓浮層立即 rebase 而不必等捲動。
  */
-import { parseHeaderSpec, isCheckedValue, type HeaderControl } from './tableSpec';
+import {
+  parseHeaderSpec,
+  isCheckedValue,
+  unescapeCellBr,
+  toggleCellCheckbox,
+  countCellCheckboxes,
+  type HeaderControl,
+} from './tableSpec';
 import {
   compareCellValues,
   rowPassesFilters,
@@ -211,6 +218,95 @@ function applyChipColor(
   } else {
     element.dataset.zwColor = color;
   }
+}
+
+/**
+ * 儲存格「段首」多 checkbox 的文字樣式（DOM 端；raw 端的同構規則見 tableSpec.countCellCheckboxes）：
+ * 可選空白＋字面 `[ ]`/`[x]`/`[X]`，其後必須是空白或文字節點結尾（黏字不算）。
+ */
+const SEGMENT_CHECKBOX_TEXT_PATTERN = /^([ \t]*)\[( |x|X)\](?=$|[ \t])/;
+
+/**
+ * 儲存格內多 checkbox 增強（A6）：以 `<br>` 分「段」，把段首字面 `[ ]`/`[x]` 換成
+ * 可點擊核取方塊；點擊＝以 tableSpec.toggleCellCheckbox 切換 raw 第 k 個標記後走
+ * 既有 saveCell 寫回。
+ *
+ * 安全比對：DOM 偵測到的段首標記數必須等於 raw 的標記數（`\[ ]` 跳脫等會造成
+ * DOM 與 raw 不同構）——不相等＝整格放棄增強，寧可不互動、不可切錯標記。
+ *
+ * @param cell 目標儲存格（td）。
+ * @param mdLine 該列在原文的行號（1 起算）。
+ * @param columnIndex 欄索引（0 起算）。
+ * @param table 所屬表格（寫回前檢查 isConnected，防孤兒節點寫錯行）。
+ * @param interactions 寫回介面。
+ */
+function enhanceCellChecklist(
+  cell: HTMLTableCellElement,
+  mdLine: number,
+  columnIndex: number,
+  table: HTMLTableElement,
+  interactions: ReadingTableInteractions,
+): void {
+  // 先蒐集候選（不動 DOM）：段首（起頭或 <br> 之後）的文字節點且以標記樣式開頭。
+  const candidates: Text[] = [];
+  let atSegmentStart = true;
+  for (const node of Array.from(cell.childNodes)) {
+    if (node instanceof HTMLBRElement) {
+      atSegmentStart = true;
+      continue;
+    }
+    const isStart = atSegmentStart;
+    atSegmentStart = false;
+    if (!isStart || !(node instanceof Text)) continue;
+    if (SEGMENT_CHECKBOX_TEXT_PATTERN.test(node.textContent ?? '')) candidates.push(node);
+  }
+  if (candidates.length === 0) return;
+
+  const raw = interactions.getCellRaw(mdLine, columnIndex);
+  if (raw === null || countCellCheckboxes(raw) !== candidates.length) return;
+
+  // 把候選文字節點的標記字面換成核取方塊（其餘文字原樣保留）。
+  const boxes: HTMLInputElement[] = [];
+  for (const textNode of candidates) {
+    const text = textNode.textContent ?? '';
+    const match = text.match(SEGMENT_CHECKBOX_TEXT_PATTERN);
+    if (!match) continue;
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.className = 'zw-cell-cbx';
+    box.checked = match[2].toLowerCase() === 'x';
+    box.setAttribute('aria-label', '待辦勾選');
+    textNode.textContent = text.slice(match[0].length);
+    cell.insertBefore(box, textNode);
+    boxes.push(box);
+  }
+
+  boxes.forEach((box, checkboxIndex) => {
+    box.addEventListener('change', () => {
+      // 表格已被整段重注入汰換（孤兒節點）→ 不寫回（行號可能已過期）。
+      if (!table.isConnected) {
+        box.checked = !box.checked;
+        return;
+      }
+      // 以「此刻」的 raw 為準（同格可能剛被別的操作改過）；切換失敗＝還原勾選。
+      const currentRaw = interactions.getCellRaw(mdLine, columnIndex);
+      const nextValue = currentRaw === null ? null : toggleCellCheckbox(currentRaw, checkboxIndex);
+      if (nextValue === null) {
+        box.checked = !box.checked;
+        return;
+      }
+      boxes.forEach((b) => {
+        b.disabled = true;
+      });
+      interactions.saveCell(mdLine, columnIndex, nextValue).then((ok) => {
+        // 成功也要自行恢復可互動：渲染後 HTML 可能一字未變、不會有重注入（同控件欄先例）。
+        boxes.forEach((b) => {
+          b.disabled = false;
+        });
+        if (!ok) box.checked = !box.checked; // 失敗還原樂觀 UI
+      });
+    });
+  });
 }
 
 /**
@@ -426,6 +522,20 @@ export function setupInteractiveTable(
     }
   });
 
+  // ── 儲存格內多 checkbox（一格多待辦，像 OneNote；2026-08-13 使用者追加）──────────
+  // 非控件欄的儲存格：以 <br> 分「段」，段首的字面 [ ]/[x] 換成可點擊核取方塊；
+  // 點擊＝切換 raw 中對應第 k 個標記後走既有 saveCell 寫回（樂觀 UI、失敗還原）。
+  if (interactions) {
+    for (const row of originalRows) {
+      const mdLine = editableRowLine(row);
+      if (mdLine === null) continue; // 不可寫回的列不增強（唯讀 checkbox 只會誤導）
+      Array.from(row.cells).forEach((cell, columnIndex) => {
+        if (controls[columnIndex]) return; // 控件欄有自己的整格語意（chip／單一勾選）
+        enhanceCellChecklist(cell, mdLine, columnIndex, table, interactions);
+      });
+    }
+  }
+
   // ── 表頭：點擊排序（無→升→降→無）＋漏斗篩選 ──────────────────────────────────────
   headerCells.forEach((cell, columnIndex) => {
     cell.classList.add('zw-th-sortable');
@@ -516,14 +626,18 @@ export function setupInteractiveTable(
     const cellIndex = cell.cellIndex;
     const raw = interactions.getCellRaw(mdLine, cellIndex);
     if (raw === null) return; // 行號/欄位對不上原文（防呆）→ 此格降級為不可直編
+    // 顯示對稱：字面 <br> 家族還原成真實換行（Shift+Enter 存進去的是 <br>，重開時
+    // 不該讓使用者看到標籤；存檔時 escapeCellText 會把 \n 轉回正規形 <br>）。
+    // 「無變更」比較也用還原後的 initial——變體（<br/> 等）開了沒改不會被悄悄正規化存檔。
+    const initial = unescapeCellBr(raw);
 
     const original = document.createDocumentFragment();
     while (cell.firstChild) original.appendChild(cell.firstChild);
 
     const editor = document.createElement('textarea');
     editor.className = 'zw-cell-editor';
-    editor.value = raw;
-    editor.rows = Math.max(1, raw.split('\n').length);
+    editor.value = initial;
+    editor.rows = Math.max(1, initial.split('\n').length);
     editingCell = cell;
 
     const closeEditor = (restore: boolean): void => {
@@ -532,8 +646,8 @@ export function setupInteractiveTable(
       editingCell = null;
     };
     const save = (): void => {
-      if (editor.value === raw) {
-        closeEditor(true); // 沒改 → 視同取消，不打擾後端
+      if (editor.value === initial) {
+        closeEditor(true); // 沒改 → 視同取消，不打擾後端（比較基準＝還原換行後的初值）
         return;
       }
       editor.disabled = true;

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkBreaks from 'remark-breaks';
 import { STICKY_COLORS, type OverlayItemView } from './overlayShared';
 import { PRESET_COLORS, resolveColor } from '@/lib/highlightColor';
 import { ColorPickerInline } from '@/components/ColorPicker';
@@ -194,7 +195,8 @@ export function StickyBody({
           }}
         >
           {text.trim()
-            ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+            // remarkBreaks：單一換行＝硬換行（與筆記本文一致，2026-08-13 全站裁示）。
+            ? <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{text}</ReactMarkdown>
             : <span style={{ color: '#999' }}>（空白便利貼，按下方「編輯」開始輸入）</span>}
         </div>
       ) : (
