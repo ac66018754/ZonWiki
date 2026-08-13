@@ -55,6 +55,10 @@ import { useConfirm } from '@/components/ConfirmProvider';
 import { registerNavigationGuard } from '@/lib/navigationGuard';
 import { emitNoteActiveCategory } from '@/lib/noteEvents';
 import { noteEditChannelName, NOTE_EDIT_MAX_CONTENT, type NoteEditMessage } from '@/lib/noteEditChannel';
+import { buildCategoryOptions, categoryPathOf } from '@/lib/categoryOptions';
+import { appendEmptyTableRow } from '@/lib/tableRowInsert';
+import { clearDraft, createDraftWriter, draftKeyForNote, loadDraft, type DraftRecord, type DraftWriter } from '@/lib/draftBackup';
+import { NoteMetaQuickEdit } from '@/components/NoteMetaQuickEdit';
 
 // ── 重量級用戶端元件延遲載入（修 #10：dev 模式 Turbopack render worker 崩潰 500）────────────
 // 這四個元件（Markdown 編輯器、文字標註層、浮動白板、任務編輯彈窗）合計約 2,900 行，全為
@@ -200,6 +204,8 @@ export default function NotesDetailPage() {
   const editPopupRef = useRef<Window | null>(null);
   // 「編輯」按鈕點下展開的小選單：可選「編輯頁（頁內）」或「編輯彈窗（獨立視窗）」。
   const [showEditMenu, setShowEditMenu] = useState(false);
+  // 閱讀模式「✎ 就地調整分類/標籤」面板開關（2026-08-13：不進編輯模式即可改分類）。
+  const [metaEditOpen, setMetaEditOpen] = useState(false);
 
   // 編輯時的分類/標籤：選項池與目前選取。
   // 選項池改由共用的 SWR 快取（useNoteCategories/useNoteTags）供給，並在取得資料時 seed 到
@@ -220,12 +226,18 @@ export default function NotesDetailPage() {
   const [editCatIds, setEditCatIds] = useState<string[]>([]);
   const [editTagIds, setEditTagIds] = useState<string[]>([]);
 
-  // 計算分類的完整階層路徑（顯示用，例如「工作 / 專案A」）
-  const categoryPath = (parentId: string | null | undefined, cats: NoteCategory[]): string => {
-    if (!parentId) return '';
-    const p = cats.find((c) => c.id === parentId);
-    return p ? `${categoryPath(p.parentId, cats)}${p.name} / ` : '';
-  };
+  // ── 本地草稿備份（防停電，2026-08-13）────────────────────────────────
+  // localStorage 同步落地：編輯中每次「真實使用者輸入」debounce 800ms 寫一份，
+  // 停電/當機最多損失不到 1 秒輸入。程式化 set（進入編輯、409 重載、AI 覆寫）
+  // 不經輸入 handler、不會覆寫草稿（復審 H5）。
+  const draftWriterRef = useRef<DraftWriter | null>(null);
+  // 輸入 handler 需要「另一欄的最新值」——state 在 handler 內是舊 closure，改用 ref 同步。
+  const editTitleDraftRef = useRef('');
+  const editContentDraftRef = useRef('');
+  // 進入編輯「當下」讀到的既有草稿（還原橫幅資料；null＝無草稿或與現行內容相同）。
+  const [pendingDraft, setPendingDraft] = useState<DraftRecord | null>(null);
+
+  // 分類完整階層路徑改用共用 util（含防環＋下拉排序統一——見 lib/categoryOptions.ts）。
 
   // ── 未儲存變更離開防護（#16，對齊 TaskEditorModal 的交易式暫存/放棄確認）─────────────
   // 兩組 id 陣列是否為同一集合（忽略順序）：分類/標籤選取的先後不視為變更。
@@ -250,7 +262,7 @@ export default function NotesDetailPage() {
   // 有未儲存變更時詢問是否放棄；回傳 Promise<true>＝可離開（沿用 W6 的 ConfirmDialog）。
   const confirmDiscardIfDirty = useCallback(async () => {
     if (!hasUnsavedChanges) return true;
-    return confirm({
+    const discard = await confirm({
       title: '放棄未儲存的變更？',
       message:
         '此筆記有未儲存的變更，要放棄並離開嗎？\n' +
@@ -258,6 +270,14 @@ export default function NotesDetailPage() {
       danger: true,
       confirmLabel: '放棄並離開',
     });
+    if (discard) {
+      // 明確放棄＝本地草稿備份也一併清除（否則下次進編輯會跳「還原已放棄內容」的橫幅）。
+      const current = noteRef.current;
+      if (current) clearDraft(draftKeyForNote(current.id));
+      draftWriterRef.current?.cancel();
+      setPendingDraft(null);
+    }
+    return discard;
   }, [hasUnsavedChanges, confirm]);
 
   // 硬離開防護：整頁重新整理／關閉分頁／改網址列時，用瀏覽器原生 beforeunload 警示。
@@ -272,6 +292,61 @@ export default function NotesDetailPage() {
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [hasUnsavedChanges]);
+
+  // 草稿生命週期：進入編輯當下「先讀走既有草稿」（快照進 state 供還原橫幅），
+  // 之後才建立寫入器；beforeunload 同步 flush 補上 debounce 的最後空窗
+  // （localStorage 為同步 API，直接關分頁也收得住；真斷電則靠 800ms debounce 的既有落地）。
+  useEffect(() => {
+    if (!isEditing) {
+      setPendingDraft(null);
+      return;
+    }
+    const current = noteRef.current;
+    if (!current) return;
+    const key = draftKeyForNote(current.id);
+    // 相依含 note?.id（二輪復審 HIGH）：本頁在站內切換筆記時不會 remount、isEditing 也不重設，
+    // 若 writer 不隨筆記重建，B 筆記的輸入會寫進 A 筆記的草稿鍵（跨筆記污染＋還原時資料錯置）。
+    const existing = loadDraft(key);
+    setPendingDraft(
+      existing && (existing.content !== current.contentRaw || existing.title !== current.title)
+        ? existing
+        : null,
+    );
+    const writer = createDraftWriter(key);
+    draftWriterRef.current = writer;
+    const flushOnUnload = () => writer.flush();
+    window.addEventListener('beforeunload', flushOnUnload);
+    return () => {
+      window.removeEventListener('beforeunload', flushOnUnload);
+      // 只停計時、不清已落地的草稿：非正常離開（未經確認對話框）時草稿必須留著。
+      writer.cancel();
+      if (draftWriterRef.current === writer) draftWriterRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- note?.id 經 noteRef 讀取（避免整個 note 物件當相依），id 變動時必須重建 writer
+  }, [isEditing, note?.id]);
+
+  // 程式化 set（進入編輯、409 重載、AI 覆寫）也要讓 ref 跟上，
+  // 使用者下一次輸入寫草稿時才不會夾帶過期的另一欄。
+  useEffect(() => {
+    editTitleDraftRef.current = editTitle;
+  }, [editTitle]);
+  useEffect(() => {
+    editContentDraftRef.current = editContent;
+  }, [editContent]);
+
+  /** 標題輸入（使用者輸入路徑——寫草稿；程式化 set 不經此處）。 */
+  const handleEditTitleChange = useCallback((value: string) => {
+    setEditTitle(value);
+    editTitleDraftRef.current = value;
+    draftWriterRef.current?.write({ title: value, content: editContentDraftRef.current });
+  }, []);
+
+  /** 內容輸入（使用者輸入路徑——寫草稿；程式化 set 不經此處）。 */
+  const handleEditContentChange = useCallback((value: string) => {
+    setEditContent(value);
+    editContentDraftRef.current = value;
+    draftWriterRef.current?.write({ title: editTitleDraftRef.current, content: value });
+  }, []);
 
   // 軟離開防護 A｜全站導頁守門：把「未儲存變更確認」登記進共用的 navigationGuard，
   // 供所有「以 router.push 導頁但非 <a>」或「自管導頁的 <a>」入口（全域搜尋、指令面板、
@@ -638,6 +713,10 @@ export default function NotesDetailPage() {
       },
       saveCell: (mdLine, cellIndex, newValue) =>
         applyReadingEdit((base) => setCellValueInContent(base, mdLine, cellIndex, newValue)),
+      // 「＋ 新增一行」（2026-08-13）：appendEmptyTableRow 定位失敗回 null →
+      // applyReadingEdit 視為不動、回 false（按鈕無反應但不誤寫）。
+      insertRow: (anchorMdLine) =>
+        applyReadingEdit((base) => appendEmptyTableRow(base, anchorMdLine)),
     }),
     [getReadingBase, applyReadingEdit],
   );
@@ -974,6 +1053,7 @@ export default function NotesDetailPage() {
         // 剛存完檔卻被導進消歧異頁（對抗式復審 CRITICAL #2）。改帶 ?expect 讓重掛後的載入 effect 直達本篇。
         setIsEditing(false);
         setError(null);
+        clearDraft(draftKeyForNote(note.id)); // 存檔成功＝草稿任務完成
         try { localStorage.setItem('zonwiki:last-note-slug', saved.slug); } catch { /* ignore */ }
         router.replace(noteHref(saved.slug) + '?expect=' + note.id);
         return; // 重掛後由載入 effect（透過 ?expect）接手渲染，本處不再重抓
@@ -986,6 +1066,7 @@ export default function NotesDetailPage() {
       setNote(saved);
       setIsEditing(false);
       setError(null);
+      clearDraft(draftKeyForNote(note.id)); // 存檔成功＝草稿任務完成
 
       const fresh = await getNoteById(note.id);
       if (fresh) {
@@ -1504,7 +1585,7 @@ export default function NotesDetailPage() {
               <input
                 type="text"
                 value={editTitle}
-                onChange={(e) => setEditTitle(e.target.value)}
+                onChange={(e) => handleEditTitleChange(e.target.value)}
                 style={{
                   flex: 1,
                   minWidth: 0,
@@ -1545,6 +1626,56 @@ export default function NotesDetailPage() {
               </div>
             </div>
 
+            {/* ⚡ 本地草稿還原橫幅（防停電）：進入編輯當下偵測到「與現行內容不同」的草稿。
+                非 modal、不擋輸入；還原後草稿仍留在 localStorage（存檔/明確放棄才清）。 */}
+            {pendingDraft && (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: 'var(--spacing-3)',
+                  marginBottom: 'var(--spacing-4)',
+                  padding: 'var(--spacing-3)',
+                  background: 'var(--status-warning-bg, var(--bg-surface))',
+                  border: '1px solid var(--border-strong)',
+                  borderRadius: 'var(--radius-md)',
+                  fontSize: 'var(--text-sm)',
+                  color: 'var(--text-primary)',
+                }}
+              >
+                <span style={{ flex: 1, minWidth: 200 }}>
+                  ⚡ 偵測到 {formatFullDateTime(pendingDraft.savedAt, userTimeZone)} 的未儲存草稿
+                  （可能因斷電/當機未存檔）。
+                </span>
+                <div style={{ display: 'flex', gap: 'var(--spacing-2)', flexShrink: 0 }}>
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    onClick={() => {
+                      setEditTitle(pendingDraft.title);
+                      setEditContent(pendingDraft.content);
+                      editTitleDraftRef.current = pendingDraft.title;
+                      editContentDraftRef.current = pendingDraft.content;
+                      setPendingDraft(null);
+                    }}
+                  >
+                    還原草稿
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => {
+                      if (note) clearDraft(draftKeyForNote(note.id));
+                      setPendingDraft(null);
+                    }}
+                  >
+                    捨棄
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* 分類 / 標籤（可搜尋下拉 + 就地新增） */}
             <div
               style={{
@@ -1567,10 +1698,7 @@ export default function NotesDetailPage() {
                   分類
                 </label>
                 <SearchableMultiSelect
-                  options={allCategories.map((c) => ({
-                    id: c.id,
-                    name: `${categoryPath(c.parentId, allCategories)}${c.name}`,
-                  }))}
+                  options={buildCategoryOptions(allCategories)}
                   selectedIds={editCatIds}
                   onChange={setEditCatIds}
                   onCreate={async (name) => {
@@ -1642,7 +1770,7 @@ export default function NotesDetailPage() {
 
             <MarkdownEditor
               value={editContent}
-              onChange={setEditContent}
+              onChange={handleEditContentChange}
               withPreview
               minHeight={400}
               placeholder="用 Markdown 撰寫內容…（可用工具列套用格式；🔒 可框住不想被 AI 重排的內容）"
@@ -1670,9 +1798,11 @@ export default function NotesDetailPage() {
             </div>
 
             {/* 分類／標籤（常駐顯示於時間列下方；分類 chip 可點擊 → 該分類的筆記清單）。
-                樣式沿用全站慣例：📁 分類完整路徑、🏷 標籤名（與全域搜尋結果一致）。 */}
+                樣式沿用全站慣例：📁 分類完整路徑、🏷 標籤名（與全域搜尋結果一致）。
+                ✎ 就地調整（2026-08-13）：不進編輯模式即可改分類/標籤（獨立端點、不產生版本）。 */}
             <div
               style={{
+                position: 'relative',
                 marginBottom: 'var(--spacing-5)',
                 display: 'grid',
                 gap: 'var(--spacing-2)',
@@ -1698,7 +1828,7 @@ export default function NotesDetailPage() {
                     // 池尚未載入完成時退回只顯示葉節點名稱（載入後自動補全）。
                     const fullCategory = allCategories.find((x) => x.id === c.id);
                     const pathLabel = fullCategory
-                      ? `${categoryPath(fullCategory.parentId, allCategories)}${fullCategory.name}`
+                      ? categoryPathOf(fullCategory.id, allCategories)
                       : c.name;
                     return (
                       <button
@@ -1734,6 +1864,25 @@ export default function NotesDetailPage() {
                     );
                   })
                 )}
+                {/* ✎ 就地調整分類/標籤（不進編輯模式） */}
+                <button
+                  type="button"
+                  onClick={() => setMetaEditOpen((open) => !open)}
+                  title="調整分類與標籤"
+                  aria-label="調整分類與標籤"
+                  style={{
+                    padding: '2px 8px',
+                    background: 'transparent',
+                    border: '1px dashed var(--border-default)',
+                    borderRadius: 'var(--radius-full)',
+                    color: 'var(--text-tertiary)',
+                    fontSize: 'var(--text-xs)',
+                    cursor: 'pointer',
+                    flexShrink: 0,
+                  }}
+                >
+                  ✎
+                </button>
               </div>
               <div
                 style={{
@@ -1770,6 +1919,61 @@ export default function NotesDetailPage() {
                   ))
                 )}
               </div>
+              {metaEditOpen && (
+                <NoteMetaQuickEdit
+                  noteId={note.id}
+                  categoryOptions={buildCategoryOptions(allCategories)}
+                  tagOptions={allTags.map((t) => ({ id: t.id, name: t.name }))}
+                  initialCategoryIds={(note.categories ?? []).map((c) => c.id)}
+                  initialTagIds={(note.tags ?? []).map((t) => t.id)}
+                  onCreateCategory={async (name) => {
+                    try {
+                      const cat = await createNoteCategory({ name, parentId: null });
+                      if (cat) {
+                        setAllCategories((c) => [...c, cat]);
+                        mutateCategories();
+                        return { id: cat.id, name: cat.name };
+                      }
+                    } catch (e) {
+                      setError(e instanceof Error ? e.message : '新增分類失敗');
+                    }
+                    return null;
+                  }}
+                  onCreateTag={async (name) => {
+                    try {
+                      const tag = await createNoteTag(name);
+                      if (tag) {
+                        setAllTags((t) => [...t, tag]);
+                        mutateTags();
+                        return { id: tag.id, name: tag.name };
+                      }
+                    } catch (e) {
+                      setError(e instanceof Error ? e.message : '新增標籤失敗');
+                    }
+                    return null;
+                  }}
+                  onSaved={(categoryIds, tagIds) => {
+                    // 就地更新本頁筆記狀態（chip 立即反映），並重新驗證共用快取（側欄計數）。
+                    setNote((prev) => {
+                      if (!prev) return prev;
+                      const catById = new Map(allCategories.map((c) => [c.id, c]));
+                      const tagById = new Map(allTags.map((t) => [t.id, t]));
+                      return {
+                        ...prev,
+                        categories: categoryIds
+                          .map((id) => catById.get(id))
+                          .filter((c): c is NoteCategory => Boolean(c)),
+                        tags: tagIds
+                          .map((id) => tagById.get(id))
+                          .filter((t): t is NoteTag => Boolean(t)),
+                      };
+                    });
+                    mutateCategories();
+                    mutateTags();
+                  }}
+                  onClose={() => setMetaEditOpen(false)}
+                />
+              )}
             </div>
 
             {/* 標籤頁 */}

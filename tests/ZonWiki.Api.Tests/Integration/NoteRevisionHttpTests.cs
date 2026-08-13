@@ -20,6 +20,11 @@ namespace ZonWiki.Api.Tests.Integration;
 /// 本檔逐一鎖住所有「會改變筆記標題/內容」的真實路徑都寫快照，並鎖住
 /// 「不該寫快照的情境」（純中繼資料變更、同值重送、還原）不產生噪音版本。
 ///
+/// 2026-08-13 契約演進（使用者裁示「時間窗合併」）：同一使用者、有 HTTP 脈絡、
+/// 距最新 update 版的 CreatedDateTime 10 分鐘內的連續 update 併成一筆（就地覆寫）；
+/// create/delete 快照與背景服務寫入永不合併——「任何變更都留版本」修正為
+/// 「每 10 分鐘至少留一個救援點；窗內連續小改動視為同一次編輯」。
+///
 /// 斷言原則（測試計畫審查結論）：
 /// - 一律斷言「恰好 N 筆」而非「包含某筆」——才能同時抓到「漏寫」與「雙寫」。
 /// - 一律驗證快照列的稽核欄位（CreatedDateTime 非 0001-01-01）——攔截器產生的列
@@ -364,15 +369,17 @@ public sealed class NoteRevisionHttpTests
         rows.Should().HaveCount(2, "409 那方的交易整體 rollback，不得留下孤兒版本列");
         rows[1].RevisionNo.Should().Be(2);
 
-        // 失敗方重新取版本再更新 → 序號正確銜接。
+        // 失敗方重新取版本再更新 → 距勝方 update 僅數秒、同 actor、窗內
+        // → 依「時間窗合併」語意併入最新版（就地覆寫），不新增列。
         var retryVersion = await GetNoteVersionAsync(noteId);
         var retry = await client.PutAsJsonAsync(
             $"/api/notes/{noteId}", new { contentRaw = "重試成功", baseVersion = retryVersion });
         retry.EnsureSuccessStatusCode();
 
         var finalRows = await GetRevisionRowsAsync(noteId);
-        finalRows.Should().HaveCount(3);
-        finalRows[2].RevisionNo.Should().Be(3);
+        finalRows.Should().HaveCount(2, "重試發生在合併窗內，應併入最新 update 版而非新增列");
+        finalRows[1].RevisionNo.Should().Be(2);
+        finalRows[1].ContentRaw.Should().Be("重試成功");
     }
 
     /// <summary>
@@ -404,6 +411,194 @@ public sealed class NoteRevisionHttpTests
         rows[1].ChangeKind.Should().Be("delete");
     }
 
+    // ==================== 時間窗合併（coalescing，2026-08-13） ====================
+    // 規則：本次為 update、且「現存最新一版」同時滿足
+    //   (a) ChangeKind=update (b) ValidFlag=true (c) UpdatedUser=本次 actor
+    //   (d) now − 最新版 CreatedDateTime < 10 分鐘（錨定 Created＝鏈最長 10 分鐘必斷）
+    //   (e) 本次有 HTTP 脈絡（CurrentUserId 非空；背景服務寫入永不合併）
+    // → 就地覆寫最新版（Title/ContentRaw/UpdatedDateTime/UpdatedUser），不新增列。
+    // create / delete 永不合併、也永不被 update 併入（首版與刪除快照是誤刪救援的底）。
+
+    /// <summary>
+    /// 測試：同一使用者窗內連續兩次 PUT 內容 → 併成一筆 update（內容=最後一次、
+    /// RevisionNo 不變、UpdatedDateTime 前進、CreatedDateTime 維持鏈首時間）。
+    /// </summary>
+    [Fact]
+    public async Task QuickSuccessiveUpdates_CoalesceIntoLatestUpdateRevision()
+    {
+        var (_, token) = await _factory.SeedUserWithTokenAsync($"rev-coal-{Guid.NewGuid():N}@test.local");
+        using var client = _factory.CreateClientWithToken(token);
+        var noteId = await CreateNoteViaApiAsync(client, "合併測試", "v1");
+
+        (await client.PutAsJsonAsync($"/api/notes/{noteId}", new { contentRaw = "v2" }))
+            .EnsureSuccessStatusCode();
+        (await client.PutAsJsonAsync($"/api/notes/{noteId}", new { contentRaw = "v3" }))
+            .EnsureSuccessStatusCode();
+
+        var rows = await GetRevisionRowsAsync(noteId);
+        rows.Should().HaveCount(2, "窗內第二次 update 應併入第一次，不新增列");
+        rows[1].RevisionNo.Should().Be(2);
+        rows[1].ChangeKind.Should().Be("update");
+        rows[1].ContentRaw.Should().Be("v3", "合併後內容＝鏈上最後一次的內容");
+        rows[1].UpdatedDateTime.Should().BeOnOrAfter(rows[1].CreatedDateTime,
+            "合併只前進 UpdatedDateTime，CreatedDateTime 維持鏈首時間");
+    }
+
+    /// <summary>
+    /// 測試：最新版 CreatedDateTime 被回溯到窗外（11 分鐘前）→ 不合併、新增列且序號銜接。
+    /// 回溯必須用 raw SQL：稽核攔截器會把 EF 路徑的 Modified 蓋回 now（復審 C1）。
+    /// </summary>
+    [Fact]
+    public async Task UpdateOutsideCoalesceWindow_AppendsNewRevision()
+    {
+        var (_, token) = await _factory.SeedUserWithTokenAsync($"rev-coalwin-{Guid.NewGuid():N}@test.local");
+        using var client = _factory.CreateClientWithToken(token);
+        var noteId = await CreateNoteViaApiAsync(client, "窗外測試", "v1");
+
+        (await client.PutAsJsonAsync($"/api/notes/{noteId}", new { contentRaw = "v2" }))
+            .EnsureSuccessStatusCode();
+        await BackdateRevisionAsync(noteId, revisionNo: 2, age: TimeSpan.FromMinutes(11));
+
+        (await client.PutAsJsonAsync($"/api/notes/{noteId}", new { contentRaw = "v3" }))
+            .EnsureSuccessStatusCode();
+
+        var rows = await GetRevisionRowsAsync(noteId);
+        rows.Should().HaveCount(3, "窗（錨定最新版 CreatedDateTime）已過期，必須留新列");
+        rows[1].ContentRaw.Should().Be("v2", "窗外合併不可回頭覆寫舊列");
+        rows[2].RevisionNo.Should().Be(3);
+        rows[2].ContentRaw.Should().Be("v3");
+    }
+
+    /// <summary>
+    /// 測試：窗內連續兩次「只改標題」→ 同樣併成一筆（標題=最後一次）。
+    /// </summary>
+    [Fact]
+    public async Task TitleOnlyQuickUpdates_CoalesceIntoLatestUpdateRevision()
+    {
+        var (_, token) = await _factory.SeedUserWithTokenAsync($"rev-coaltitle-{Guid.NewGuid():N}@test.local");
+        using var client = _factory.CreateClientWithToken(token);
+        var noteId = await CreateNoteViaApiAsync(client, "標題A", "內容");
+
+        (await client.PutAsJsonAsync($"/api/notes/{noteId}", new { title = "標題B" }))
+            .EnsureSuccessStatusCode();
+        (await client.PutAsJsonAsync($"/api/notes/{noteId}", new { title = "標題C" }))
+            .EnsureSuccessStatusCode();
+
+        var rows = await GetRevisionRowsAsync(noteId);
+        rows.Should().HaveCount(2);
+        rows[1].Title.Should().Be("標題C");
+        rows[1].ContentRaw.Should().Be("內容");
+    }
+
+    /// <summary>
+    /// 測試：軟刪除→還原→窗內 PUT → 不併入 delete 快照（最新版是 delete，不滿足條件 (a)），
+    /// 新增獨立 update 列。刪除快照是誤刪救援的關鍵，永不被覆寫。
+    /// </summary>
+    [Fact]
+    public async Task RestoreThenUpdate_NotMergedIntoDeleteRevision()
+    {
+        var (_, token) = await _factory.SeedUserWithTokenAsync($"rev-coaldel-{Guid.NewGuid():N}@test.local");
+        using var client = _factory.CreateClientWithToken(token);
+        var noteId = await CreateNoteViaApiAsync(client, "刪後更新", "原文");
+
+        (await client.DeleteAsync($"/api/notes/{noteId}")).EnsureSuccessStatusCode();
+        (await client.PostAsync($"/api/trash/Note/{noteId}/restore", null)).EnsureSuccessStatusCode();
+        (await client.PutAsJsonAsync($"/api/notes/{noteId}", new { contentRaw = "還原後改" }))
+            .EnsureSuccessStatusCode();
+
+        var rows = await GetRevisionRowsAsync(noteId);
+        rows.Should().HaveCount(3, "create + delete + 還原後的獨立 update");
+        rows[1].ChangeKind.Should().Be("delete");
+        rows[1].ContentRaw.Should().Be("原文", "delete 快照不可被後續 update 覆寫");
+        rows[2].ChangeKind.Should().Be("update");
+        rows[2].ContentRaw.Should().Be("還原後改");
+    }
+
+    /// <summary>
+    /// 測試：背景服務寫入（無 HTTP 脈絡、CurrentUserId 為空——AI 精煉/框選提問同款路徑）
+    /// 接在手動 update 的窗內 → 不合併（條件 (e)）。
+    /// 否則 AI 覆寫會吃掉使用者手動版本的救援點（復審 C2——版本系統存在的理由）。
+    /// </summary>
+    [Fact]
+    public async Task BackgroundWriteWithinWindow_DoesNotCoalesce()
+    {
+        var (_, token) = await _factory.SeedUserWithTokenAsync($"rev-coalbg-{Guid.NewGuid():N}@test.local");
+        using var client = _factory.CreateClientWithToken(token);
+        var noteId = await CreateNoteViaApiAsync(client, "背景不合併", "v1");
+
+        (await client.PutAsJsonAsync($"/api/notes/{noteId}", new { contentRaw = "手動v2" }))
+            .EnsureSuccessStatusCode();
+
+        // 背景寫入：DI 解析的 DbContext（完整攔截器鏈）、無 HTTP 脈絡。
+        var (scope, db) = _factory.CreateDbScope();
+        using (scope)
+        {
+            var note = await db.Note.IgnoreQueryFilters().FirstAsync(n => n.Id == noteId);
+            note.ContentRaw = "背景覆寫v3";
+            await db.SaveChangesAsync();
+        }
+
+        var rows = await GetRevisionRowsAsync(noteId);
+        rows.Should().HaveCount(3, "背景寫入永不合併——手動 v2 的救援點必須保留");
+        rows[1].ContentRaw.Should().Be("手動v2");
+        rows[2].ContentRaw.Should().Be("背景覆寫v3");
+    }
+
+    /// <summary>
+    /// 測試：背景流程照「真實慣例」冒用使用者（SetCurrentUserId——所有背景 AI 流程
+    /// 動筆記前都會呼叫，否則過不了隔離過濾）再於窗內覆寫內容 → 仍不合併。
+    /// 二輪對抗復審 HIGH：CurrentUserId 非空判不出背景冒用，必須另以覆寫旗標排除；
+    /// 上一個測試的「裸 DbContext」情境現實中不存在，本測試才是真實背景路徑的守門。
+    /// </summary>
+    [Fact]
+    public async Task BackgroundWriteWithImpersonation_DoesNotCoalesce()
+    {
+        var (userId, token) = await _factory.SeedUserWithTokenAsync($"rev-coalimp-{Guid.NewGuid():N}@test.local");
+        using var client = _factory.CreateClientWithToken(token);
+        var noteId = await CreateNoteViaApiAsync(client, "冒用不合併", "v1");
+
+        (await client.PutAsJsonAsync($"/api/notes/{noteId}", new { contentRaw = "手動v2" }))
+            .EnsureSuccessStatusCode();
+
+        // 背景寫入：DI 解析 DbContext ＋ SetCurrentUserId 冒用（RefineService/AskQueueService 同款慣例）。
+        var (scope, db) = _factory.CreateDbScope();
+        using (scope)
+        {
+            db.SetCurrentUserId(userId);
+            var note = await db.Note.FirstAsync(n => n.Id == noteId);
+            note.ContentRaw = "背景冒用覆寫v3";
+            await db.SaveChangesAsync();
+        }
+
+        var rows = await GetRevisionRowsAsync(noteId);
+        rows.Should().HaveCount(3, "背景冒用（SetCurrentUserId）仍屬背景脈絡，不得併掉手動版本");
+        rows[1].ContentRaw.Should().Be("手動v2", "手動 v2 的救援點必須完整保留");
+        rows[2].ContentRaw.Should().Be("背景冒用覆寫v3");
+    }
+
+    /// <summary>
+    /// 測試：同一使用者用「另一把 PAT」窗內接續 PUT → 仍合併。
+    /// actor＝使用者 GUID（與 token 無關），此測試鎖住該語意，防止未來誤以 token 區分。
+    /// </summary>
+    [Fact]
+    public async Task SameUserDifferentPat_StillCoalesces()
+    {
+        var (userId, token1) = await _factory.SeedUserWithTokenAsync($"rev-coalpat-{Guid.NewGuid():N}@test.local");
+        using var client1 = _factory.CreateClientWithToken(token1);
+        var noteId = await CreateNoteViaApiAsync(client1, "雙PAT", "v1");
+        (await client1.PutAsJsonAsync($"/api/notes/{noteId}", new { contentRaw = "v2" }))
+            .EnsureSuccessStatusCode();
+
+        var token2 = await SeedSecondTokenAsync(userId);
+        using var client2 = _factory.CreateClientWithToken(token2);
+        (await client2.PutAsJsonAsync($"/api/notes/{noteId}", new { contentRaw = "v3" }))
+            .EnsureSuccessStatusCode();
+
+        var rows = await GetRevisionRowsAsync(noteId);
+        rows.Should().HaveCount(2, "同一使用者不同 PAT 仍是同一 actor，窗內合併");
+        rows[1].ContentRaw.Should().Be("v3");
+    }
+
     // ==================== 查詢端點回歸 ====================
 
     /// <summary>
@@ -431,6 +626,9 @@ public sealed class NoteRevisionHttpTests
         data[1]!["changeKind"]!.GetValue<string>().Should().Be("update");
         data[1]!["contentRaw"]!.GetValue<string>().Should().Be("第二版");
         data[1]!["createdDateTime"].Should().NotBeNull();
+        // 合併上線後（2026-08-13）：前端時間軸的排序/分組鍵改用 updatedDateTime
+        //（合併會讓 createdDateTime 停在鏈首、內容卻是鏈尾——復審 H4），DTO 必須帶出此欄。
+        data[1]!["updatedDateTime"].Should().NotBeNull();
     }
 
     // ==================== 共用輔助 ====================
@@ -486,6 +684,59 @@ public sealed class NoteRevisionHttpTests
                 .Where(r => r.NoteId == noteId)
                 .OrderBy(r => r.RevisionNo)
                 .ToListAsync();
+        }
+    }
+
+    /// <summary>
+    /// 用 raw SQL 把某版本列的 Created/UpdatedDateTime 回溯到 <paramref name="age"/> 之前。
+    /// 必須繞過 SaveChanges：稽核攔截器會把 EF 路徑的 Modified 蓋回 now、且強制
+    /// CreatedDateTime IsModified=false（復審 C1）。僅為測試的時間操縱，不動 Title/ContentRaw。
+    /// </summary>
+    /// <param name="noteId">筆記 Id。</param>
+    /// <param name="revisionNo">目標版本序號。</param>
+    /// <param name="age">要回溯的時距。</param>
+    private async Task BackdateRevisionAsync(Guid noteId, int revisionNo, TimeSpan age)
+    {
+        var (scope, db) = _factory.CreateDbScope();
+        using (scope)
+        {
+            var t = DateTime.UtcNow - age;
+            await db.Database.ExecuteSqlInterpolatedAsync(
+                $"""
+                UPDATE "NoteRevision"
+                SET "NoteRevision_CreatedDateTime" = {t}, "NoteRevision_UpdatedDateTime" = {t}
+                WHERE "NoteRevision_NoteId" = {noteId} AND "NoteRevision_RevisionNo" = {revisionNo}
+                """);
+        }
+    }
+
+    /// <summary>
+    /// 為既有使用者再種一把 PAT（供「同使用者不同 token」的合併語意測試）。
+    /// </summary>
+    /// <param name="userId">既有使用者 Id。</param>
+    /// <returns>新權杖的明碼字串。</returns>
+    private async Task<string> SeedSecondTokenAsync(Guid userId)
+    {
+        var (scope, db) = _factory.CreateDbScope();
+        using (scope)
+        {
+            var now = DateTime.UtcNow;
+            var (token, hash, prefix) = ZonWiki.Infrastructure.Auth.ApiTokenGenerator.Generate();
+            db.ApiToken.Add(new ApiToken
+            {
+                Id = Guid.NewGuid(),
+                UserId = userId,
+                Name = "integration-test-token-2",
+                TokenHash = hash,
+                TokenPrefix = prefix,
+                CreatedDateTime = now,
+                UpdatedDateTime = now,
+                CreatedUser = "test",
+                UpdatedUser = "test",
+                ValidFlag = true,
+            });
+            await db.SaveChangesAsync();
+            return token;
         }
     }
 

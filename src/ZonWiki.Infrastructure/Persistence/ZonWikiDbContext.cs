@@ -39,6 +39,14 @@ public sealed class ZonWikiDbContext(
     public string CurrentSource => _currentUser?.Source ?? "web";
 
     /// <summary>
+    /// 是否為「背景流程冒用使用者」的脈絡（曾呼叫 <see cref="SetCurrentUserId"/>）。
+    /// 供 NoteRevisionInterceptor 的時間窗合併判定：<see cref="CurrentUserId"/> 非空
+    /// 「不代表」有 HTTP 請求脈絡——所有背景 AI 流程都會冒用使用者 Id 以通過隔離過濾，
+    /// 若只看 CurrentUserId，背景覆寫仍會併掉使用者手動版本的救援點（對抗復審 HIGH）。
+    /// </summary>
+    public bool IsUserContextOverridden => _userIdOverride is not null;
+
+    /// <summary>
     /// 設定背景工作的「目前使用者」覆寫。
     /// 必須在此 DbContext 的「第一次查詢之前」呼叫——因為使用者隔離過濾的 UserId 會在
     /// 模型首次建立時以常數烤進模型、並依此值快取，呼叫太晚將無效。

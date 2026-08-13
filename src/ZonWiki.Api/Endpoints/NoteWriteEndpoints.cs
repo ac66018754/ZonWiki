@@ -1013,7 +1013,8 @@ public static class NoteWriteEndpoints
                 r.Title,
                 r.ContentRaw,
                 r.CreatedDateTime,
-                r.CreatedUser))
+                r.CreatedUser,
+                r.UpdatedDateTime))
             .ToListAsync(ct);
 
         return Results.Ok(ApiResponse<List<NoteRevisionDto>>.Ok(revisions));

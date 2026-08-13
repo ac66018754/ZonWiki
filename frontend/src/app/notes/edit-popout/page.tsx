@@ -17,13 +17,7 @@ import {
 } from "@/lib/api";
 import { useConfirm } from "@/components/ConfirmProvider";
 import { findLostMarksForSave, formatLostMarksMessage } from "@/lib/saveGuardRun";
-
-/** 組出分類的階層路徑前綴（父 / 祖父 / …）。 */
-function categoryPath(parentId: string | null | undefined, cats: NoteCategory[]): string {
-  if (!parentId) return "";
-  const p = cats.find((c) => c.id === parentId);
-  return p ? `${categoryPath(p.parentId, cats)}${p.name} / ` : "";
-}
+import { buildCategoryOptions } from "@/lib/categoryOptions";
 
 /**
  * 獨立編輯視窗（由筆記頁「編輯」以 window.open 開啟）。
@@ -182,7 +176,7 @@ export default function NoteEditPopoutPage() {
           <div style={{ flex: 1, minWidth: 220 }}>
             <label style={{ display: "block", fontSize: "var(--text-xs)", fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>分類</label>
             <SearchableMultiSelect
-              options={allCategories.map((c) => ({ id: c.id, name: `${categoryPath(c.parentId, allCategories)}${c.name}` }))}
+              options={buildCategoryOptions(allCategories)}
               selectedIds={catIds}
               onChange={setCatIds}
               onCreate={async (name) => {

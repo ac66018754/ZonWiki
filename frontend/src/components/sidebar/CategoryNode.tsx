@@ -3,7 +3,7 @@
 import React from "react";
 import Link from "next/link";
 import type { NoteCategory } from "@/lib/api";
-import { NOTE_DND_MIME } from "@/lib/constants";
+import { NOTE_DND_MIME, NOTE_DND_SOURCE_MIME } from "@/lib/constants";
 import { noteHref } from "@/lib/noteHref";
 import type { CatDrop, CatEditorState, SidebarTreeHandlers } from "./types";
 import { NoteRow } from "./NoteRow";
@@ -163,13 +163,14 @@ function CategoryNodeImpl(props: CategoryNodeProps): React.ReactElement {
           }
         }}
         onDrop={(e) => {
-          // (1) 筆記拖入 → 把該筆記加入這個分類
+          // (1) 筆記拖入 → 詢問「切換/增加」後歸類（2026-08-13；來源分類只有側欄樹拖出才有）
           if (e.dataTransfer.types.includes(NOTE_DND_MIME)) {
             e.preventDefault();
             e.stopPropagation();
             const noteId = e.dataTransfer.getData(NOTE_DND_MIME);
+            const sourceCategoryId = e.dataTransfer.getData(NOTE_DND_SOURCE_MIME) || null;
             setNoteDropCatId(null);
-            if (noteId) handleDropNoteOnCategory(noteId, cat.id);
+            if (noteId) handleDropNoteOnCategory(noteId, cat.id, sourceCategoryId);
             return;
           }
           // (2) 分類拖曳放下 → 依落點調順序或變子分類
@@ -328,6 +329,7 @@ function CategoryNodeImpl(props: CategoryNodeProps): React.ReactElement {
               key={`note-${note.id}`}
               note={note}
               depth={depth + 1}
+              sourceCategoryId={cat.id}
               // currentNotePath 是 decodeURIComponent(pathname)（見 Sidebar.tsx:696）；
               // decode∘encode 恆等，故此寫法與原本的「/notes/{slug} 裸串」語意完全相同，
               // 差別只在改走 noteHref helper，讓靜態守衛測試也能驗證此呼叫點確實用了共用編碼。

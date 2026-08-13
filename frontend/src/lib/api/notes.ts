@@ -117,6 +117,23 @@ export type NoteResolution =
 // ============================================================================
 
 /**
+ * 更新筆記分類（整組取代；閱讀模式就地編輯與拖曳「切換分類」用）。
+ * 走獨立端點——不動 contentRaw、不產生版本快照（NoteRevision）、無 baseVersion/409 問題。
+ */
+export async function setNoteCategories(
+  noteId: string,
+  categoryIds: string[]
+): Promise<boolean> {
+  // 後端 PUT /api/notes/{id}/categories 的 body 直接是「分類 ID 陣列」(List<Guid>)，
+  // 與 updateNoteTags 同款——送 { categoryIds } 物件會 400。
+  const r = await fetchJson(`/api/notes/${encodeURIComponent(noteId)}/categories`, {
+    method: 'PUT',
+    body: JSON.stringify(categoryIds),
+  });
+  return r.success;
+}
+
+/**
  * 更新標籤（用於分配給筆記）
  */
 export async function updateNoteTags(
@@ -327,10 +344,12 @@ export interface NoteRevision {
   title: string;
   /** 該版本的原始內容 */
   contentRaw: string;
-  /** 建立時間 (UTC) */
+  /** 建立時間 (UTC) — 時間窗合併時維持鏈首時間 */
   createdDateTime: string;
   /** 建立者 ID */
   createdUser: string;
+  /** 最後變更時間 (UTC) — 時間窗合併會前進此欄；時間軸排序/分組一律以此欄為準 */
+  updatedDateTime: string;
 }
 
 /**

@@ -14,9 +14,14 @@ import {
   reorderNoteCategories,
   reorderNoteTags,
   addNoteToCategory,
+  getNoteById,
+  setNoteCategories,
 } from "@/lib/api";
 import { useNoteCategories, useNoteTags, useNotes } from "@/lib/swr";
 import { useConfirm } from "@/components/ConfirmProvider";
+import { ChoiceDialog } from "@/components/ChoiceDialog";
+import { computeSwitchCategoryIds } from "@/lib/categoryDrop";
+import { showToast } from "@/lib/toast";
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useSWRConfig } from "swr";
 import Link from "next/link";
@@ -459,19 +464,61 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
     [tags, reorderTagSibling]
   );
 
-  // 把一篇筆記加入某分類（來自筆記清單頁的拖曳；冪等）
+  // 筆記拖放到分類：先跳「切換/增加」選擇框（2026-08-13 使用者裁示），選定後才寫入。
+  // 待決的拖放脈絡（null＝選擇框未開）。
+  const [noteDropPending, setNoteDropPending] = useState<{
+    noteId: string;
+    categoryId: string;
+    sourceCategoryId: string | null;
+    sourceName: string | null;
+  } | null>(null);
+
   const handleDropNoteOnCategory = useCallback(
-    async (noteId: string, categoryId: string) => {
+    (noteId: string, categoryId: string, sourceCategoryId: string | null) => {
       setError(null);
+      // 拖回自己所在的分類：無事可做，提示即可（不彈選擇框）。
+      if (sourceCategoryId !== null && sourceCategoryId === categoryId) {
+        showToast("筆記已在此分類", { type: "info" });
+        return;
+      }
+      const sourceName = sourceCategoryId
+        ? categories.find((c) => c.id === sourceCategoryId)?.name ?? null
+        : null;
+      setNoteDropPending({ noteId, categoryId, sourceCategoryId, sourceName });
+    },
+    [categories]
+  );
+
+  /** 選擇框選定後實際歸類：add＝冪等單加端點；switch＝重抓最新分類集合後整組取代。 */
+  const resolveNoteDrop = useCallback(
+    async (choice: string) => {
+      const pending = noteDropPending;
+      setNoteDropPending(null);
+      if (!pending) return;
       try {
-        await addNoteToCategory(noteId, categoryId);
+        if (choice === "add") {
+          // 「增加」沿用冪等原子的單加端點（無讀-改-寫競態——復審 M2）。
+          await addNoteToCategory(pending.noteId, pending.categoryId);
+        } else {
+          // 「切換」：drop 當下重抓筆記詳情取得最新分類集合（不用可能過期的 SWR 快取）。
+          const detail = await getNoteById(pending.noteId);
+          if (!detail) throw new Error("讀取筆記失敗，未變更分類");
+          const currentIds = (detail.categories ?? []).map((c) => c.id);
+          const nextIds = computeSwitchCategoryIds(
+            currentIds,
+            pending.sourceCategoryId,
+            pending.categoryId
+          );
+          const ok = await setNoteCategories(pending.noteId, nextIds);
+          if (!ok) throw new Error("切換分類失敗");
+        }
         await reload(); // 更新分類的筆記數
         invalidateAllNotes(); // 撤銷所有筆記清單快取，兩邊即時更新
       } catch (err) {
-        setError(err instanceof Error ? err.message : "加入分類失敗");
+        setError(err instanceof Error ? err.message : "歸類失敗");
       }
     },
-    [reload, invalidateAllNotes]
+    [noteDropPending, reload, invalidateAllNotes]
   );
 
   // ─────────── 分類 CRUD ───────────
@@ -974,6 +1021,36 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
           mutateNotes();
         }}
         presetCategoryIds={presetCatForNewNote}
+      />
+      {/* 筆記拖放到分類的「切換/增加」選擇框（2026-08-13） */}
+      <ChoiceDialog
+        isOpen={noteDropPending !== null}
+        title="要怎麼歸類這篇筆記？"
+        options={
+          noteDropPending?.sourceCategoryId
+            ? [
+                {
+                  key: "add",
+                  label: "增加分類",
+                  description: `保留原分類「${noteDropPending.sourceName ?? "原分類"}」，同時加入目標分類`,
+                },
+                {
+                  key: "switch",
+                  label: "切換分類",
+                  description: `移出「${noteDropPending.sourceName ?? "原分類"}」，改放到目標分類（其餘分類保留）`,
+                },
+              ]
+            : [
+                { key: "add", label: "增加分類", description: "保留既有分類，同時加入目標分類" },
+                {
+                  key: "switch",
+                  label: "切換分類",
+                  description: "以目標分類「取代」此筆記的全部分類（拖曳來源不明時的切換語意）",
+                },
+              ]
+        }
+        onSelect={resolveNoteDrop}
+        onCancel={() => setNoteDropPending(null)}
       />
     </CategoryEditorContext.Provider>
   );

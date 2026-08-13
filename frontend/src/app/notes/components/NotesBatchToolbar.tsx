@@ -12,6 +12,7 @@ import {
 } from "@/lib/api";
 import { SearchableMultiSelect } from "@/components/SearchableMultiSelect";
 import { useConfirm } from "@/components/ConfirmProvider";
+import { buildCategoryOptions } from "@/lib/categoryOptions";
 
 /**
  * 筆記清單「編輯模式」的批次操作工具列。
@@ -47,12 +48,7 @@ export function NotesBatchToolbar({
 
   const count = selected.length;
 
-  // 分類顯示名稱（含上層路徑）
-  const catLabel = (parentId: string | null | undefined): string => {
-    if (!parentId) return "";
-    const p = categories.find((c) => c.id === parentId);
-    return p ? `${catLabel(p.parentId)}${p.name} / ` : "";
-  };
+  // 分類顯示名稱改用共用 util（完整路徑＋排序＋防環——見 lib/categoryOptions.ts）。
 
   /** 批次刪除（軟刪除）。刪完清掉本次批次標籤狀態（成員已不在，避免殘留空標籤指標）。 */
   const doDelete = async () => {
@@ -147,7 +143,7 @@ export function NotesBatchToolbar({
           <div className="nbt-pick">
             <SearchableMultiSelect
               single
-              options={categories.map((c) => ({ id: c.id, name: `${catLabel(c.parentId)}${c.name}` }))}
+              options={buildCategoryOptions(categories)}
               selectedIds={pickedCat ? [pickedCat] : []}
               onChange={(ids) => setPickedCat(ids[0] ?? "")}
               placeholder="選擇要加入的分類…"

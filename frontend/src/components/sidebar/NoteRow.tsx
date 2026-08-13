@@ -3,7 +3,7 @@
 import React from "react";
 import Link from "next/link";
 import type { NoteSummary } from "@/lib/api";
-import { NOTE_DND_MIME } from "@/lib/constants";
+import { NOTE_DND_MIME, NOTE_DND_SOURCE_MIME } from "@/lib/constants";
 import { noteHref } from "@/lib/noteHref";
 
 /**
@@ -16,6 +16,8 @@ interface NoteRowProps {
   depth: number;
   /** 是否為目前正在閱讀的筆記（用於高亮）。 */
   isActive: boolean;
+  /** 本列所屬的分類節點 id（拖曳時當「來源分類」帶給 drop 端；「切換分類」據此移出）。 */
+  sourceCategoryId?: string;
 }
 
 /**
@@ -28,7 +30,7 @@ interface NoteRowProps {
  * 以 React.memo 包裝：props 為穩定的 note / depth / isActive，因此父層因與此列無關的狀態
  * 重繪時（如編輯器輸入、拖曳其他分類）本列會被略過，不再隨整棵樹重建（審查 finding #22）。
  */
-function NoteRowImpl({ note, depth, isActive }: NoteRowProps): React.ReactElement {
+function NoteRowImpl({ note, depth, isActive, sourceCategoryId }: NoteRowProps): React.ReactElement {
   return (
     <div className="nt-row nt-row--note" style={{ paddingLeft: `${depth * 14}px` }}>
       <span className="nt-caret nt-caret--spacer" />
@@ -41,6 +43,10 @@ function NoteRowImpl({ note, depth, isActive }: NoteRowProps): React.ReactElemen
         onDragStart={(e) => {
           // 攜帶筆記 ID，供左側分類列接收（把此筆記加入該分類）。與清單頁卡片同一套協定。
           e.dataTransfer.setData(NOTE_DND_MIME, note.id);
+          // 側欄樹拖出時額外帶「來源分類」——drop 端據此提供「切換分類（移出來源）」選項。
+          if (sourceCategoryId) {
+            e.dataTransfer.setData(NOTE_DND_SOURCE_MIME, sourceCategoryId);
+          }
           e.dataTransfer.effectAllowed = "copyMove";
         }}
         style={{
