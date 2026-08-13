@@ -20,6 +20,15 @@ export const DISPLAY_MODES = ["warmpaper", "light", "dark", "night"] as const;
 export const NOTE_DND_MIME = "application/x-zonwiki-note";
 
 /**
+ * 拖曳筆記時攜帶「來源分類 ID」的第二個 MIME（2026-08-13「切換/增加」提示用）。
+ * 只有「從側欄分類樹拖出」才會帶（NoteRow 知道自己屬於哪個分類節點）；
+ * 筆記清單頁卡片沒有明確來源、不帶此 MIME——drop 端以「是否存在」區分兩種語意。
+ * 刻意用第二個 MIME 而非把 NOTE_DND_MIME 改成 JSON：舊 payload（純 noteId 字串）
+ * 天然向後相容，免 parse 防禦碼。
+ */
+export const NOTE_DND_SOURCE_MIME = "application/x-zonwiki-note-src-cat";
+
+/**
  * 任務優先級標籤對應
  */
 export const PRIORITY_LABELS: Record<number, string> = {

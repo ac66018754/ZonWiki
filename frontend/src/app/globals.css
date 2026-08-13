@@ -1630,6 +1630,39 @@ th {
   width: 3px;
 }
 
+/* ── 讀模式表格「＋ 新增一行」鈕（2026-08-13）──────────────────────────────
+   平時低調（避免干擾閱讀）、hover/聚焦醒目；觸控裝置無 hover → 常駐正常透明度。
+   文字用 --text-secondary（雙主題對比皆 ≥ AA），互動態換主色。 */
+.zw-table-addrow {
+  display: block;
+  margin: 2px 0 var(--spacing-3);
+  padding: 2px 10px;
+  background: transparent;
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  opacity: 0.45;
+  transition: opacity 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.zw-table-addrow:hover,
+.zw-table-addrow:focus-visible {
+  opacity: 1;
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+.zw-table-addrow:disabled {
+  opacity: 0.3;
+  cursor: wait;
+}
+@media (hover: none) {
+  /* 觸控裝置沒有 hover：常駐顯示（復審 M6）。 */
+  .zw-table-addrow {
+    opacity: 1;
+  }
+}
+
 /* ── 閱讀內容的長字串保護（全寬皆適用；手機 393px 特別關鍵）──────────────────
    長網址、長英數 token、行內 code 沒有斷行機會時會直接把版面撐爆。 */
 .markdown-prose {

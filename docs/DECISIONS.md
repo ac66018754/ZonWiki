@@ -588,3 +588,26 @@
 - **對抗式復審修正（code-reviewer sub-agent，合併前已修）**：HIGH——confirmNavigation 鏈無 .catch、安全逾時排在 push 之後：守門 reject 或 push 同步拋錯會讓 in-flight 旗標永久卡死、側鍵整個 session 靜默失效。修法：安全逾時在設旗標當下排程、push 包 try/catch 且**成功才 commit 堆疊**（失敗下次可重試）、整鏈補 .catch；R11/R12 回歸鎖。其餘 8 項疑點（StrictMode 雙掛載、監聽器洩漏、與筆記頁 capture click／便利貼死區／畫布中右鍵平移的互動、sessionStorage 分頁隔離等）復審實測全過。
 - **明知的取捨**：只攔「滑鼠側鍵」一種輸入——鍵盤 Alt+←/→ 與觸控板手勢仍走瀏覽器原生歷史（不經堆疊也不經守門）；開問啦畫布位置＝viewport 平移非捲動，錨點只還原路由不還原視角（畫布自有 viewport 持久化）；觸控點擊也會下錨（無側鍵可用，僅多些去重後的 sessionStorage 寫入）。
 - **驗證**：單元 36 例（純邏輯 24＋Runtime 12）全綠；Playwright 對 production 實例以 CDP 真側鍵實測：同頁錨點往返（URL 不變＝未被瀏覽器歷史劫持）、跨頁返回＋捲動還原 5000px、堆疊見底交還瀏覽器（回 about:blank）、console 零錯誤，截圖存 zonwiki-ui-tests/2026-08-10-mouse-nav/。
+
+## 2026-08-13 ｜ 歷史時間窗合併＋筆記 UX 六包（就地改分類、拖曳三選一、下拉排序、表格加行、防停電草稿）
+
+- **背景**：使用者發現「工作日記」這類每天編輯的筆記歷史紀錄爆量。實查根因：閱讀模式就地互動（表格勾選/直編/程式碼區塊改名）每一下都是零 debounce 的完整 PUT，而 NoteRevisionInterceptor 對任何 Title/ContentRaw 變更無條件寫全文快照、無合併無 retention。使用者同時裁示四項分類/表格 UX 與「防停電本地草稿」。
+- **時間窗合併的關鍵裁量**：
+  - 窗長 10 分鐘、**錨定最新版的 CreatedDateTime**（非滑動窗）：鏈最長 10 分鐘必斷，保證「每 10 分鐘至少一個救援點」。滑動窗（錨 UpdatedDateTime）被對抗復審否決——連續編輯數小時會收斂成單一版本，與版本系統「防覆寫救援」的存在理由衝突。
+  - 合併條件：本次與最新版皆為 update、ValidFlag=true、同 actor、**有 HTTP 脈絡（CurrentUserId 非空）**。最後一條是復審 CRITICAL：背景服務（AI 精煉/框選提問）與使用者共用同一個 actor GUID，若允許合併，AI 覆寫會吃掉使用者手動版本的救援點——背景寫入永遠新列。
+  - **已知殘餘風險**：背景寫的版本列與手動列無欄位可區分，其後 10 分鐘內的手動編輯會把「背景寫入當下」的快照併掉（前一版仍在，損失有限）。不為此加 schema 欄位（本輪無 migration）。
+  - 契約演進：原「任何變更都留版本」（NoteRevisionHttpTests 檔頭）修正為「窗內連續小改動＝同一次編輯」；ConcurrentPuts 尾段斷言隨之改為合併語意。
+  - 就地覆寫用「追蹤查詢＋顯式 IsModified 恰 4 欄」：攔截器位於鏈尾不可靠 DetectChanges；整列標 Modified 會把未載入欄位寫成預設值。
+  - DTO 補 UpdatedDateTime、前端時間軸排序/分組改吃它（復審 H4：合併後 createdDateTime 停在鏈首、內容卻是鏈尾，沿用舊鍵會整天錯位）。
+  - **本輪刻意不做**：歷史端點瘦身/分頁、retention（使用者未點名；retention 另有「孤兒附件掃描器拿 NoteRevision.ContentRaw 判引用」與「垃圾桶型別表」兩個耦合，需獨立裁示）。
+- **分類下拉排序**：後端 OrderBy(SortOrder).ThenBy(Name) 在「SortOrder 每層各自 0,1,2…且大多為 0」的資料下，扁平下拉體感隨機（實查：68/82 個分類 SortOrder=0，排過序的層反被推到末端）。裁示「按字串大小由小到大」＝**codepoint 排序（非注音/筆畫）**，以「完整路徑字串」排——路徑前綴天然把子分類聚在父分類後。共用 util（lib/categoryOptions.ts，含防環）取代 4 處重複私有實作；側欄樹/搜尋頁不動（側欄是手動排序 UI）。
+- **拖曳筆記到分類**：由「靜默附加」改為三選一（增加/切換/取消）。「增加」沿用冪等原子的單加端點（不改走整組取代——避免讀-改-寫競態）；「切換」drop 當下重抓筆記詳情取最新分類集合再整組取代。來源分類以**第二個 MIME** 攜帶（舊 payload 純 noteId 向後相容）；清單頁卡片拖入無來源→「切換」語意退化為「取代全部分類」（選項文案明示）。拖回原分類→toast 不彈窗。
+- **閱讀模式 ✎ 就地改分類/標籤**：走既有的 PUT /categories、/tags 獨立端點（不動內容、不產生版本、無 409）；缺的只是前端 wrapper 與 UI。絕不可改走 PUT /api/notes/{id} 整包更新。
+- **表格「＋ 新增一行」**：純文字層定位「真表格區塊」（必須有分隔列；blockquote 前綴重建；CRLF 照 tableSpec 慣例），插入空列走既有 applyReadingEdit 管線。排序/篩選作用中語意固定「追加到原文表尾」。觸控裝置鈕常駐顯示。
+- **防停電本地草稿**（筆記編輯頁/新增筆記彈窗/任務編輯彈窗）：localStorage 同步落地、使用者輸入 debounce 800ms、beforeunload 同步 flush；**進入編輯當下先讀走既有草稿再開放寫入**（復審 H5：程式化 setEditContent——進入編輯/409 重載/AI 覆寫——絕不可覆寫草稿，否則橫幅還原到的是被蓋掉的內容）；存檔成功或明確放棄才清；7 天過期自動清理。已知限制：同筆記雙分頁互踩（後寫贏）。
+- **驗證**：後端 NoteRevisionHttpTests 20/20（新增 6 案例＋既有回歸鎖）；前端 vitest 390/390（新增 categoryOptions/tableRowInsert/draftBackup/categoryDrop/historyGrouping/NoteMetaQuickEdit/ChoiceDialog 共 47 例）；tsc 零錯誤；production build 過；Playwright 實測見 PR 說明。
+- **二輪對抗復審修正（合併前已修，0C/2H/3M/2L）**：
+  - **H1**：條件 (e) 原判 `CurrentUserId != Guid.Empty` 實際失效——所有背景 AI 流程都會 `SetCurrentUserId` 冒用使用者以通過隔離過濾。改為同時排除覆寫脈絡（`IsUserContextOverridden`），並補「真實背景慣例（SetCurrentUserId＋改內容）」整合測試取代裸 DbContext 的假信心測試。
+  - **H2**：本頁站內切換筆記不 remount、isEditing 不重設 → 草稿 writer 綁舊筆記鍵造成跨筆記污染（B 的輸入寫進 A 的草稿、還原時資料錯置）。草稿 effect 相依補 `note?.id`。
+  - **M**：歷史「按天摺疊」手動狀態改為換筆記時重設（day 鍵跨筆記共用同一天）；表格加行鈕改插在 `.md-table-wrap` 橫捲容器「外面」（寬表橫捲時鈕不消失）；✎ 面板「分類成功、標籤失敗」時以 onSaved(分類=新, 標籤=原值) 回報部分成功（避免畫面與伺服器不同步），面板留著供重試。
+  - **已知取捨（記錄不修）**：①合併會抹掉窗內中繼版本——若附件只在同一 10 分鐘窗內「貼上又移除」，其唯一歷史引用會消失、寬限期後被孤兒掃描器軟刪（命中條件窄、軟刪可救，接受）；②✎ 面板無點外關閉（Esc/取消/儲存可關）；③加行鈕插入會多觸發一次無害的 MutationObserver 重掃（已驗證非無限迴圈）。

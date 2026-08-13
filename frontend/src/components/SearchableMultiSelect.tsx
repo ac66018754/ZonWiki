@@ -112,6 +112,9 @@ export function SearchableMultiSelect({
     } else if (e.key === "Backspace" && !query && selected.length > 0) {
       removeId(selected[selected.length - 1].id);
     } else if (e.key === "Escape") {
+      // 分層關閉：下拉開啟時 Esc 只關下拉，不讓事件冒泡到外層面板/彈窗
+      // 把整個容器一起關掉（例如閱讀模式的 ✎ 調整分類面板也監聽 document Esc）。
+      if (open) e.stopPropagation();
       setOpen(false);
     }
   };

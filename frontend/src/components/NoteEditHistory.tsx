@@ -11,6 +11,7 @@ import {
 } from '@/lib/api';
 import { formatFullDateTime } from '@/lib/formatters';
 import { DEFAULT_TIMEZONE } from '@/lib/constants';
+import { groupEntriesByDay } from '@/lib/historyGrouping';
 
 interface NoteEditHistoryProps {
   /** 筆記 ID */
@@ -94,9 +95,15 @@ export function NoteEditHistory({ noteId, userTimeZone = DEFAULT_TIMEZONE }: Not
   const [snapshots, setSnapshots] = useState<NoteOverlaySnapshotListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedRevision, setExpandedRevision] = useState<string | null>(null);
+  // 按天分組的摺疊狀態：null＝未手動操作過（預設「最新一天展開、其餘摺疊」）；
+  // 之後以使用者的手動 toggle 為準。換筆記時由載入 effect 重設。
+  const [collapsedDaysOverride, setCollapsedDaysOverride] = useState<Set<string> | null>(null);
 
   // 載入三種來源（互不阻塞；任一失敗顯示其餘）。
   useEffect(() => {
+    // 換筆記時重設手動摺疊狀態（二輪復審 M：day 鍵是日曆日期字串，跨筆記共用同一天，
+    // 沿用前一篇的手動摺疊會讓新筆記的「今天」被錯誤摺起）。
+    setCollapsedDaysOverride(null);
     const load = async () => {
       setLoading(true);
       const [revisionResult, activityResult, snapshotResult] = await Promise.allSettled([
@@ -121,7 +128,9 @@ export function NoteEditHistory({ noteId, userTimeZone = DEFAULT_TIMEZONE }: Not
     const merged: TimelineEntry[] = [
       ...revisions.map((revision): TimelineEntry => ({
         kind: 'revision',
-        at: revision.createdDateTime,
+        // 排序/分組鍵一律用 updatedDateTime：時間窗合併會讓 createdDateTime 停在
+        // 鏈首、內容卻是鏈尾（復審 H4）；舊快取資料無此欄時退回 createdDateTime。
+        at: revision.updatedDateTime || revision.createdDateTime,
         revision,
       })),
       ...activities
@@ -143,6 +152,25 @@ export function NoteEditHistory({ noteId, userTimeZone = DEFAULT_TIMEZONE }: Not
   const formatTime = (dateStr: string) => formatFullDateTime(dateStr, userTimeZone);
   const newestRevisionId = revisions.length > 0 ? revisions[revisions.length - 1].id : null;
   const oldestRevisionId = revisions.length > 0 ? revisions[0].id : null;
+
+  // 按天分組（分組時區＝顯示時區，避免組頭日期與組內時間對不上——復審 M4）。
+  const dayGroups = useMemo(
+    () => groupEntriesByDay(entries, userTimeZone),
+    [entries, userTimeZone],
+  );
+
+  const collapsedDays = useMemo(() => {
+    if (collapsedDaysOverride) return collapsedDaysOverride;
+    return new Set(dayGroups.slice(1).map((group) => group.day));
+  }, [collapsedDaysOverride, dayGroups]);
+
+  /** 切換某一天的摺疊狀態（首次手動操作時把預設狀態實體化）。 */
+  const toggleDay = (day: string) => {
+    const next = new Set(collapsedDays);
+    if (next.has(day)) next.delete(day);
+    else next.add(day);
+    setCollapsedDaysOverride(next);
+  };
 
   if (loading) {
     return (
@@ -172,10 +200,10 @@ export function NoteEditHistory({ noteId, userTimeZone = DEFAULT_TIMEZONE }: Not
     );
   }
 
-  return (
-    <div style={{ display: 'grid', gap: 'var(--spacing-3)' }}>
-      {entries.map((entry) => {
-        if (entry.kind === 'revision') {
+  /** 渲染單一時間軸項目（版本卡片／浮層快照細列／活動細列）。 */
+  const renderEntry = (entry: TimelineEntry): React.ReactElement => {
+    {
+      if (entry.kind === 'revision') {
           return (
             <RevisionItem
               key={`rev-${entry.revision.id}`}
@@ -238,6 +266,53 @@ export function NoteEditHistory({ noteId, userTimeZone = DEFAULT_TIMEZONE }: Not
             <span style={{ marginLeft: 'auto', color: 'var(--text-tertiary)', flexShrink: 0 }}>
               {formatTime(activity.at)}
             </span>
+          </div>
+        );
+    }
+  };
+
+  return (
+    <div style={{ display: 'grid', gap: 'var(--spacing-3)' }}>
+      {dayGroups.map((group) => {
+        const isCollapsed = collapsedDays.has(group.day);
+        return (
+          <div key={group.day} style={{ display: 'grid', gap: 'var(--spacing-2)' }}>
+            {/* 組頭：日期＋筆數，點擊摺疊/展開（預設只展開最新一天——歷史筆數體感優化） */}
+            <button
+              type="button"
+              onClick={() => toggleDay(group.day)}
+              aria-expanded={!isCollapsed}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 'var(--spacing-2)',
+                padding: 'var(--spacing-2) var(--spacing-3)',
+                background: 'var(--bg-primary)',
+                border: '1px solid var(--border-default)',
+                borderRadius: 'var(--radius-md)',
+                color: 'var(--text-secondary)',
+                fontSize: 'var(--text-sm)',
+                fontWeight: 600,
+                cursor: 'pointer',
+                textAlign: 'left',
+              }}
+            >
+              <span
+                aria-hidden="true"
+                style={{
+                  display: 'inline-block',
+                  transition: 'transform 0.15s ease',
+                  transform: isCollapsed ? 'rotate(0deg)' : 'rotate(90deg)',
+                }}
+              >
+                ▸
+              </span>
+              📅 {group.day}
+              <span style={{ color: 'var(--text-tertiary)', fontWeight: 400 }}>
+                （{group.entries.length} 筆）
+              </span>
+            </button>
+            {!isCollapsed && group.entries.map(renderEntry)}
           </div>
         );
       })}
@@ -383,7 +458,16 @@ function RevisionItem({
               gap: 'var(--spacing-3)',
             }}
           >
-            <span>⏱️ {formatTime(revision.createdDateTime)}</span>
+            {/* 主時間＝最後變更時間（時間窗合併會前進它）；合併鏈（≠鏈首）時補標起點。 */}
+            <span>⏱️ {formatTime(revision.updatedDateTime || revision.createdDateTime)}</span>
+            {revision.updatedDateTime && revision.updatedDateTime !== revision.createdDateTime && (
+              <span
+                title="此版本由時間窗內的多次連續編輯合併而成"
+                style={{ color: 'var(--text-tertiary)' }}
+              >
+                （{formatTime(revision.createdDateTime)} 起的連續編輯）
+              </span>
+            )}
             <span>👤 {revision.createdUser}</span>
           </div>
         </div>

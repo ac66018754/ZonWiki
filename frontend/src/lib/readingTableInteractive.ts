@@ -51,7 +51,60 @@ export type ReadingTableInteractions = {
    * @returns 是否成功（失敗時上層負責 toast，本層負責還原樂觀 UI／保留編輯內容）。
    */
   saveCell: (mdLine: number, cellIndex: number, newValue: string) => Promise<boolean>;
+  /**
+   * 在表格最後一列後插入一列空儲存格（2026-08-13「＋ 新增一行」鈕）。
+   * 以該表任一列的 data-md-line 當定位錨；原文層的區塊定位與欄數推導由
+   * lib/tableRowInsert.ts 處理。未提供時不顯示加行鈕（相容舊呼叫端）。
+   * @param anchorMdLine 該表任一列在原文的行號（1 起算）。
+   * @returns 是否成功（成功後上層重注入 HTML，新空列就地出現）。
+   */
+  insertRow?: (anchorMdLine: number) => Promise<boolean>;
 };
+
+/**
+ * 在互動表格下方掛「＋ 新增一行」鈕（2026-08-13）：點擊即於原文表尾插入空列，
+ * 走 insertRow（applyReadingEdit 管線）寫回；成功後整段 HTML 重注入、新列就地出現。
+ *
+ * - 錨點取表格「最後一個帶 data-md-line 的列」；整表皆無行號（不可寫回）＝不掛鈕。
+ * - 排序/篩選作用中照常可按——語意固定為「追加到原文表尾」（畫面落點可能因排序不同，屬預期）。
+ * - hover 才醒目、觸控裝置常駐顯示（樣式見 globals.css 的 .zw-table-addrow）。
+ *
+ * @param table 目標表格（已由 enhanceReadingTables 增強）。
+ * @param interactions 讀模式寫回介面（需含 insertRow）。
+ */
+export function attachAddRowButton(
+  table: HTMLTableElement,
+  interactions: ReadingTableInteractions,
+): void {
+  const insertRow = interactions.insertRow;
+  if (!insertRow) return;
+
+  const rowsWithLine = table.querySelectorAll<HTMLTableRowElement>('tr[data-md-line]');
+  const lastRow = rowsWithLine.length > 0 ? rowsWithLine[rowsWithLine.length - 1] : null;
+  const anchorMdLine = lastRow ? Number.parseInt(lastRow.dataset.mdLine ?? '', 10) : NaN;
+  if (!Number.isFinite(anchorMdLine)) return;
+
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'zw-table-addrow';
+  button.textContent = '＋ 新增一行';
+  button.title = '在此表格底部新增一列（儲存格皆為空，可雙右鍵直編）';
+  button.addEventListener('click', async () => {
+    if (button.disabled) return;
+    button.disabled = true;
+    try {
+      // 失敗的 toast 由 applyReadingEdit（上層）統一處理；成功後整段重注入、本鈕隨舊 DOM 汰換。
+      await insertRow(anchorMdLine);
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  // 插在橫向捲動容器（.md-table-wrap）「外面」：寬表格橫捲時按鈕不可跟著捲出可視範圍
+  //（二輪復審 M：手機表格橫捲是本專案特別優化過的情境，按鈕必須固定可見）。
+  const host = table.closest('.md-table-wrap') ?? table;
+  host.insertAdjacentElement('afterend', button);
+}
 
 /** 通知浮層（便利貼/文字框/塗鴉）「版面因排序/篩選變動了」，立即 rebase 而不必等捲動。 */
 function dispatchLayoutChanged(): void {

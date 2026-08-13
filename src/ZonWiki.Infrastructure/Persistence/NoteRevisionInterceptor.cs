@@ -25,6 +25,21 @@ namespace ZonWiki.Infrastructure.Persistence;
 ///   (NoteId, RevisionNo) 唯一索引不分 ValidFlag，若只看有效列，遇到被軟刪的版本列會取到
 ///   重複序號、整批存檔爆唯一索引（此坑已由整合測試 SoftDeletedRevisionRow_DoesNotBreakNumbering 鎖住）。
 ///
+/// 時間窗合併（coalescing，2026-08-13 使用者裁示——閱讀模式勾選/直編每下都是一次 PUT，
+/// 版本噪音淹沒真正的救援點）：本次為 "update" 且「現存最新一版」同時滿足
+///   (a) ChangeKind="update"（create/delete 快照永不被覆寫——首版與刪除快照是誤刪救援的底）
+///   (b) ValidFlag=true（被軟刪進垃圾桶的版本列不可就地復用）
+///   (c) UpdatedUser＝本次 actor（不同操作者的變更各自留版本）
+///   (d) now − 最新版 CreatedDateTime &lt; <see cref="CoalesceWindow"/>——錨定「鏈首時間」而非
+///       滑動窗：鏈最長 10 分鐘必斷，保證每 10 分鐘至少留一個救援點（對抗復審 H2 裁定）
+///   (e) 本次有「真 HTTP 請求脈絡」（CurrentUserId 非空「且」非 SetCurrentUserId 背景冒用）——
+///       背景服務（AI 精煉/框選提問）寫入永不合併，否則 AI 覆寫會吃掉使用者手動版本的
+///       救援點（對抗復審 C2＋二輪復審 HIGH：背景流程一律冒用使用者 Id，單看非空判不出來）
+/// → 就地覆寫最新版的 Title/ContentRaw/UpdatedDateTime/UpdatedUser（顯式 IsModified，
+///   不倚賴 DetectChanges——本攔截器位於攔截器鏈尾），不新增列、RevisionNo 不變。
+/// 已知殘餘風險（記於 DECISIONS.md）：背景服務寫的版本列與手動列無欄位可區分，
+/// 其後 10 分鐘內的手動編輯會把「背景寫入當下」的快照併掉（前一版仍在，損失有限）。
+///
 /// 結構性注意事項：
 /// - 必須註冊在 <see cref="AuditingSaveChangesInterceptor"/> 之後，且**自行蓋章**全部稽核欄位
 ///   （Id/時間/使用者/ValidFlag）：稽核攔截器在本攔截器之前執行、不會回頭補章，
@@ -41,6 +56,12 @@ namespace ZonWiki.Infrastructure.Persistence;
 /// </summary>
 public sealed class NoteRevisionInterceptor : SaveChangesInterceptor
 {
+    /// <summary>
+    /// 時間窗合併的窗長：距最新 update 版的 CreatedDateTime 在此窗內的連續 update
+    /// 併成一筆（就地覆寫）。錨定鏈首時間＝鏈最長此時距必斷，保證救援點密度。
+    /// </summary>
+    internal static readonly TimeSpan CoalesceWindow = TimeSpan.FromMinutes(10);
+
     /// <inheritdoc />
     public override InterceptionResult<int> SavingChanges(
         DbContextEventData eventData,
@@ -85,16 +106,19 @@ public sealed class NoteRevisionInterceptor : SaveChangesInterceptor
 
         var noteIds = drafts.Select(d => d.Note.Id).ToList();
 
-        // 一次查齊所有涉及筆記的現存最大序號（避免逐筆 N+1）。
-        // IgnoreQueryFilters：唯一索引不分 ValidFlag/使用者，取號必須看「全部」列。
-        var maxNoByNoteId = await db.NoteRevision
-            .IgnoreQueryFilters()
-            .Where(r => noteIds.Contains(r.NoteId))
-            .GroupBy(r => r.NoteId)
-            .Select(g => new { NoteId = g.Key, MaxNo = g.Max(r => r.RevisionNo) })
-            .ToDictionaryAsync(x => x.NoteId, x => x.MaxNo, ct);
+        // 一次查齊所有涉及筆記的「現存最新一版」完整實體（追蹤查詢，合併時就地覆寫；
+        // 其 RevisionNo 同時就是取號用的現存最大序號——避免逐筆 N+1）。
+        // IgnoreQueryFilters：唯一索引不分 ValidFlag/使用者，取號與合併判定必須看「全部」列
+        //（背景服務無 CurrentUserId，使用者過濾器會讓查詢空手而回、取號歸零撞唯一索引）。
+        var latestByNoteId = (await db.NoteRevision
+                .IgnoreQueryFilters()
+                .Where(r => noteIds.Contains(r.NoteId))
+                .GroupBy(r => r.NoteId)
+                .Select(g => g.OrderByDescending(r => r.RevisionNo).First())
+                .ToListAsync(ct))
+            .ToDictionary(r => r.NoteId);
 
-        AssembleAndAdd(db, drafts, maxNoByNoteId);
+        AssembleAndAdd(db, drafts, latestByNoteId);
     }
 
     /// <summary>
@@ -111,14 +135,15 @@ public sealed class NoteRevisionInterceptor : SaveChangesInterceptor
 
         var noteIds = drafts.Select(d => d.Note.Id).ToList();
 
-        var maxNoByNoteId = db.NoteRevision
+        var latestByNoteId = db.NoteRevision
             .IgnoreQueryFilters()
             .Where(r => noteIds.Contains(r.NoteId))
             .GroupBy(r => r.NoteId)
-            .Select(g => new { NoteId = g.Key, MaxNo = g.Max(r => r.RevisionNo) })
-            .ToDictionary(x => x.NoteId, x => x.MaxNo);
+            .Select(g => g.OrderByDescending(r => r.RevisionNo).First())
+            .ToList()
+            .ToDictionary(r => r.NoteId);
 
-        AssembleAndAdd(db, drafts, maxNoByNoteId);
+        AssembleAndAdd(db, drafts, latestByNoteId);
     }
 
     // ══════════════════════════════ 掃描階段 ══════════════════════════════
@@ -206,21 +231,22 @@ public sealed class NoteRevisionInterceptor : SaveChangesInterceptor
     // ══════════════════════════════ 組裝階段 ══════════════════════════════
 
     /// <summary>
-    /// 依草稿與現存最大序號組出快照列並加入本次儲存（同一交易原子送出）。
+    /// 依草稿與「現存最新一版」組出快照：滿足時間窗合併條件者就地覆寫最新版，
+    /// 其餘新增快照列（皆與本次變更同一交易原子送出）。
     /// </summary>
     /// <param name="db">ZonWiki 資料庫內容。</param>
     /// <param name="drafts">快照草稿清單。</param>
-    /// <param name="maxNoByNoteId">筆記 Id → 現存最大版本序號（無列者不在字典中）。</param>
+    /// <param name="latestByNoteId">筆記 Id → 現存最新版本列（追蹤中實體；無列者不在字典中）。</param>
     private static void AssembleAndAdd(
         ZonWikiDbContext db,
         List<RevisionDraft> drafts,
-        IReadOnlyDictionary<Guid, int> maxNoByNoteId)
+        IReadOnlyDictionary<Guid, NoteRevision> latestByNoteId)
     {
         var now = DateTime.UtcNow;
 
         foreach (var (note, changeKind) in drafts)
         {
-            var nextNo = maxNoByNoteId.GetValueOrDefault(note.Id, 0) + 1;
+            var latest = latestByNoteId.GetValueOrDefault(note.Id);
 
             // 快照歸屬與操作者：
             // - UserId 一律取筆記擁有者（背景服務無 CurrentUserId 也要歸屬正確，歷史才查得到）。
@@ -228,6 +254,39 @@ public sealed class NoteRevisionInterceptor : SaveChangesInterceptor
             var actor = db.CurrentUserId != Guid.Empty
                 ? db.CurrentUserId.ToString()
                 : note.UserId.ToString();
+
+            // 時間窗合併（條件說明見類別註解 (a)–(e)）：就地覆寫最新版、不新增列。
+            // (e) 的「有 HTTP 脈絡」不能只看 CurrentUserId 非空——背景流程一律
+            // SetCurrentUserId 冒用使用者（隔離過濾需要），必須同時排除覆寫脈絡
+            //（對抗復審 HIGH：否則背景 AI 覆寫仍會併掉使用者手動版本）。
+            var canCoalesce =
+                changeKind == "update"
+                && db.CurrentUserId != Guid.Empty
+                && !db.IsUserContextOverridden
+                && latest is not null
+                && latest.ChangeKind == "update"
+                && latest.ValidFlag
+                && latest.UpdatedUser == actor
+                && now - latest.CreatedDateTime < CoalesceWindow;
+
+            if (canCoalesce)
+            {
+                latest!.Title = Truncate(note.Title, 500);
+                latest.ContentRaw = note.ContentRaw ?? string.Empty;
+                latest.UpdatedDateTime = now;
+                latest.UpdatedUser = actor;
+
+                // 顯式標記恰好 4 欄——本攔截器位於攔截器鏈尾，不可倚賴後續 DetectChanges；
+                // 且絕不可整列標 Modified（未載入欄位會被預設值覆寫）。
+                var entry = db.Entry(latest);
+                entry.Property(nameof(NoteRevision.Title)).IsModified = true;
+                entry.Property(nameof(NoteRevision.ContentRaw)).IsModified = true;
+                entry.Property(nameof(AuditableEntity.UpdatedDateTime)).IsModified = true;
+                entry.Property(nameof(AuditableEntity.UpdatedUser)).IsModified = true;
+                continue;
+            }
+
+            var nextNo = (latest?.RevisionNo ?? 0) + 1;
 
             db.NoteRevision.Add(new NoteRevision
             {

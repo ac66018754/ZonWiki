@@ -615,8 +615,10 @@ public sealed record AskNoteQuestionRequest(string Question);
 /// <param name="ChangeKind">變更種類（create / update / delete）。</param>
 /// <param name="Title">當時的標題快照。</param>
 /// <param name="ContentRaw">當時的原始內容快照。</param>
-/// <param name="CreatedDateTime">變更時間（UTC）。</param>
+/// <param name="CreatedDateTime">鏈首時間（UTC）——時間窗合併時維持第一次變更的時間。</param>
 /// <param name="CreatedUser">變更者。</param>
+/// <param name="UpdatedDateTime">最後變更時間（UTC）——時間窗合併會前進此欄；
+/// 前端時間軸的排序/分組一律以此欄為準（合併後 CreatedDateTime 停在鏈首、內容卻是鏈尾）。</param>
 public sealed record NoteRevisionDto(
     Guid Id,
     int RevisionNo,
@@ -624,7 +626,8 @@ public sealed record NoteRevisionDto(
     string Title,
     string ContentRaw,
     DateTime CreatedDateTime,
-    string CreatedUser);
+    string CreatedUser,
+    DateTime UpdatedDateTime);
 
 /// <summary>
 /// 筆記活動紀錄資料傳輸物件（歷史分頁合併時間軸用）。

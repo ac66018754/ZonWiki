@@ -50,6 +50,14 @@ import { logger } from "@/lib/logger";
 import { useConfirm } from "@/components/ConfirmProvider";
 import { showToast } from "@/lib/toast";
 import { ConflictError } from "@/lib/errors";
+import {
+  clearDraft,
+  createDraftWriter,
+  draftKeyForTask,
+  loadDraft,
+  type DraftRecord,
+  type DraftWriter,
+} from "@/lib/draftBackup";
 import type { LinkEntityType } from "@/lib/api";
 
 /** 連結浮動視窗的開啟狀態（針對某個子任務）。 */
@@ -156,6 +164,21 @@ export function TaskEditorModal({
     setSaveError(false);
   }, []);
 
+  // ── 本地草稿備份（防停電，2026-08-13；鍵＝zw:draft:task:{id}）─────────
+  // 任務關窗雖會自動存檔，但「開著彈窗打字中」停電仍會遺失——與筆記編輯頁同款：
+  // 標題/內容的使用者輸入 debounce 落地 localStorage、存檔成功才清。
+  const draftWriterRef = useRef<DraftWriter | null>(null);
+  const titleDraftRef = useRef("");
+  const contentDraftRef = useRef("");
+  const [pendingDraft, setPendingDraft] = useState<DraftRecord | null>(null);
+
+  /** 標題/內容的草稿寫入（僅使用者輸入路徑呼叫；populateFields 程式化 set 不經此處）。 */
+  const writeDraft = useCallback((nextTitle: string, nextContent: string) => {
+    titleDraftRef.current = nextTitle;
+    contentDraftRef.current = nextContent;
+    draftWriterRef.current?.write({ title: nextTitle, content: nextContent });
+  }, []);
+
   /** 開啟連結浮動視窗（定位在被點的 🔗 鈕旁）。 */
   const openLinkPopover = (type: LinkEntityType, id: string, t: string, e: React.MouseEvent) => {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -195,12 +218,29 @@ export function TaskEditorModal({
         if (cancelled || !c) return;
         setCard(c);
         populateFields(c);
+        titleDraftRef.current = c.title;
+        contentDraftRef.current = c.content || "";
+        // 載入完成當下比對既有草稿（先讀走再開放寫入——程式化填入不覆寫草稿）。
+        const existing = loadDraft(draftKeyForTask(taskId));
+        setPendingDraft(
+          existing && (existing.title !== c.title || existing.content !== (c.content || ""))
+            ? existing
+            : null,
+        );
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
+    const writer = createDraftWriter(draftKeyForTask(taskId));
+    draftWriterRef.current = writer;
+    const flushOnUnload = () => writer.flush();
+    window.addEventListener("beforeunload", flushOnUnload);
     return () => {
       cancelled = true;
+      window.removeEventListener("beforeunload", flushOnUnload);
+      writer.cancel(); // 只停計時、不清已落地草稿（非正常關閉時要留著救援）
+      if (draftWriterRef.current === writer) draftWriterRef.current = null;
+      setPendingDraft(null);
     };
   }, [taskId, populateFields]);
 
@@ -322,6 +362,10 @@ export function TaskEditorModal({
     await assignTaskTags(taskId, selectedTagIds);
     await flushSubtasks(card?.subTasks ?? [], subTasks, taskId);
     dirtyRef.current = false;
+    // 存檔成功＝本地草稿任務完成（防停電備份，2026-08-13）。
+    draftWriterRef.current?.cancel();
+    clearDraft(draftKeyForTask(taskId));
+    setPendingDraft(null);
     // 通知其他掛在視窗上的任務清單（例如 Todo 側欄「置頂的任務」）重新載入。
     window.dispatchEvent(new CustomEvent("zonwiki:tasks-changed"));
     onSaved();
@@ -526,6 +570,7 @@ export function TaskEditorModal({
                 onChange={(e) => {
                   setTitle(e.target.value);
                   markDirty();
+                  writeDraft(e.target.value, contentDraftRef.current);
                 }}
                 placeholder="任務標題"
                 autoFocus
@@ -534,6 +579,53 @@ export function TaskEditorModal({
                 ✕
               </button>
             </div>
+
+            {/* ⚡ 本地草稿還原橫幅（防停電）：開啟時偵測到「與現行內容不同」的草稿 */}
+            {pendingDraft && (
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  gap: 8,
+                  margin: "8px 16px 0",
+                  padding: "8px 12px",
+                  background: "var(--status-warning-bg, var(--bg-surface))",
+                  border: "1px solid var(--border-strong)",
+                  borderRadius: "var(--radius-md)",
+                  fontSize: "var(--text-sm)",
+                  color: "var(--text-primary)",
+                }}
+              >
+                <span style={{ flex: 1, minWidth: 180 }}>
+                  ⚡ 偵測到未儲存的草稿（可能因斷電/當機未存檔）。
+                </span>
+                <button
+                  type="button"
+                  className="tk-btn tk-btn--primary"
+                  onClick={() => {
+                    setTitle(pendingDraft.title);
+                    setContent(pendingDraft.content);
+                    titleDraftRef.current = pendingDraft.title;
+                    contentDraftRef.current = pendingDraft.content;
+                    markDirty();
+                    setPendingDraft(null);
+                  }}
+                >
+                  還原草稿
+                </button>
+                <button
+                  type="button"
+                  className="tk-btn"
+                  onClick={() => {
+                    if (taskId) clearDraft(draftKeyForTask(taskId));
+                    setPendingDraft(null);
+                  }}
+                >
+                  捨棄
+                </button>
+              </div>
+            )}
 
             {/* 兩欄：左＝屬性、右＝內容 */}
             <div className="tk-edit-body">
@@ -847,6 +939,7 @@ export function TaskEditorModal({
                   onChange={(v) => {
                     setContent(v);
                     markDirty();
+                    writeDraft(titleDraftRef.current, v);
                   }}
                   minHeight={360}
                   withPreview

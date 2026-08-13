@@ -15,6 +15,7 @@ import {
   prepareHeaderControls,
   setupInteractiveTable,
   closeActiveTablePopover,
+  attachAddRowButton,
   type ReadingTableInteractions,
 } from './readingTableInteractive';
 
@@ -377,6 +378,10 @@ export function enhanceReadingTables(
     enhanceSingleTable(table, tableIndex, noteId);
     if (isInteractive) {
       setupInteractiveTable(table, tableIndex, noteId, controls, interactions);
+      // 「＋ 新增一行」鈕（2026-08-13）：僅在可寫回（interactions 含 insertRow）時掛上。
+      if (interactions?.insertRow) {
+        attachAddRowButton(table, interactions);
+      }
     }
   });
 }

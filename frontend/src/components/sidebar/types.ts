@@ -58,8 +58,12 @@ export interface SidebarTreeHandlers {
   reparentCategory: (childId: string, newParentId: string | null) => void;
   /** 把分類插到目標分類的同層級前 / 後（調順序）。 */
   reorderCategorySibling: (dragId: string, targetId: string, zone: "before" | "after") => void;
-  /** 把一篇筆記加入某分類（來自筆記清單頁的拖曳）。 */
-  handleDropNoteOnCategory: (noteId: string, categoryId: string) => void;
+  /** 筆記被拖放到某分類：跳「切換/增加」選擇後歸類（sourceCategoryId＝側欄樹來源分類，清單頁拖入為 null）。 */
+  handleDropNoteOnCategory: (
+    noteId: string,
+    categoryId: string,
+    sourceCategoryId: string | null
+  ) => void;
   /** 把分類在同層兄弟中往上移一位。 */
   moveCategoryUp: (cat: NoteCategory) => void;
   /** 把分類在同層兄弟中往下移一位。 */
