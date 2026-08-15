@@ -309,6 +309,76 @@ export function coachWsUrl(sessionId?: string | null): string {
 }
 
 /**
+ * 開課失敗的原因碼（前端據此給使用者不同說法；對應 <see cref="friendlyFatalReason"/>）。
+ */
+export type CoachOpenFailureReason =
+  | "unauthorized"
+  | "daily_limit_reached"
+  | "session_open_failed";
+
+/**
+ * 開課結果（成功帶場次；失敗帶可分辨的原因碼）。
+ */
+export type OpenCoachSessionResult =
+  | { ok: true; session: CoachSessionSummary }
+  | { ok: false; reason: CoachOpenFailureReason };
+
+/**
+ * 把 HTTP 狀態碼轉成開課失敗原因碼。
+ * @param status HTTP 狀態碼（可空）。
+ * @returns 原因碼。
+ */
+function openFailureReasonFrom(status: number | undefined): CoachOpenFailureReason {
+  if (status === 401) return "unauthorized";
+  if (status === 429) return "daily_limit_reached";
+  return "session_open_failed";
+}
+
+/**
+ * 開新課（POST /api/coach/sessions）。
+ *
+ * 為什麼要回傳原因碼而不是單純的 null：使用者看到的終態訊息完全靠它分辨——
+ * 登入過期要說「請重新登入」、額度用完要說「今天已達上限」，而不是一律「後端異常」。
+ *
+ * @param opts 標題/主題（皆可選，後端可自動命名）。
+ * @returns 成功帶場次；失敗帶原因碼。
+ */
+export async function openCoachSession(opts?: {
+  title?: string | null;
+  topic?: string | null;
+}): Promise<OpenCoachSessionResult> {
+  const body: Record<string, string> = {};
+  if (opts?.title) body.title = opts.title;
+  if (opts?.topic) body.topic = opts.topic;
+
+  try {
+    const response = await fetchJson<unknown>("/api/coach/sessions", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    if (response.success && response.data) {
+      const session = normalizeSession(response.data);
+      if (session) return { ok: true, session };
+    }
+    return { ok: false, reason: openFailureReasonFrom(response.statusCode) };
+  } catch (error) {
+    // fetchJson 對 429（限流／額度）等狀態會 throw，訊息內含狀態碼——沿用 tts.ts 既有慣例判讀。
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      reason: /\b429\b/.test(message) ? "daily_limit_reached" : "session_open_failed",
+    };
+  }
+}
+
+/**
+ * 「本次開場要用哪個 sessionId」的決策結果。
+ */
+export type StartSessionResolution =
+  | { ok: true; sessionId: string | null }
+  | { ok: false; reason: CoachOpenFailureReason };
+
+/**
  * 決定「本次開場」要用的 sessionId。
  *
  * 後端的 `/api/ws/coach` **強制要求既有且屬本人的 sessionId**（跨使用者 resumption 的 IDOR 護欄，
@@ -316,26 +386,26 @@ export function coachWsUrl(sessionId?: string | null): string {
  * 因此就算路由通了也連不上——這個函式就是補上這一段。
  *
  * @param options 決策輸入。
- * @param options.currentSessionId 目前已持有的場次 ID（續接既有場次／重連時沿用；null 代表要開新場）。
+ * @param options.currentSessionId 目前已持有的場次 ID（沿用；null 代表要開新場）。
  * @param options.isMock 是否為 e2e 假造模式（假傳輸不驗 sessionId，也不該打真後端）。
- * @param options.openSession 開課函式（預設 <see cref="createCoachSession"/>，測試可注入）。
- * @returns 要用的 sessionId；e2e 假造模式或開課失敗回 null（呼叫端據此決定不連線並進 fatal）。
+ * @param options.openSession 開課函式（預設 <see cref="openCoachSession"/>，測試可注入）。
+ * @returns 成功帶要用的 sessionId（e2e 假造模式為 null）；失敗帶原因碼。
  */
 export async function resolveSessionIdForStart(options: {
   currentSessionId: string | null;
   isMock: boolean;
-  openSession?: () => Promise<CoachSessionSummary | null>;
-}): Promise<string | null> {
-  const { currentSessionId, isMock, openSession = createCoachSession } = options;
+  openSession?: () => Promise<OpenCoachSessionResult>;
+}): Promise<StartSessionResolution> {
+  const { currentSessionId, isMock, openSession = openCoachSession } = options;
 
-  // 已有場次（續接歷史／前端退避重連）：沿用同一場，不重複開課、不重複計費。
-  if (currentSessionId) return currentSessionId;
+  // 已有場次（沿用）：不重複開課、不重複計費。
+  if (currentSessionId) return { ok: true, sessionId: currentSessionId };
 
   // e2e 假造模式：不打後端（假傳輸忽略 URL）。
-  if (isMock) return null;
+  if (isMock) return { ok: true, sessionId: null };
 
-  const session = await openSession();
-  return session?.id ?? null;
+  const result = await openSession();
+  return result.ok ? { ok: true, sessionId: result.session.id } : { ok: false, reason: result.reason };
 }
 
 // ============================================================================
@@ -377,30 +447,6 @@ function normalizeMessage(raw: unknown): CoachMessageDto | null {
     interruptedFlag: pickBool(rec, "interruptedFlag"),
     approxCutChars: pickNum(rec, "approxCutChars"),
   };
-}
-
-/**
- * 開新課（POST /api/coach/sessions）。
- * @param opts 標題/主題（皆可選，後端可自動命名）。
- * @returns 建立的場次摘要；失敗回 null。
- */
-export async function createCoachSession(opts?: {
-  title?: string | null;
-  topic?: string | null;
-}): Promise<CoachSessionSummary | null> {
-  try {
-    const body: Record<string, string> = {};
-    if (opts?.title) body.title = opts.title;
-    if (opts?.topic) body.topic = opts.topic;
-    const r = await fetchJson<unknown>("/api/coach/sessions", {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
-    if (!r.success || !r.data) return null;
-    return normalizeSession(r.data);
-  } catch {
-    return null;
-  }
 }
 
 /**

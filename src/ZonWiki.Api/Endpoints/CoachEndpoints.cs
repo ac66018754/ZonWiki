@@ -202,6 +202,16 @@ public static class CoachEndpoints
                 ApiResponse<CoachSessionDto>.Fail($"主題過長，請縮短到 {MaxTopicLength} 字元以內", 400), statusCode: 400);
         }
 
+        // 每日分鐘上限：在「開課」這一步就擋。
+        // 若留到 WS 端點才擋（第 5 道護欄），此處已先建出一筆 active 場次，而該場永遠不會有連線來收尾，
+        // 會以「未收尾 active 一律以 now 保守計入」的規則持續灌大今日用量，直到殭屍修正才收——
+        // 使用者會被一筆從沒講過話的幽靈場次鎖住一整天。
+        if (await sessionService.IsDailyLimitReachedAsync(userId, ct))
+        {
+            return Results.Json(
+                ApiResponse<CoachSessionDto>.Fail("今日教練時間已達上限，請明天再繼續", 429), statusCode: 429);
+        }
+
         var session = await sessionService.OpenSessionAsync(userId, title, topic, ct);
         return Results.Created(
             $"/api/coach/sessions/{session.Id}",

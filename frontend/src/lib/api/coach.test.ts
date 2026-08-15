@@ -39,49 +39,69 @@ test("coachWsUrl：帶 sessionId → 以 query 傳遞且經過編碼", () => {
   expect(new URL(url).searchParams.get("sessionId")).toBe("a b/c");
 });
 
+/** 測試用：成功開課的假回應。 */
+const okSession = (id: string) =>
+  ({ ok: true, session: { id, title: "t", status: "active" } }) as const;
+
 test("resolveSessionIdForStart：已有 sessionId → 沿用，不重複開課", async () => {
   let opened = 0;
-  const id = await resolveSessionIdForStart({
+  const resolution = await resolveSessionIdForStart({
     currentSessionId: "existing-id",
     isMock: false,
     openSession: async () => {
       opened += 1;
-      return { id: "new-id", title: "t", status: "active" };
+      return okSession("new-id");
     },
   });
-  expect(id).toBe("existing-id");
+  expect(resolution).toEqual({ ok: true, sessionId: "existing-id" });
   expect(opened).toBe(0);
 });
 
 test("resolveSessionIdForStart：沒有 sessionId → 開新場並回新 id", async () => {
-  const id = await resolveSessionIdForStart({
+  const resolution = await resolveSessionIdForStart({
     currentSessionId: null,
     isMock: false,
-    openSession: async () => ({ id: "fresh-id", title: "t", status: "active" }),
+    openSession: async () => okSession("fresh-id"),
   });
-  expect(id).toBe("fresh-id");
+  expect(resolution).toEqual({ ok: true, sessionId: "fresh-id" });
 });
 
-test("resolveSessionIdForStart：開課失敗 → null（呼叫端據此進 fatal，不去連注定 400 的 WS）", async () => {
-  const id = await resolveSessionIdForStart({
+test("resolveSessionIdForStart：開課失敗 → 帶回原因碼（呼叫端據此進 fatal，不去連注定 400 的 WS）", async () => {
+  const resolution = await resolveSessionIdForStart({
     currentSessionId: null,
     isMock: false,
-    openSession: async () => null,
+    openSession: async () => ({ ok: false, reason: "session_open_failed" }),
   });
-  expect(id).toBe(null);
+  expect(resolution).toEqual({ ok: false, reason: "session_open_failed" });
+});
+
+test("resolveSessionIdForStart：額度／登入失效的原因碼要能分辨（訊息才給得準）", async () => {
+  const limited = await resolveSessionIdForStart({
+    currentSessionId: null,
+    isMock: false,
+    openSession: async () => ({ ok: false, reason: "daily_limit_reached" }),
+  });
+  expect(limited).toEqual({ ok: false, reason: "daily_limit_reached" });
+
+  const unauthorized = await resolveSessionIdForStart({
+    currentSessionId: null,
+    isMock: false,
+    openSession: async () => ({ ok: false, reason: "unauthorized" }),
+  });
+  expect(unauthorized).toEqual({ ok: false, reason: "unauthorized" });
 });
 
 test("resolveSessionIdForStart：e2e 假造模式 → 不打後端", async () => {
   let opened = 0;
-  const id = await resolveSessionIdForStart({
+  const resolution = await resolveSessionIdForStart({
     currentSessionId: null,
     isMock: true,
     openSession: async () => {
       opened += 1;
-      return { id: "should-not-happen", title: "t", status: "active" };
+      return okSession("should-not-happen");
     },
   });
-  expect(id).toBe(null);
+  expect(resolution).toEqual({ ok: true, sessionId: null });
   expect(opened).toBe(0);
 });
 

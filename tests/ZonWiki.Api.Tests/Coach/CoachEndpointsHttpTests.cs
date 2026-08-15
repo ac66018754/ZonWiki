@@ -202,6 +202,23 @@ public sealed class CoachEndpointsHttpTests
     }
 
     [Fact]
+    public async Task OpenSession_每日上限已達_回429且不留下幽靈active場次()
+    {
+        // 上限檢查若只掛在 WS 端點，開課這一步仍會建出一筆 active 場次；該場永遠等不到連線收尾，
+        // 又因「未收尾 active 以 now 保守計入」而持續灌大今日用量，把使用者鎖住一整天。
+        var (userId, client) = await NewCookieUserAsync();
+        await SeedEndedUsageAsync(userId, minutes: 61);
+
+        var response = await client.PostAsJsonAsync("/api/coach/sessions", new { topic = "small talk" });
+        response.StatusCode.Should().Be(HttpStatusCode.TooManyRequests);
+
+        var listJson = (await (await client.GetAsync("/api/coach/sessions")).Content.ReadFromJsonAsync<JsonNode>())!;
+        var activeCount = listJson["data"]!.AsArray()
+            .Count(node => node!["status"]!.GetValue<string>() == CoachSession.StatusActive);
+        activeCount.Should().Be(0, "被擋下的開課不可留下任何 active 場次");
+    }
+
+    [Fact]
     public async Task ListSessions_只回本人()
     {
         var (_, clientA) = await NewCookieUserAsync();
