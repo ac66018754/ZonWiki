@@ -8,6 +8,7 @@ import {
   updateNoteOverlay,
   deleteNoteOverlay,
   askNoteSelectionAnswer,
+  createOverlaySnapshot,
   type NoteOverlayItem,
 } from '@/lib/api';
 import { logger } from '@/lib/logger';
@@ -21,6 +22,8 @@ import {
   samePoint,
   eraseAt,
   eraseInBox,
+  eraseVisibleOnly,
+  shapeAnchorPoint,
 } from '@/lib/drawing/shapes';
 import { ShapeEl } from '@/lib/drawing/ShapeEl';
 import { StickyBody } from '@/components/overlay/StickyBody';
@@ -29,6 +32,22 @@ import { STICKY_COLORS, parseSlideData } from '@/components/overlay/overlayShare
 import { DrawingTextBox, parseTextExtra, type TextExtra } from '@/components/drawing/TextBox';
 import { DrawingToolbar } from '@/components/drawing/DrawingToolbar';
 import { TextPropsPanel } from '@/components/drawing/TextPropsPanel';
+import {
+  computeAnchorAt,
+  locateAnchor,
+  isOverlayAnchor,
+  openAncestorDetails,
+  revealAnchor,
+  type OverlayAnchor,
+} from '@/lib/overlayAnchor';
+import { NoteQuestionListPanel } from '@/components/questions/NoteQuestionListPanel';
+import { QuestionAnswerPopup } from '@/components/questions/QuestionAnswerPopup';
+import { deriveQuestionTitle } from '@/lib/questionTitle';
+import { scrollToOverlayItem } from '@/lib/scrollToOverlayItem';
+import { createDragClickTracker } from '@/lib/overlayDragClick';
+import { SHORTCUT_ACTION_EVENT } from '@/lib/shortcuts';
+import { OVERLAY_SHORTCUT_COMMANDS } from '@/lib/overlayShortcutCommands';
+import { useShortcutKeyCaps } from '@/lib/useShortcutKeyCaps';
 
 /**
  * 事件：框選提問的答案要放進「就在原處旁邊」的便利貼（由 NoteMarksLayer 派發、NoteOverlay 接收建立）。
@@ -36,12 +55,42 @@ import { TextPropsPanel } from '@/components/drawing/TextPropsPanel';
  */
 export const NOTE_ASK_STICKY_EVENT = 'zonwiki:note-ask-sticky';
 
+/**
+ * 螢光筆「直線／自由筆」偏好的 localStorage 鍵。
+ * 帶 v1 版本後綴：日後若儲存格式改變，可換 v2 而不會誤讀舊值。
+ * 值為 '1'（直線）／'0'（自由筆）。
+ */
+const HIGHLIGHT_STRAIGHT_STORAGE_KEY = 'zonwiki:highlightStraight:v1';
+
 /** 兩個字串集合內容是否相同（供避免無意義的 state 更新/重繪）。 */
 function sameStringSet(a: Set<string>, b: Set<string>): boolean {
   if (a.size !== b.size) return false;
   for (const v of a) if (!b.has(v)) return false;
   return true;
 }
+
+// ── dataJson 純函式（模組層級：不依賴元件狀態，供 useCallback 引用而不進相依陣列）──
+/**
+ * 讀取項目 dataJson 的「物件形式」並保留所有欄位；舊的純陣列（圖片板）視為 `{ images }`。
+ * 供泛用地讀/寫共同欄位（如 pinned），不會把便利貼的 highlights 或圖片板的 images 弄丟。
+ */
+const rawDataObj = (item: NoteOverlayItem): Record<string, unknown> => {
+  try {
+    const parsed = JSON.parse(item.dataJson || '');
+    if (Array.isArray(parsed)) return { images: parsed };
+    if (parsed && typeof parsed === 'object') return parsed as Record<string, unknown>;
+  } catch { /* 空/壞 → {} */ }
+  return {};
+};
+
+/** 項目是否「釘住浮動」（position:fixed、不貼內文；旗標存於 dataJson.pinned）。 */
+const isPinned = (item: NoteOverlayItem): boolean => rawDataObj(item).pinned === true;
+
+/** 讀取項目的持久化內容錨點（無/壞 → null＝走舊點錨定回退）。 */
+const itemAnchor = (item: NoteOverlayItem): OverlayAnchor | null => {
+  const a = rawDataObj(item).anchor;
+  return isOverlayAnchor(a) ? a : null;
+};
 
 /** 便利貼/圖片板標題列上的小圖示按鈕樣式（－ 收合、🗑 刪除）。 */
 const chromeBtnStyle: React.CSSProperties = {
@@ -64,6 +113,21 @@ interface Props {
   onToggleToc?: () => void;
   /** 章節目錄表目前是否開啟（開啟時工具列目錄鈕加深底色，標示 On）。 */
   tocOpen?: boolean;
+  /**
+   * 「問題清單」面板是否開啟（由筆記頁工具列的「❓ 問題清單」鈕控制）。
+   * 面板本身由本元件渲染（因需存取 overlay items 與回答狀態），開關狀態上提給頁面。
+   */
+  questionPanelOpen?: boolean;
+  /** 問題清單面板要求關閉時回呼（面板 ✕／點列定位後同步頁面的開關狀態）。 */
+  onQuestionPanelOpenChange?: (open: boolean) => void;
+  /** 本篇問題項目變動時回呼（供頁面工具列鈕顯示問題數）。 */
+  onQuestionsChange?: (questions: NoteOverlayItem[]) => void;
+  /**
+   * 要求定位的浮層項目 id（來自 ?overlay= 深連結——搜尋結果／問題清單頁跳轉）。
+   * 由本元件承接（而非頁面直接呼叫 scrollToOverlayItem）的原因：定位前需讀取該項目的
+   * 錨點資料做「循著階層展開收合 toggle」，而 overlay items 只存在於本元件的狀態裡。
+   */
+  locateOverlayId?: string | null;
 }
 
 /**
@@ -78,9 +142,22 @@ interface Props {
  * 浮層容器 pointer-events:none；繪圖中時 SVG 捕捉指標、便利貼暫不可拖；未繪圖時指標穿透、便利貼可互動，
  * 故不影響底下文字選取（#5 標註）。
  */
-export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Props) {
+export function NoteOverlay({
+  noteId,
+  containerRef,
+  onToggleToc,
+  tocOpen,
+  questionPanelOpen,
+  onQuestionPanelOpenChange,
+  onQuestionsChange,
+  locateOverlayId,
+}: Props) {
   const confirm = useConfirm();
   const [items, setItems] = useState<NoteOverlayItem[]>([]);
+  // 浮層清單是否已載入完成（?overlay= 深連結定位要等資料到齊才能讀錨點做展開）。
+  const [itemsLoaded, setItemsLoaded] = useState(false);
+  // 目前開著答題彈窗的問題 item id 清單（可多開；只存 React state，刷新即消失）。
+  const [openAnswerItemIds, setOpenAnswerItemIds] = useState<string[]>([]);
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [mounted, setMounted] = useState(false);
   // 疊在內文上的浮層容器（position:absolute; inset:0）——非釘住便利貼/圖片板的絕對定位原點。
@@ -106,6 +183,40 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
   // 「剛畫完的形狀」索引：可在工具列即時調整其顏色 / 線寬 / 虛線並立刻看到變化。
   // null＝沒有可調整的對象（換工具、擦除、開始畫新的一筆都會清除）。
   const [selectedShapeIdx, setSelectedShapeIdx] = useState<number | null>(null);
+  // 螢光筆「直線模式」：開啟時螢光筆拖曳畫出筆直的半透明線（type:'line' + opacity），
+  // 適合整行畫重點；關閉＝原本的自由筆螢光筆。
+  //
+  // 預設 true（直線）：多數畫重點情境要的是「整行拉一條直線」，故預設直線；
+  // 但仍「記住上次選擇」——若使用者用工具列切回自由筆，換一篇筆記不該被強制拉回直線（否則體驗矛盾）。
+  // SSR 安全：初始一律給 true（伺服器端無 window，不可讀 localStorage），掛載後再從 localStorage 覆蓋，
+  //          以此避免 hydration mismatch（見下方兩個 effect）。
+  const [highlightStraight, setHighlightStraight] = useState(true);
+  // 偏好是否已從 localStorage 還原完畢。用來擋住「還沒讀就先寫回」把舊偏好覆蓋掉的競態；
+  // 刻意用 state（而非 ref）故不依賴 effect 的宣告順序，較穩健。
+  const [highlightStraightLoaded, setHighlightStraightLoaded] = useState(false);
+
+  // 掛載後從 localStorage 還原螢光筆直線偏好（放 effect 而非 useState 初始值，以避免 SSR/水合不一致）。
+  // 讀不到（首次使用）時維持預設 true（直線）。
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(HIGHLIGHT_STRAIGHT_STORAGE_KEY);
+      if (raw !== null) setHighlightStraight(raw === '1');
+    } catch {
+      /* 隱私模式／停用 storage 時忽略，維持預設直線。 */
+    }
+    setHighlightStraightLoaded(true);
+  }, []);
+
+  // highlightStraight 變動時寫回 localStorage（工具列切換直線／自由筆即持久化，跨筆記與 session 保持）。
+  // 還原完成前（loaded=false）不寫，避免掛載瞬間的預設值覆蓋掉使用者上次存下的偏好。
+  useEffect(() => {
+    if (!highlightStraightLoaded) return;
+    try {
+      window.localStorage.setItem(HIGHLIGHT_STRAIGHT_STORAGE_KEY, highlightStraight ? '1' : '0');
+    } catch {
+      /* 忽略寫入失敗（storage 已滿或被停用等）。 */
+    }
+  }, [highlightStraight, highlightStraightLoaded]);
 
   useEffect(() => setMounted(true), []);
 
@@ -136,9 +247,11 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
 
   useEffect(() => {
     let alive = true;
+    setItemsLoaded(false); // 換筆記時重置，避免深連結定位讀到上一篇的載入旗標
     listNoteOverlay(noteId).then((list) => {
       if (!alive) return;
       setItems(list);
+      setItemsLoaded(true);
       // 便利貼/圖片板預設「收合」（只顯示標題列）——每次打開筆記都全收合，不記憶展開狀態。
       setCollapsedIds(new Set(list.filter((i) => i.kind === 'sticky' || i.kind === 'slide').map((i) => i.id)));
     });
@@ -149,6 +262,20 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
   const itemsRef = useRef(items);
   itemsRef.current = items;
 
+  /**
+   * 依「容器相對座標點」建立內容錨點（畫記跟著文字走的基準；點在視窗外或無文字時回 null）。
+   * useCallback：只依賴穩定的 containerRef，供下方 effect 安全列入依賴。
+   * @param px 相對內文容器的 X。
+   * @param py 相對內文容器的 Y。
+   * @returns 內容錨點或 null（呼叫端 fallback 絕對座標）。
+   */
+  const anchorAtContainerPoint = useCallback((px: number, py: number): OverlayAnchor | null => {
+    const container = containerRef.current;
+    const rect = container?.getBoundingClientRect();
+    if (!container || !rect) return null;
+    return computeAnchorAt(container, rect.left + px, rect.top + py);
+  }, [containerRef]);
+
   // 接收「框選提問答案 → 便利貼」事件：在指定座標建立便利貼並加入浮層（取代開新筆記）。
   useEffect(() => {
     const onAskSticky = (e: Event) => {
@@ -156,6 +283,8 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
       if (!detail) return;
       const z = itemsRef.current.reduce((m, i) => Math.max(m, i.zIndex), 0) + 1;
       // detail.x/y 為「相對內文容器」座標；新便利貼預設跟著內文（absolute），直接沿用即可。
+      // 一併建立內容錨點（跟著所選段落的文字走）。
+      const askAnchor = anchorAtContainerPoint(Math.max(0, detail.x), Math.max(0, detail.y));
       createNoteOverlay(noteId, {
         kind: 'sticky',
         x: Math.max(0, detail.x),
@@ -165,13 +294,14 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
         zIndex: z,
         color: STICKY_COLORS[2],
         text: detail.text,
+        ...(askAnchor ? { dataJson: JSON.stringify({ anchor: askAnchor }) } : {}),
       }).then((created) => {
         if (created) setItems((prev) => [...prev, created]);
       });
     };
     window.addEventListener(NOTE_ASK_STICKY_EVENT, onAskSticky);
     return () => window.removeEventListener(NOTE_ASK_STICKY_EVENT, onAskSticky);
-  }, [noteId, containerRef]);
+  }, [noteId, containerRef, anchorAtContainerPoint]);
 
   // 量測內文容器尺寸（繪圖 SVG 用）
   useEffect(() => {
@@ -189,19 +319,92 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
   const patchLocal = (id: string, patch: Partial<NoteOverlayItem>) =>
     setItems((prev) => prev.map((i) => (i.id === id ? { ...i, ...patch } : i)));
 
+  // 飛行中的浮層更新數（persist 是 fire-and-forget）：儲存快照前要等它們落地，
+  // 否則「剛拖完就按儲存」會拍到伺服器上的舊位置。
+  const inFlightPersists = useRef(0);
+
   const persist = useCallback(async (id: string, patch: Partial<NoteOverlayItem>) => {
+    inFlightPersists.current += 1;
     try {
       await updateNoteOverlay(id, patch);
     } catch (e) {
       logger.error('Failed to update overlay item:', e);
+    } finally {
+      inFlightPersists.current -= 1;
     }
   }, []);
+
+  // 浮層快照儲存狀態（工具列「💾 儲存」鈕的回饋）。
+  // saved-partial：逾時仍有飛行中更新未落地——快照已存，但可能未含最後一刻的拖曳變更。
+  const [snapshotState, setSnapshotState] = useState<
+    'idle' | 'saving' | 'saved' | 'saved-partial' | 'error'
+  >('idle');
+
+  /**
+   * 儲存浮層快照：等待飛行中的位置/內容更新落地（上限 2 秒）後，
+   * 請伺服器把當下全部浮層與畫記存成一份不可變快照（歷史分頁可見）。
+   * 逾時仍有未落地的更新時照樣儲存，但以「未含拖曳中變更」如實告知。
+   */
+  const saveOverlaySnapshot = useCallback(async () => {
+    if (snapshotState === 'saving') return;
+    setSnapshotState('saving');
+    const deadline = Date.now() + 2000;
+    while (inFlightPersists.current > 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const fullyFlushed = inFlightPersists.current === 0;
+    const result = await createOverlaySnapshot(noteId);
+    if (result) {
+      setSnapshotState(fullyFlushed ? 'saved' : 'saved-partial');
+      setTimeout(() => setSnapshotState('idle'), fullyFlushed ? 2000 : 4000);
+    } else {
+      setSnapshotState('error');
+      setTimeout(() => setSnapshotState('idle'), 3000);
+    }
+  }, [noteId, snapshotState]);
 
   const bringToFront = (item: NoteOverlayItem) => {
     if (item.zIndex >= maxZ) return;
     const z = maxZ + 1;
     patchLocal(item.id, { zIndex: z });
     persist(item.id, { zIndex: z });
+  };
+
+  // ── 問題功能 ──
+  // 本篇被標記為問題的浮層元件（僅 sticky / text；建立時間新→舊）。
+  const questionItems = items
+    .filter((i) => i.isQuestion && (i.kind === 'sticky' || i.kind === 'text'));
+
+  // 問題項目變動時通知頁面（供工具列「❓ 問題清單 (N)」顯示數量）。用 JSON key 避免無意義的重複回呼。
+  const questionsSignature = questionItems
+    .map((i) => `${i.id}:${i.isQuestion ? 1 : 0}:${(i.questionAnswer ?? '') !== '' ? 1 : 0}`)
+    .join('|');
+  useEffect(() => {
+    onQuestionsChange?.(questionItems);
+    // 僅在「問題集合／已答狀態」真的變動時回呼（questionsSignature 為穩定的內容指紋）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [questionsSignature]);
+
+  /** 切換「設為問題／移除問題」（樂觀更新 + 持久化）。 */
+  const toggleQuestion = (item: NoteOverlayItem) => {
+    const next = !item.isQuestion;
+    patchLocal(item.id, { isQuestion: next });
+    persist(item.id, { isQuestion: next });
+  };
+
+  /** 開啟某問題的答題彈窗（同一 item 已開則不重開）。 */
+  const openAnswerPopup = (itemId: string) => {
+    setOpenAnswerItemIds((prev) => (prev.includes(itemId) ? prev : [...prev, itemId]));
+  };
+
+  /** 關閉某問題的答題彈窗。 */
+  const closeAnswerPopup = (itemId: string) => {
+    setOpenAnswerItemIds((prev) => prev.filter((id) => id !== itemId));
+  };
+
+  /** 答題彈窗儲存成功：同步本地 item 的回答（彈窗已自行持久化，此處只更新本地狀態）。 */
+  const onAnswerSaved = (itemId: string, answer: string) => {
+    patchLocal(itemId, { questionAnswer: answer });
   };
 
   // ── 新增便利貼 / 輪播 ──
@@ -221,17 +424,20 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
   };
   const addSticky = async () => {
     const p = spawnPos();
+    const anchor = anchorAtContainerPoint(p.x, p.y);
     const created = await createNoteOverlay(noteId, {
       kind: 'sticky', x: p.x, y: p.y, width: 220, height: 200, zIndex: maxZ + 1,
       color: STICKY_COLORS[0], text: '',
+      ...(anchor ? { dataJson: JSON.stringify({ anchor }) } : {}),
     });
     if (created) setItems((prev) => [...prev, created]);
   };
   const addSlide = async () => {
     const p = spawnPos();
+    const anchor = anchorAtContainerPoint(p.x, p.y);
     const created = await createNoteOverlay(noteId, {
       kind: 'slide', x: p.x, y: p.y, width: 260, height: 200, zIndex: maxZ + 1,
-      dataJson: JSON.stringify([]),
+      dataJson: JSON.stringify(anchor ? { images: [], anchor } : []),
     });
     if (created) setItems((prev) => [...prev, created]);
   };
@@ -248,10 +454,16 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
   };
 
   const addTextBox = async () => {
+    // 需求：按 T＝進入文字，同時取消畫筆/形狀/螢光筆/橡皮擦模式
+    //（否則繪圖 SVG 仍攔截指標，新文字框根本點不到）。
+    setTool(null);
+    setSelectedShapeIdx(null);
     const p = spawnPos();
+    const anchor = anchorAtContainerPoint(p.x, p.y);
     const created = await createNoteOverlay(noteId, {
       kind: 'text', x: p.x, y: p.y, width: 180, height: 48, zIndex: maxZ + 1,
-      color: '#ef4444', text: '', dataJson: JSON.stringify({ bg: null, fontSize: 20, rotation: 0 }),
+      color: '#ef4444', text: '',
+      dataJson: JSON.stringify({ bg: null, fontSize: 20, rotation: 0, ...(anchor ? { anchor } : {}) }),
     });
     if (created) {
       setItems((prev) => [...prev, created]);
@@ -267,11 +479,10 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
   };
 
   const selectedTextItem = items.find((i) => i.id === selectedTextId && i.kind === 'text') ?? null;
-  /** 更新選取文字框的額外屬性（bg / fontSize / rotation）並持久化。 */
+  /** 更新選取文字框的額外屬性（bg / fontSize / rotation）並持久化（合併寫入，保留 anchor 等其他欄位）。 */
   const updateTextExtra = (patch: Partial<TextExtra>) => {
     if (!selectedTextItem) return;
-    const cur = parseTextExtra(selectedTextItem.dataJson);
-    const json = JSON.stringify({ ...cur, ...patch });
+    const json = JSON.stringify({ ...rawDataObj(selectedTextItem), ...patch });
     patchLocal(selectedTextItem.id, { dataJson: json });
     persist(selectedTextItem.id, { dataJson: json });
   };
@@ -287,6 +498,55 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
     setSelectedTextId(null);
     setEditingTextId(null);
     if (id) remove(id);
+  };
+
+  /**
+   * 文字框持久化：移動（patch 含 x/y）時順便以新位置重建內容錨點——拖到新文字上就跟著新文字；
+   * 其他 patch（打字、旋轉…）原樣持久化。
+   * @param id 文字框 id。
+   * @param patch 來自 DrawingTextBox 的 onCommit 內容。
+   */
+  const commitTextItemPatch = (id: string, patch: Partial<NoteOverlayItem>) => {
+    if (patch.x === undefined || patch.y === undefined) {
+      persist(id, patch);
+      return;
+    }
+    const cur = itemsRef.current.find((x) => x.id === id);
+    if (!cur) return;
+    // 縮放/旋轉的 commit 也帶 x/y 但值可能沒變（rotation=0 的 resize）→ 沒真的移動就不重錨（省一次定位）。
+    const anchorObj = rawDataObj(cur).anchor;
+    if (isOverlayAnchor(anchorObj) && Math.abs(patch.x - cur.x) < 0.5 && Math.abs(patch.y - cur.y) < 0.5) {
+      persist(id, patch);
+      return;
+    }
+    const anchor = anchorAtContainerPoint(patch.x, patch.y);
+    const obj = { ...rawDataObj({ ...cur, ...patch }) } as Record<string, unknown>;
+    if (anchor) obj.anchor = anchor;
+    else delete obj.anchor;
+    const json = JSON.stringify(obj);
+    patchLocal(id, { dataJson: json });
+    persist(id, { ...patch, dataJson: json });
+  };
+
+  // 文字框「滾輪調整大小」（調整中狀態的 T 版本）：等比縮放字級與框尺寸。
+  // 滾輪連發 → 本地即時、持久化尾端去抖。
+  const textWheelPersistTimer = useRef<number | null>(null);
+  const adjustTextByWheel = (id: string, deltaY: number) => {
+    const it = itemsRef.current.find((x) => x.id === id);
+    if (!it || it.kind !== 'text') return;
+    const factor = deltaY < 0 ? 1.06 : 1 / 1.06;
+    const extra = parseTextExtra(it.dataJson);
+    const fontSize = Math.min(120, Math.max(8, Math.round(extra.fontSize * factor)));
+    const width = Math.max(40, Math.round(it.width * factor));
+    const height = Math.max(24, Math.round(it.height * factor));
+    // 合併寫入（保留 anchor 等其他欄位）。
+    patchLocal(id, { dataJson: JSON.stringify({ ...rawDataObj(it), fontSize }), width, height });
+    if (textWheelPersistTimer.current != null) window.clearTimeout(textWheelPersistTimer.current);
+    textWheelPersistTimer.current = window.setTimeout(() => {
+      textWheelPersistTimer.current = null;
+      const cur = itemsRef.current.find((x) => x.id === id);
+      if (cur) persist(id, { dataJson: cur.dataJson, width: cur.width, height: cur.height });
+    }, 500);
   };
 
   // 點文字框與其屬性面板 / 色盤以外的地方 → 取消選取（空框順手刪除）。
@@ -385,18 +645,7 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
   };
 
   // ── 圖片板 dataJson 結構 { title?, images, pinned? }：各欄共存，改一欄不動其他欄 ──
-  /**
-   * 讀取項目 dataJson 的「物件形式」並保留所有欄位；舊的純陣列（圖片板）視為 `{ images }`。
-   * 供泛用地讀/寫共同欄位（如 pinned），不會把便利貼的 highlights 或圖片板的 images 弄丟。
-   */
-  const rawDataObj = (item: NoteOverlayItem): Record<string, unknown> => {
-    try {
-      const parsed = JSON.parse(item.dataJson || '');
-      if (Array.isArray(parsed)) return { images: parsed };
-      if (parsed && typeof parsed === 'object') return parsed as Record<string, unknown>;
-    } catch { /* 空/壞 → {} */ }
-    return {};
-  };
+  // （rawDataObj / isPinned / itemAnchor 為模組層級純函式，見檔案上方。）
   /** 讀圖片板標題（相容舊的純陣列格式，見 parseSlideData）。 */
   const slideTitle = (item: NoteOverlayItem): string => parseSlideData(item.dataJson).title;
   /** 合併寫入圖片板 dataJson（保留既有所有欄位——含 pinned；並把舊的純陣列格式一併升級為物件格式）。 */
@@ -425,7 +674,6 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
   // pinned=true：position:fixed、portal 到 body、可拖到整個畫面（含側欄），但不隨內文捲動（像章節目錄表）。
   // pinned=false（預設）：position:absolute 疊在內文上，隨內文捲動、被內文區裁切（原本的便利貼行為）。
   // x/y 的意義隨 pinned 改變（fixed＝視窗座標、absolute＝相對內文座標），切換時換算座標讓它停在原地。
-  const isPinned = (item: NoteOverlayItem): boolean => rawDataObj(item).pinned === true;
   const togglePin = (item: NoteOverlayItem) => {
     const pinned = !isPinned(item);
     const rect = containerRef.current?.getBoundingClientRect();
@@ -451,27 +699,61 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
       .forEach((item, i) => {
         const x = 28 + (i % 8) * 26;
         const y = 28 + (i % 8) * 26;
-        patchLocal(item.id, { x, y });
-        persist(item.id, { x, y });
-        if (isPinned(item)) setPinnedFlag(item, false);
+        // 歸位＝移到內文左上角 → 內容錨點已不代表它的位置，一併重建（左上角多半無文字 → 移除錨點）。
+        const anchor = anchorAtContainerPoint(x, y);
+        const obj = { ...rawDataObj(item) } as Record<string, unknown>;
+        if (anchor) obj.anchor = anchor;
+        else delete obj.anchor;
+        if (isPinned(item)) obj.pinned = false;
+        const json = JSON.stringify(obj);
+        patchLocal(item.id, { x, y, dataJson: json });
+        persist(item.id, { x, y, dataJson: json });
       });
   };
 
-  // ── 便利貼/圖片板「跟著所在的 toggle 一起收合」（使用者需求）──
-  // 規格：非釘住（position:absolute、貼在內文上隨捲動）的便利貼/圖片板，若其「左上角的點」最靠近的文字所在的
-  // <details class="md-toggle">（或其任一祖先 details）被收合，這張就一起「隱藏」；再展開就恢復（可逆）。
-  // 釘住（fixed）者不受影響（它不貼著任何文字）。
+  // ── 便利貼/圖片板/文字框/手繪形狀「跟著所在的 toggle 一起收合」（使用者需求）──
+  // 規格：非釘住（position:absolute、貼在內文上隨捲動）的便利貼/圖片板/文字框，以及每一個手繪形狀，
+  // 若其錨定點下的內容所在的 <details class="md-toggle">（或其任一祖先 details）被收合，就一起「隱藏」；
+  // 再展開就恢復（可逆）。釘住（fixed）者不受影響（它不貼著任何文字）。
   //
-  // 【為何用 DOM 錨點、而非幾何範圍——決定性關鍵】收合是「同一輸入→同一輸出」的需求。純用幾何（點是否落在
-  // details 的 rect 內）會因「內層收合使外層 rect 縮短」「上方兄弟 toggle 收合使整段內容上移」而讓判定隨
-  // 『收合歷史』飄移，出現「有時不隱藏、有時不出現、多按幾下又好」的非決定性。改法：把項目錨定到它左上角點
-  // 下方「真正的內容元素」（DOM 祖先鏈穩定、不受版面位移影響），再以純 DOM 判斷「該元素是否位於某個收合中的
-  // <details> 內」決定隱藏——純函式、決定性。
-  //
-  // 錨點建立時機：只在「目前錨點可見（不在收合 details 內）或尚未建立」時，才用 elementsFromPoint 重抓點下的
-  // 可見內容元素；若目前錨點已被收合（該藏），就保留它、不重抓（否則會抓到位移後的別段內容而誤判）。
+  // 【雙軌機制】
+  // (A) 持久化「內容錨點」（新資料，建立當下寫入）：畫記建立時把「壓在哪段文字上」存成文字錨點
+  //     （lib/overlayAnchor.ts），之後一律以文字重新定位——文字被收合（Range 無 rects）→ 隱藏；
+  //     文字可見但位置改變（收合/展開其他段落造成位移、甚至重載後版面不同）→ 把畫記座標「跟著位移量」
+  //     rebase 搬移。如此畫記永遠貼著它的文字，判定是純函式（同版面 → 同結果），且不依賴視窗可見性。
+  //     【為什麼不能只用絕對座標＋點錨定】絕對座標只在「畫記當下的展開狀態」的版面正確；多層 toggle 下
+  //     展開別的段落就會讓文字整段位移，畫記視覺上跑到別段文字上，點錨定也會在重抓時綁錯內容
+  //     （2026-07-08 使用者於 reamde 筆記實測重現）。
+  // (B) 點錨定 session 機制（舊資料回退，無持久化錨點者）：以錨定點下的 DOM 元素判定收合隱藏，
+  //     行為與先前版本一致（絕對座標、不跟隨位移）。舊畫記重畫一次即自動升級為 (A)。
   const stickyAnchorRef = useRef<Map<string, Element>>(new Map());
   const [collapsedByToggle, setCollapsedByToggle] = useState<Set<string>>(new Set());
+  const shapeAnchorsRef = useRef<Map<string, Element>>(new Map());
+  const [hiddenShapeKeys, setHiddenShapeKeys] = useState<Set<string>>(new Set());
+  // 最新 recompute 的 ref：供「items/shapes 變動」的去抖 effect 呼叫（函式本體定義於下方 effect 內）。
+  const recomputeAnchorsRef = useRef<() => void>(() => {});
+  // rebase 後待持久化的項目 id 與 drawing 髒旗標（rebase 高頻觸發 → 尾端去抖批次寫回後端）。
+  const rebaseDirtyItemIdsRef = useRef<Set<string>>(new Set());
+  const rebaseDrawingDirtyRef = useRef(false);
+  const rebasePersistTimer = useRef<number | null>(null);
+  /** 排程把 rebase 結果批次持久化（800ms 尾端去抖；讀 itemsRef/shapesRef 的最新值）。 */
+  const scheduleRebasePersist = useCallback(() => {
+    if (rebasePersistTimer.current != null) window.clearTimeout(rebasePersistTimer.current);
+    rebasePersistTimer.current = window.setTimeout(() => {
+      rebasePersistTimer.current = null;
+      const ids = Array.from(rebaseDirtyItemIdsRef.current);
+      rebaseDirtyItemIdsRef.current.clear();
+      for (const id of ids) {
+        const it = itemsRef.current.find((x) => x.id === id);
+        if (it) persist(id, { x: it.x, y: it.y, dataJson: it.dataJson });
+      }
+      if (rebaseDrawingDirtyRef.current) {
+        rebaseDrawingDirtyRef.current = false;
+        const d = drawingRef.current;
+        if (d) persist(d.id, { dataJson: JSON.stringify(shapesRef.current) });
+      }
+    }, 800);
+  }, [persist]);
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -486,7 +768,7 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
       return false;
     };
 
-    /** 找左上角螢幕點下方「真正可見的內容元素」（在內文容器內、非 overlay、非 summary、不在收合 details 內）。 */
+    /** 找錨定螢幕點下方「真正可見的內容元素」（在內文容器內、非 overlay、非 summary、不在收合 details 內）。 */
     const contentElAt = (px: number, py: number): Element | null => {
       if (px < 0 || py < 0 || px > window.innerWidth || py > window.innerHeight) return null; // 視窗外 → elementsFromPoint 無效
       for (const el of document.elementsFromPoint(px, py)) {
@@ -498,55 +780,262 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
       return null;
     };
 
+    /**
+     * 通用的「錨定→判定隱藏」流程（項目級與形狀級共用同一套規則）。
+     * @param anchors 錨點表（key → 內容元素）。
+     * @param entries 待判定的 key 與其錨定螢幕點（pt 為 null＝點無法計算）。
+     * @returns 目前應隱藏的 key 集合。
+     */
+    const computeHidden = (
+      anchors: Map<string, Element>,
+      entries: { key: string; pt: [number, number] | null }[],
+    ): Set<string> => {
+      const liveKeys = new Set(entries.map((e) => e.key));
+      for (const k of Array.from(anchors.keys())) if (!liveKeys.has(k)) anchors.delete(k); // 清掉已不存在者
+
+      const hidden = new Set<string>();
+      for (const { key, pt } of entries) {
+        const cur = anchors.get(key);
+        const curHidden = !!cur && cur.isConnected && inClosedToggle(cur);
+        if (!curHidden) {
+          // 目前可見/未建立/已脫離 DOM → 依錨定點重抓錨點；已被收合藏起者則保留錨點、不重抓。
+          const el = pt ? contentElAt(pt[0], pt[1]) : null;
+          if (el) anchors.set(key, el);
+          else if (!cur || !cur.isConnected) anchors.delete(key); // 點上無可用內容 → 無錨點（永遠顯示）
+        }
+        const a = anchors.get(key);
+        if (a && a.isConnected && inClosedToggle(a)) hidden.add(key);
+      }
+      return hidden;
+    };
+
     const recompute = () => {
       const origin = overlayRef.current?.getBoundingClientRect();
       if (!origin) return;
+      // 一輪只序列化一次容器純文字，供本輪所有錨點重定位共用（大筆記×多畫記的成本控制）。
+      const containerText = container.textContent ?? '';
+
+      // ── (1) 項目級：便利貼/圖片板/文字框（非釘住者） ──
       const nonPinned = itemsRef.current.filter(
-        (i) => (i.kind === 'sticky' || i.kind === 'slide') && !isPinned(i),
+        (i) => (i.kind === 'sticky' || i.kind === 'slide' || i.kind === 'text') && !isPinned(i),
       );
-      const anchors = stickyAnchorRef.current;
-      const liveIds = new Set(nonPinned.map((i) => i.id));
-      for (const id of Array.from(anchors.keys())) if (!liveIds.has(id)) anchors.delete(id); // 清掉已不存在項目
-
-      const hidden = new Set<string>();
+      const hiddenItems = new Set<string>();
+      const legacyItems: typeof nonPinned = [];
       for (const it of nonPinned) {
-        const cur = anchors.get(it.id);
-        const curHidden = !!cur && cur.isConnected && inClosedToggle(cur);
-        if (!curHidden) {
-          // 目前可見/未建立/已脫離 DOM → 依左上角點重抓錨點；已被收合藏起者則保留錨點、不重抓。
-          const el = contentElAt(origin.left + it.x, origin.top + it.y);
-          if (el) anchors.set(it.id, el);
-          else if (!cur || !cur.isConnected) anchors.delete(it.id); // 點上無可用內容 → 無錨點（永遠顯示）
+        const a = itemAnchor(it);
+        if (!a) {
+          legacyItems.push(it); // 無持久化錨點 → 舊點錨定回退
+          continue;
         }
-        const a = anchors.get(it.id);
-        if (a && a.isConnected && inClosedToggle(a)) hidden.add(it.id);
+        const loc = locateAnchor(container, a, containerText);
+        if (!loc) continue; // 錨定文字已不存在（內容被編輯掉）→ 絕對座標、永遠顯示
+        if (!loc.visible) {
+          hiddenItems.add(it.id); // 文字在收合的 toggle 內 → 一起隱藏
+          continue;
+        }
+        if (it.id === draggingItemIdRef.current) continue; // 拖曳中 → 不與使用者搶位置
+        // 文字可見但位置改變 → 座標跟著位移（rebase），並更新錨點基準位置。
+        const dx = loc.x - a.ex;
+        const dy = loc.y - a.ey;
+        if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+          const json = JSON.stringify({ ...rawDataObj(it), anchor: { ...a, ex: loc.x, ey: loc.y } });
+          patchLocal(it.id, { x: it.x + dx, y: it.y + dy, dataJson: json });
+          rebaseDirtyItemIdsRef.current.add(it.id);
+        }
       }
-      setCollapsedByToggle((prev) => (sameStringSet(prev, hidden) ? prev : hidden));
-    };
+      // 舊資料回退：點錨定 session 機制（絕對座標、只做隱藏判定）。
+      const hiddenLegacy = computeHidden(
+        stickyAnchorRef.current,
+        legacyItems.map((it) => ({ key: it.id, pt: [origin.left + it.x, origin.top + it.y] as [number, number] })),
+      );
+      hiddenLegacy.forEach((id) => hiddenItems.add(id));
+      setCollapsedByToggle((prev) => (sameStringSet(prev, hiddenItems) ? prev : hiddenItems));
 
-    // toggle 事件不冒泡 → 於容器用 capture 監聽，可涵蓋事後才注入的 details。
+      // ── (2) 形狀級 ──
+      const hiddenShapes = new Set<string>();
+      const legacyShapeEntries: { key: string; pt: [number, number] | null }[] = [];
+      // 互動進行中（畫到一半/擦除中/建立空窗）不做位移 rebase，避免與暫存陣列打架；隱藏判定照算。
+      const interacting =
+        curShape.current !== null || eraseWork.current !== null || eraseBox.current !== null || creatingRef.current !== null;
+      let shifted = false;
+      const nextShapes = shapesRef.current.map((s) => {
+        if (!s.anchor) {
+          const pt = shapeAnchorPoint(s);
+          legacyShapeEntries.push({
+            key: JSON.stringify(s),
+            pt: pt ? ([origin.left + pt[0], origin.top + pt[1]] as [number, number]) : null,
+          });
+          return s;
+        }
+        const loc = locateAnchor(container, s.anchor, containerText);
+        if (!loc) return s; // 錨定文字不存在 → 絕對座標、永遠顯示
+        if (!loc.visible) {
+          hiddenShapes.add(JSON.stringify(s));
+          return s;
+        }
+        const dx = loc.x - s.anchor.ex;
+        const dy = loc.y - s.anchor.ey;
+        if (interacting || (Math.abs(dx) <= 0.5 && Math.abs(dy) <= 0.5)) return s;
+        shifted = true;
+        return {
+          ...s,
+          points: s.points.map(([x, y]) => [x + dx, y + dy] as [number, number]),
+          anchor: { ...s.anchor, ex: loc.x, ey: loc.y },
+        };
+      });
+      if (shifted && drawingRef.current) {
+        shapesRef.current = nextShapes;
+        patchLocal(drawingRef.current.id, { dataJson: JSON.stringify(nextShapes) });
+        rebaseDrawingDirtyRef.current = true;
+      }
+      // 舊資料形狀：點錨定回退。
+      const hiddenLegacyShapes = computeHidden(shapeAnchorsRef.current, legacyShapeEntries);
+      hiddenLegacyShapes.forEach((k) => hiddenShapes.add(k));
+      setHiddenShapeKeys((prev) => (sameStringSet(prev, hiddenShapes) ? prev : hiddenShapes));
+
+      if (rebaseDirtyItemIdsRef.current.size > 0 || rebaseDrawingDirtyRef.current) scheduleRebasePersist();
+    };
+    recomputeAnchorsRef.current = recompute;
+
+    // toggle 事件不冒泡 → 於容器用 capture 監聽，可涵蓋事後才注入的 details；開合當下立即重算。
     const onToggle = (e: Event) => {
       const d = e.target;
       if (!(d instanceof HTMLDetailsElement) || !d.classList.contains('md-toggle')) return;
       recompute();
     };
 
+    // 捲動/視窗改變 → 節流重算：讓「捲進視野」的既有畫記/便利貼漸進建立錨點。
+    // 已建立且仍有效的錨點不會被此舉破壞（可見時重抓＝當下正確；隱藏時保留不動）。
+    let throttleTimer: number | null = null;
+    const scheduleRecompute = () => {
+      if (throttleTimer != null) return;
+      throttleTimer = window.setTimeout(() => {
+        throttleTimer = null;
+        recompute();
+      }, 200);
+    };
+
+    // 互動表格的排序/篩選是「不經 toggle、不觸發捲動/resize」的純版面變動——
+    // enhanceReadingTables 在變動後派發此事件，讓浮層立即 rebase 到新位置（不必等使用者捲動）。
+    const onLayoutChanged = () => scheduleRecompute();
+
     container.addEventListener('toggle', onToggle, true);
+    window.addEventListener('scroll', scheduleRecompute, true);
+    window.addEventListener('resize', scheduleRecompute);
+    window.addEventListener('zonwiki:layout-changed', onLayoutChanged);
     recompute();
-    return () => container.removeEventListener('toggle', onToggle, true);
+    return () => {
+      container.removeEventListener('toggle', onToggle, true);
+      window.removeEventListener('scroll', scheduleRecompute, true);
+      window.removeEventListener('resize', scheduleRecompute);
+      window.removeEventListener('zonwiki:layout-changed', onLayoutChanged);
+      if (throttleTimer != null) window.clearTimeout(throttleTimer);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [containerRef]);
 
+  // 項目/形狀變動（畫完一筆、新增便利貼/文字框、載入完成…）→ 去抖重算錨點，
+  // 讓「畫完當下（必在視野內）」就建立錨點；拖曳中每幀的 patchLocal 也會觸發，60ms 去抖合併。
+  useEffect(() => {
+    const id = window.setTimeout(() => recomputeAnchorsRef.current(), 60);
+    return () => window.clearTimeout(id);
+  }, [items]);
+
+  // ── 定位到某個浮層項目（問題清單面板點列項目 / ?overlay= 深連結共用）──
+  // scrollToOverlayItem 會回傳清理函式（取消尚未完成的重試與高亮計時器）。保存最近一次，
+  // 下次定位前先執行上一次的清理、元件卸載時也清理，避免遺留計時器（對抗式復審 MEDIUM）。
+  const locateCleanupRef = useRef<(() => void) | null>(null);
+  const handleLocateQuestion = useCallback((itemId: string) => {
+    // 定位前先「循著階層展開」（比照目錄 TocPanel.scrollToHeading）：
+    // 問題的錨定文字若位於收合的 :::toggle 內，該項目此刻整個未被渲染（collapsedByToggle 過濾），
+    // scrollToOverlayItem 會找不到 DOM 而靜默失敗。先展開祖先 details 後，details 的 toggle 事件
+    // 觸發既有 recompute → 項目恢復渲染 → scrollToOverlayItem 的重試迴圈接手捲動與高亮。
+    // 釘住（pinned）者不貼著文字、永遠可見 → 不需要也不應替使用者展開任何 toggle。
+    // 注意：面板保持開啟（先前版本會在此關閉面板，經使用者裁示改為不關——連續定位多個問題更順）。
+    const container = containerRef.current;
+    const item = itemsRef.current.find((i) => i.id === itemId);
+    if (container && item && !isPinned(item)) {
+      const anchor = itemAnchor(item);
+      if (anchor) {
+        // 錨點文字已被編輯掉（revealAnchor 回 false）時，項目以絕對座標渲染、永遠可見，
+        // 不需展開；無論結果都繼續往下捲動定位。
+        revealAnchor(container, anchor);
+      } else {
+        // 舊資料（無持久化錨點）：session 點錨定表記著它壓住的內容元素，展開其收合祖先。
+        // （整頁載入時就收合的舊項目沒有可靠錨點、也不會被隱藏，走預設定位即可。）
+        const el = stickyAnchorRef.current.get(itemId);
+        if (el && el.isConnected) openAncestorDetails(container, el);
+      }
+    }
+    locateCleanupRef.current?.();
+    locateCleanupRef.current = scrollToOverlayItem(itemId);
+  }, [containerRef]);
+  useEffect(() => () => {
+    locateCleanupRef.current?.();
+  }, []);
+
+  // ?overlay= 深連結定位（搜尋結果／問題清單頁跳轉進來）：等浮層資料載入後，
+  // 走與問題清單面板相同的「展開收合祖先 → 捲動定位」路徑。每個 overlayId 只處理一次
+  // （items 後續變動不重新定位，避免使用者捲走後又被拉回去）。
+  //
+  // ⚠️ 隱性依賴（對抗式復審 MEDIUM，勿悄悄破壞）：「單次防護 ref＋itemsLoaded 不會殘留舊筆記狀態」
+  // 的正確性，依賴筆記頁換 slug 時 page.tsx 的 loading 閘門會把整棵子樹（含本元件）完整卸載重掛
+  // ——若日後為了避免換頁閃爍而改成「保留舊內容不卸載」，這裡要改成以 noteId 一併重置
+  // handledLocateIdRef，否則深連結定位會拿舊筆記的 items 找新 id、標成已處理後永不重試。
+  const handledLocateIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!locateOverlayId) {
+      handledLocateIdRef.current = null;
+      return;
+    }
+    if (!itemsLoaded || handledLocateIdRef.current === locateOverlayId) return;
+    handledLocateIdRef.current = locateOverlayId;
+
+    // 內文（previewHtml）與浮層清單是並行載入——內文尚未渲染時 reveal 找不到錨定文字。
+    // 有錨點者以短輪詢等「錨定文字出現在內文」再定位（上限與 scrollToOverlayItem 同級的 5 秒，
+    // 逾時仍定位一次作兜底）；無錨點／釘住者直接定位。
+    const item = itemsRef.current.find((i) => i.id === locateOverlayId);
+    const anchor = item && !isPinned(item) ? itemAnchor(item) : null;
+    if (!anchor) {
+      handleLocateQuestion(locateOverlayId);
+      return;
+    }
+    let attempts = 0;
+    let timer: number | null = null;
+    const tryLocate = () => {
+      timer = null;
+      const text = containerRef.current?.textContent ?? '';
+      if (text.includes(anchor.text) || attempts >= 20) {
+        handleLocateQuestion(locateOverlayId);
+        return;
+      }
+      attempts += 1;
+      timer = window.setTimeout(tryLocate, 250);
+    };
+    tryLocate();
+    return () => {
+      if (timer != null) window.clearTimeout(timer);
+    };
+  }, [locateOverlayId, itemsLoaded, handleLocateQuestion, containerRef]);
+
   // ── 拖曳 / 縮放 ──
+  // 拖曳中的項目 id：rebase 不得動它（避免背景重算與使用者手動拖曳互相覆寫，對抗式復審 MEDIUM）。
+  const draggingItemIdRef = useRef<string | null>(null);
   const startDrag = (e: React.PointerEvent, item: NoteOverlayItem, mode: 'move' | 'resize') => {
     e.preventDefault();
     e.stopPropagation();
+    draggingItemIdRef.current = item.id;
     bringToFront(item);
     const sx = e.clientX, sy = e.clientY;
     const ox = item.x, oy = item.y, ow = item.width, oh = item.height;
     let next = { x: ox, y: oy, width: ow, height: oh };
+    // 「點擊 vs 拖曳」判定器：每次 pointerdown 各自新建（跨手勢不污染）。
+    // 【只用於 mode==='move'】標題列同時承擔「點擊收合」與「拖曳移動」，故需要死區把兩者分開。
+    // resize 把手沒有點擊語意，不套死區——否則縮放起手會有 8px 不跟手再跳一段（對抗式復審實測）。
+    const tracker = createDragClickTracker();
     const onMove = (ev: PointerEvent) => {
       const dx = ev.clientX - sx, dy = ev.clientY - sy;
+      if (mode === 'move' && !tracker.move(dx, dy)) return; // 死區：微晃不動作，保留點擊判定
       if (mode === 'move') {
         let nx = ox + dx;
         let ny = oy + dy;
@@ -567,14 +1056,43 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
         next = { x: nx, y: ny, width: ow, height: oh };
         patchLocal(item.id, { x: next.x, y: next.y });
       } else {
-        next = { x: ox, y: oy, width: Math.max(120, ow + dx), height: Math.max(80, oh + dy) };
+        // 最小寬：問題便利貼的標題列多兩顆常駐鈕（❓ 上色＋「答」膠囊），120px 會讓按鈕溢出裁切，
+        // 提高到 150；其餘維持原本 120。
+        const minW = item.kind === 'sticky' && item.isQuestion ? 150 : 120;
+        next = { x: ox, y: oy, width: Math.max(minW, ow + dx), height: Math.max(80, oh + dy) };
         patchLocal(item.id, { width: next.width, height: next.height });
       }
     };
     const onUp = () => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
-      persist(item.id, mode === 'move' ? { x: next.x, y: next.y } : { width: next.width, height: next.height });
+      draggingItemIdRef.current = null;
+      if (mode === 'resize') {
+        // 單純點一下把手（尺寸沒變）：不必發 PATCH。
+        if (next.width === ow && next.height === oh) return;
+        persist(item.id, { width: next.width, height: next.height });
+        return;
+      }
+      if (tracker.isClick()) {
+        // 點一下標題列（沒拖）＝切換收合/展開。位置沒變，故不持久化座標、也不重建錨點
+        // （避免無意義的 PATCH 與錨點飄移）。
+        toggleCollapse(item.id);
+        return;
+      }
+      if (!isPinned(item)) {
+        // 拖曳＝使用者把它放到新的文字上 → 重建內容錨點一併持久化（拖到無文字處則移除錨點、回絕對座標）。
+        const anchor = anchorAtContainerPoint(next.x, next.y);
+        const cur = itemsRef.current.find((x) => x.id === item.id) ?? item;
+        const obj = { ...rawDataObj(cur) } as Record<string, unknown>;
+        if (anchor) obj.anchor = anchor;
+        else delete obj.anchor;
+        const json = JSON.stringify(obj);
+        patchLocal(item.id, { dataJson: json });
+        persist(item.id, { x: next.x, y: next.y, dataJson: json });
+      } else {
+        // 釘住（浮動）：座標是視窗座標，不做內容錨點重建。
+        persist(item.id, { x: next.x, y: next.y });
+      }
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
@@ -588,18 +1106,27 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
   const eraseBox = useRef<{ x0: number; y0: number; x1: number; y1: number } | null>(null); // 框選擦除進行中的選取框
   const [, forceRerender] = useState(0);
 
-  // 以 ref 持有最新狀態，避免復原 / 重做的閉包鎖死過時物件（例如尚未建立的繪圖項目）。
-  const shapesRef = useRef<Shape[]>(shapes);
-  shapesRef.current = shapes;
   const drawingRef = useRef<NoteOverlayItem | null>(drawing);
   drawingRef.current = drawing;
   // 建立 drawing 項目的 in-flight 守衛：避免「第一筆畫完、建立 POST 尚未回來時就 Ctrl+Z」
   // 導致重複建立第二個 drawing 項目。後續呼叫會等同一個建立完成、再更新同一項目。
   const creatingRef = useRef<Promise<void> | null>(null);
 
+  // 以 ref 持有最新狀態，避免復原 / 重做的閉包鎖死過時物件（例如尚未建立的繪圖項目）。
+  // 【對抗式復審修正】drawing 項目「建立中」（第一筆的 POST 往返空窗）時不要用 items 派生的
+  // shapes（此刻仍是空陣列）蓋掉 setDrawingShapes 樂觀寫入的最新值——否則空窗期間第一筆會
+  // 短暫消失、滾輪縮放/調色短路、甚至連畫第二筆會把第一筆蓋掉。
+  const shapesRef = useRef<Shape[]>(shapes);
+  if (!creatingRef.current) shapesRef.current = shapes;
+  /** 畫面與互動實際採用的形狀來源（建立空窗期走樂觀值，其餘走 items 派生值）。 */
+  const shapesForUi: Shape[] = creatingRef.current ? shapesRef.current : shapes;
+
   /** 把手繪寫入（local + 後端）；一律透過 drawingRef 取得「當前」繪圖項目，故供復原閉包安全沿用。 */
   const setDrawingShapes = async (next: Shape[]) => {
     shapesRef.current = next; // 立即同步，連續復原 / 重做不必等重繪
+    // 復原/重做可能把形狀設回「rebase 前」的舊座標快照（rebase 不進 undo 堆疊）——
+    // 明確排程一次錨點重算，讓有錨點的形狀立刻被 rebase 回目前版面的正確位置（對抗式復審 HIGH）。
+    window.setTimeout(() => recomputeAnchorsRef.current(), 0);
     const json = JSON.stringify(next);
     // 若有建立中的請求，先等它完成（屆時 drawingRef 已就緒），避免重複建立。
     if (!drawingRef.current && creatingRef.current) {
@@ -618,7 +1145,15 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
       });
       if (created) {
         drawingRef.current = created; // 立即同步，後續呼叫直接走「更新」分支
-        setItems((prev) => [...prev, created]);
+        // POST 往返期間形狀可能又被更新（例如剛畫完立刻滾輪縮放）→ 以最新樂觀值回填，
+        // 避免建立回應的初始 json 蓋掉空窗期的變更。
+        const latest = JSON.stringify(shapesRef.current);
+        if (latest !== created.dataJson) {
+          setItems((prev) => [...prev, { ...created, dataJson: latest }]);
+          persist(created.id, { dataJson: latest });
+        } else {
+          setItems((prev) => [...prev, created]);
+        }
       }
     })();
     await creatingRef.current;
@@ -639,20 +1174,39 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
   // 線寬滑桿目前控制的值：螢光筆用自己的較粗線寬，其餘用一般筆寬。
   const activeWidth = tool === 'highlight' ? highlightWidth : penWidth;
 
+  // 「調整中」：剛畫完的幾何形狀（直線/矩形/橢圓/螢光直線）→ 滾輪調粗細、Del 刪除、左鍵點一下完成、
+  // 完成後維持原工具模式可直接畫下一個。自由筆（free）不進調整中——手寫（如「坑」字）
+  // 是連續多筆劃，若每一筆的起筆都被「完成上一筆」吃掉會完全無法書寫。
+  const selectedShape =
+    selectedShapeIdx !== null && selectedShapeIdx >= 0 && selectedShapeIdx < shapesForUi.length
+      ? shapesForUi[selectedShapeIdx]
+      : null;
+  const adjustingShape = selectedShape !== null && selectedShape.type !== 'free' && isDrawShapeTool;
+
+  /** 形狀目前是否因 toggle 收合而隱藏（隱藏者不得被擦除、不渲染）。 */
+  const isHiddenShape = (s: Shape): boolean => hiddenShapeKeys.has(JSON.stringify(s));
+
   const relPoint = (e: React.PointerEvent<SVGSVGElement>): [number, number] => {
     const rect = e.currentTarget.getBoundingClientRect();
     return [e.clientX - rect.left, e.clientY - rect.top];
   };
 
   const onSvgDown = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (e.button !== 0) return; // 只有左鍵作畫/擦除（右鍵留給「取消模式」，見 contextmenu 監聽）
     if (!tool || tool === 'erase-stroke') return; // 整筆刪除由各形狀自行接收點擊
+    // 幾何形狀「調整中」→ 左鍵點一下＝完成（只結束調整、不開新的一筆），維持目前工具模式。
+    if (adjustingShape) {
+      setSelectedShapeIdx(null);
+      return;
+    }
     // 開始新的一筆 / 擦除 → 取消「可調整上一個形狀」的選取。
     setSelectedShapeIdx(null);
     const p = relPoint(e);
     // 抓住指標，跨出 SVG 仍持續繪圖 / 擦除；合成事件或無作用指標時可能拋錯，忽略即可。
     try { (e.target as Element).setPointerCapture?.(e.pointerId); } catch { /* ignore */ }
     if (tool === 'erase-area') {
-      eraseWork.current = eraseAt(shapes, p[0], p[1], eraseRadius);
+      // 被收合隱藏的形狀不可被看不見地誤擦 → 只擦可見形狀。
+      eraseWork.current = eraseVisibleOnly(shapesForUi, isHiddenShape, (sub) => eraseAt(sub, p[0], p[1], eraseRadius));
       forceRerender((n) => n + 1);
       return;
     }
@@ -661,7 +1215,13 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
       forceRerender((n) => n + 1);
       return;
     }
-    if (tool === 'pen' || tool === 'highlight') {
+    if (tool === 'highlight' && highlightStraight) {
+      // 螢光筆直線模式：筆直的半透明線（type:'line' + opacity），適合整行畫重點。
+      curShape.current = {
+        type: 'line', color: penColor, width: highlightWidth, dash: false,
+        opacity: highlightOpacity, points: [p, p],
+      };
+    } else if (tool === 'pen' || tool === 'highlight') {
       // 螢光筆＝自由筆 + 較粗線寬 + 半透明（opacity）。
       curShape.current = {
         type: 'free', color: penColor,
@@ -678,7 +1238,7 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
   const onSvgMove = (e: React.PointerEvent<SVGSVGElement>) => {
     if (tool === 'erase-area' && eraseWork.current) {
       const p = relPoint(e);
-      eraseWork.current = eraseAt(eraseWork.current, p[0], p[1], eraseRadius);
+      eraseWork.current = eraseVisibleOnly(eraseWork.current, isHiddenShape, (sub) => eraseAt(sub, p[0], p[1], eraseRadius));
       forceRerender((n) => n + 1);
       return;
     }
@@ -699,7 +1259,7 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
       const next = eraseWork.current;
       eraseWork.current = null;
       // 只有真的擦掉東西才記錄一步（拖過空白不留下空的復原項）
-      if (JSON.stringify(next) !== JSON.stringify(shapes)) commitShapes(next);
+      if (JSON.stringify(next) !== JSON.stringify(shapesForUi)) commitShapes(next);
       else forceRerender((n) => n + 1);
       return;
     }
@@ -715,8 +1275,9 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
         forceRerender((n) => n + 1);
         return;
       }
-      const next = eraseInBox(shapes, minX, minY, maxX, maxY);
-      if (JSON.stringify(next) !== JSON.stringify(shapes)) commitShapes(next);
+      // 被收合隱藏的形狀不可被看不見地誤擦 → 只擦可見形狀。
+      const next = eraseVisibleOnly(shapesForUi, isHiddenShape, (sub) => eraseInBox(sub, minX, minY, maxX, maxY));
+      if (JSON.stringify(next) !== JSON.stringify(shapesForUi)) commitShapes(next);
       else forceRerender((n) => n + 1);
       return;
     }
@@ -725,9 +1286,15 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
     if (!s) return;
     const ok = s.type === 'free' ? s.points.length > 1 : !samePoint(s.points[0], s.points[1]);
     if (ok) {
+      // 建立內容錨點（畫記跟著文字走）：以形狀代表點下的文字為錨；無文字（空白區）→ 絕對座標。
+      const pt = shapeAnchorPoint(s);
+      if (pt) {
+        const anchor = anchorAtContainerPoint(pt[0], pt[1]);
+        if (anchor) s.anchor = anchor;
+      }
       // 把剛畫好的形狀設為「可即時調整」對象（它會是陣列最後一個）。
-      setSelectedShapeIdx(shapes.length);
-      commitShapes([...shapes, s]);
+      setSelectedShapeIdx(shapesForUi.length);
+      commitShapes([...shapesForUi, s]);
     } else {
       forceRerender((n) => n + 1);
     }
@@ -735,10 +1302,10 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
   const eraseShape = (idx: number) => {
     if (tool !== 'erase-stroke') return;
     setSelectedShapeIdx(null);
-    commitShapes(shapes.filter((_, i) => i !== idx));
+    commitShapes(shapesForUi.filter((_, i) => i !== idx));
   };
   const clearDrawing = async () => {
-    if (!shapes.length) return;
+    if (!shapesForUi.length) return;
     if (!(await confirm({ message: '清除這張筆記上的所有手繪？（可用 Ctrl+Z 復原）', danger: true }))) return;
     setSelectedShapeIdx(null);
     commitShapes([]);
@@ -810,11 +1377,217 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
     setTool((cur) => (cur === t ? null : t));
   };
 
+  // ── 調整中形狀的「滾輪調粗細」（原生 wheel 監聽：React 合成事件是 passive，無法 preventDefault 擋捲動）──
+  // 需求：滾輪調整的是「線條粗細」而非縮放範圍（範圍由拖曳兩端決定）。
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  // 以 ref 鏡像「調整中」的形狀索引，供原生監聽器取最新值（避免 stale closure）。
+  const adjustingIdxRef = useRef<number | null>(null);
+  adjustingIdxRef.current = adjustingShape ? selectedShapeIdx : null;
+  // 滾輪連發 → 本地即時更新、持久化走尾端去抖（不能每一格都 PATCH 後端）。
+  const wheelPersistTimer = useRef<number | null>(null);
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const onWheel = (e: WheelEvent) => {
+      const idx = adjustingIdxRef.current;
+      if (idx === null) return; // 非調整中 → 不攔截，頁面正常捲動
+      e.preventDefault();
+      const cur = shapesRef.current;
+      if (idx < 0 || idx >= cur.length) return;
+      const shape = cur[idx];
+      // 螢光筆（半透明，opacity<1）線寬上限較粗（40），一般畫筆/形狀上限 20。
+      const isHighlightShape = typeof shape.opacity === 'number' && shape.opacity < 1;
+      const maxWidth = isHighlightShape ? 40 : 20;
+      const step = e.deltaY < 0 ? 1 : -1; // 上滾變粗、下滾變細
+      const nextWidth = Math.min(maxWidth, Math.max(1, shape.width + step));
+      if (nextWidth === shape.width) return; // 已到上/下限：不動作、不排持久化
+      const next = cur.map((s, i) => (i === idx ? { ...s, width: nextWidth } : s));
+      shapesRef.current = next;
+      // 讓工具列「線寬」滑桿同步反映（螢光筆用自己的線寬 state）。
+      if (isHighlightShape) setHighlightWidth(nextWidth);
+      else setPenWidth(nextWidth);
+      const d = drawingRef.current;
+      // drawing 項目建立中（第一筆的 POST 空窗）→ 沒有可 patch 的 item，改強制重繪
+      //（畫面走 shapesForUi＝樂觀的 shapesRef，縮放仍即時可見）。
+      if (d) patchLocal(d.id, { dataJson: JSON.stringify(next) });
+      else forceRerender((n) => n + 1);
+      if (wheelPersistTimer.current != null) window.clearTimeout(wheelPersistTimer.current);
+      const schedulePersist = () => {
+        wheelPersistTimer.current = window.setTimeout(() => {
+          wheelPersistTimer.current = null;
+          const dd = drawingRef.current;
+          if (dd) persist(dd.id, { dataJson: JSON.stringify(shapesRef.current) });
+          else if (creatingRef.current) schedulePersist(); // 建立還沒回來 → 稍後再試，勿丟失縮放結果
+        }, 500);
+      };
+      schedulePersist();
+    };
+    svg.addEventListener('wheel', onWheel, { passive: false });
+    return () => svg.removeEventListener('wheel', onWheel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // 卸載時若滾輪調整尚未落地 → 立即持久化，避免遺失最後的縮放結果。
+  useEffect(
+    () => () => {
+      if (wheelPersistTimer.current != null) {
+        window.clearTimeout(wheelPersistTimer.current);
+        const d = drawingRef.current;
+        if (d) persist(d.id, { dataJson: JSON.stringify(shapesRef.current) });
+      }
+    },
+    [persist],
+  );
+
+  // ── 右鍵＝取消目前的繪圖 / 文字模式（需求：右鍵點一下取消畫筆/形狀/螢光筆/文字）──
+  // 僅在「有模式」時攔截（preventDefault 抑制該次右鍵選單）；平時右鍵完全不受影響。
+  const toolRef = useRef<DrawTool>(tool);
+  toolRef.current = tool;
+  const selectedTextIdRef = useRef<string | null>(selectedTextId);
+  selectedTextIdRef.current = selectedTextId;
+  const deleteIfEmptyRef = useRef(deleteIfEmpty);
+  deleteIfEmptyRef.current = deleteIfEmpty;
+  useEffect(() => {
+    const onContextMenu = (e: MouseEvent) => {
+      const hasMode = toolRef.current !== null || selectedTextIdRef.current !== null;
+      if (!hasMode) return;
+      e.preventDefault();
+      // 取消繪圖模式與調整中狀態；丟棄畫到一半的一筆與進行中的擦除。
+      curShape.current = null;
+      eraseWork.current = null;
+      eraseBox.current = null;
+      setSelectedShapeIdx(null);
+      setTool(null);
+      // 取消文字模式（選取/編輯中的文字框；空框順手刪除）。
+      const textId = selectedTextIdRef.current;
+      setSelectedTextId(null);
+      setEditingTextId(null);
+      if (textId) deleteIfEmptyRef.current(textId);
+    };
+    document.addEventListener('contextmenu', onContextMenu, true);
+    return () => document.removeEventListener('contextmenu', onContextMenu, true);
+  }, []);
+
+  // ── Del＝刪除「調整中的形狀」或「已選取（非編輯中）的文字框」──（需求：調整狀態中的形狀/文字按 Del 刪除）
+  // 以 ref 鏡像最新狀態與動作，讓全域 keydown 監聽器只掛一次、又不吃到過時閉包。
+  const delRef = useRef<{
+    selectedShapeIdx: number | null;
+    adjustingShape: boolean;
+    selectedTextId: string | null;
+    editingTextId: string | null;
+    deleteShapeAt: (i: number) => void;
+    deleteSelectedText: () => void;
+  }>(null!);
+  delRef.current = {
+    selectedShapeIdx,
+    adjustingShape,
+    selectedTextId,
+    editingTextId,
+    deleteShapeAt: (i: number) => {
+      const cur = shapesRef.current;
+      if (i >= 0 && i < cur.length) commitShapes(cur.filter((_, k) => k !== i)); // 可 Ctrl+Z 復原
+      setSelectedShapeIdx(null);
+    },
+    deleteSelectedText,
+  };
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Delete') return;
+      // 在輸入框/可編輯區內打字時，Del 交給該元件刪字，不刪形狀/文字框。
+      const t = e.target as HTMLElement | null;
+      if (t && (t.isContentEditable || /^(input|textarea|select)$/i.test(t.tagName))) return;
+      const s = delRef.current;
+      // 優先刪「調整中的形狀」；否則刪「已選取但非編輯中的文字框」。
+      if (s.selectedShapeIdx !== null && s.adjustingShape) {
+        e.preventDefault();
+        s.deleteShapeAt(s.selectedShapeIdx);
+        return;
+      }
+      if (s.selectedTextId && s.editingTextId === null) {
+        e.preventDefault();
+        s.deleteSelectedText();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  // ── 浮層工具快捷鍵（ShortcutRuntime 派發 SHORTCUT_ACTION_EVENT；本元件只在
+  //    筆記「閱覽」預覽分頁掛載，編輯模式／編輯彈窗分支整個卸載＝快捷鍵天然不生效）──
+  // 以 ref 鏡像最新動作，監聽器只掛一次；add/remove 對稱，StrictMode 雙掛載不會重複執行
+  //（addSticky 等會打後端 API、非幂等，重複註冊會「按一次建兩個」）。
+  const shortcutRef = useRef<{
+    selectTool: (t: Exclude<DrawTool, null>) => void;
+    addSticky: () => void;
+    addSlide: () => void;
+    addTextBox: () => void;
+    toggleToc: () => void;
+  }>(null!);
+  shortcutRef.current = {
+    selectTool,
+    addSticky,
+    addSlide,
+    addTextBox,
+    toggleToc: () => onToggleToc?.(),
+  };
+  useEffect(() => {
+    const onShortcut = (e: Event) => {
+      const actionId = (e as CustomEvent<{ actionId?: string }>).detail?.actionId;
+      if (!actionId) return;
+      const s = shortcutRef.current;
+      // 目錄開關（notes scope）：狀態在筆記頁，經既有 onToggleToc prop 轉交。
+      if (actionId === 'toggleToc') {
+        s.toggleToc();
+        return;
+      }
+      const cmd = OVERLAY_SHORTCUT_COMMANDS[actionId];
+      if (!cmd) return; // 其他動作（如 newNote）由各自的監聽者處理
+      switch (cmd.type) {
+        case 'tool':
+          s.selectTool(cmd.tool); // 與點按鈕同語意：再按同鍵＝關閉該工具
+          break;
+        case 'addSticky':
+          void s.addSticky();
+          break;
+        case 'addSlide':
+          void s.addSlide();
+          break;
+        case 'addText':
+          void s.addTextBox();
+          break;
+      }
+    };
+    window.addEventListener(SHORTCUT_ACTION_EVENT, onShortcut);
+    return () => window.removeEventListener(SHORTCUT_ACTION_EVENT, onShortcut);
+  }, []);
+
+  // 工具列鍵帽提示（隨使用者改鍵即時更新）。
+  const keyCaps = useShortcutKeyCaps([
+    'toolPen', 'toolHighlight', 'toolLine', 'toolRect', 'toolEllipse',
+    'addTextBox', 'eraseArea', 'eraseStroke', 'eraseBox',
+    'addSticky', 'addSlide', 'toggleToc',
+  ]);
+
+  // 「剛畫完的形狀」缺少「點畫布外即取消」→ 選取可能一直殘留，之後一次無關的 Del 就會靜默刪掉它。
+  // 比照文字框（見上方 selectedTextId 的 outside-pointerdown）：點在「繪圖 SVG／工具列／色盤」
+  // 以外任何地方，即取消 selectedShapeIdx，把 Del 刪除的作用範圍收斂在「剛畫完、仍在畫布上操作」時。
+  useEffect(() => {
+    if (selectedShapeIdx === null) return;
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (!t) return;
+      if (svgRef.current && svgRef.current.contains(t)) return; // SVG 內：交給 onSvgDown 處理（起新筆/完成）
+      if (t.closest('[data-testid="overlay-toolbar"]') || t.closest('[data-draw-colorpop]')) return; // 工具列/色盤：調整中不取消
+      setSelectedShapeIdx(null);
+    };
+    document.addEventListener('pointerdown', onDown, true);
+    return () => document.removeEventListener('pointerdown', onDown, true);
+  }, [selectedShapeIdx]);
+
   const allShapes = eraseWork.current
     ? eraseWork.current
     : curShape.current
-      ? [...shapes, curShape.current]
-      : shapes;
+      ? [...shapesForUi, curShape.current]
+      : shapesForUi;
   const drawingActive = tool !== null;
 
   /**
@@ -840,10 +1613,12 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
         }}
         onPointerDown={() => bringToFront(item)}
         data-testid={`overlay-item-${item.kind}`}
+        data-overlay-id={item.id}
       >
         <div
           className="overlay-item-chrome"
           onPointerDown={(e) => startDrag(e, item, 'move')}
+          title="點一下收合/展開；按住拖曳移動"
           style={{
             display: 'flex', alignItems: 'center', gap: 4,
             padding: '2px 4px 2px 6px', cursor: 'move', background: 'rgba(0,0,0,0.06)', flexShrink: 0,
@@ -887,6 +1662,51 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
           {/* 可拖曳的留白（標題與按鈕之間）：讓人好抓著拖曳整張便利貼。 */}
           {editingTitleId !== item.id && (
             <span aria-hidden="true" style={{ flex: 1, alignSelf: 'stretch', cursor: 'move' }} />
+          )}
+          {/* ❓ 設為問題 / 移除問題（僅便利貼；標記後會出現在「問題清單」中） */}
+          {isSticky && (
+            <button
+              onClick={() => toggleQuestion(item)}
+              onPointerDown={(e) => e.stopPropagation()}
+              title={item.isQuestion ? '移除問題標記' : '設為問題'}
+              data-testid="overlay-item-question"
+              style={{
+                ...chromeBtnStyle,
+                opacity: item.isQuestion ? 1 : 0.5,
+                color: item.isQuestion ? 'var(--action-primary-bg, #2563eb)' : 'var(--text-tertiary)',
+              }}
+            >
+              ❓
+            </button>
+          )}
+          {/* 答 開啟答題彈窗（僅已標記為問題的便利貼；比照 T 文字框的「答」鈕語言＝小膠囊）：
+              未作答＝白底深字、已作答＝主色底白字。顏色刻意用固定值而非主題變數——
+              便利貼標題列永遠是「淺色便利貼底＋6% 黑」，暗色主題的淺灰前景放上去對比會掉到 3:1 以下
+              （視覺稽核實測 dark 2.75），固定深字/白字在四主題與任意便利貼色上都 ≥4.5:1。 */}
+          {isSticky && item.isQuestion && (
+            <button
+              onClick={() => openAnswerPopup(item.id)}
+              onPointerDown={(e) => e.stopPropagation()}
+              title={(item.questionAnswer ?? '') !== '' ? '開啟答題彈窗（已作答）' : '開啟答題彈窗（尚未作答）'}
+              data-testid="overlay-item-answer-open"
+              style={{
+                ...chromeBtnStyle,
+                fontSize: 'var(--text-xs)',
+                fontWeight: 700,
+                lineHeight: 1.3,
+                padding: '0 4px',
+                borderRadius: 'var(--radius-sm, 4px)',
+                border: '1px solid rgba(0,0,0,0.28)',
+                background: (item.questionAnswer ?? '') !== ''
+                  ? 'var(--action-primary-bg, #2563eb)'
+                  : 'rgba(255,255,255,0.88)',
+                color: (item.questionAnswer ?? '') !== ''
+                  ? 'var(--action-primary-fg, #fff)'
+                  : 'rgba(0,0,0,0.78)',
+              }}
+            >
+              答
+            </button>
           )}
           {/* 📌 釘住浮動 / 跟著內文 切換（便利貼、圖片板皆可） */}
           <button
@@ -965,6 +1785,7 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
       >
         {/* 手繪 SVG（繪圖中捕捉指標；否則僅顯示、指標穿透）。高度含手動加高（extraHeight）。 */}
         <svg
+          ref={svgRef}
           width={size.w}
           height={size.h + extraHeight}
           style={{
@@ -978,14 +1799,41 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
           onPointerLeave={onSvgUp}
           data-testid="overlay-draw-svg"
         >
-          {allShapes.map((s, i) => (
-            <ShapeEl
-              key={i}
-              s={s}
-              erasable={tool === 'erase-stroke'}
-              onErase={() => eraseShape(i)}
-            />
-          ))}
+          {allShapes.map((s, i) =>
+            // 被 toggle 收合隱藏者不渲染，但「保留原始索引 i」（渲染 null、不可 filter 重排——
+            // 整筆刪除 eraseShape(i) 依索引對應完整 shapes 陣列，位移會刪錯形狀）。
+            // 進行中的一筆（curShape）永遠可見。
+            s !== curShape.current && hiddenShapeKeys.has(JSON.stringify(s)) ? null : (
+              <ShapeEl
+                key={i}
+                s={s}
+                erasable={tool === 'erase-stroke'}
+                onErase={() => eraseShape(i)}
+              />
+            )
+          )}
+          {/* 調整中的幾何形狀：虛線外接框提示（滾輪縮放、左鍵點一下完成）。 */}
+          {adjustingShape && selectedShape && (() => {
+            const xs = selectedShape.points.map((p) => p[0]);
+            const ys = selectedShape.points.map((p) => p[1]);
+            const pad = selectedShape.width / 2 + 4;
+            const minX = Math.min(...xs) - pad;
+            const minY = Math.min(...ys) - pad;
+            return (
+              <rect
+                data-testid="overlay-adjusting"
+                x={minX}
+                y={minY}
+                width={Math.max(...xs) + pad - minX}
+                height={Math.max(...ys) + pad - minY}
+                fill="none"
+                stroke="var(--action-primary-bg, #2563eb)"
+                strokeWidth={1}
+                strokeDasharray="4 3"
+                style={{ pointerEvents: 'none' }}
+              />
+            );
+          })()}
           {/* 框選擦除進行中的選取框（虛線；放開後框內內容被擦除） */}
           {eraseBox.current && (
             <rect
@@ -1007,11 +1855,13 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
           .filter((i) => (i.kind === 'sticky' || i.kind === 'slide') && !isPinned(i) && !collapsedByToggle.has(i.id))
           .map(renderOverlayItem)}
         {/* 純文字框（Snipaste 風格：可打字、設背景、旋轉縮放；與開問啦畫布共用元件）。
-            繪圖中時設為不可互動，讓底下手繪 SVG 接管指標。 */}
-        {items.filter((i) => i.kind === 'text').map((item) => (
+            繪圖中時設為不可互動，讓底下手繪 SVG 接管指標。
+            collapsedByToggle 內者＝其所在的 toggle 目前收合中 → 一起隱藏（展開即恢復）。 */}
+        {items.filter((i) => i.kind === 'text' && !collapsedByToggle.has(i.id)).map((item) => (
           <DrawingTextBox
             key={item.id}
             item={item}
+            overlayId={item.id}
             zoomRef={noteZoomRef}
             toFlow={toFlow}
             selected={selectedTextId === item.id}
@@ -1021,30 +1871,58 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
             onStartEdit={() => { setSelectedTextId(item.id); setEditingTextId(item.id); }}
             onStopEdit={() => { setEditingTextId(null); deleteIfEmpty(item.id); }}
             onChange={(patch) => patchLocal(item.id, patch)}
-            onCommit={(patch) => persist(item.id, patch)}
+            onCommit={(patch) => commitTextItemPatch(item.id, patch)}
+            onAdjustWheel={(deltaY) => adjustTextByWheel(item.id, deltaY)}
+            isQuestion={item.isQuestion}
+            onToggleQuestion={() => toggleQuestion(item)}
+            hasAnswer={(item.questionAnswer ?? '') !== ''}
+            onOpenAnswer={() => openAnswerPopup(item.id)}
           />
         ))}
       </div>
 
-      {/* pinned 便利貼/圖片板：portal 至 body、position:fixed → 可自由拖到整個畫面（含側欄），不隨內文捲動。 */}
+      {/* pinned 便利貼/圖片板：portal 至 body、position:fixed → 可自由拖到整個畫面（含側欄），不隨內文捲動。
+          （只限 sticky/slide——文字框沒有釘住功能，誤入會走錯渲染分支。） */}
       {mounted && createPortal(
-        <>{items.filter((i) => i.kind !== 'drawing' && isPinned(i)).map(renderOverlayItem)}</>,
+        <>{items.filter((i) => (i.kind === 'sticky' || i.kind === 'slide') && isPinned(i)).map(renderOverlayItem)}</>,
         document.body,
       )}
 
       {/* 工具列：portal 至 body 並 position:fixed → 捲動內文時固定不動。
-          使用與開問啦畫布共用的 DrawingToolbar（三列版面）；筆記專屬的「歸位 / ＋高 / −高」放在情境控制列。 */}
+          使用與開問啦畫布共用的 DrawingToolbar（四列版面，2026-08-10 改版）；
+          筆記專屬鈕的位置：「歸位／儲存快照」在 Row4 常駐列（persistentControls）、「＋高／−高」在情境控制列。 */}
       {mounted && createPortal(
         <DrawingToolbar
           testIdPrefix="overlay"
           position={{ bottom: 24, right: 24 }}
           maxWidth={380}
+          // 手機（≤768px）預設收合：四列工具列會蓋住小螢幕下方約 1/3 的「閱讀」區，
+          // 需要時點右上角 ▴ 展開（只影響筆記閱讀端；開問啦畫布端維持展開）。
+          defaultCollapsed={
+            typeof window !== 'undefined' &&
+            typeof window.matchMedia === 'function' &&
+            window.matchMedia('(max-width: 768px)').matches
+          }
           leading={{
             label: '📖 目錄',
             title: tocOpen ? '關閉章節目錄表' : '開啟章節目錄表',
             onClick: () => onToggleToc?.(),
             active: tocOpen,
             testId: 'overlay-toggle-toc',
+          }}
+          shortcutKeys={{
+            pen: keyCaps.toolPen,
+            highlight: keyCaps.toolHighlight,
+            line: keyCaps.toolLine,
+            rect: keyCaps.toolRect,
+            ellipse: keyCaps.toolEllipse,
+            'erase-area': keyCaps.eraseArea,
+            'erase-stroke': keyCaps.eraseStroke,
+            'erase-box': keyCaps.eraseBox,
+            text: keyCaps.addTextBox,
+            sticky: keyCaps.addSticky,
+            slide: keyCaps.addSlide,
+            leading: keyCaps.toggleToc,
           }}
           onAddSticky={addSticky}
           onAddSlide={addSlide}
@@ -1061,21 +1939,42 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
           onToggleDash={togglePenDash}
           highlightOpacity={highlightOpacity}
           onHighlightOpacityChange={setHighlightOpacity}
+          highlightStraight={highlightStraight}
+          onToggleHighlightStraight={() => setHighlightStraight((v) => !v)}
+          adjustHint={adjustingShape ? '滾輪調粗細・Del 刪除・左鍵點一下完成' : undefined}
           eraseRadius={eraseRadius}
           selectedShapeIdx={selectedShapeIdx}
-          hasShapes={shapes.length > 0}
+          hasShapes={shapesForUi.length > 0}
           onClear={clearDrawing}
           drawingActive={drawingActive}
           onDone={() => { setSelectedShapeIdx(null); setTool(null); }}
-          extraControls={(items.some((i) => i.kind !== 'drawing') || drawingActive) ? (
+          persistentControls={(
+            // Row4 常駐鈕（2026-08-10 版面：目錄｜歸位｜儲存）：
+            // 歸位＝把跑丟的便利貼/圖片板/文字框拉回；儲存＝手動浮層快照（按下才記一筆，避免版本筆數爆炸）。
             <>
               {items.some((i) => i.kind !== 'drawing') && (
-                <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={gatherStrayItems} title="歸位：把所有便利貼/圖片板/文字框拉回左上角（救回被拖到看不見、抓不回來的）" data-testid="overlay-gather">↺ 歸位</button>
+                <button className="tk-btn" style={{ cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={gatherStrayItems} title="歸位：把所有便利貼/圖片板/文字框拉回左上角（救回被拖到看不見、抓不回來的）" data-testid="overlay-gather">↺ 歸位</button>
               )}
-              {drawingActive && (
-                <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={growCanvas} title="加高繪圖區（往下擴充，可放更多便利貼/塗鴉/輪播）" data-testid="overlay-grow">＋高</button>
-              )}
-              {drawingActive && extraHeight > 0 && (
+              <button
+                className="tk-btn"
+                style={{ cursor: snapshotState === 'saving' ? 'wait' : 'pointer', whiteSpace: 'nowrap' }}
+                onClick={saveOverlaySnapshot}
+                disabled={snapshotState === 'saving'}
+                title="儲存浮層快照：把目前全部便利貼/文字框/塗鴉/畫記存成一份版本（筆記「歷史」分頁可見）"
+                data-testid="overlay-snapshot-save"
+              >
+                {snapshotState === 'saving' && '⏳ 儲存中…'}
+                {snapshotState === 'saved' && '✓ 已儲存'}
+                {snapshotState === 'saved-partial' && '✓ 已儲存（未含拖曳中變更）'}
+                {snapshotState === 'error' && '⚠️ 失敗，請重試'}
+                {snapshotState === 'idle' && '💾 儲存'}
+              </button>
+            </>
+          )}
+          extraControls={drawingActive ? (
+            <>
+              <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={growCanvas} title="加高繪圖區（往下擴充，可放更多便利貼/塗鴉/輪播）" data-testid="overlay-grow">＋高</button>
+              {extraHeight > 0 && (
                 <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={shrinkCanvas} title="降低繪圖區高度" data-testid="overlay-shrink">−高</button>
               )}
             </>
@@ -1097,6 +1996,36 @@ export function NoteOverlay({ noteId, containerRef, onToggleToc, tocOpen }: Prop
         />,
         document.body,
       )}
+
+      {/* 問題清單面板（由本元件渲染，因需存取 overlay items 與回答狀態；開關由頁面工具列鈕控制）。 */}
+      {mounted && questionPanelOpen && (
+        <NoteQuestionListPanel
+          questions={questionItems}
+          onLocate={handleLocateQuestion}
+          onAnswer={(item) => openAnswerPopup(item.id)}
+          onClose={() => onQuestionPanelOpenChange?.(false)}
+        />
+      )}
+
+      {/* 答題彈窗（可多開；狀態只存 React、刷新即消失）。 */}
+      {mounted && openAnswerItemIds.map((itemId, index) => {
+        const item = items.find((i) => i.id === itemId);
+        if (!item) return null;
+        return (
+          <QuestionAnswerPopup
+            key={itemId}
+            itemId={item.id}
+            noteId={noteId}
+            kind={item.kind === 'text' ? 'text' : 'sticky'}
+            questionTitle={deriveQuestionTitle(item.kind, item.text, item.dataJson)}
+            questionText={item.text ?? ''}
+            initialAnswer={item.questionAnswer ?? ''}
+            offsetIndex={index}
+            onClose={() => closeAnswerPopup(itemId)}
+            onSaved={(answer) => onAnswerSaved(itemId, answer)}
+          />
+        );
+      })}
     </>
   );
 }

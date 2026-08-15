@@ -18,6 +18,8 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
+import { encodeSlugPath } from './slugPath.js'
+import { formatAmbiguous, type NoteResolution } from './ambiguousFormat.js'
 
 const API_BASE = process.env.ZONWIKI_API_BASE ?? 'http://localhost:5009'
 const API_COOKIE = process.env.ZONWIKI_API_COOKIE
@@ -129,7 +131,15 @@ server.tool(
   },
   async ({ slug }: { slug: string }) => {
     try {
-      return ok(await call('GET', `/api/notes/${slug}`))
+      // GET /api/notes/{slug} 現在回傳 NoteResolutionDto（kind=note｜ambiguous）。
+      const resolution = await call<NoteResolution>('GET', `/api/notes/${encodeSlugPath(slug)}`)
+      if (resolution.kind === 'ambiguous') {
+        // 歧義：不把整包 JSON 丟回，改回可讀文字＋「以 id 重查直達」提示。
+        const text = formatAmbiguous(resolution.requestedSlug ?? slug, resolution.candidates ?? [])
+        return { content: [{ type: 'text' as const, text }] }
+      }
+      // kind=note：回傳筆記本體 JSON（維持舊輸出形狀，AI 呼叫端無感）。
+      return ok(resolution.note)
     } catch (e) {
       return fail(e)
     }

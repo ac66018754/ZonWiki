@@ -29,7 +29,8 @@ public static class NoteOverlayEndpoints
                 .Where(i => i.UserId == userGuid && i.NoteId == noteId && i.ValidFlag)
                 .OrderBy(i => i.ZIndex)
                 .Select(i => new NoteOverlayItemDto(
-                    i.Id, i.Kind, i.X, i.Y, i.Width, i.Height, i.ZIndex, i.Color, i.Text, i.DataJson))
+                    i.Id, i.Kind, i.X, i.Y, i.Width, i.Height, i.ZIndex, i.Color, i.Text, i.DataJson,
+                    i.IsQuestion, i.QuestionAnswer))
                 .ToListAsync(ct);
 
             return Results.Ok(ApiResponse<List<NoteOverlayItemDto>>.Ok(items));
@@ -70,7 +71,7 @@ public static class NoteOverlayEndpoints
 
             var dto = new NoteOverlayItemDto(
                 item.Id, item.Kind, item.X, item.Y, item.Width, item.Height, item.ZIndex,
-                item.Color, item.Text, item.DataJson);
+                item.Color, item.Text, item.DataJson, item.IsQuestion, item.QuestionAnswer);
             return Results.Ok(ApiResponse<NoteOverlayItemDto>.Ok(dto));
         }).RequireAuthorization();
 
@@ -83,6 +84,21 @@ public static class NoteOverlayEndpoints
                 i => i.Id == itemId && i.UserId == userGuid && i.ValidFlag, ct);
             if (item is null) return Results.NotFound(ApiResponse<object>.Fail("Overlay item not found", 404));
 
+            // 「問題」屬性僅適用於便利貼（sticky）與 T 文字框（text）——與 NoteOverlayItem 的設計一致；
+            // drawing / slide 不接受。問題清單讀取端雖也有 Kind 過濾，仍在寫入端守門，
+            // 避免資料庫累積無意義的問題狀態（多層防線）。
+            if ((req.IsQuestion.HasValue || req.QuestionAnswer != null)
+                && item.Kind != "sticky" && item.Kind != "text")
+            {
+                return Results.BadRequest(ApiResponse<object>.Fail("問題屬性僅適用於便利貼與文字框", 400));
+            }
+
+            // 回答內容應用層長度上限（DB 欄位為無上限 text）：遠大於一般 AI 回答，防止單列無限膨脹。
+            if (req.QuestionAnswer is { Length: > MaxQuestionAnswerLength })
+            {
+                return Results.BadRequest(ApiResponse<object>.Fail($"回答過長（上限 {MaxQuestionAnswerLength} 字元）", 400));
+            }
+
             if (req.X.HasValue) item.X = req.X.Value;
             if (req.Y.HasValue) item.Y = req.Y.Value;
             if (req.Width.HasValue) item.Width = req.Width.Value;
@@ -91,6 +107,9 @@ public static class NoteOverlayEndpoints
             if (req.Color != null) item.Color = req.Color;
             if (req.Text != null) item.Text = req.Text;
             if (req.DataJson != null) item.DataJson = req.DataJson;
+            if (req.IsQuestion.HasValue) item.IsQuestion = req.IsQuestion.Value;
+            // 遵循 patch 慣例：!= null 才套用（含空字串）→ 傳空字串＝清空回答、傳 null＝不更動。
+            if (req.QuestionAnswer != null) item.QuestionAnswer = req.QuestionAnswer;
             item.UpdatedDateTime = DateTime.UtcNow;
             item.UpdatedUser = userGuid.ToString();
             await db.SaveChangesAsync(ct);
@@ -114,6 +133,13 @@ public static class NoteOverlayEndpoints
             return Results.Ok(ApiResponse<object>.Ok(new { id = item.Id }));
         }).RequireAuthorization();
     }
+
+    /// <summary>
+    /// 問題回答內容的應用層長度上限（字元）。
+    /// QuestionAnswer 的 DB 欄位為無上限 text（AI 回答的 Markdown 可能較長），
+    /// 故在應用層設一個寬鬆上限，防止單列被重複 PUT 塞爆儲存空間（自傷型 DoS）。
+    /// </summary>
+    private const int MaxQuestionAnswerLength = 100_000;
 
     /// <summary>從 claim 取出登入使用者 Id。</summary>
     private static bool TryUser(HttpContext http, out Guid userGuid)

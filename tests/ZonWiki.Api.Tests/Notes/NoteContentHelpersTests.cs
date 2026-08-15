@@ -214,4 +214,327 @@ public sealed class NoteContentHelpersTests
         html.Should().Contain("&lt;details&gt;");
         html.Should().NotContain("<details><summary>X</summary>");
     }
+
+    // ---------------------------------------------------------------------
+    // 需求1：表格格子（與一般段落）內以字面 <br> 家族換行。
+    // 白名單只認 <br> / <br/> / <br />（大小寫不敏感、標籤內允許空白），
+    // 轉成硬換行（<br />）；其餘任何 HTML 標籤一律維持轉義（維持 DisableHtml 的零注入面）。
+    // ---------------------------------------------------------------------
+
+    [Fact]
+    public void TableCell_WithLiteralBr_RendersHardLineBreak()
+    {
+        // Arrange：GFM pipe table，格內用 <br> 換行（GitHub 通用逃生口）。
+        var markdown =
+            "| 欄位 | 說明 |\n" +
+            "| --- | --- |\n" +
+            "| 第一行<br>第二行 | x |\n";
+
+        // Act
+        var html = NoteContentHelpers.RenderToHtml(markdown);
+
+        // Assert：格內 <br> 應轉成硬換行 <br />，不得殘留字面 &lt;br&gt;。
+        html.Should().Contain("<br />");
+        html.Should().NotContain("&lt;br&gt;");
+        // 換行落在同一個表格格內（<td> … </td> 之間），而非把儲存格拆成兩列。
+        html.Should().Contain("第一行<br />");
+        html.Should().Contain("第二行");
+        html.Should().Contain("<td>").And.Contain("</td>");
+    }
+
+    [Theory]
+    [InlineData("<br>")]
+    [InlineData("<br/>")]
+    [InlineData("<br />")]
+    [InlineData("<BR>")]
+    [InlineData("<br >")]
+    [InlineData("<br  />")]
+    public void BrVariants_AllRenderHardLineBreak(string brToken)
+    {
+        // Arrange：一般段落內的各種 <br> 變體（大小寫、有無斜線、標籤內空白）皆應生效。
+        var markdown = $"第一行{brToken}第二行";
+
+        // Act
+        var html = NoteContentHelpers.RenderToHtml(markdown);
+
+        // Assert
+        html.Should().Contain("<br />");
+        html.Should().NotContain("&lt;br");
+    }
+
+    [Fact]
+    public void Paragraph_WithLiteralBr_RendersHardLineBreak()
+    {
+        // Arrange：一般段落內的 <br> 也應轉硬換行（與表格格內行為一致）。
+        var markdown = "第一段落<br>接續同段落";
+
+        // Act
+        var html = NoteContentHelpers.RenderToHtml(markdown);
+
+        // Assert
+        html.Should().Contain("第一段落<br />");
+        html.Should().Contain("接續同段落");
+        html.Should().NotContain("&lt;br&gt;");
+    }
+
+    [Fact]
+    public void InlineCode_WithBr_KeepsLiteralNotConverted()
+    {
+        // Arrange：inline code 內的 <br> 必須維持字面（不可被當成硬換行）。
+        var markdown = "這是程式碼 `<br>` 標籤";
+
+        // Act
+        var html = NoteContentHelpers.RenderToHtml(markdown);
+
+        // Assert：inline code 內容轉義成 &lt;br&gt;，且不得產生 <br />。
+        html.Should().Contain("<code>&lt;br&gt;</code>");
+        html.Should().NotContain("<br />");
+    }
+
+    [Fact]
+    public void FencedCodeBlock_WithBr_KeepsLiteralNotConverted()
+    {
+        // Arrange：程式碼區塊內的 <br> 也必須維持字面。
+        var markdown = "```\n<br>\n```";
+
+        // Act
+        var html = NoteContentHelpers.RenderToHtml(markdown);
+
+        // Assert
+        html.Should().Contain("&lt;br&gt;");
+        html.Should().NotContain("<br />");
+    }
+
+    [Theory]
+    [InlineData("<script>alert(1)</script>", "&lt;script&gt;")]
+    [InlineData("<div>x</div>", "&lt;div&gt;")]
+    [InlineData("<b>粗</b>", "&lt;b&gt;")]
+    [InlineData("<brs>", "&lt;brs&gt;")]
+    [InlineData("<br x>", "&lt;br x&gt;")]
+    public void NonWhitelistedTags_StillEscaped_ProvesNoRawHtmlOpened(
+        string tagInput,
+        string expectedEscaped)
+    {
+        // Arrange：非白名單標籤（含近似 <br> 但不合法的 <brs>/<br x>）一律維持轉義。
+        var markdown = $"前綴 {tagInput} 後綴";
+
+        // Act
+        var html = NoteContentHelpers.RenderToHtml(markdown);
+
+        // Assert：應轉義輸出，且完全不得產生硬換行（證明只開放 <br> 家族、沒開放其他標籤）。
+        html.Should().Contain(expectedEscaped);
+        html.Should().NotContain("<br />");
+    }
+
+    [Fact]
+    public void Autolink_StillWorks_ParserInsertedAtFrontDoesNotBreakAngleBracketLinks()
+    {
+        // 迴歸守門：<br> parser 被插到 InlineParsers[0]、搶在其他 '<' 家族解析器（含 autolink）之前，
+        // 必須確認合法 autolink（<https://...>）在改動後仍正常轉成 <a>，沒有被誤吃或擋掉。
+        var markdown = "請看 <https://example.com>";
+
+        var html = NoteContentHelpers.RenderToHtml(markdown);
+
+        html.Should().Contain("<a href=\"https://example.com\"");
+        html.Should().Contain(">https://example.com</a>");
+    }
+
+    [Fact]
+    public void DanglingBr_WithoutClosingBracket_NoException_KeepsLiteral()
+    {
+        // 邊界安全：懸空 <br（無收尾 '>'，延伸到行尾）不得拋例外，且退化為字面（不觸發硬換行）。
+        var markdown = "前綴 <br 後面還有文字";
+
+        var html = NoteContentHelpers.RenderToHtml(markdown);
+
+        html.Should().NotContain("<br />");
+        html.Should().Contain("&lt;br");
+    }
+
+    [Fact]
+    public void ConsecutiveBr_BothRenderHardLineBreak()
+    {
+        // 連續 <br><br> 應各自轉成硬換行（兩個 <br />），彼此不互相干擾。
+        var markdown = "一<br><br>二";
+
+        var html = NoteContentHelpers.RenderToHtml(markdown);
+
+        System.Text.RegularExpressions.Regex.Matches(html, "<br />").Count.Should().Be(2);
+        html.Should().NotContain("&lt;br");
+    }
+
+    // ---------------------------------------------------------------------
+    // 查看模式就地改程式碼區塊 metadata：後端給每個「圍欄程式碼區塊」標 data-fence-line＝
+    // 其在原文的來源起始行號（1 起算），供前端直接定位並改寫該行圍欄；縮排程式碼區塊不標。
+    // ---------------------------------------------------------------------
+
+    [Fact]
+    public void FencedCodeBlocks_GetSourceLineNumber()
+    {
+        // Arrange：兩個圍欄程式碼區塊（js 在第 1 行、py 在第 5 行）。
+        var markdown = "```js\na();\n```\n\n```py\nb();\n```";
+
+        // Act
+        var html = NoteContentHelpers.RenderToHtml(markdown);
+
+        // Assert：各標其來源行號（1 起算），共兩個。
+        html.Should().Contain("data-fence-line=\"1\"");
+        html.Should().Contain("data-fence-line=\"5\"");
+        System.Text.RegularExpressions.Regex.Matches(html, "data-fence-line=").Count.Should().Be(2);
+    }
+
+    [Fact]
+    public void DataFenceLine_SkipsListIndentedContinuation_C1Regression()
+    {
+        // C1 迴歸守門：清單項下縮排 4 空白的續行段落是「普通段落」（不是縮排程式碼區塊），
+        // 不得被當成圍欄；兩個真正的圍欄在第 5、9 行。
+        var markdown = string.Join("\n",
+            "- point", "", "    continuation paragraph indented 4 spaces", "",
+            "```a", "AAA", "```", "", "```b", "BBB", "```");
+
+        var html = NoteContentHelpers.RenderToHtml(markdown);
+
+        html.Should().Contain("continuation paragraph");
+        System.Text.RegularExpressions.Regex.Matches(html, "data-fence-line=").Count.Should().Be(2);
+        html.Should().Contain("data-fence-line=\"5\"");
+        html.Should().Contain("data-fence-line=\"9\"");
+    }
+
+    [Fact]
+    public void DataFenceLine_SkipsTopLevelIndentedFenceLiteral_High1Regression()
+    {
+        // HIGH-1 迴歸守門：頂層縮排 4 空白的字面 ```bash 是「縮排程式碼區塊」（CommonMark），
+        // 不是圍欄、不標行號；只有真正的圍欄 py（第 7 行）被標。這正是前端逐行正則會誤判、
+        // 而後端 Markdig 正確判定之處——查看模式據此定位才不會改到縮排展示區塊。
+        var markdown = string.Join("\n",
+            "段落", "", "    ```bash", "    echo", "    ```", "", "```py", "print", "```");
+
+        var html = NoteContentHelpers.RenderToHtml(markdown);
+
+        System.Text.RegularExpressions.Regex.Matches(html, "data-fence-line=").Count.Should().Be(1);
+        html.Should().Contain("data-fence-line=\"7\"");
+    }
+
+    [Fact]
+    public void IndentedCodeBlock_GetsNoDataFenceLine()
+    {
+        // 真正的縮排程式碼區塊不是 FencedCodeBlock → 不標 data-fence-line；只有圍欄 js（第 5 行）被標。
+        var markdown = "para\n\n    indented_code()\n\n```js\nx\n```";
+
+        var html = NoteContentHelpers.RenderToHtml(markdown);
+
+        System.Text.RegularExpressions.Regex.Matches(html, "data-fence-line=").Count.Should().Be(1);
+        html.Should().Contain("data-fence-line=\"5\"");
+    }
+
+    // ─── 全域「單一換行＝硬換行」（2026-08-13 使用者裁示：Enter 即換行，Notion 式）───
+    // 對應測試計畫 docs/design/測試計畫-Enter硬換行與表格br視圖層.md B1 組。
+
+    [Fact]
+    public void SoftLineBreak_RendersAsHardLineBreak_B1_1()
+    {
+        // Arrange：段落內單一換行（過去是 soft break 渲染成空白，使用者常忘記補兩空白）。
+        var markdown = "第一行\n第二行";
+
+        // Act
+        var html = ToHtml(markdown);
+
+        // Assert：單一 <p> 內含 <br />（不再需要行尾兩空白）。
+        System.Text.RegularExpressions.Regex.Matches(html, "<p>").Count.Should().Be(1);
+        html.Should().Contain("<br />");
+    }
+
+    [Fact]
+    public void BlankLine_StillSplitsParagraphs_B1_2()
+    {
+        // Arrange：空行仍是段落分隔（硬換行設定不可影響段落切分）。
+        var markdown = "段一\n\n段二";
+
+        // Act
+        var html = ToHtml(markdown);
+
+        // Assert
+        System.Text.RegularExpressions.Regex.Matches(html, "<p>").Count.Should().Be(2);
+        html.Should().NotContain("<br />");
+    }
+
+    [Fact]
+    public void FencedCode_MultiLine_NotAffectedByHardLineBreak_B1_3()
+    {
+        // Arrange：程式碼區塊內的換行不得被轉成 <br />。
+        var markdown = "```\nline1\nline2\n```";
+
+        // Act
+        var html = ToHtml(markdown);
+
+        // Assert
+        html.Should().NotContain("<br />");
+        html.Should().Contain("line1\nline2");
+    }
+
+    [Fact]
+    public void ToggleBody_SoftLineBreak_RendersHardLineBreak_B1_4()
+    {
+        // Arrange：:::toggle 內文的單一換行也要換行（與一般段落一致）。
+        var markdown = ":::toggle 標題\n內文一\n內文二\n:::";
+
+        // Act
+        var html = ToHtml(markdown);
+
+        // Assert
+        html.Should().Contain("<details");
+        html.Should().Contain("<br />");
+    }
+
+    [Fact]
+    public void Table_WithBrCell_StillRendersTable_B1_5()
+    {
+        // Arrange：回歸鎖——硬換行設定不可破壞 GFM 表格結構與格內 <br>。
+        var markdown =
+            "| 日期 | 待辦 |\n" +
+            "| --- | --- |\n" +
+            "| 2026/08/12 | 設好 API<br>設定好 Slack |\n";
+
+        // Act
+        var html = ToHtml(markdown);
+
+        // Assert
+        html.Should().Contain("<table");
+        html.Should().Contain("設好 API<br />");
+        html.Should().NotContain("&lt;br&gt;");
+    }
+
+    [Fact]
+    public void ListItem_LazyContinuation_RendersHardLineBreak_B1_6()
+    {
+        // Arrange：清單項的接續行（lazy continuation）在硬換行下項內換行（鎖定新行為）。
+        var markdown = "- 項目一\n  接續文字";
+
+        // Act
+        var html = ToHtml(markdown);
+
+        // Assert
+        html.Should().Contain("<li>");
+        html.Should().Contain("<br />");
+    }
+
+    [Fact]
+    public void CurrentRenderVersion_IsBumpedTo3_B1_7()
+    {
+        // 管線行為變更（軟換行→硬換行）必須 bump 渲染快取版本，否則舊筆記永遠是舊渲染。
+        NoteContentHelpers.CurrentRenderVersion.Should().Be(3);
+    }
+
+    [Theory]
+    [InlineData("第一行  \n第二行")] // 行尾兩空白
+    [InlineData("第一行\\\n第二行")] // 行尾反斜線
+    public void ExistingHardBreakSyntax_StillWorks_B1_8(string markdown)
+    {
+        // Arrange/Act：既有的硬換行寫法不得退化。
+        var html = ToHtml(markdown);
+
+        // Assert
+        html.Should().Contain("<br />");
+        System.Text.RegularExpressions.Regex.Matches(html, "<p>").Count.Should().Be(1);
+    }
 }

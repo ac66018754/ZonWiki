@@ -3,6 +3,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { navBtn, parseSlideData, STICKY_COLORS, type OverlayItemView } from './overlayShared';
 import { ColorPickerInline } from '@/components/ColorPicker';
+import { uploadAttachment } from '@/lib/api';
+import { toAbsoluteAttachmentUrl } from '@/lib/attachmentUrl';
+import { showToast } from '@/lib/toast';
 
 /**
  * 圖片板內容：固定大小（可手動拖曳調整）、可放多張圖片、手動切換（不自動輪播）。
@@ -35,17 +38,27 @@ export function SlideBody({
     return () => document.removeEventListener('mousedown', onDown, true);
   }, [showBgPalette]);
 
-  /** 直接上傳/貼上圖片：讀成 data URL 後加入圖片板（不需網址）。 */
+  // 圖片上傳進行中（顯示提示、避免重複觸發）。
+  const [isUploading, setIsUploading] = useState(false);
+
+  /**
+   * 直接上傳/貼上圖片：上傳成附件後把「相對短網址」加入圖片板
+   * （取代舊的 base64 data URL 內嵌——base64 會灌爆 DataJson；
+   * 舊資料裡既有的 data URL 仍相容顯示）。
+   */
   const addImageFile = (file: File) => {
-    if (!file.type.startsWith('image/')) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        onImagesChange([...images, reader.result]);
+    if (!file.type.startsWith('image/') || isUploading) return;
+    setIsUploading(true);
+    uploadAttachment(file)
+      .then((uploaded) => {
+        onImagesChange([...images, uploaded.url]);
         setIdx(images.length);
-      }
-    };
-    reader.readAsDataURL(file);
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : '圖片上傳失敗';
+        showToast(message, { type: 'error' });
+      })
+      .finally(() => setIsUploading(false));
   };
 
   const safeIdx = images.length ? idx % images.length : 0;
@@ -69,7 +82,7 @@ export function SlideBody({
         ) : (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={images[safeIdx]}
+            src={toAbsoluteAttachmentUrl(images[safeIdx])}
             alt={`board-${safeIdx}`}
             style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
           />
@@ -100,8 +113,9 @@ export function SlideBody({
           onClick={() => fileRef.current?.click()}
           title="上傳圖片（直接放圖，不需網址）"
           data-testid="slide-upload"
+          disabled={isUploading}
         >
-          📁 上傳
+          {isUploading ? '⏳ 上傳中…' : '📁 上傳'}
         </button>
         <input
           value={url}

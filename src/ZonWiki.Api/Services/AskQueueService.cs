@@ -137,7 +137,7 @@ public sealed class AskQueueService
         var filterByStatus = !string.IsNullOrWhiteSpace(status) && validStatuses.Contains(status);
 
         // 驗證 kind 值（忽略無效值）。
-        var validKinds = new[] { "node", "floatingnote", "beautify", "reformat", "refine" };
+        var validKinds = new[] { "node", "floatingnote", "beautify", "reformat", "refine", "notequestion" };
         var filterByKind = !string.IsNullOrWhiteSpace(kind) && validKinds.Contains(kind);
 
         // 建立查詢。
@@ -345,6 +345,8 @@ public sealed class AskQueueService
                 ContentRaw = answerContent,
                 ContentHtml = NoteContentHelpers.RenderToHtml(answerContent),
                 ContentHash = NoteContentHelpers.ComputeContentHash(answerContent),
+                // 快取版本：與 ContentHtml 同步寫入現行管線版本（lazy 自癒比對基準）。
+                RenderVersion = NoteContentHelpers.CurrentRenderVersion,
                 Kind = "note",
                 IsDraft = false,
                 CreatedUser = userId.ToString(),
@@ -368,20 +370,10 @@ public sealed class AskQueueService
                 UpdatedUser = userId.ToString(),
             };
 
-            // 答案筆記、create 版本、錨點、以及 Session 的「已完成」狀態，
+            // 答案筆記、錨點、以及 Session 的「已完成」狀態，
             // 於「單次 SaveChanges」原子寫入——避免多次儲存之間崩潰而留下半完成狀態。
+            // create 版本快照由 NoteRevisionInterceptor 於同一次 SaveChanges 自動寫入。
             _db.Note.Add(answerNote);
-            _db.NoteRevision.Add(new NoteRevision
-            {
-                UserId = userId,
-                NoteId = answerNote.Id,
-                RevisionNo = 1,
-                ChangeKind = "create",
-                Title = answerNote.Title,
-                ContentRaw = answerNote.ContentRaw,
-                CreatedUser = userId.ToString(),
-                UpdatedUser = userId.ToString(),
-            });
             _db.NoteMark.Add(mark);
             ApplyCompleted(session, answerNote.Id, mark.Id);
             await _db.SaveChangesAsync(ct);
@@ -664,6 +656,8 @@ public sealed class AskQueueService
                 ContentRaw = answerContent,
                 ContentHtml = NoteContentHelpers.RenderToHtml(answerContent),
                 ContentHash = NoteContentHelpers.ComputeContentHash(answerContent),
+                // 快取版本：與 ContentHtml 同步寫入現行管線版本（lazy 自癒比對基準）。
+                RenderVersion = NoteContentHelpers.CurrentRenderVersion,
                 Kind = "note",
                 IsDraft = false,
                 CreatedUser = userId.ToString(),
@@ -685,18 +679,8 @@ public sealed class AskQueueService
                 UpdatedUser = userId.ToString(),
             };
 
+            // create 版本快照由 NoteRevisionInterceptor 於同一次 SaveChanges 自動寫入。
             _db.Note.Add(answerNote);
-            _db.NoteRevision.Add(new NoteRevision
-            {
-                UserId = userId,
-                NoteId = answerNote.Id,
-                RevisionNo = 1,
-                ChangeKind = "create",
-                Title = answerNote.Title,
-                ContentRaw = answerNote.ContentRaw,
-                CreatedUser = userId.ToString(),
-                UpdatedUser = userId.ToString(),
-            });
             _db.NoteMark.Add(mark);
             session.ResultText = answer;
             ApplyCompleted(session, answerNote.Id, mark.Id);

@@ -55,6 +55,8 @@ export interface TaskCard {
   isPinnedToHome?: boolean;
   /** 首頁釘選區排序序號（越小越前） */
   homeSortOrder?: number;
+  /** 是否置頂於 Todo 頁側欄「置頂的任務」分頁（與首頁釘選獨立） */
+  isPinnedToTodo?: boolean;
   /** 建立時間 (UTC) */
   createdDateTime: string;
   /** 更新時間 (UTC) */
@@ -170,6 +172,15 @@ export async function listTaskCards(params?: {
 }
 
 /**
+ * 列出「置頂（Todo 側欄）」的任務卡片（isPinnedToTodo=true）。
+ * 供 Todo 頁左側欄「置頂的任務」分頁使用；後端依建立時間排序回傳。
+ */
+export async function listPinnedTodoTasks(): Promise<TaskCard[]> {
+  const r = await fetchJson<TaskCard[]>("/api/tasks?view=list&pinnedToTodo=true");
+  return r.data ?? [];
+}
+
+/**
  * 取得單張任務卡片詳情（含內容與子任務清單）。
  */
 export async function getTaskCard(id: string): Promise<TaskCard | null> {
@@ -200,12 +211,55 @@ export async function createTaskCard(payload: {
   targetGranularity?: string | null;
   /** 是否釘選到首頁 */
   isPinnedToHome?: boolean;
+  /** 是否置頂於 Todo 頁側欄（與首頁釘選獨立） */
+  isPinnedToTodo?: boolean;
 }): Promise<TaskCard | null> {
   const r = await fetchJson<TaskCard>("/api/tasks", {
     method: "POST",
     body: JSON.stringify(payload),
   });
   return r.data ?? null;
+}
+
+/**
+ * 複製一張任務卡片：以來源卡片建立一張新的獨立任務（標題加「(副本)」），
+ * 帶入內容/狀態/優先度/分類/日期/長期設定，並複製標籤與子任務。
+ * 副本刻意「不」帶：
+ *  - 父任務關係、首頁釘選（避免與原卡片糾纏、或洗掉首頁排序）；
+ *  - **重複規則（recurrenceRule）**——否則副本會變成「第二條母規則」，背景具現化服務會照它的錨點日期
+ *    另外生出一整串重複實例，與原本那串重疊、無聲爆量（見 RecurringTaskMaterializationService）。
+ *    需要重複的話，請到副本上自行重新設定。
+ * 以既有的 create / assignTags / createSubTask API 組合完成（多次請求；個別失敗不影響已建立的主卡）。
+ * @param source 來源任務（需含 tags 與 subTasks，通常來自 getTaskCard 詳情）。
+ * @returns 新建立的任務卡片；主卡建立失敗回 null。
+ */
+export async function duplicateTask(source: TaskCard): Promise<TaskCard | null> {
+  const created = await createTaskCard({
+    title: `${source.title} (副本)`,
+    content: source.content || undefined,
+    status: (source.status as "todo" | "doing" | "done") || "todo",
+    priority: source.priority ?? 0,
+    groupId: source.groupId || undefined,
+    plannedDateTime: source.plannedDateTime ?? null,
+    dueDateTime: source.dueDateTime ?? null,
+    // 重複規則刻意不複製（見上方 doc）——避免副本變成第二條重複母規則。
+    isLongTerm: source.isLongTerm ?? false,
+    targetGranularity: source.targetGranularity ?? undefined,
+    targetDateTime: source.targetDateTime ?? undefined,
+  });
+  if (!created) return null;
+
+  const tagIds = (source.tags ?? []).map((t) => t.id);
+  if (tagIds.length > 0) await assignTaskTags(created.id, tagIds);
+
+  // 複製子任務（依原順序建立；已完成者補打勾）。
+  for (const sub of source.subTasks ?? []) {
+    const title = sub.title.trim();
+    if (!title) continue;
+    const createdSub = await createSubTask(created.id, title);
+    if (createdSub && sub.isDone) await updateSubTask(createdSub.id, { isDone: true });
+  }
+  return created;
 }
 
 /**
@@ -235,6 +289,8 @@ export interface UpdateTaskCardPayload {
   isPinnedToHome?: boolean;
   /** 首頁排序序號（未傳＝不更新） */
   homeSortOrder?: number;
+  /** 是否置頂於 Todo 頁側欄（未傳＝不更新；與首頁釘選獨立） */
+  isPinnedToTodo?: boolean;
   clearPlannedDateTime?: boolean;
   clearDueDateTime?: boolean;
   clearGroupId?: boolean;

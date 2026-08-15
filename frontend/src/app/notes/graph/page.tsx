@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { getKnowledgeGraph, type KnowledgeGraph, type GraphNode } from '@/lib/api';
 import { logger } from '@/lib/logger';
+import { noteHref } from '@/lib/noteHref';
 import { KnowledgeGraphVisualizer } from '@/components/KnowledgeGraph';
 
 /**
@@ -56,7 +57,7 @@ export default function KnowledgeGraphPage() {
   // 導航至筆記
   const navigateToNote = () => {
     if (selectedNode) {
-      window.location.href = `/notes/${selectedNode.slug}`;
+      window.location.href = noteHref(selectedNode.slug);
     }
   };
 
@@ -256,7 +257,7 @@ export default function KnowledgeGraphPage() {
                         return (
                           <a
                             key={`${edge.sourceNoteId}-${selectedNode.id}`}
-                            href={`/notes/${source?.slug}`}
+                            href={noteHref(source?.slug)}
                             className="graph-page__link-item"
                           >
                             <span className="graph-page__link-icon">←</span>
@@ -290,7 +291,7 @@ export default function KnowledgeGraphPage() {
                             <span className="graph-page__link-icon">→</span>
                             {target ? (
                               <>
-                                <a href={`/notes/${target.slug}`} className="graph-page__link-title">
+                                <a href={noteHref(target.slug)} className="graph-page__link-title">
                                   {target.title}
                                 </a>
                                 {edge.anchorText && (

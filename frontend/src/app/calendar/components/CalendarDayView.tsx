@@ -30,6 +30,12 @@ export function CalendarDayView({
   // 目前登入者（僅用於時區顯示）改由共用的 SWR 快取取得，避免每個檢視各自重打 /api/me。
   const { data: user } = useCurrentUser();
 
+  // 換日（selectedDate 變）時先清空內容顯示載入中；單純背景重抓（refreshKey 變、selectedDate 不變，
+  // 如關閉任務彈窗後）則保留現有內容、抓完再換——不卸載時間格、不閃動、捲動位置保留。
+  useEffect(() => {
+    setEvents(null);
+  }, [selectedDate]);
+
   useEffect(() => {
     const loadData = async () => {
       try {
@@ -83,7 +89,9 @@ export function CalendarDayView({
     [selectedDate]
   );
 
-  if (loading) {
+  // 只有「首次載入（尚無資料）」才顯示載入中並卸載內容；背景重抓（如關閉任務彈窗後 refreshKey 變動）
+  // 保留現有內容顯示、抓完再換上新資料——避免時間格整塊卸載重掛造成「閃一下＋捲動跳回 07:00」。
+  if (loading && !events) {
     return <div style={{ textAlign: "center", padding: "var(--spacing-8)" }}>載入中...</div>;
   }
 

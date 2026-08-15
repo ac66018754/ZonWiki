@@ -213,6 +213,10 @@ export interface ActivityLogEntry {
   entityId: string;
   /** 動作當下的標題 / 名稱（標題級） */
   title: string;
+  /** 變更內容摘要（僅「編輯」時有值）：如「標題「舊」→「新」；加入分類「工作」」。 */
+  detail?: string | null;
+  /** （僅筆記）該筆記「目前」的分類完整路徑清單，用來區分同名筆記；非筆記為 null。 */
+  categories?: string[] | null;
   /** 動作發生時間（UTC ISO；前端依裝置時區顯示） */
   at: string;
 }

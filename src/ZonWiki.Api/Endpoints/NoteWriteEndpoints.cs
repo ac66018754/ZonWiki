@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using ZonWiki.Api.Auth;
 using ZonWiki.Api.Common;
 using ZonWiki.Api.Notes;
+using ZonWiki.Api.RateLimiting;
 using ZonWiki.Api.Services;
 using ZonWiki.Domain.Common;
 using ZonWiki.Domain.Dtos;
@@ -71,11 +72,18 @@ public static class NoteWriteEndpoints
         // GET /api/notes/{id}/revisions - 查詢筆記編輯歷史
         var getRevisions = app.MapGet("/api/notes/{id:guid}/revisions", GetRevisionsHandler);
 
+        // GET /api/notes/{id}/activities - 查詢「這篇筆記」的完整活動紀錄
+        // （建立/編輯/刪除/還原/分類/標籤/關聯，供歷史分頁合併時間軸）
+        var getActivities = app.MapGet("/api/notes/{id:guid}/activities", GetActivitiesHandler);
+
         // GET /api/notes/{id}/backlinks - 查詢反向連結（有哪些筆記指向此筆記）
         var getBacklinks = app.MapGet("/api/notes/{id:guid}/backlinks", GetBacklinksHandler);
 
         // GET /api/graph - 知識圖譜（所有筆記與連結，供前端繪製）
         var getGraph = app.MapGet("/api/graph", GetKnowledgeGraphHandler);
+
+        // POST /api/notes/render - 純轉換 dry-run（存檔攔截用；把 Markdown 轉 HTML 但不落地）
+        var renderNote = app.MapPost("/api/notes/render", RenderNoteHandler);
 
         // POST /api/notes/{id}/reformat - AI 排版調整
         var reformatNote = app.MapPost("/api/notes/{id:guid}/reformat", ReformatNoteHandler);
@@ -90,6 +98,22 @@ public static class NoteWriteEndpoints
         // 只回傳 AI 答案文字，由前端放進便利貼浮層（不另建答案筆記）。
         var askSelectionAnswer = app.MapPost("/api/notes/{id:guid}/ask-selection-answer", AskSelectionAnswerHandler);
 
+        // POST /api/notes/{id}/ask-question - 問題功能：以「整篇筆記內容」為脈絡請 AI 回答一則問題，
+        // 只回傳答案文字（不落地），由前端放進答題彈窗的「回答」框。
+        var askQuestion = app.MapPost("/api/notes/{id:guid}/ask-question", AskQuestionHandler);
+
+        // AI 端點（會真實觸發付費 LLM 呼叫）一律掛「每使用者限流」（AiPolicy）——
+        // 比照 /api/ai/ask（AiEndpoints）與精煉端點的既定政策（審查發現 #30/#58）：
+        // 防止無窮迴圈或被盜憑證灌爆付費 API 額度與這台 2GB VM 的背景工作數。
+        reformatNote.RequireRateLimiting(RateLimitingExtensions.AiPolicy);
+        beautifyNote.RequireRateLimiting(RateLimitingExtensions.AiPolicy);
+        askSelection.RequireRateLimiting(RateLimitingExtensions.AiPolicy);
+        askSelectionAnswer.RequireRateLimiting(RateLimitingExtensions.AiPolicy);
+        askQuestion.RequireRateLimiting(RateLimitingExtensions.AiPolicy);
+
+        // 純轉換渲染只吃 CPU（不觸發 LLM），掛「寬鬆」限流（RenderPolicy）——僅存檔動作觸發、非逐鍵。
+        renderNote.RequireRateLimiting(RateLimitingExtensions.RenderPolicy);
+
         // 要求驗證的端點
         if (authConfigured)
         {
@@ -99,10 +123,12 @@ public static class NoteWriteEndpoints
             assignCategories.RequireAuthorization();
             addNoteToCategory.RequireAuthorization();
             assignTags.RequireAuthorization();
+            renderNote.RequireAuthorization();
             reformatNote.RequireAuthorization();
             beautifyNote.RequireAuthorization();
             askSelection.RequireAuthorization();
             askSelectionAnswer.RequireAuthorization();
+            askQuestion.RequireAuthorization();
         }
     }
 
@@ -245,6 +271,87 @@ public static class NoteWriteEndpoints
         return Results.Accepted(value: ApiResponse<AiAsyncStartedDto>.Ok(new AiAsyncStartedDto(sessionId)));
     }
 
+    /// <summary>
+    /// 問題功能：以「整篇筆記內容」為脈絡請 AI 回答一則問題，只回傳答案文字（不建答案筆記、不落地）；
+    /// 由前端把答案放進答題彈窗的「回答」框。完全模仿 <see cref="AskSelectionAnswerHandler"/> 的非同步流程。
+    /// </summary>
+    private static async Task<IResult> AskQuestionHandler(
+        HttpContext http,
+        ZonWikiDbContext db,
+        AskQueueService queueService,
+        IServiceScopeFactory scopeFactory,
+        ILoggerFactory loggerFactory,
+        Guid id,
+        AskNoteQuestionRequest request,
+        CancellationToken ct)
+    {
+        var userId = ExtractUserId(http);
+        if (userId == Guid.Empty)
+        {
+            return Results.Json(
+                ApiResponse<AiAsyncStartedDto>.Fail("Invalid user identity", 401),
+                statusCode: StatusCodes.Status401Unauthorized);
+        }
+
+        var sourceNote = await db.Note
+            .FirstOrDefaultAsync(n => n.Id == id && n.ValidFlag && n.UserId == userId, ct);
+        if (sourceNote is null)
+        {
+            return Results.NotFound(ApiResponse<AiAsyncStartedDto>.Fail("Note not found", 404));
+        }
+
+        var question = (request.Question ?? "").Trim();
+        if (string.IsNullOrEmpty(question))
+        {
+            return Results.BadRequest(ApiResponse<AiAsyncStartedDto>.Fail("缺少問題", 400));
+        }
+
+        // 長度上限比照 NoteOverlayItem_Text 的 DB 上限——問題文字來自便利貼／文字框，超過即拒。
+        if (question.Length > MaxQuestionLength)
+        {
+            return Results.BadRequest(ApiResponse<AiAsyncStartedDto>.Fail($"問題過長（上限 {MaxQuestionLength} 字元）", 400));
+        }
+
+        // 把「整篇筆記內容」當成上下文（沿用 AskAboutAsync，不改 AI 介面）。
+        var context = $"【整篇筆記內容】\n{sourceNote.ContentRaw}";
+
+        // 非同步：同步建 Running session 立即回 sessionId；後援鏈在背景跑（避免 claude 冷啟動阻塞請求→502）。
+        // kind="notequestion"：與框選提問（floatingnote）區隔，讓「AI 處理佇列」正確標示為「筆記提問」。
+        var session = await queueService.CreateRunningNoteAiSessionAsync(userId, id, "notequestion", question, null, ct);
+        var sessionId = session.Id;
+
+        _ = Task.Run(async () =>
+        {
+            using var scope = scopeFactory.CreateScope();
+            var bgDb = scope.ServiceProvider.GetRequiredService<ZonWikiDbContext>();
+            bgDb.SetCurrentUserId(userId);
+            var bgQueue = scope.ServiceProvider.GetRequiredService<AskQueueService>();
+            var bgAi = scope.ServiceProvider.GetRequiredService<INoteAiService>();
+            var bgLogger = loggerFactory.CreateLogger("NoteAiBackground");
+            // 背景總預算 1800 秒（30 分）：讓後援鏈能真的逐棒 fallback。
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(1800));
+            try
+            {
+                await bgQueue.FinishNoteAiAsync(
+                    sessionId,
+                    userId,
+                    async (onStage, bgCt) => await bgAi.AskAboutAsync(context, question, bgCt, onStage),
+                    cts.Token);
+            }
+            catch (Exception ex)
+            {
+                bgLogger.LogError(ex, "筆記提問背景失敗（session={SessionId}）", sessionId);
+            }
+        });
+
+        return Results.Accepted(value: ApiResponse<AiAsyncStartedDto>.Ok(new AiAsyncStartedDto(sessionId)));
+    }
+
+    /// <summary>
+    /// 問題文字長度上限（字元）：與 NoteOverlayItem_Text 的 DB 上限共用同一常數（單一真相，避免魔術數字漂移）。
+    /// </summary>
+    private const int MaxQuestionLength = NoteOverlayItem.TextMaxLength;
+
     // ==================== Create Note ====================
 
     private static async Task<IResult> CreateNoteHandler(
@@ -272,21 +379,9 @@ public static class NoteWriteEndpoints
 
         try
         {
-            // 產生 Slug（去除特殊字元、轉小寫、用連字號分隔）；全被濾掉就以 "note" 墊底。
-            var baseSlug = NoteContentHelpers.GenerateSlug(request.Title);
-            if (string.IsNullOrEmpty(baseSlug))
-            {
-                baseSlug = "note";
-            }
-
-            // 同使用者內 slug 若重複，自動加序號（-2, -3 …）而非報錯——避免「同標題就建不了筆記」。
-            var slug = baseSlug;
-            for (var i = 2;
-                 await db.Note.AnyAsync(n => n.UserId == userId && n.Slug == slug && n.ValidFlag, ct);
-                 i++)
-            {
-                slug = $"{baseSlug}-{i}";
-            }
+            // 產生「本使用者活筆記內唯一」的 slug（撞活 slug 加序號、撞別名不加——見 GenerateUniqueSlugAsync）。
+            // 建立情境不排除任何筆記（傳 null）。
+            var slug = await GenerateUniqueSlugAsync(db, userId, request.Title, excludeNoteId: null, ct);
 
             // 內容允許為空（先建立、再編輯）；null 一律轉空字串避免後續 NPE。
             var contentRaw = request.ContentRaw ?? string.Empty;
@@ -302,6 +397,8 @@ public static class NoteWriteEndpoints
                 ContentRaw = contentRaw,
                 ContentHtml = contentHtml,
                 ContentHash = contentHash,
+                // 快取版本：ContentHtml 由現行管線產生，同步記下版本號（lazy 自癒的比對基準）。
+                RenderVersion = NoteContentHelpers.CurrentRenderVersion,
                 Kind = request.Kind ?? "note",
                 IsDraft = request.IsDraft,
                 JournalDate = request.JournalDate,
@@ -310,21 +407,10 @@ public static class NoteWriteEndpoints
             };
 
             db.Note.Add(note);
-            await db.SaveChangesAsync(ct);
-
-            // 建立版本紀錄（ChangeKind = "create"）
-            var revision = new NoteRevision
-            {
-                UserId = userId,
-                NoteId = note.Id,
-                RevisionNo = 1,
-                ChangeKind = "create",
-                Title = note.Title,
-                ContentRaw = note.ContentRaw,
-                CreatedUser = userId.ToString(),
-                UpdatedUser = userId.ToString(),
-            };
-            db.NoteRevision.Add(revision);
+            // 注意：不在此先 SaveChanges。Id 於實體建構時即以 Guid.NewGuid() 產生，分類/標籤/連結
+            // 都可直接引用 note.Id，全部併入「單一 SaveChanges」原子寫入。這樣「建立即帶分類」只會產生
+            // 一筆 created 活動——若拆成「先存筆記→再存分類」兩段式，活動攔截器會記成 created + updated 兩筆。
+            // 版本快照（ChangeKind="create"）由 NoteRevisionInterceptor 於 SaveChanges 時自動寫入。
 
             // 指派分類（若傳入）
             if (request.CategoryIds?.Count > 0)
@@ -355,7 +441,8 @@ public static class NoteWriteEndpoints
                 note.CreatedDateTime,
                 note.UpdatedDateTime,
                 0,
-                Version: db.Entry(note).GetConcurrencyVersion());
+                Version: db.Entry(note).GetConcurrencyVersion(),
+                ContentHash: note.ContentHash);
 
             // Location 標頭只能是 ASCII；slug 可能含中文（GenerateSlug 保留 Unicode），故 URL 編碼，
             // 否則會丟 InvalidOperationException: Invalid non-ASCII character in header。
@@ -412,7 +499,27 @@ public static class NoteWriteEndpoints
                         ApiResponse<NoteDetailDto>.Fail("標題不可為空", 400),
                         statusCode: StatusCodes.Status400BadRequest);
                 }
-                note.Title = trimmedTitle;
+
+                // slug 連動標題（見 DECISIONS「筆記 URL 改版」）：只在標題「真的變了」時處理。
+                if (trimmedTitle != note.Title)
+                {
+                    // 先記住「改名前」的 slug 與標題：舊 slug 要落成別名、別名記讓出當下的標題（消歧異顯示用）。
+                    var oldSlug = note.Slug;
+                    var oldTitle = note.Title;
+                    note.Title = trimmedTitle;
+
+                    // 以新標題重產 slug：撞「活著的 slug」加序號（排除自己，否則僅改大小寫也會誤加序號）；
+                    // 撞「別名」不加序號（名字可重用，歧義交由消歧異頁）。
+                    var newSlug = await GenerateUniqueSlugAsync(db, userId, trimmedTitle, note.Id, ct);
+
+                    // slug 真的變了才動別名（例：標題只加驚嘆號被 GenerateSlug 濾掉 → newSlug==oldSlug → 不留噪音別名）。
+                    if (newSlug != oldSlug)
+                    {
+                        await RecordSlugAliasAsync(db, userId, note.Id, oldSlug, oldTitle, ct);
+                        await CollapseSelfAliasAsync(db, userId, note.Id, newSlug, ct);
+                        note.Slug = newSlug;
+                    }
+                }
             }
 
             // 更新內容：同樣以 is not null 判斷有無傳入。
@@ -422,6 +529,8 @@ public static class NoteWriteEndpoints
                 note.ContentRaw = request.ContentRaw;
                 note.ContentHtml = NoteContentHelpers.RenderToHtml(request.ContentRaw);
                 note.ContentHash = NoteContentHelpers.ComputeContentHash(request.ContentRaw);
+                // 快取版本同步為現行管線（否則剛編輯完的存量筆記會被 GET 誤判成待自癒）。
+                note.RenderVersion = NoteContentHelpers.CurrentRenderVersion;
                 contentChanged = true;
             }
 
@@ -433,26 +542,8 @@ public static class NoteWriteEndpoints
 
             note.UpdatedUser = userId.ToString();
 
-            // 記錄版本
-            var latestRevision = await db.NoteRevision
-                .Where(r => r.NoteId == id)
-                .OrderByDescending(r => r.RevisionNo)
-                .FirstOrDefaultAsync(ct);
-
-            var nextRevisionNo = (latestRevision?.RevisionNo ?? 0) + 1;
-
-            var revision = new NoteRevision
-            {
-                UserId = userId,
-                NoteId = note.Id,
-                RevisionNo = nextRevisionNo,
-                ChangeKind = "update",
-                Title = note.Title,
-                ContentRaw = note.ContentRaw,
-                CreatedUser = userId.ToString(),
-                UpdatedUser = userId.ToString(),
-            };
-            db.NoteRevision.Add(revision);
+            // 版本快照（ChangeKind="update"）由 NoteRevisionInterceptor 於 SaveChanges 時自動寫入——
+            // 且只在標題/內容確有變更時才寫（純分類/標籤/草稿旗標變更不產生噪音版本）。
 
             // 更新分類（整組取代；reconcile 會復活軟刪除列，避免唯一索引衝突）
             if (request.CategoryIds != null)
@@ -498,7 +589,8 @@ public static class NoteWriteEndpoints
                 note.CreatedDateTime,
                 note.UpdatedDateTime,
                 await db.Comment.CountAsync(c => c.NoteId == id && c.ValidFlag, ct),
-                Version: db.Entry(note).GetConcurrencyVersion());
+                Version: db.Entry(note).GetConcurrencyVersion(),
+                ContentHash: note.ContentHash);
 
             return Results.Ok(ApiResponse<NoteDetailDto>.Ok(dto));
         }
@@ -547,30 +639,20 @@ public static class NoteWriteEndpoints
             note.DeletedDateTime = DateTime.UtcNow;
             note.UpdatedUser = userId.ToString();
 
-            // 記錄版本（ChangeKind = "delete"）
-            var latestRevision = await db.NoteRevision
-                .Where(r => r.NoteId == id)
-                .OrderByDescending(r => r.RevisionNo)
-                .FirstOrDefaultAsync(ct);
-
-            var nextRevisionNo = (latestRevision?.RevisionNo ?? 0) + 1;
-
-            var revision = new NoteRevision
-            {
-                UserId = userId,
-                NoteId = note.Id,
-                RevisionNo = nextRevisionNo,
-                ChangeKind = "delete",
-                Title = note.Title,
-                ContentRaw = note.ContentRaw,
-                CreatedUser = userId.ToString(),
-                UpdatedUser = userId.ToString(),
-            };
-            db.NoteRevision.Add(revision);
+            // 版本快照（ChangeKind="delete"，保留刪除當下全文）由 NoteRevisionInterceptor
+            // 偵測 ValidFlag true→false 自動寫入。
 
             await db.SaveChangesAsync(ct);
 
             return Results.Ok(ApiResponse<object>.Ok(new { id = note.Id }));
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // 併發競賽（連點刪除、或刪除與更新同時發生）：xmin 不符或版本序號撞唯一索引
+            //（後者由 ZonWikiDbContext 統一轉譯為本例外）→ 回 409，不外洩裸 500。
+            return Results.Json(
+                ApiResponse<object>.Fail("此筆記已被其他請求同時修改或刪除", 409),
+                statusCode: StatusCodes.Status409Conflict);
         }
         catch (Exception ex)
         {
@@ -931,10 +1013,70 @@ public static class NoteWriteEndpoints
                 r.Title,
                 r.ContentRaw,
                 r.CreatedDateTime,
-                r.CreatedUser))
+                r.CreatedUser,
+                r.UpdatedDateTime))
             .ToListAsync(ct);
 
         return Results.Ok(ApiResponse<List<NoteRevisionDto>>.Ok(revisions));
+    }
+
+    // ==================== Get Activities ====================
+
+    /// <summary>
+    /// 查詢「這篇筆記」的完整活動紀錄（供歷史分頁合併時間軸）。
+    /// 涵蓋建立/編輯（含分類、標籤、關聯的變更明細）/刪除/還原；依時間倒序、上限 200 筆。
+    /// 垃圾桶內的筆記比照 revisions 慣例回 404（須先還原）。
+    /// </summary>
+    /// <param name="db">資料庫內容。</param>
+    /// <param name="id">筆記 Id。</param>
+    /// <param name="ct">取消權杖。</param>
+    /// <returns>活動清單。</returns>
+    private static async Task<IResult> GetActivitiesHandler(
+        ZonWikiDbContext db,
+        Guid id,
+        CancellationToken ct)
+    {
+        var noteExists = await db.Note
+            .AnyAsync(n => n.Id == id && n.ValidFlag, ct);
+
+        if (!noteExists)
+        {
+            return Results.NotFound(ApiResponse<List<NoteActivityDto>>.Fail("Note not found", 404));
+        }
+
+        var activities = await db.ActivityLog
+            .Where(a => a.EntityType == "note" && a.EntityId == id)
+            .OrderByDescending(a => a.CreatedDateTime)
+            .Take(200)
+            .Select(a => new NoteActivityDto(
+                a.Id,
+                a.ActionType,
+                a.Title,
+                a.Detail,
+                a.Source,
+                a.CreatedDateTime))
+            .ToListAsync(ct);
+
+        return Results.Ok(ApiResponse<List<NoteActivityDto>>.Ok(activities));
+    }
+
+    // ==================== Render Dry-Run（純轉換，不落地） ====================
+
+    /// <summary>
+    /// 把 Markdown 原文渲染成 HTML 但不寫入資料庫（存檔攔截用）。
+    ///
+    /// 為什麼要有這個端點：包4 錨點保護的架構裁決是「瀏覽器為唯一座標系」（見 docs/DECISIONS.md）——
+    /// 存檔前前端需拿到「新內容」的權威 HTML，注入 detached DOM 讀 textContent 預跑 reAnchor，
+    /// 判斷哪些標註會斷。此 HTML 必須與正式儲存管線「逐字元一致」，故直接呼叫同一個
+    /// <see cref="NoteContentHelpers.RenderToHtml"/>，零座標系分歧、零演算法移植。
+    /// 僅在「存檔動作」被觸發（非逐鍵、非即時預覽），故掛寬鬆的 RenderPolicy 限流即可。
+    /// </summary>
+    /// <param name="request">要渲染的 Markdown 原文。</param>
+    /// <returns>渲染後的 HTML（與正式儲存一致）。</returns>
+    private static IResult RenderNoteHandler(NoteRenderRequest request)
+    {
+        var html = NoteContentHelpers.RenderToHtml(request.ContentRaw ?? string.Empty);
+        return Results.Ok(ApiResponse<NoteRenderResultDto>.Ok(new NoteRenderResultDto(html)));
     }
 
     // ==================== Get Backlinks ====================
@@ -952,24 +1094,112 @@ public static class NoteWriteEndpoints
             return Results.NotFound(ApiResponse<List<BacklinkDto>>.Fail("Note not found", 404));
         }
 
-        // 先以真實欄位 n.Title 排序、再投影成 DTO。
-        // 不可在 Join 投影成 BacklinkDto「之後」再 OrderBy(b => b.SourceNoteTitle)——
-        // EF Core 會試圖在 SQL ORDER BY 內重建 BacklinkDto 而無法轉譯（造成 500）。
-        var backlinks = await db.NoteLink
-            .Where(nl => nl.TargetNoteId == id && nl.ValidFlag)
+        // 反向連結聯集三套互不相通的來源（保持三個獨立查詢、記憶體合併排序即可，量級小不需 SQL UNION）：
+        //   wiki   ＝ 內文 [[X]] 解析成的 NoteLink；
+        //   mark   ＝ 框選段落建立的關聯（NoteMark，Kind=link / TargetType=note）；
+        //   entity ＝「關聯」分頁的整篇雙向關聯（EntityLink）。
+        // 三張表都是 IUserOwned：全域查詢過濾（UserId + ValidFlag）自動生效；
+        // 且 join db.Note 取來源標題/slug 時，Note 的全域過濾會一併擋掉「已軟刪除／跨使用者」的來源筆記，
+        // 因此三個查詢都「不需要」IgnoreQueryFilters——跨使用者隔離與軟刪連動由框架保證。
+
+        // ── 來源1（wiki）：內文 [[X]] → NoteLink，指向本篇者 ──
+        // 加 SourceNoteId != id 排除「[[自己]]」的自我參照。
+        var wikiRows = await db.NoteLink
+            .Where(nl => nl.TargetNoteId == id && nl.ValidFlag && nl.SourceNoteId != id)
             .Join(
                 db.Note,
                 nl => nl.SourceNoteId,
                 n => n.Id,
-                (nl, n) => new { nl, n })
-            .OrderBy(x => x.n.Title)
-            .Select(x => new BacklinkDto(
-                x.nl.Id,
-                x.nl.SourceNoteId,
-                x.n.Title,
-                x.n.Slug,
-                x.nl.AnchorText))
+                (nl, n) => new BacklinkDto(
+                    nl.Id,
+                    nl.SourceNoteId,
+                    n.Title,
+                    n.Slug,
+                    nl.AnchorText,
+                    "wiki",
+                    null))
             .ToListAsync(ct);
+
+        // ── 來源2（mark）：框選段落關聯 → NoteMark（Kind=link / TargetType=note）指向本篇者 ──
+        // TargetType 在建立端（NoteMarkEndpoints.cs:131）存的是「原始請求值」未做正規化，
+        // 但前端一律送小寫 "note"（NoteMarksLayer 與 links API 皆然），與 EntityLink 的正規化小寫一致，
+        // 故直接用 == "note" 比對即可、且能轉譯成 SQL。
+        // Detached 刻意「不」過濾：關聯本身沒失效、只是內文定位失效（斷錨的降級顯示屬包4），此處先保證不消失。
+        // NoteId != id 排除「自己框選段落又指向自己」的自我參照。
+        var markRows = await db.NoteMark
+            .Where(m => m.Kind == "link"
+                && m.TargetType == "note"
+                && m.TargetId == id
+                && m.ValidFlag
+                && m.NoteId != id)
+            .Join(
+                db.Note,
+                m => m.NoteId,
+                n => n.Id,
+                (m, n) => new BacklinkDto(
+                    m.Id,
+                    m.NoteId,
+                    n.Title,
+                    n.Slug,
+                    m.AnchorText,
+                    "mark",
+                    m.Id,
+                    // 段落級關聯：帶回目標段落錨點 Id，前端跳轉改用 ?mark={TargetMarkId} 精準落段。
+                    m.TargetMarkId))
+            .ToListAsync(ct);
+
+        // ── 來源3（entity）：整篇雙向關聯 → EntityLink ──
+        // EntityLink 一筆代表雙向：哪端是 Source 只是「建立當下開著哪頁」的巧合，
+        // 因此兩個方向都要撈（只撈單向會重演「從本篇建立、卻在本篇看不見」的原始 bug），顯示的一律是「另一端」。
+        // 拆成兩個方向查詢再記憶體合併，避免「條件式計算另一端後再 Where/Join」的 EF 轉譯風險：
+        //   方向A：本篇是 Source（SourceId==id）→ 另一端＝Target；
+        //   方向B：本篇是 Target（TargetId==id）→ 另一端＝Source。
+        // 兩側都排除「另一端==本篇」（TargetId!=id／SourceId!=id）以濾掉自我參照；
+        // 唯一可能同時命中兩方向的情況正是「SourceId==TargetId==id」的自我參照，已被排除，故不會重複計。
+        var entityAsSource = await db.EntityLink
+            .Where(l => l.ValidFlag
+                && l.SourceType == "note" && l.SourceId == id
+                && l.TargetType == "note" && l.TargetId != id)
+            .Join(
+                db.Note,
+                l => l.TargetId,
+                n => n.Id,
+                (l, n) => new BacklinkDto(l.Id, n.Id, n.Title, n.Slug, "", "entity", null))
+            .ToListAsync(ct);
+
+        var entityAsTarget = await db.EntityLink
+            .Where(l => l.ValidFlag
+                && l.TargetType == "note" && l.TargetId == id
+                && l.SourceType == "note" && l.SourceId != id)
+            .Join(
+                db.Note,
+                l => l.SourceId,
+                n => n.Id,
+                (l, n) => new BacklinkDto(l.Id, n.Id, n.Title, n.Slug, "", "entity", null))
+            .ToListAsync(ct);
+
+        // ── 記憶體合併＋排序 ──
+        // 排序權重表（Kind 權重）：wiki=0 → mark=1 → entity=2；同權重內再依來源筆記標題。
+        // 在記憶體排序（LINQ-to-Objects）而非 SQL：三來源已各自 ToListAsync 拉回，
+        // 因此不會踩到原本「投影成 DTO 後、EF 在 SQL ORDER BY 內重建 DTO 無法轉譯（造成 500）」的陷阱。
+        static int KindWeight(string kind) => kind switch
+        {
+            "wiki" => 0,
+            "mark" => 1,
+            "entity" => 2,
+            _ => 3,
+        };
+
+        // 標題排序用 Ordinal（碼位序）而非預設文化比較器：伺服器文化在本機（zh-TW）與
+        // prod 容器（invariant/ICU）不同，culture-aware 排序會讓同一份資料在兩環境順序不一致；
+        // Ordinal 跨環境確定、可被整合測試釘死。
+        var backlinks = wikiRows
+            .Concat(markRows)
+            .Concat(entityAsSource)
+            .Concat(entityAsTarget)
+            .OrderBy(b => KindWeight(b.Kind))
+            .ThenBy(b => b.SourceNoteTitle, StringComparer.Ordinal)
+            .ToList();
 
         return Results.Ok(ApiResponse<List<BacklinkDto>>.Ok(backlinks));
     }
@@ -1195,6 +1425,129 @@ public static class NoteWriteEndpoints
             return "Kind must be 'note' or 'journal'";
 
         return null;
+    }
+
+    /// <summary>
+    /// 從標題產生一個「在本使用者的『活著的』筆記中唯一」的 slug（建立與改名共用，收斂 DRY）。
+    /// 規則：GenerateSlug 去特殊字元/轉小寫 → 空字串以 "note" 墊底 → 撞「活著的 slug」自動加序號（-2, -3…）。
+    /// 刻意只比對「活 slug」、不看別名——名字可重用（見 DECISIONS「筆記 URL 改版」）：撞別名照拿、歧義交消歧異頁。
+    /// </summary>
+    /// <param name="db">資料庫內容。</param>
+    /// <param name="userId">使用者識別碼。</param>
+    /// <param name="title">來源標題。</param>
+    /// <param name="excludeNoteId">
+    /// 取號時要排除的筆記 Id：改名情境傳「本篇自己」的 Id——否則「僅調整標題大小寫、slug 不變」時
+    /// 會把自己算成撞名而誤加序號。建立情境傳 null（不排除任何筆記）。
+    /// </param>
+    /// <param name="ct">取消權杖。</param>
+    /// <returns>唯一的 slug。</returns>
+    private static async Task<string> GenerateUniqueSlugAsync(
+        ZonWikiDbContext db,
+        Guid userId,
+        string title,
+        Guid? excludeNoteId,
+        CancellationToken ct)
+    {
+        var baseSlug = NoteContentHelpers.GenerateSlug(title);
+        if (string.IsNullOrEmpty(baseSlug))
+        {
+            baseSlug = "note";
+        }
+
+        // 以 Guid.Empty 當「不排除」哨兵：沒有任何筆記的 Id 會是 Guid.Empty，故 n.Id != exclude 恆為 true，
+        // 等同建立情境的「不排除」；改名情境則排除本篇自己。單一 SQL 判斷，避免 nullable 進運算式的轉譯風險。
+        var exclude = excludeNoteId ?? Guid.Empty;
+
+        var slug = baseSlug;
+        for (var i = 2;
+             await db.Note.AnyAsync(
+                 n => n.UserId == userId && n.Slug == slug && n.ValidFlag && n.Id != exclude,
+                 ct);
+             i++)
+        {
+            slug = $"{baseSlug}-{i}";
+        }
+
+        return slug;
+    }
+
+    /// <summary>
+    /// 把「讓出的舊 slug」記成一筆 NoteSlugAlias（供舊網址永久解析回本篇）。
+    /// 查 (UserId, Slug=舊slug, NoteId=本篇) 含軟刪列（IgnoreQueryFilters 須手動補 UserId 過濾以維持跨租戶隔離）：
+    /// 有活列 → 更新 OriginalTitle 為「讓出當下的標題」；有軟刪列 → 復活＋更新；無 → 新增。
+    /// 「復活軟刪列」是反覆改名（S→S2→S…）不撞 (UserId,Slug,NoteId) 唯一索引的關鍵（同 NoteRevision 取號教訓）。
+    /// </summary>
+    /// <param name="db">資料庫內容。</param>
+    /// <param name="userId">使用者識別碼。</param>
+    /// <param name="noteId">讓出 slug 的筆記識別碼。</param>
+    /// <param name="oldSlug">讓出的舊 slug。</param>
+    /// <param name="oldTitle">讓出當下該筆記的標題（消歧異顯示用）。</param>
+    /// <param name="ct">取消權杖。</param>
+    private static async Task RecordSlugAliasAsync(
+        ZonWikiDbContext db,
+        Guid userId,
+        Guid noteId,
+        string oldSlug,
+        string oldTitle,
+        CancellationToken ct)
+    {
+        var existing = await db.NoteSlugAlias
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(
+                a => a.UserId == userId && a.Slug == oldSlug && a.NoteId == noteId,
+                ct);
+
+        if (existing is null)
+        {
+            db.NoteSlugAlias.Add(new NoteSlugAlias
+            {
+                UserId = userId,
+                NoteId = noteId,
+                Slug = oldSlug,
+                OriginalTitle = oldTitle,
+                CreatedUser = userId.ToString(),
+                UpdatedUser = userId.ToString(),
+            });
+        }
+        else
+        {
+            // 復活（若曾被軟刪）並把 OriginalTitle 更新成「這一次」讓出當下的標題。
+            existing.ValidFlag = true;
+            existing.DeletedDateTime = null;
+            existing.OriginalTitle = oldTitle;
+            existing.UpdatedUser = userId.ToString();
+            existing.UpdatedDateTime = DateTime.UtcNow;
+        }
+    }
+
+    /// <summary>
+    /// 自我收斂：本篇「重新取用」某個名字（newSlug）時，把本篇先前對這個 slug 的「有效別名」軟刪，
+    /// 避免「活 slug 與自我別名」同時命中造成假歧義（見測試「改回舊名的自我收斂」）。只動本篇自己的別名，
+    /// 不影響別篇對同一 slug 的別名（那正是真正的歧義，須保留）。
+    /// </summary>
+    /// <param name="db">資料庫內容。</param>
+    /// <param name="userId">使用者識別碼。</param>
+    /// <param name="noteId">重新取用名字的筆記識別碼。</param>
+    /// <param name="newSlug">本篇新取用的 slug。</param>
+    /// <param name="ct">取消權杖。</param>
+    private static async Task CollapseSelfAliasAsync(
+        ZonWikiDbContext db,
+        Guid userId,
+        Guid noteId,
+        string newSlug,
+        CancellationToken ct)
+    {
+        var selfAlias = await db.NoteSlugAlias
+            .FirstOrDefaultAsync(
+                a => a.UserId == userId && a.Slug == newSlug && a.NoteId == noteId && a.ValidFlag,
+                ct);
+        if (selfAlias is not null)
+        {
+            selfAlias.ValidFlag = false;
+            selfAlias.DeletedDateTime = DateTime.UtcNow;
+            selfAlias.UpdatedUser = userId.ToString();
+            selfAlias.UpdatedDateTime = DateTime.UtcNow;
+        }
     }
 
 

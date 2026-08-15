@@ -21,11 +21,15 @@ import {
 } from '@/lib/drawing/shapes';
 import { ShapeEl } from '@/lib/drawing/ShapeEl';
 import { StickyBody } from '@/components/overlay/StickyBody';
+import { createDragClickTracker } from '@/lib/overlayDragClick';
 import { SlideBody } from '@/components/overlay/SlideBody';
 import { STICKY_COLORS } from '@/components/overlay/overlayShared';
 import { DrawingTextBox, parseTextExtra, type TextExtra } from '@/components/drawing/TextBox';
 import { DrawingToolbar } from '@/components/drawing/DrawingToolbar';
 import { TextPropsPanel } from '@/components/drawing/TextPropsPanel';
+import { SHORTCUT_ACTION_EVENT } from '@/lib/shortcuts';
+import { OVERLAY_SHORTCUT_COMMANDS } from '@/lib/overlayShortcutCommands';
+import { useShortcutKeyCaps } from '@/lib/useShortcutKeyCaps';
 
 /** 便利貼/圖片板標題列上的小圖示按鈕樣式（－ 收合、🗑 刪除）；與筆記便利貼一致。 */
 const annoChromeBtnStyle: React.CSSProperties = {
@@ -305,7 +309,13 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
   /** 螢幕座標 → 畫布座標（供純文字框縮放/旋轉換算）。 */
   const toFlow = (clientX: number, clientY: number) => screenToFlowPosition({ x: clientX, y: clientY });
 
-  const addTextBox = async () => {
+  /**
+   * 新增純文字框。
+   * @param opts.expandToolbar 是否順便展開工具箱（讓文字屬性面板可見）。
+   *   按鈕觸發＝true（既有行為）；「鍵盤快捷鍵」觸發＝false——
+   *   使用者裁示：工具箱收合時按快捷鍵「不展開、但依然執行」。
+   */
+  const addTextBox = async (opts?: { expandToolbar?: boolean }) => {
     if (!canvasId) return;
     const c = viewCenter();
     const created = await kaiwenApi.createCanvasAnnotation(canvasId, {
@@ -315,7 +325,7 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
     if (created) {
       const it = fromDto(created);
       setItems((prev) => [...prev, it]);
-      setToolbarOpen(true);
+      if (opts?.expandToolbar !== false) setToolbarOpen(true);
       setSelectedTextId(it.id);
       setEditingTextId(it.id);
     }
@@ -403,8 +413,14 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
     const z = zoomRef.current || 1;
     const ox = item.x, oy = item.y, ow = item.width, oh = item.height;
     let next = { x: ox, y: oy, width: ow, height: oh };
+    // 「點擊 vs 拖曳」判定器：每次 pointerdown 各自新建。死區判定餵「除以 zoom 之前」的
+    // 螢幕位移，讓點擊容忍度不隨畫布縮放改變（zoom=2 時 4px 螢幕微晃仍是點擊）。
+    // 【只用於 mode==='move'】resize 把手沒有點擊語意，不套死區——否則縮放起手會不跟手。
+    const tracker = createDragClickTracker();
     const onMove = (ev: PointerEvent) => {
-      const dx = (ev.clientX - sx) / z, dy = (ev.clientY - sy) / z;
+      const rawDx = ev.clientX - sx, rawDy = ev.clientY - sy;
+      if (mode === 'move' && !tracker.move(rawDx, rawDy)) return; // 死區：微晃不動作，保留點擊判定
+      const dx = rawDx / z, dy = rawDy / z;
       if (mode === 'move') {
         next = { x: ox + dx, y: oy + dy, width: ow, height: oh };
         patchLocal(item.id, { x: next.x, y: next.y });
@@ -416,7 +432,18 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
     const onUp = () => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
-      persist(item.id, mode === 'move' ? { x: next.x, y: next.y } : { width: next.width, height: next.height });
+      if (mode === 'resize') {
+        // 單純點一下把手（尺寸沒變）：不必發 PATCH。
+        if (next.width === ow && next.height === oh) return;
+        persist(item.id, { width: next.width, height: next.height });
+        return;
+      }
+      if (tracker.isClick()) {
+        // 點一下標題列（沒拖）＝切換收合/展開。位置沒變，故不持久化。
+        toggleCollapse(item.id);
+        return;
+      }
+      persist(item.id, { x: next.x, y: next.y });
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
@@ -629,6 +656,57 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
     setTool((cur) => (cur === t ? null : t));
   };
 
+  // ── 浮層工具快捷鍵（ShortcutRuntime 在 /canvas 派發 SHORTCUT_ACTION_EVENT）──
+  // 以 ref 鏡像最新動作，監聽器只掛一次；add/remove 對稱，StrictMode 雙掛載不會重複執行
+  //（addSticky 等會打後端 API、非幂等）。工具箱收合（toolbarOpen=false）時照樣執行、不展開。
+  const shortcutRef = useRef<{
+    selectTool: (t: Exclude<DrawTool, null>) => void;
+    addSticky: () => void;
+    addSlide: () => void;
+    addTextBox: () => void;
+  }>(null!);
+  useEffect(() => {
+    shortcutRef.current = {
+      selectTool,
+      addSticky,
+      addSlide,
+      // 鍵盤路徑不展開工具箱（裁示 #5）；文字屬性面板此時不可見，屬可接受的取捨。
+      addTextBox: () => void addTextBox({ expandToolbar: false }),
+    };
+  });
+  useEffect(() => {
+    const onShortcut = (e: Event) => {
+      const actionId = (e as CustomEvent<{ actionId?: string }>).detail?.actionId;
+      if (!actionId) return;
+      const cmd = OVERLAY_SHORTCUT_COMMANDS[actionId];
+      if (!cmd) return; // toggleToc 等筆記頁動作：畫布端不處理
+      const s = shortcutRef.current;
+      switch (cmd.type) {
+        case 'tool':
+          s.selectTool(cmd.tool); // 與點按鈕同語意：再按同鍵＝關閉該工具
+          break;
+        case 'addSticky':
+          void s.addSticky();
+          break;
+        case 'addSlide':
+          void s.addSlide();
+          break;
+        case 'addText':
+          s.addTextBox();
+          break;
+      }
+    };
+    window.addEventListener(SHORTCUT_ACTION_EVENT, onShortcut);
+    return () => window.removeEventListener(SHORTCUT_ACTION_EVENT, onShortcut);
+  }, []);
+
+  // 工具列鍵帽提示（隨使用者改鍵即時更新）。畫布第一格是「收合工具箱」、無快捷鍵，不給 leading。
+  const keyCaps = useShortcutKeyCaps([
+    'toolPen', 'toolHighlight', 'toolLine', 'toolRect', 'toolEllipse',
+    'addTextBox', 'eraseArea', 'eraseStroke', 'eraseBox',
+    'addSticky', 'addSlide',
+  ]);
+
   const allShapes = eraseWork.current
     ? eraseWork.current
     : curShape.current
@@ -701,6 +779,7 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
             >
               <div
                 onPointerDown={(e) => startDrag(e, item, 'move')}
+                title="點一下收合/展開；按住拖曳移動"
                 style={{
                   display: 'flex', alignItems: 'center', gap: 4,
                   padding: '2px 4px 2px 6px', cursor: 'move', background: 'rgba(0,0,0,0.06)', flexShrink: 0,
@@ -856,7 +935,20 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
             leading={{ label: '🧰', title: '收合工具箱', onClick: collapseToolbar, testId: 'canvas-anno-collapse' }}
             onAddSticky={addSticky}
             onAddSlide={addSlide}
-            onAddText={addTextBox}
+            onAddText={() => void addTextBox({ expandToolbar: true })}
+            shortcutKeys={{
+              pen: keyCaps.toolPen,
+              highlight: keyCaps.toolHighlight,
+              line: keyCaps.toolLine,
+              rect: keyCaps.toolRect,
+              ellipse: keyCaps.toolEllipse,
+              'erase-area': keyCaps.eraseArea,
+              'erase-stroke': keyCaps.eraseStroke,
+              'erase-box': keyCaps.eraseBox,
+              text: keyCaps.addTextBox,
+              sticky: keyCaps.addSticky,
+              slide: keyCaps.addSlide,
+            }}
             tool={tool}
             onSelectTool={selectTool}
             penColor={penColor}

@@ -8,33 +8,32 @@
  * 修法讓 canReceiveServerUpdate 額外放行 reconnecting → 這裡以純函式斷言「reconnecting 能脫離、終態不受污染」。
  */
 
-import { test } from "node:test";
-import assert from "node:assert/strict";
+import { test, expect } from "vitest";
 import { isActiveState, canReceiveServerUpdate } from "./coachState";
 
 test("isActiveState：進行中狀態為 true、reconnecting/終態為 false", () => {
-  assert.equal(isActiveState("connecting"), true);
-  assert.equal(isActiveState("listening"), true);
-  assert.equal(isActiveState("thinking"), true);
-  assert.equal(isActiveState("speaking"), true);
-  assert.equal(isActiveState("reconnecting"), false);
-  assert.equal(isActiveState("ended"), false);
-  assert.equal(isActiveState("fatal"), false);
+  expect(isActiveState("connecting")).toBe(true);
+  expect(isActiveState("listening")).toBe(true);
+  expect(isActiveState("thinking")).toBe(true);
+  expect(isActiveState("speaking")).toBe(true);
+  expect(isActiveState("reconnecting")).toBe(false);
+  expect(isActiveState("ended")).toBe(false);
+  expect(isActiveState("fatal")).toBe(false);
 });
 
 test("canReceiveServerUpdate：reconnecting 放行（重連成功後能回 listening/speaking），修死鎖", () => {
   // #1 關鍵：重連中收到後端 state:listening／audio 必須能轉移（否則永久卡死）。
-  assert.equal(canReceiveServerUpdate("reconnecting"), true);
+  expect(canReceiveServerUpdate("reconnecting")).toBe(true);
 });
 
 test("canReceiveServerUpdate：進行中狀態放行", () => {
-  assert.equal(canReceiveServerUpdate("connecting"), true);
-  assert.equal(canReceiveServerUpdate("listening"), true);
-  assert.equal(canReceiveServerUpdate("thinking"), true);
-  assert.equal(canReceiveServerUpdate("speaking"), true);
+  expect(canReceiveServerUpdate("connecting")).toBe(true);
+  expect(canReceiveServerUpdate("listening")).toBe(true);
+  expect(canReceiveServerUpdate("thinking")).toBe(true);
+  expect(canReceiveServerUpdate("speaking")).toBe(true);
 });
 
 test("canReceiveServerUpdate：終態不放行（避免收線後殘留訊框污染 ended/fatal）", () => {
-  assert.equal(canReceiveServerUpdate("ended"), false);
-  assert.equal(canReceiveServerUpdate("fatal"), false);
+  expect(canReceiveServerUpdate("ended")).toBe(false);
+  expect(canReceiveServerUpdate("fatal")).toBe(false);
 });

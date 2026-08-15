@@ -76,8 +76,10 @@ export function ConfirmDialog({
 
   return (
     // 暗背景：點擊（僅背景本身）視為取消。對話框內容置於其內，靠 overlay 的 flex 置中。
+    // modal-overlay--top：確認框是「最上層」的互動（例如任務彈窗 z-index:1000 內按關閉時
+    // 跳出的「放棄未儲存變更？」），必須疊在所有一般彈窗之上，否則會被蓋住看不到。
     <div
-      className="modal-overlay"
+      className="modal-overlay modal-overlay--top"
       onClick={onCancel}
       role="presentation"
     >

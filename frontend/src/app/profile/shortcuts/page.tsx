@@ -22,7 +22,7 @@ const LABEL_BY_ID: Record<string, string> = Object.fromEntries(
 /**
  * 個人頁面 — 快捷鍵設定子頁 /profile/shortcuts（#2 可自訂改鍵）。
  *
- * - 分「全域」與「Todo 頁」兩區列出所有動作目前生效的鍵位。
+ * - 依範圍分區（全域／Todo 頁／筆記頁／浮層工具）列出所有動作目前生效的鍵位。
  * - 點「重新綁定」進入擷取模式，按下新按鍵即綁定（Esc 取消）；擷取時以 capture
  *   階段攔截並 stopImmediatePropagation，避免被全域執行器搶走。
  * - 即時偵測按鍵衝突（任兩動作同鍵），有衝突則禁止儲存。
@@ -98,13 +98,15 @@ export default function ProfileShortcutsPage() {
     setSavedMsg(ok ? "已儲存，立即生效。" : "儲存失敗，請稍後重試。");
   };
 
-  const scopes: ShortcutScope[] = ["global", "tasks"];
+  // 四個範圍全列（先前只列 global/tasks，notes 的動作在設定頁看不到＝既有缺口，一併補上）。
+  const scopes: ShortcutScope[] = ["global", "tasks", "notes", "overlay"];
 
   return (
     <ProfileShell title="快捷鍵設定" loading={loading} error={null}>
       <p style={{ color: "var(--text-secondary)", fontSize: "var(--text-sm)", margin: "0 0 var(--spacing-4)" }}>
         點「重新綁定」後按下想要的按鍵即可改鍵（Esc 取消）；按鍵在輸入文字時不會觸發。
-        全域快捷鍵於任何頁面皆生效，Todo 頁快捷鍵僅在日程規劃頁生效。
+        全域快捷鍵於任何頁面皆生效；Todo 頁僅在日程規劃頁、筆記頁僅在筆記頁生效；
+        浮層工具（右下角工具列）於筆記「閱覽」頁與開問啦畫布生效。
       </p>
 
       {scopes.map((scope) => (

@@ -118,6 +118,10 @@ public sealed record NoteSummaryDto(
 /// 樂觀鎖併發權杖（PostgreSQL xmin，#4/#34）。前端保存時原封帶回為 baseVersion，
 /// 供後端偵測「載入後是否被其他來源改過」；0＝未知（不參與併發檢查）。
 /// </param>
+/// <param name="ContentHash">
+/// 內容雜湊（SHA-256）。包4 錨點保護的 Detached 回寫以此為「當次渲染基準」防過期：
+/// 前端 PATCH detached 帶當次渲染的 ContentHash，後端比對非最新即忽略（防兩分頁競態）。
+/// </param>
 public sealed record NoteDetailDto(
     Guid Id,
     string Title,
@@ -131,7 +135,49 @@ public sealed record NoteDetailDto(
     int CommentCount,
     List<TagRefDto>? Categories = null,
     List<TagRefDto>? Tags = null,
-    long Version = 0);
+    long Version = 0,
+    string ContentHash = "");
+
+/// <summary>
+/// 依 slug 解析筆記的結果（GET /api/notes/{slug} 的統一回應形狀）。
+///
+/// slug 連動標題後，同一個 slug 可能對應「唯一一篇」（活 slug 或別名命中）或「多篇」（名字被取用過、產生歧義）：
+/// - kind = "note"：<see cref="Note"/> 有值、<see cref="MatchedByAlias"/> 表示是否經舊 slug（別名）命中；
+/// - kind = "ambiguous"：<see cref="Candidates"/> 列出所有候選，<see cref="RequestedSlug"/> 為使用者輸入的 slug。
+/// </summary>
+/// <param name="Kind">解析種類："note"（唯一命中）或 "ambiguous"（多篇候選）。</param>
+/// <param name="MatchedByAlias">
+/// 僅 kind="note" 有意義：命中來源是「舊 slug（別名）」而非「目前活著的 slug」時為 true
+/// （供前端顯示「你是從舊網址進來的」橫幅）。kind="ambiguous" 時為 null。
+/// </param>
+/// <param name="Note">命中的筆記完整詳情（kind="note"）；kind="ambiguous" 時為 null。</param>
+/// <param name="RequestedSlug">使用者輸入、產生歧義的 slug（kind="ambiguous"）；kind="note" 時為 null。</param>
+/// <param name="Candidates">歧義候選清單（kind="ambiguous"）；kind="note" 時為 null。</param>
+public sealed record NoteResolutionDto(
+    string Kind,
+    bool? MatchedByAlias,
+    NoteDetailDto? Note,
+    string? RequestedSlug,
+    IReadOnlyList<SlugCandidateDto>? Candidates);
+
+/// <summary>
+/// 消歧異候選：某個 slug 目前可能指向的一篇筆記（供前端消歧異頁與 MCP 文字化）。
+/// </summary>
+/// <param name="Id">筆記識別碼（前端以此 GUID 直達，永不再歧義）。</param>
+/// <param name="Title">筆記目前的標題。</param>
+/// <param name="Slug">筆記目前的（活著的）slug。</param>
+/// <param name="IsCurrentHolder">是否為「現在正用這個名字」的那一篇（true＝活 slug 命中、false＝僅別名命中）。</param>
+/// <param name="OriginalTitle">
+/// 別名命中者：讓出此 slug 當下的標題（「曾用此名（現名《…》）」的辨識用）；現用者為 null。
+/// </param>
+/// <param name="UpdatedAt">筆記最後更新時間（UTC，候選排序用：現用者優先、再依此新→舊）。</param>
+public sealed record SlugCandidateDto(
+    Guid Id,
+    string Title,
+    string Slug,
+    bool IsCurrentHolder,
+    string? OriginalTitle,
+    DateTime UpdatedAt);
 
 /// <summary>
 /// 留言資料傳輸物件。
@@ -375,6 +421,11 @@ public sealed record AiAsyncStartedDto(Guid SessionId);
 /// <param name="TargetTitle">關聯目標顯示名稱（伺服器解析；供 hover 浮窗顯示）。</param>
 /// <param name="TargetSlug">關聯目標（筆記）slug，供前端導航（僅 note）。</param>
 /// <param name="Text">備註文字（annotation 用）。</param>
+/// <param name="TargetMarkId">段落級關聯的目標錨點識別碼（link 用；null＝整篇關聯）。</param>
+/// <param name="ReferencedBy">
+/// （僅 kind="anchor"）此錨點「被哪些來源筆記引用」的標題清單（去重、依標題 Ordinal 排序）。
+/// 供存檔攔截確認框顯示「被《X》引用」；其他 kind 一律給空陣列（前端免 null 防禦）。
+/// </param>
 public sealed record NoteMarkDto(
     Guid Id,
     string Kind,
@@ -390,7 +441,9 @@ public sealed record NoteMarkDto(
     string? TargetUrl,
     string? TargetTitle,
     string? TargetSlug,
-    string? Text);
+    string? Text,
+    Guid? TargetMarkId = null,
+    IReadOnlyList<string>? ReferencedBy = null);
 
 /// <summary>
 /// 建立筆記文字標註的請求。依 Kind 帶對應欄位。
@@ -406,6 +459,7 @@ public sealed record NoteMarkDto(
 /// <param name="TargetId">關聯目標實體識別碼（link 用）。</param>
 /// <param name="TargetUrl">外部網址（link 用）。</param>
 /// <param name="Text">備註文字（annotation 用）。</param>
+/// <param name="TargetMarkId">段落級關聯的目標錨點識別碼（link 用；null＝整篇關聯）。</param>
 public sealed record CreateNoteMarkRequest(
     string Kind,
     string AnchorText,
@@ -417,7 +471,8 @@ public sealed record CreateNoteMarkRequest(
     string? TargetType = null,
     Guid? TargetId = null,
     string? TargetUrl = null,
-    string? Text = null);
+    string? Text = null,
+    Guid? TargetMarkId = null);
 
 /// <summary>
 /// 更新筆記文字標註的請求（編輯備註文字或重點顏色）。
@@ -427,6 +482,37 @@ public sealed record CreateNoteMarkRequest(
 public sealed record UpdateNoteMarkRequest(
     string? Text = null,
     string? Color = null);
+
+/// <summary>
+/// 回寫「錨點失效狀態（Detached）」的請求（PATCH /api/notes/marks/{id}/detached）。
+/// 座標系為「瀏覽器對渲染 HTML 的 textContent」，Detached 由前端每次真實渲染時計算後回寫；
+/// 後端不做 reAnchor、只信任前端（信任模型僅及於自己的資料）。
+/// </summary>
+/// <param name="Detached">此標註在當次渲染下是否失去定位（true＝找不到錨點）。</param>
+/// <param name="ContentHash">
+/// 前端「當次渲染所依據」的筆記 ContentHash。後端與筆記目前的 ContentHash 比對：
+/// 不一致代表這是「停在舊內容的分頁」送來的過期計算 → 忽略（no-op），
+/// 不得覆蓋另一分頁在新內容上剛寫對的值（兩分頁競態防呆）。
+/// </param>
+public sealed record PatchMarkDetachedRequest(
+    bool Detached,
+    string ContentHash);
+
+/// <summary>
+/// 純轉換（dry-run）渲染請求：把 Markdown 原文轉成 HTML 但不落地。
+/// 存檔攔截以此取得「新內容」的權威 HTML（＝正式儲存管線的同一函式），
+/// 前端再注入 detached DOM 讀 textContent 預跑 reAnchor 判斷哪些標註會斷。
+/// </summary>
+/// <param name="ContentRaw">要渲染的 Markdown 原文。</param>
+public sealed record NoteRenderRequest(
+    string ContentRaw);
+
+/// <summary>
+/// 純轉換（dry-run）渲染回應。
+/// </summary>
+/// <param name="ContentHtml">渲染後的 HTML（與正式儲存管線 RenderToHtml 完全一致）。</param>
+public sealed record NoteRenderResultDto(
+    string ContentHtml);
 
 /// <summary>
 /// 筆記浮層元件資料傳輸物件（便利貼 / 塗鴉 / 圖片輪播）。
@@ -441,6 +527,8 @@ public sealed record UpdateNoteMarkRequest(
 /// <param name="Color">便利貼底色（sticky 用）。</param>
 /// <param name="Text">便利貼文字（sticky 用）。</param>
 /// <param name="DataJson">型別專屬資料 JSON（drawing 筆畫 / slide 圖片網址）。</param>
+/// <param name="IsQuestion">是否被標記為「問題」（僅 sticky / text 適用）。</param>
+/// <param name="QuestionAnswer">問題的回答內容（可空；空字串／null 皆視為未作答）。</param>
 public sealed record NoteOverlayItemDto(
     Guid Id,
     string Kind,
@@ -451,7 +539,9 @@ public sealed record NoteOverlayItemDto(
     int ZIndex,
     string? Color,
     string? Text,
-    string? DataJson);
+    string? DataJson,
+    bool IsQuestion,
+    string? QuestionAnswer);
 
 /// <summary>
 /// 建立筆記浮層元件的請求。
@@ -469,6 +559,8 @@ public sealed record CreateNoteOverlayItemRequest(
 
 /// <summary>
 /// 更新筆記浮層元件的請求（欄位皆選擇性；null 表不改）。
+/// 註：<see cref="QuestionAnswer"/> 遵循 patch 慣例「!= null 才套用（含空字串）」，
+/// 故傳空字串代表「清空回答」，傳 null 代表「不更動回答」。
 /// </summary>
 public sealed record UpdateNoteOverlayItemRequest(
     double? X = null,
@@ -478,7 +570,42 @@ public sealed record UpdateNoteOverlayItemRequest(
     int? ZIndex = null,
     string? Color = null,
     string? Text = null,
-    string? DataJson = null);
+    string? DataJson = null,
+    bool? IsQuestion = null,
+    string? QuestionAnswer = null);
+
+/// <summary>
+/// 問題清單項目資料傳輸物件（供筆記頁與分類問題清單頁集中檢視「被標記為問題的浮層元件」）。
+/// </summary>
+/// <param name="ItemId">浮層元件（問題）識別碼。</param>
+/// <param name="NoteId">所屬筆記識別碼。</param>
+/// <param name="NoteTitle">所屬筆記標題。</param>
+/// <param name="NoteSlug">所屬筆記 slug（供前端導航到該筆記 + ?overlay 定位）。</param>
+/// <param name="Kind">浮層型別："sticky"（便利貼）/ "text"（T 文字框）。</param>
+/// <param name="QuestionTitle">問題顯示標題（sticky 優先取 DataJson.title；否則取文字前段；再無則預設字樣）。</param>
+/// <param name="QuestionText">問題完整文字（浮層的 Text）。</param>
+/// <param name="QuestionAnswer">問題的回答內容（可空）。</param>
+/// <param name="HasAnswer">是否已作答（回答非空字串且非 null）。</param>
+/// <param name="CategoryIds">所屬筆記的分類識別碼陣列（供前端做分類篩選；可為空＝未分類）。</param>
+/// <param name="CreatedDateTime">問題（浮層元件）建立時間（UTC）。</param>
+public sealed record NoteQuestionListItemDto(
+    Guid ItemId,
+    Guid NoteId,
+    string NoteTitle,
+    string NoteSlug,
+    string Kind,
+    string QuestionTitle,
+    string QuestionText,
+    string? QuestionAnswer,
+    bool HasAnswer,
+    IReadOnlyList<Guid> CategoryIds,
+    DateTime CreatedDateTime);
+
+/// <summary>
+/// 對「一則問題」請 AI 回答的請求（以整篇筆記內容為脈絡，只回文字不落地）。
+/// </summary>
+/// <param name="Question">問題文字（trim 後必填、長度上限 4000 字元）。</param>
+public sealed record AskNoteQuestionRequest(string Question);
 
 /// <summary>
 /// 筆記修訂（版本）資料傳輸物件。
@@ -488,8 +615,10 @@ public sealed record UpdateNoteOverlayItemRequest(
 /// <param name="ChangeKind">變更種類（create / update / delete）。</param>
 /// <param name="Title">當時的標題快照。</param>
 /// <param name="ContentRaw">當時的原始內容快照。</param>
-/// <param name="CreatedDateTime">變更時間（UTC）。</param>
+/// <param name="CreatedDateTime">鏈首時間（UTC）——時間窗合併時維持第一次變更的時間。</param>
 /// <param name="CreatedUser">變更者。</param>
+/// <param name="UpdatedDateTime">最後變更時間（UTC）——時間窗合併會前進此欄；
+/// 前端時間軸的排序/分組一律以此欄為準（合併後 CreatedDateTime 停在鏈首、內容卻是鏈尾）。</param>
 public sealed record NoteRevisionDto(
     Guid Id,
     int RevisionNo,
@@ -497,22 +626,70 @@ public sealed record NoteRevisionDto(
     string Title,
     string ContentRaw,
     DateTime CreatedDateTime,
-    string CreatedUser);
+    string CreatedUser,
+    DateTime UpdatedDateTime);
 
 /// <summary>
-/// 反向連結資料傳輸物件。
+/// 筆記活動紀錄資料傳輸物件（歷史分頁合併時間軸用）。
 /// </summary>
-/// <param name="Id">連結識別碼。</param>
-/// <param name="SourceNoteId">來源筆記識別碼。</param>
+/// <param name="Id">活動識別碼。</param>
+/// <param name="Action">動作（created / updated / deleted / restored）。</param>
+/// <param name="Title">動作當下的筆記標題。</param>
+/// <param name="Detail">變更明細摘要（分類/標籤/關聯/欄位變更；可空）。</param>
+/// <param name="Source">操作來源（web 或 API 權杖名）。</param>
+/// <param name="At">發生時間（UTC）。</param>
+public sealed record NoteActivityDto(
+    Guid Id,
+    string Action,
+    string Title,
+    string? Detail,
+    string Source,
+    DateTime At);
+
+/// <summary>
+/// 浮層快照清單項目資料傳輸物件（不含重量級 ItemsJson）。
+/// </summary>
+/// <param name="Id">快照識別碼。</param>
+/// <param name="SnapshotNo">快照序號（同一筆記內遞增）。</param>
+/// <param name="Summary">內容摘要（例如「便利貼2・文字框1・畫記3」）。</param>
+/// <param name="CreatedDateTime">儲存時間（UTC）。</param>
+public sealed record NoteOverlaySnapshotListItemDto(
+    Guid Id,
+    int SnapshotNo,
+    string Summary,
+    DateTime CreatedDateTime);
+
+/// <summary>
+/// 反向連結資料傳輸物件。聯集三套互不相通的連結來源（見 <paramref name="Kind"/>）。
+/// </summary>
+/// <param name="Id">
+/// 連結識別碼。依來源不同取不同表的主鍵（wiki=NoteLink.Id、mark=NoteMark.Id、entity=EntityLink.Id），
+/// 三來源合併後仍需唯一（供前端 React key 使用）。
+/// </param>
+/// <param name="SourceNoteId">來源筆記識別碼（entity 來源時為「關聯的另一端」筆記）。</param>
 /// <param name="SourceNoteTitle">來源筆記標題。</param>
 /// <param name="SourceNoteSlug">來源筆記 slug。</param>
-/// <param name="AnchorText">連結文字。</param>
+/// <param name="AnchorText">
+/// 錨點文字：wiki=[[X]] 內的 X；mark=框選的段落文字；entity=空字串（整篇關聯無錨點）。
+/// </param>
+/// <param name="Kind">
+/// 來源型別："wiki"（內文 [[X]] → NoteLink）｜"mark"（框選段落關聯 → NoteMark）｜
+/// "entity"（整篇關聯 → EntityLink）。放在最後並給預設值，維持既有 5 參數建構的相容性。
+/// </param>
+/// <param name="MarkId">mark 來源的標註識別碼（供前端組 ?mark= 深連結跳回段落）；其餘來源為 null。</param>
+/// <param name="TargetMarkId">
+/// （僅 mark 來源）該框選關聯指向的「目標筆記段落錨點」識別碼：有值時前端跳轉改用
+/// <c>?mark={TargetMarkId}</c> 精準落在本篇的被引用段落；null＝整篇關聯（落在頁頂）。其餘來源恆為 null。
+/// </param>
 public sealed record BacklinkDto(
     Guid Id,
     Guid SourceNoteId,
     string SourceNoteTitle,
     string SourceNoteSlug,
-    string AnchorText);
+    string AnchorText,
+    string Kind = "wiki",
+    Guid? MarkId = null,
+    Guid? TargetMarkId = null);
 
 /// <summary>
 /// 知識圖譜節點資料傳輸物件。
@@ -560,16 +737,29 @@ public sealed record NoteTagDto(
 
 /// <summary>
 /// 全站搜尋結果資料傳輸物件。
-/// 支援搜尋筆記、任務卡片、畫布、節點、標籤、分類與快速捕捉。
+/// 支援搜尋筆記、任務卡片、畫布、節點、標籤、分類、快速捕捉，
+/// 以及筆記浮層的 T 文字框（overlay-text）與便利貼（overlay-sticky）。
+///
+/// 脈絡強化欄位（<see cref="Categories"/> / <see cref="Tags"/> / <see cref="UpdatedAt"/> / <see cref="ParentTitle"/>）
+/// 皆為選擇性，僅在適用的結果型別上填值（例如分類/標籤只對筆記填、所屬筆記標題只對浮層填），
+/// 讓下拉與進階搜尋頁能區分同名筆記、依更新時間排序、標示浮層文字位於哪篇筆記。
 /// </summary>
-/// <param name="Type">結果類型（note / task / canvas / node / tag / category / capture）。</param>
+/// <param name="Type">結果類型（note / task / canvas / node / tag / category / capture / overlay-text / overlay-sticky）。</param>
 /// <param name="Id">結果識別碼。</param>
 /// <param name="Title">結果標題。</param>
 /// <param name="Snippet">結果內容摘要（搜尋片段、節點開頭部分，可空）。</param>
 /// <param name="Url">結果對應的路由 URL。</param>
+/// <param name="Categories">（僅筆記）所屬分類的完整路徑清單，如 <c>學習 / 併發</c>；無分類為空陣列、非筆記為 null。</param>
+/// <param name="Tags">（僅筆記）標籤名稱清單；無標籤為空陣列、非筆記為 null。</param>
+/// <param name="UpdatedAt">結果實體的更新時間（UTC，供依更新時間排序；可空）。</param>
+/// <param name="ParentTitle">（僅浮層）所屬筆記的標題；非浮層為 null。</param>
 public sealed record SearchResultDto(
     string Type,
     string Id,
     string Title,
     string? Snippet,
-    string Url);
+    string Url,
+    IReadOnlyList<string>? Categories = null,
+    IReadOnlyList<string>? Tags = null,
+    DateTime? UpdatedAt = null,
+    string? ParentTitle = null);

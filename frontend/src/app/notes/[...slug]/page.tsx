@@ -4,43 +4,62 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
-import { enhanceCodeBlocks } from '@/lib/codeBlocks';
+import { enhanceReadingCodeBlocks } from '@/lib/enhanceReadingCodeBlocks';
+import { enhanceReadingTables, type ReadingTableInteractions } from '@/lib/enhanceReadingTables';
+import { setFenceMetaAtLine } from '@/lib/codeBlockMeta';
+import { getCellRawFromContent, setCellValueInContent } from '@/lib/tableSpec';
+import { replaceFenceBody } from '@/lib/fenceBody';
+import { showToast } from '@/lib/toast';
 import {
   getNote,
+  getNoteById,
   markNoteOpened,
   updateNote,
   deleteNote,
+  duplicateNote,
   listNoteComments,
   addNoteComment,
   createNoteCategory,
   createNoteTag,
   listTaskGroups,
+  listNoteMarks,
   type NoteDetail,
   type NoteCategory,
   type NoteTag,
+  type SlugCandidate,
   type Comment,
   type TaskGroup,
 } from '@/lib/api';
+import { findLostMarksForSave, formatLostMarksMessage } from '@/lib/saveGuardRun';
 import { useCurrentUser, useNoteCategories, useNoteTags } from '@/lib/swr';
 import { ConflictError } from '@/lib/errors';
 import { formatFullDateTime, formatDateTime as formatDateTimeUtil } from '@/lib/formatters';
 import { DEFAULT_TIMEZONE } from '@/lib/constants';
 import { SkeletonCard } from '@/components/Skeleton';
 import { NoteAiActions } from '@/components/NoteAiActions';
+import type { EditorFoldApi } from '@/components/MarkdownEditor';
 import { NoteEditHistory } from '@/components/NoteEditHistory';
 import { NoteBacklinks } from '@/components/NoteBacklinks';
+import { NoteDisambiguation } from '@/components/NoteDisambiguation';
+import { resolveExpectedCandidate } from '@/lib/resolveExpectedCandidate';
 import { SearchableMultiSelect } from '@/components/SearchableMultiSelect';
 import { recordNoteNav, getNoteBackTarget, getRecentCategoryId, markBackNavigation } from '@/lib/noteNav';
+import { noteHref } from '@/lib/noteHref';
 import { LinkedEntitiesBar } from '@/components/LinkedEntitiesBar';
 import { TocPanel } from '@/components/TocPanel';
 import { ToggleAwareMarkdown } from '@/components/MarkdownPreview';
 import { buildToc } from '@/lib/toc';
+import { resolveAttachmentUrls } from '@/lib/attachmentUrl';
 import { useUndoHotkeys, resetUndo } from '@/lib/undoManager';
 import { useConfirm } from '@/components/ConfirmProvider';
 import { registerNavigationGuard } from '@/lib/navigationGuard';
 import { emitNoteActiveCategory } from '@/lib/noteEvents';
 import { noteEditChannelName, NOTE_EDIT_MAX_CONTENT, type NoteEditMessage } from '@/lib/noteEditChannel';
 import { ListenButton } from './components/ListenButton';
+import { buildCategoryOptions, categoryPathOf } from '@/lib/categoryOptions';
+import { appendEmptyTableRow } from '@/lib/tableRowInsert';
+import { clearDraft, createDraftWriter, draftKeyForNote, loadDraft, type DraftRecord, type DraftWriter } from '@/lib/draftBackup';
+import { NoteMetaQuickEdit } from '@/components/NoteMetaQuickEdit';
 
 // ── 重量級用戶端元件延遲載入（修 #10：dev 模式 Turbopack render worker 崩潰 500）────────────
 // 這四個元件（Markdown 編輯器、文字標註層、浮動白板、任務編輯彈窗）合計約 2,900 行，全為
@@ -68,6 +87,56 @@ const TaskEditorModal = dynamic(
   () => import('@/app/tasks/components/TaskEditorModal').then((mod) => mod.TaskEditorModal),
   { ssr: false },
 );
+
+/**
+ * 解析「站內同源錨點導航」的目的地（capture 階段 document click 的共用過濾）。
+ *
+ * 這段錨點過濾＋同源目的地解析同時服務本檔兩個 capture 階段的 click 攔截器：
+ *   1)「軟離開防護 B」——編輯中有未存變更時，先確認再導頁；
+ *   2)「站內筆記連結客戶端導航」——乾淨狀態時，攔內文裸 &lt;a&gt; 改走部分渲染。
+ * 兩者「這個點擊算不算一個該攔的站內同源導航、以及要導去哪裡」的判斷完全相同，
+ * 故抽成單一純函式避免兩份過濾邏輯日後各自漂移（DRY）。抽取時逐檢查、逐順序保持與
+ * 防護 B 原本的行為完全一致——防護 B 久經對抗式復審，語意不得改變；本函式只封裝
+ * 「是否攔＋目的地」的純判斷，兩個攔截器各自的額外條件（如只攔 /notes/）與動作
+ * （確認導頁／直接 router.push）仍留在各自的 effect 內。
+ *
+ * @param event capture 階段收到的滑鼠點擊事件
+ * @returns 通過全部過濾、且與目前頁面不同的「同源目的地 URL」；任一條件不符則回傳
+ *          null（呼叫端據此 return，維持瀏覽器／Next &lt;Link&gt; 的原生行為）。
+ */
+function resolveSameOriginAnchorTarget(event: MouseEvent): URL | null {
+  // 只處理單純左鍵、無修飾鍵的點擊；其餘（開新分頁/中鍵等）交給瀏覽器預設行為。
+  if (
+    event.defaultPrevented ||
+    event.button !== 0 ||
+    event.metaKey ||
+    event.ctrlKey ||
+    event.shiftKey ||
+    event.altKey
+  ) {
+    return null;
+  }
+  const anchor = (event.target as HTMLElement | null)?.closest?.('a');
+  if (!anchor) return null;
+  // 自管導頁的連結（自己會透過 navigationGuard 確認）→ 不由攔截器插手。
+  if (anchor.closest('[data-skip-leave-guard]')) return null;
+  const href = anchor.getAttribute('href');
+  if (!href || href.startsWith('#')) return null; // 純錨點捲動不算離開
+  if (anchor.target && anchor.target !== '_self') return null; // 開新分頁
+  if (anchor.hasAttribute('download')) return null;
+  // 解析為絕對網址：外部連結（不同 origin）交給瀏覽器預設（由 beforeunload 接手）。
+  let destination: URL;
+  try {
+    destination = new URL(href, window.location.href);
+  } catch {
+    return null;
+  }
+  if (destination.origin !== window.location.origin) return null;
+  // 目的地與目前頁面相同則略過（避免對自身連結誤攔）。
+  const current = window.location.pathname + window.location.search;
+  if (destination.pathname + destination.search === current) return null;
+  return destination;
+}
 
 /**
  * 筆記詳細編輯與查看頁面
@@ -101,6 +170,17 @@ export default function NotesDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // slug 連動標題後的「三態解析」（見 lib/api getNote → NoteResolution）：
+  // - 經「舊 slug 別名」進來（matchedByAlias）→ 內容頂部顯示「你從舊網址進來」資訊橫幅（本次瀏覽可關閉）；
+  // - slug 歧義（多篇曾用此名）→ 就地渲染消歧異頁（note 維持 null、candidates 有值，不跑 markNoteOpened/捲動還原）。
+  const [matchedByAlias, setMatchedByAlias] = useState(false);
+  // 進入時的 requested slug（＝命中別名的舊網址；橫幅顯示用，非 URL 參數以免之後被 replace 影響）。
+  const [aliasRequestedSlug, setAliasRequestedSlug] = useState<string | null>(null);
+  const [aliasBannerDismissed, setAliasBannerDismissed] = useState(false);
+  // 消歧異候選（null＝非歧義）與其 requested slug。
+  const [candidates, setCandidates] = useState<SlugCandidate[] | null>(null);
+  const [ambiguousRequestedSlug, setAmbiguousRequestedSlug] = useState('');
+
   // 編輯狀態
   const [isEditing, setIsEditing] = useState(false);
   const [editTitle, setEditTitle] = useState('');
@@ -108,16 +188,25 @@ export default function NotesDetailPage() {
   const [isSaving, setIsSaving] = useState(false);
   // AI（排版/美化）進行中：用來與「保存」互鎖，避免兩者重疊寫入造成競態。
   const [aiBusy, setAiBusy] = useState(false);
+  // 圖片上傳進行中的數量：>0 時擋「保存」與 AI 動作，
+  // 避免把編輯器裡的「〔圖片上傳中 #xxx〕」佔位文字永久存進 DB。
+  const [uploadingCount, setUploadingCount] = useState(0);
+  // 進入編輯模式時：本篇有幾處「被其他筆記引用」的段落錨點（存檔攔截會檢查是否受影響）。
+  const [referencedAnchorCount, setReferencedAnchorCount] = useState(0);
   // 預覽內文容器參考（供 NoteMarksLayer 套用文字標註）。
   const previewRef = useRef<HTMLDivElement | null>(null);
   // 編輯器 textarea 參考：供「局部排版（重排選取範圍）」讀取目前選取位置。
   const editorTaRef = useRef<HTMLTextAreaElement | null>(null);
+  // 編輯模式摺疊 API：MarkdownEditor 填入、NoteAiActions（局部排版）用它把顯示座標映射回完整座標。
+  const editorFoldApiRef = useRef<EditorFoldApi | null>(null);
   // 編輯彈窗：開啟時筆記頁改顯示「即時預覽（彈窗目前內容）」；null＝彈窗未開、顯示存檔版閱讀畫面。
   const [editPopoutContent, setEditPopoutContent] = useState<string | null>(null);
   const editChannelRef = useRef<BroadcastChannel | null>(null);
   const editPopupRef = useRef<Window | null>(null);
   // 「編輯」按鈕點下展開的小選單：可選「編輯頁（頁內）」或「編輯彈窗（獨立視窗）」。
   const [showEditMenu, setShowEditMenu] = useState(false);
+  // 閱讀模式「✎ 就地調整分類/標籤」面板開關（2026-08-13：不進編輯模式即可改分類）。
+  const [metaEditOpen, setMetaEditOpen] = useState(false);
 
   // 編輯時的分類/標籤：選項池與目前選取。
   // 選項池改由共用的 SWR 快取（useNoteCategories/useNoteTags）供給，並在取得資料時 seed 到
@@ -138,12 +227,18 @@ export default function NotesDetailPage() {
   const [editCatIds, setEditCatIds] = useState<string[]>([]);
   const [editTagIds, setEditTagIds] = useState<string[]>([]);
 
-  // 計算分類的完整階層路徑（顯示用，例如「工作 / 專案A」）
-  const categoryPath = (parentId: string | null | undefined, cats: NoteCategory[]): string => {
-    if (!parentId) return '';
-    const p = cats.find((c) => c.id === parentId);
-    return p ? `${categoryPath(p.parentId, cats)}${p.name} / ` : '';
-  };
+  // ── 本地草稿備份（防停電，2026-08-13）────────────────────────────────
+  // localStorage 同步落地：編輯中每次「真實使用者輸入」debounce 800ms 寫一份，
+  // 停電/當機最多損失不到 1 秒輸入。程式化 set（進入編輯、409 重載、AI 覆寫）
+  // 不經輸入 handler、不會覆寫草稿（復審 H5）。
+  const draftWriterRef = useRef<DraftWriter | null>(null);
+  // 輸入 handler 需要「另一欄的最新值」——state 在 handler 內是舊 closure，改用 ref 同步。
+  const editTitleDraftRef = useRef('');
+  const editContentDraftRef = useRef('');
+  // 進入編輯「當下」讀到的既有草稿（還原橫幅資料；null＝無草稿或與現行內容相同）。
+  const [pendingDraft, setPendingDraft] = useState<DraftRecord | null>(null);
+
+  // 分類完整階層路徑改用共用 util（含防環＋下拉排序統一——見 lib/categoryOptions.ts）。
 
   // ── 未儲存變更離開防護（#16，對齊 TaskEditorModal 的交易式暫存/放棄確認）─────────────
   // 兩組 id 陣列是否為同一集合（忽略順序）：分類/標籤選取的先後不視為變更。
@@ -168,7 +263,7 @@ export default function NotesDetailPage() {
   // 有未儲存變更時詢問是否放棄；回傳 Promise<true>＝可離開（沿用 W6 的 ConfirmDialog）。
   const confirmDiscardIfDirty = useCallback(async () => {
     if (!hasUnsavedChanges) return true;
-    return confirm({
+    const discard = await confirm({
       title: '放棄未儲存的變更？',
       message:
         '此筆記有未儲存的變更，要放棄並離開嗎？\n' +
@@ -176,6 +271,14 @@ export default function NotesDetailPage() {
       danger: true,
       confirmLabel: '放棄並離開',
     });
+    if (discard) {
+      // 明確放棄＝本地草稿備份也一併清除（否則下次進編輯會跳「還原已放棄內容」的橫幅）。
+      const current = noteRef.current;
+      if (current) clearDraft(draftKeyForNote(current.id));
+      draftWriterRef.current?.cancel();
+      setPendingDraft(null);
+    }
+    return discard;
   }, [hasUnsavedChanges, confirm]);
 
   // 硬離開防護：整頁重新整理／關閉分頁／改網址列時，用瀏覽器原生 beforeunload 警示。
@@ -190,6 +293,61 @@ export default function NotesDetailPage() {
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [hasUnsavedChanges]);
+
+  // 草稿生命週期：進入編輯當下「先讀走既有草稿」（快照進 state 供還原橫幅），
+  // 之後才建立寫入器；beforeunload 同步 flush 補上 debounce 的最後空窗
+  // （localStorage 為同步 API，直接關分頁也收得住；真斷電則靠 800ms debounce 的既有落地）。
+  useEffect(() => {
+    if (!isEditing) {
+      setPendingDraft(null);
+      return;
+    }
+    const current = noteRef.current;
+    if (!current) return;
+    const key = draftKeyForNote(current.id);
+    // 相依含 note?.id（二輪復審 HIGH）：本頁在站內切換筆記時不會 remount、isEditing 也不重設，
+    // 若 writer 不隨筆記重建，B 筆記的輸入會寫進 A 筆記的草稿鍵（跨筆記污染＋還原時資料錯置）。
+    const existing = loadDraft(key);
+    setPendingDraft(
+      existing && (existing.content !== current.contentRaw || existing.title !== current.title)
+        ? existing
+        : null,
+    );
+    const writer = createDraftWriter(key);
+    draftWriterRef.current = writer;
+    const flushOnUnload = () => writer.flush();
+    window.addEventListener('beforeunload', flushOnUnload);
+    return () => {
+      window.removeEventListener('beforeunload', flushOnUnload);
+      // 只停計時、不清已落地的草稿：非正常離開（未經確認對話框）時草稿必須留著。
+      writer.cancel();
+      if (draftWriterRef.current === writer) draftWriterRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- note?.id 經 noteRef 讀取（避免整個 note 物件當相依），id 變動時必須重建 writer
+  }, [isEditing, note?.id]);
+
+  // 程式化 set（進入編輯、409 重載、AI 覆寫）也要讓 ref 跟上，
+  // 使用者下一次輸入寫草稿時才不會夾帶過期的另一欄。
+  useEffect(() => {
+    editTitleDraftRef.current = editTitle;
+  }, [editTitle]);
+  useEffect(() => {
+    editContentDraftRef.current = editContent;
+  }, [editContent]);
+
+  /** 標題輸入（使用者輸入路徑——寫草稿；程式化 set 不經此處）。 */
+  const handleEditTitleChange = useCallback((value: string) => {
+    setEditTitle(value);
+    editTitleDraftRef.current = value;
+    draftWriterRef.current?.write({ title: value, content: editContentDraftRef.current });
+  }, []);
+
+  /** 內容輸入（使用者輸入路徑——寫草稿；程式化 set 不經此處）。 */
+  const handleEditContentChange = useCallback((value: string) => {
+    setEditContent(value);
+    editContentDraftRef.current = value;
+    draftWriterRef.current?.write({ title: editTitleDraftRef.current, content: value });
+  }, []);
 
   // 軟離開防護 A｜全站導頁守門：把「未儲存變更確認」登記進共用的 navigationGuard，
   // 供所有「以 router.push 導頁但非 <a>」或「自管導頁的 <a>」入口（全域搜尋、指令面板、
@@ -213,36 +371,10 @@ export default function NotesDetailPage() {
   useEffect(() => {
     if (!hasUnsavedChanges) return;
     const handleAnchorClick = (event: MouseEvent) => {
-      // 只處理單純左鍵、無修飾鍵的點擊；其餘（開新分頁/中鍵等）交給瀏覽器預設行為。
-      if (
-        event.defaultPrevented ||
-        event.button !== 0 ||
-        event.metaKey ||
-        event.ctrlKey ||
-        event.shiftKey ||
-        event.altKey
-      ) {
-        return;
-      }
-      const anchor = (event.target as HTMLElement | null)?.closest?.('a');
-      if (!anchor) return;
-      // 自管導頁的連結（自己會透過 navigationGuard 確認）→ 不由本攔截器插手。
-      if (anchor.closest('[data-skip-leave-guard]')) return;
-      const href = anchor.getAttribute('href');
-      if (!href || href.startsWith('#')) return; // 純錨點捲動不算離開
-      if (anchor.target && anchor.target !== '_self') return; // 開新分頁
-      if (anchor.hasAttribute('download')) return;
-      // 解析為絕對網址：外部連結（不同 origin）交給瀏覽器預設（由 beforeunload 接手）。
-      let destination: URL;
-      try {
-        destination = new URL(href, window.location.href);
-      } catch {
-        return;
-      }
-      if (destination.origin !== window.location.origin) return;
-      // 目的地與目前頁面相同則略過（避免對自身連結誤攔）。
-      const current = window.location.pathname + window.location.search;
-      if (destination.pathname + destination.search === current) return;
+      // 錨點過濾＋同源目的地解析抽成共用純函式（見檔案上方 resolveSameOriginAnchorTarget）：
+      // 逐檢查、逐順序與本防護原本的行為完全一致，僅去除與下方客戶端導航攔截器的重複，語意不變。
+      const destination = resolveSameOriginAnchorTarget(event);
+      if (!destination) return;
 
       // 只攔下預設導頁（Next <Link> 會因 defaultPrevented 而不自行導頁）；
       // 不呼叫 stopPropagation，讓同一 <a> 上其他 onClick 仍能執行自己的邏輯。
@@ -259,6 +391,39 @@ export default function NotesDetailPage() {
     return () => document.removeEventListener('click', handleAnchorClick, true);
   }, [hasUnsavedChanges, confirmDiscardIfDirty, router]);
 
+  // 站內筆記連結客戶端導航（部分渲染）｜乾淨狀態時攔內文裸 <a>，改走 router.push：
+  //   ● 為什麼要攔：查看模式的內文是後端渲染的 HTML 經 dangerouslySetInnerHTML 注入，
+  //     內文的站內連結是裸 <a>，點擊會走瀏覽器原生「整頁重載」——白白重抓整個頁面殼、
+  //     閃一下白畫面、丟掉前端狀態。改用 router.push 走 App Router 的客戶端導航後，只有
+  //     本頁主體重繪（Header／左側欄常駐），與左側欄筆記列（next/link）今天已在用、已驗證
+  //     的路徑完全一致：不同 URL 對應不同 cache node，[...slug] 頁元件卸載重掛→重抓該篇→
+  //     重廣播分類給側欄，捲動還原（setPreviewNode）／toggle 還原／返回堆疊（recordNoteNav）
+  //     皆天然成立，無需另寫還原邏輯。
+  //   ● 為什麼只在乾淨狀態（!hasUnsavedChanges）啟用：與上面「軟離開防護 B」互斥——髒狀態
+  //     （編輯中有未存變更）一律交給防護 B（它會先跳「放棄變更？」確認再導頁），本攔截器完全
+  //     不介入。兩者都以 hasUnsavedChanges 決定是否掛 document click 監聽，任一時刻只有一個
+  //     生效（狀態翻轉時舊 effect 卸監聽、新 effect 掛監聽），避免同一點擊被雙重處理或順序耦合。
+  //   ● 為什麼只攔 /notes/：本需求只涵蓋「筆記→筆記」的部分渲染。其他 app 路由（首頁／任務／
+  //     行事曆…）、/api/... 一律不攔，維持瀏覽器原生整頁行為，避免誤攔到需要整頁載入的目的地。
+  //   過濾與同源目的地解析與防護 B 共用 resolveSameOriginAnchorTarget（見檔案上方註解）。
+  useEffect(() => {
+    if (hasUnsavedChanges) return; // 髒狀態交給防護 B，本攔截器不介入（兩者互斥）
+    const handleInternalNoteNavClick = (event: MouseEvent) => {
+      const destination = resolveSameOriginAnchorTarget(event);
+      if (!destination) return;
+      // 只涵蓋筆記→筆記；其餘同源路由維持原生整頁導航（不攔 /api/... 與其他 app 路由）。
+      if (!destination.pathname.startsWith('/notes/')) return;
+
+      // 只 preventDefault、不 stopPropagation（理由同防護 B）：讓 Next <Link> 與同一 <a>
+      // 上其他 onClick 仍能各自運作，只改由我們以 router.push 走客戶端部分渲染。
+      event.preventDefault();
+      router.push(destination.pathname + destination.search + destination.hash);
+    };
+    // capture 階段攔截：先於 Next.js Link 與 React 合成事件（與防護 B 同一機制）。
+    document.addEventListener('click', handleInternalNoteNavClick, true);
+    return () => document.removeEventListener('click', handleInternalNoteNavClick, true);
+  }, [hasUnsavedChanges, router]);
+
   // 留言狀態
   const [commentContent, setCommentContent] = useState('');
   const [isPostingComment, setIsPostingComment] = useState(false);
@@ -267,15 +432,86 @@ export default function NotesDetailPage() {
   const [activeTab, setActiveTab] = useState<'preview' | 'comments' | 'history' | 'backlinks' | 'links'>('preview');
   // 「全部收合／展開」單鈕的狀態：false=目前視為全收合（後端 toggle 預設收合），點擊會展開全部並翻轉。
   const [allTogglesExpanded, setAllTogglesExpanded] = useState(false);
+  // 「全部收合／展開」的觸發序號：0＝尚未按過。批次寫入 details.open 的 effect 只在序號變動時執行一次——
+  // 初載與其他任何重繪都不得批次改寫（否則 :::toggle-open 的預設展開會被壓掉、使用者手動開合會被清空）。
+  const [allTogglesSeq, setAllTogglesSeq] = useState(0);
 
-  // 章節目錄表（浮動、可拖曳、可關閉）：每次載入頁面「預設打開」，位置固定在左側（不記憶、不壓內文）。
-  const [tocOpen, setTocOpen] = useState(true);
+  // 章節目錄表（浮動、可拖曳、可關閉）：預設不開啟，點右下角工具列「📖 目錄」才打開（使用者裁示 2026-07-08）。
+  const [tocOpen, setTocOpen] = useState(false);
+
+  // 問題清單：面板開關由本頁工具列鈕控制，面板本體由 NoteOverlay 渲染（需存取 overlay items）。
+  // 問題數由 NoteOverlay 透過 onQuestionsChange 回報，供工具列鈕顯示 "❓ 問題清單 (N)"。
+  const [questionPanelOpen, setQuestionPanelOpen] = useState(false);
+  const [questionCount, setQuestionCount] = useState(0);
 
   // 本頁捲動容器（.note-detail-page）：記住閱讀位置、下次打開自動捲回（N1）。
   const noteScrollRef = useRef<HTMLDivElement | null>(null);
   const scrollSaveRaf = useRef<number | null>(null);
-  const scrollRestoredFor = useRef<string | null>(null);
   const noteScrollKey = (noteId: string) => `zonwiki:note-scroll:${noteId}`;
+  // 每篇筆記記住 toggle 展開狀態的 key（N-toggle：編輯彈窗/切分頁造成內文區重掛時，
+  // 不再讓 toggle 被重新注入的 markdown 預設值蓋掉；同時也是「續讀」功能的一部分）。
+  const noteToggleKey = (noteId: string) => `zonwiki:note-toggles:${noteId}`;
+  // 目前筆記 id 的最新值：供不隨 note 變動而重建的 setPreviewNode callback 讀取（避免閉包捕捉到舊值）。
+  // 直接在 render 期間同步賦值（合法的 React 逃生艙模式），不透過 useEffect——
+  // ref callback 與 useLayoutEffect 同屬「commit 階段」執行，早於 useEffect 這類被動效果被 flush，
+  // 若改用 useEffect 同步，首次掛載時 setPreviewNode 可能搶先在 noteIdRef 被寫入前執行，讀到 null。
+  const noteIdRef = useRef<string | null>(null);
+  noteIdRef.current = note?.id ?? null;
+  // 以 ref 持有最新 note，供查看模式就地改程式碼區塊 metadata 時讀到最新 contentRaw（避免 stale closure）。
+  const noteRef = useRef<NoteDetail | null>(null);
+  noteRef.current = note;
+  // 查看模式就地改程式碼 metadata 的暫存基準（H2：連續快速改不遺失更新；切換筆記時由下方 effect 重置）。
+  // appliedTo＝算此結果時的基準 contentRaw、result＝算出的新 contentRaw，用來偵測 note 是否被別條路徑換掉。
+  const readingDraftRef = useRef<{ appliedTo: string; result: string } | null>(null);
+  // 即存後 setNote 會整篇重注入，用此旗標讓 observer 在重注入後重套 toggle 展開狀態與捲動位置（M1）。
+  const pendingMetaReflowRef = useRef(false);
+  useEffect(() => { readingDraftRef.current = null; }, [note?.id]);
+
+  // 讀取某篇筆記記住的 toggle 展開狀態（序號→是否展開的表；壞資料視同沒有）。
+  // 包成穩定 useCallback（鍵直接內嵌，不相依外層的 noteToggleKey），供下方兩個 callback 安全列入依賴，
+  // 才不會讓 setPreviewNode 每次 render 都重建、導致查看模式內文區被無謂重掛。
+  const readToggleMap = useCallback((noteId: string): Record<string, boolean> => {
+    try {
+      const raw = localStorage.getItem(`zonwiki:note-toggles:${noteId}`);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') return parsed as Record<string, boolean>;
+      }
+    } catch { /* 壞資料視同沒有 */ }
+    return {};
+  }, []);
+
+  // toggle 的持久化鍵＝「該 toggle 在整篇筆記 .markdown-prose 容器內、依文件順序（含巢狀）的序號」。
+  // 為什麼用序號而非標題／錨點 id：查看模式（後端 HTML＋dangerouslySetInnerHTML）與編輯彈窗即時預覽
+  // （ToggleAwareMarkdown React 元件）是兩條不同的渲染路徑——前者 summary 有 buildToc 注入的 id、
+  // 後者完全沒有。用「容器內第幾個 details.md-toggle」這種兩邊都能一致算出的序號當鍵，才能讓
+  // 「查看模式展開 → 開編輯彈窗，即時預覽」延續同一份展開狀態（本次修的正是後者仍全部收合的問題）。
+  //
+  // 把上次記住的展開狀態套用到容器內的 toggle（沒記到的維持 markdown 預設收合/展開）。
+  const applyStoredToggleState = useCallback((container: HTMLElement, noteId: string) => {
+    const saved = readToggleMap(noteId);
+    container.querySelectorAll<HTMLDetailsElement>('details.md-toggle').forEach((d, index) => {
+      if (Object.prototype.hasOwnProperty.call(saved, index)) {
+        d.open = saved[index];
+      }
+    });
+  }, [readToggleMap]);
+
+  // 使用者手動點開/收合 toggle（或「全部展開/收合」批次寫入 .open 也會非同步觸發 toggle 事件）時存回 localStorage。
+  // 以 target 最近的 .markdown-prose 當容器算序號，故查看模式與編輯彈窗即時預覽兩條路徑共用同一支 handler、
+  // 存進同一份以序號為鍵的紀錄。<details> 的 toggle 事件不冒泡，故在容器上以 capture 委派單一監聽。
+  const handleToggleChange = useCallback((e: Event) => {
+    const nid = noteIdRef.current;
+    const target = e.target;
+    if (!nid || !(target instanceof HTMLDetailsElement) || !target.classList.contains('md-toggle')) return;
+    const container = target.closest<HTMLElement>('.markdown-prose');
+    if (!container) return;
+    const index = Array.from(container.querySelectorAll<HTMLDetailsElement>('details.md-toggle')).indexOf(target);
+    if (index < 0) return;
+    const saved = readToggleMap(nid);
+    saved[index] = target.open;
+    try { localStorage.setItem(noteToggleKey(nid), JSON.stringify(saved)); } catch { /* ignore */ }
+  }, [readToggleMap]);
 
   // 任務編輯彈窗（從框選關聯點任務時，在筆記頁就地開啟，不離開頁面）（N4）。
   const [taskGroups, setTaskGroups] = useState<TaskGroup[]>([]);
@@ -294,9 +530,13 @@ export default function NotesDetailPage() {
   }, []);
 
   // 捲動時節流存目前位置（每幀最多存一次）。
+  // 只在真正的「查看模式＋預覽分頁」時存——編輯彈窗／編輯頁／其他分頁把內文換成短很多的版面時，
+  // 瀏覽器會自動把 scrollTop 夾小（因為 scrollHeight 變短了），這個「夾動」也會觸發 scroll 事件；
+  // 若不分辨就存，會把使用者原本讀到一半的真實位置洗成夾動後的 0，回到預覽時自然也還原不回去。
   const handleNoteScroll = useCallback(() => {
     const nid = note?.id;
     if (!nid) return;
+    if (isEditing || editPopoutContent !== null || activeTab !== 'preview') return;
     if (scrollSaveRaf.current != null) return;
     scrollSaveRaf.current = requestAnimationFrame(() => {
       scrollSaveRaf.current = null;
@@ -305,24 +545,26 @@ export default function NotesDetailPage() {
         try { localStorage.setItem(noteScrollKey(nid), String(Math.round(el.scrollTop))); } catch { /* ignore */ }
       }
     });
-  }, [note?.id]);
+  }, [note?.id, isEditing, editPopoutContent, activeTab]);
 
-  // 載入完成後，把捲動位置還原到上次離開處（每篇只還原一次；等內文渲染後再捲）。
-  useEffect(() => {
-    const nid = note?.id;
-    if (!nid || loading) return;
-    if (scrollRestoredFor.current === nid) return;
+  // 還原捲動位置：改由 setPreviewNode（見下方）在「預覽內文區重新掛載」當下觸發，不再是
+  // 「每篇筆記只還原一次」——那個舊限制正是本 bug 的根因之一：編輯彈窗／切分頁只會讓內文區
+  // 卸載重掛（note.id 不變），舊效果的 once-guard 會直接跳過，捲動位置就永遠停在重掛當下
+  // 瀏覽器因內容變短而夾出來的 0。統一交給 setPreviewNode，涵蓋「首次載入／切換筆記（會整頁
+  // 卸載重掛）／編輯彈窗或切分頁切回預覽（只有內文區卸載重掛）」三種情境。
+  const restoreScrollPosition = useCallback((noteId: string) => {
     let saved = 0;
-    try { saved = Number(localStorage.getItem(noteScrollKey(nid)) || '0'); } catch { /* ignore */ }
-    if (!saved) { scrollRestoredFor.current = nid; return; }
-    const timer = setTimeout(() => {
+    try { saved = Number(localStorage.getItem(noteScrollKey(noteId)) || '0'); } catch { /* ignore */ }
+    if (!saved) return;
+    // 等內文（含圖片版面）穩定後再捲，避免捲到一半又被非同步載入的圖片撐開版面推走。
+    setTimeout(() => {
+      // 這 250ms 空窗內若使用者已經切到別篇筆記，noteIdRef 會先變成新筆記的 id——
+      // 此時必須放棄，否則會把「這篇」的舊捲動位置套到「新筆記」現正顯示的容器上（兩者共用同一個 DOM 節點）。
+      if (noteIdRef.current !== noteId) return;
       const el = noteScrollRef.current;
       if (el) el.scrollTop = saved;
-      scrollRestoredFor.current = nid;
     }, 250);
-    return () => clearTimeout(timer);
-    // 內文渲染後再捲；用 250ms 緩衝，不相依 previewHtml（它宣告於後方，避免 TDZ）。
-  }, [note?.id, loading]);
+  }, []);
 
   // 記住「最後看的筆記」slug：之後從 Header 點「筆記」會直接回到這篇（N1：打開筆記功能＝回到該篇該位置）。
   useEffect(() => {
@@ -332,21 +574,29 @@ export default function NotesDetailPage() {
       recordNoteNav(window.location.pathname + window.location.search);
     }
   }, [note?.id, slug]);
-  // 由內文 HTML 萃取章節（h1/h2/h3）並為各標題補上錨點 id（供目錄點擊捲動）。
+  // 由內文 HTML 萃取章節（h1/h2/h3 標題＋ :::toggle 摘要）並補上錨點 id（供目錄點擊捲動）。
+  // 附件圖片 src 先由相對路徑補成 API 絕對網址（本地 dev 前後端跨埠時 <img> 才載得到）。
   const { html: previewHtml, toc } = useMemo(
-    () => (note ? buildToc(note.contentHtml) : { html: '', toc: [] }),
+    () => (note ? buildToc(resolveAttachmentUrls(note.contentHtml)) : { html: '', toc: [] }),
     [note],
   );
+  // 【關鍵】dangerouslySetInnerHTML 的物件必須「識別穩定」（memo 化）——
+  // React 19 的 commitUpdate 以物件識別比較此 prop，若每次 render 都是新的 {__html} 字面量，
+  // 任何不相關的重繪（例如點「📖 目錄」改 tocOpen）都會重新注入 innerHTML，
+  // 把所有 <details> 重建成預設收合、也順帶清掉畫重點的 DOM 包裹（2026-07-08 以位元組級插樁證實：
+  // 重注入的內容與原內容完全相同，純屬白做工的破壞性重寫）。
+  const previewHtmlObj = useMemo(() => ({ __html: previewHtml }), [previewHtml]);
 
-  // 「全部展開／收合」：改用 effect 套用到目前 DOM 的所有 details——
-  // 先前直接在點擊時 setOpen，但內文渲染層（NoteMarksLayer 等）在同次重繪會把 .markdown-prose 重新注入、
-  // 把 details 重建成預設收合，導致「全部展開」按了沒反應（全部收合看似 OK 只因預設就收合）。
-  // 放進 effect（父層 effect 於子層之後執行）→ 在重注入之後才套用，故一定生效；也隨 previewHtml 變動重套。
+  // 「全部展開／收合」：以 effect 套用到目前 DOM 的所有 details（點擊當下的重繪會先重注入內文，
+  // effect 於其後執行故一定生效）。只在「按鈕真的被按下」（序號變動）時批次寫入——
+  // 先前以 [allTogglesExpanded, previewHtml] 為依賴，初載就會把 :::toggle-open 壓成收合，
+  // 且任何 previewHtml 識別變動都會清空使用者手動的開合狀態。
   useEffect(() => {
+    if (allTogglesSeq === 0) return; // 尚未按過 → 尊重 markdown 預設與使用者手動狀態
     previewRef.current
       ?.querySelectorAll<HTMLDetailsElement>('details.md-toggle')
       .forEach((d) => { d.open = allTogglesExpanded; });
-  }, [allTogglesExpanded, previewHtml]);
+  }, [allTogglesSeq, allTogglesExpanded]);
 
   // 共用「復原 / 重做」：手繪塗鴉與畫重點共用同一條 Ctrl+Z 堆疊，僅在預覽分頁掛上單一鍵盤監聽。
   useUndoHotkeys(activeTab === 'preview');
@@ -356,20 +606,178 @@ export default function NotesDetailPage() {
     return () => resetUndo();
   }, [note?.id]);
 
-  // 預覽容器的 callback ref：掛載當下就為程式碼區塊注入「複製」鈕，並以 MutationObserver
-  // 持續處理之後才出現/重繪的區塊（取代原本相依 previewRef 時序的 useEffect——實測它不一定跑到）。
-  // 同時把 node 存回 previewRef，供 NoteMarksLayer / NoteOverlay 使用。
+  // 預覽容器的 callback ref：掛載當下就把程式碼區塊美化（VS Code 語法上色＋檔名/語言標題列＋複製鈕），
+  // 並以 MutationObserver 持續處理之後才出現/重繪的區塊。同時把 node 存回 previewRef，供 NoteMarksLayer / NoteOverlay 使用。
+  // 註：enhanceReadingCodeBlocks 會包一層 .code-block（本身也是 DOM 變動），但對已包裝者會跳過，故不會無限迴圈。
+  //
+  // 這裡也是「續讀」的還原時機：這個 div 每次（重新）掛載，就代表 dangerouslySetInnerHTML 剛注入
+  // 一份全新內容（markdown 預設的 toggle 開合狀態），不論起因是首次載入、切換到別篇筆記（會整頁
+  // 卸載重掛）、或是編輯彈窗／切分頁切回預覽（只有這個 div 卸載重掛，note.id 不變）——三種情境都
+  // 統一在此還原，取代舊版「每篇筆記只還原一次」的捲動還原（會漏掉後兩種情境）。
+  // 查看模式「就地改程式碼區塊 metadata 即存」：在閱讀檢視改檔名／語言 → 算出這是第幾個程式碼區塊
+  // → 改寫 Markdown 圍欄（```lang:filename）→ 即時存 DB，並以回傳的最新版重繪（不必進編輯模式）。
+  // 索引以「變更當下查 DOM 的 .code-block 文件順序」算出，與 setCodeFenceMeta 的文件順序掃描對齊
+  // （同編輯預覽既有機制）；用 noteRef 讀最新 contentRaw 避免 stale closure。
+  // H2：draft 記錄「基於哪份 contentRaw（appliedTo）算出哪份結果（result）」。只有當前 note 仍停在
+  // draft 起點（in-flight、尚未 setNote）或已成為 draft 結果（寫回成功）時才續用 draft 當基準；
+  // 若 note.contentRaw 已被別條路徑（編輯彈窗／編輯頁／AI 保存）換掉，draft 即失效、改以最新
+  // note.contentRaw 為基準——否則會用過期 draft 覆寫掉別條路徑的整篇編輯（靜默資料遺失）。
+  /** 讀模式就地編輯的共同基準：draft 有效時用 draft 結果，否則用最新 contentRaw（無筆記回 null）。 */
+  const getReadingBase = useCallback((): string | null => {
+    const cur = noteRef.current;
+    if (!cur) return null;
+    const draft = readingDraftRef.current;
+    const draftValid =
+      draft !== null && (cur.contentRaw === draft.appliedTo || cur.contentRaw === draft.result);
+    return draftValid ? draft.result : cur.contentRaw;
+  }, []);
+
+  // 讀模式編輯的序列化佇列＋版本鏈（復審 HIGH：連續勾兩格若各自帶同一個過期 baseVersion，
+  // 後到的 PUT 必撞假 409——xmin 每次 UPDATE 都前進。故同一時間只送一個 PUT，且 draft 鏈
+  // 延續時 baseVersion 用「上一次成功回應的最新 version」而非可能過期的 note.version）。
+  const readingEditQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const readingVersionRef = useRef<number | null>(null);
+
+  /**
+   * 讀模式就地編輯的共用寫回（程式碼 metadata／圍欄內文／表格儲存格共用）：
+   * 佇列序列化 → 以 draft 基準套 transform → PUT（帶樂觀鎖 baseVersion）→ setNote 重注入。
+   * transform 回 null＝定位失敗不動；回原字串＝無變更視為成功不打擾後端。
+   * 任何失敗都棄置 draft 與版本鏈（避免下次以「未落地的結果」為基準續寫）並回傳 false 讓呼叫端還原 UI。
+   */
+  const applyReadingEdit = useCallback(
+    (transform: (base: string) => string | null): Promise<boolean> => {
+      const execute = (): Promise<boolean> => {
+        const cur = noteRef.current;
+        const draft = readingDraftRef.current;
+        const draftValid =
+          draft !== null && (cur?.contentRaw === draft.appliedTo || cur?.contentRaw === draft.result);
+        const base = getReadingBase();
+        if (!cur || base === null) return Promise.resolve(false);
+        const nextRaw = transform(base);
+        if (nextRaw === null) return Promise.resolve(false);
+        if (nextRaw === base) return Promise.resolve(true);
+        // draft 鏈延續中優先用鏈上最新版本（前一個 PUT 回應的 version）；新鏈用當前筆記版本。
+        const baseVersion = draftValid && readingVersionRef.current !== null
+          ? readingVersionRef.current
+          : cur.version;
+        readingDraftRef.current = { appliedTo: base, result: nextRaw };
+        return updateNote(cur.id, { contentRaw: nextRaw, baseVersion })
+          .then((latest) => {
+            if (latest) {
+              readingVersionRef.current = latest.version ?? null;
+              pendingMetaReflowRef.current = true; // M1：重注入後由 observer 重套 toggle 展開狀態與捲動位置
+              setNote(latest);
+              return true;
+            }
+            readingDraftRef.current = null;
+            readingVersionRef.current = null;
+            showToast('儲存失敗，請稍後再試', { type: 'error' });
+            return false;
+          })
+          .catch((error) => {
+            readingDraftRef.current = null;
+            readingVersionRef.current = null;
+            if (error instanceof ConflictError) {
+              showToast('內容已被其他來源修改，請重新整理後再編輯', { type: 'error' });
+            } else {
+              showToast('儲存失敗，請稍後再試', { type: 'error' });
+            }
+            return false;
+          });
+      };
+      // 佇列：前一個寫回（成功或失敗）結束後才執行下一個；佇列本身永不 reject。
+      const run = readingEditQueueRef.current.then(execute, execute);
+      readingEditQueueRef.current = run.catch(() => {});
+      return run;
+    },
+    [getReadingBase],
+  );
+
+  const handleReadingCodeMeta = useCallback((fenceLine: number, lang: string, filename: string) => {
+    // setFenceMetaAtLine 對「行號無對應圍欄」回原文 → applyReadingEdit 視為無變更、不打擾。
+    void applyReadingEdit((base) => setFenceMetaAtLine(base, fenceLine, lang, filename));
+  }, [applyReadingEdit]);
+
+  /** 讀模式：程式碼區塊「內文」直編儲存（雙右鍵進編輯、💾 儲存）。 */
+  const handleReadingFenceBody = useCallback(
+    (fenceLine: number, newBody: string): Promise<boolean> =>
+      applyReadingEdit((base) => replaceFenceBody(base, fenceLine, newBody)),
+    [applyReadingEdit],
+  );
+
+  /** 讀模式：互動表格的儲存格讀取/寫回介面（chip 勾選、checkbox、雙右鍵直編共用）。 */
+  const readingTableInteractions = useMemo<ReadingTableInteractions>(
+    () => ({
+      getCellRaw: (mdLine, cellIndex) => {
+        const base = getReadingBase();
+        return base === null ? null : getCellRawFromContent(base, mdLine, cellIndex);
+      },
+      saveCell: (mdLine, cellIndex, newValue) =>
+        applyReadingEdit((base) => setCellValueInContent(base, mdLine, cellIndex, newValue)),
+      // 「＋ 新增一行」（2026-08-13）：appendEmptyTableRow 定位失敗回 null →
+      // applyReadingEdit 視為不動、回 false（按鈕無反應但不誤寫）。
+      insertRow: (anchorMdLine) =>
+        applyReadingEdit((base) => appendEmptyTableRow(base, anchorMdLine)),
+    }),
+    [getReadingBase, applyReadingEdit],
+  );
+
   const previewObsRef = useRef<MutationObserver | null>(null);
   const setPreviewNode = useCallback((node: HTMLDivElement | null) => {
     previewRef.current = node;
     previewObsRef.current?.disconnect();
     previewObsRef.current = null;
     if (!node) return;
-    enhanceCodeBlocks(node);
-    const obs = new MutationObserver(() => enhanceCodeBlocks(node));
+    enhanceReadingCodeBlocks(node, handleReadingCodeMeta, handleReadingFenceBody);
+    const nid = noteIdRef.current;
+    // 表格增強（調寬＋互動表格：控件/排序/篩選/直編）與程式碼區塊美化同一時機處理；還原需要 noteId。
+    enhanceReadingTables(node, nid, readingTableInteractions);
+    if (nid) {
+      applyStoredToggleState(node, nid);
+      restoreScrollPosition(nid);
+    }
+    node.addEventListener('toggle', handleToggleChange, true);
+    // 重注入後（React 19 會清掉就地 DOM 改動）由 observer 重跑兩者：程式碼美化＋表格增強（會從 localStorage 還原欄寬）。
+    const obs = new MutationObserver((records) => {
+      // 互動操作自身（排序搬列、chip/checkbox 汰換、直編 textarea 進出）也是 childList 變動，
+      // 但都發生在「已增強子樹」（帶 data-zw-table-enhanced 的表格／.code-block）內——
+      // 跳過整容器重掃：省效能（每次點擊不再全掃）且避免把互動中的浮動篩選面板誤關
+      // （enhanceReadingTables 開頭會關孤兒面板，只該在真正重注入時發生）。
+      const needsRescan = records.some((record) => {
+        const target = record.target;
+        if (!(target instanceof Element)) return true;
+        return !target.closest('[data-zw-table-enhanced], .code-block');
+      });
+      if (!needsRescan) return;
+      enhanceReadingCodeBlocks(node, handleReadingCodeMeta, handleReadingFenceBody);
+      enhanceReadingTables(node, noteIdRef.current, readingTableInteractions);
+      // 就地改程式碼 metadata 即存後的整篇重注入：重套使用者的 toggle 展開狀態與捲動位置，
+      // 避免「讀到一半改個語言就把展開的段落全收合、畫面跳回頂端」（只認即存觸發的那次重注入，
+      // 不干擾一般 DOM 變動如畫記包字）。
+      if (pendingMetaReflowRef.current) {
+        pendingMetaReflowRef.current = false;
+        const reflowNid = noteIdRef.current;
+        if (reflowNid) {
+          applyStoredToggleState(node, reflowNid);
+          restoreScrollPosition(reflowNid);
+        }
+      }
+    });
     obs.observe(node, { childList: true, subtree: true });
     previewObsRef.current = obs;
-  }, []);
+  }, [applyStoredToggleState, restoreScrollPosition, handleToggleChange, handleReadingCodeMeta, handleReadingFenceBody, readingTableInteractions]);
+
+  // 編輯彈窗「即時預覽」容器的 callback ref：這條路徑用 ToggleAwareMarkdown（React 元件）渲染，
+  // 與查看模式的 dangerouslySetInnerHTML 是兩套 DOM，但同為 .markdown-prose 容器、同以序號記憶 toggle。
+  // 掛載當下套用記住的展開狀態（否則一開編輯彈窗，即時預覽會把所有 toggle 掉回 markdown 預設收合），
+  // 並掛上同一支 toggle 監聽讓在即時預覽裡的開合也存回同一份紀錄。此 callback 為穩定 useCallback，
+  // 只在該 div 真正掛載/卸載時被呼叫，鍵入預覽內容時不會重複掛監聽。
+  const setLivePreviewNode = useCallback((node: HTMLDivElement | null) => {
+    if (!node) return;
+    const nid = noteIdRef.current;
+    if (nid) applyStoredToggleState(node, nid);
+    node.addEventListener('toggle', handleToggleChange, true);
+  }, [applyStoredToggleState, handleToggleChange]);
 
   // 把「目前筆記所屬分類」廣播給左側欄，讓它標示「📍 此筆記在這」（避免迷路）。
   // 用分類 id 串接當相依，分類載入/切換筆記時更新；離開時清空。
@@ -390,60 +798,160 @@ export default function NotesDetailPage() {
   // 讀取查詢參數（?mark= 用來從提問佇列跳轉到框選位置）
   const searchParams = useSearchParams();
   const markId = searchParams.get('mark');
+  // 以 ref 持有最新 searchParams，供主載入 effect 讀 ?expect（複製筆記直達）而不必列入其相依——
+  // ?expect 只在「複製後隨新 URL 一起抵達」時有意義（slug 也同時變、effect 會重跑），
+  // 若把 searchParams 列入相依，反而會在 ?mark=/?overlay= 變動時無謂重抓整篇筆記。
+  const searchParamsRef = useRef(searchParams);
+  searchParamsRef.current = searchParams;
 
-  // 滾動到標記位置（當標記 ID 有效且預覽容器已掛載時觸發）
-  // 這部分在預覽 HTML 與標記層載入後執行，以確保 DOM 已準備好
+  // 進入編輯模式時，數本篇「被其他筆記引用的段落錨點」數量（存檔攔截提示用；離開編輯歸零）。
+  const editingNoteId = isEditing ? note?.id : undefined;
   useEffect(() => {
-    if (!markId || !previewRef.current) return;
+    if (!editingNoteId) { setReferencedAnchorCount(0); return; }
+    let alive = true;
+    listNoteMarks(editingNoteId)
+      .then((ms) => {
+        if (!alive) return;
+        setReferencedAnchorCount(
+          ms.filter((m) => m.kind === 'anchor' && (m.referencedBy?.length ?? 0) > 0).length
+        );
+      })
+      .catch(() => { /* 提示性資訊，失敗靜默 */ });
+    return () => { alive = false; };
+  }, [editingNoteId]);
 
-    // 延遲執行，確保 DOM 已完全渲染
-    const timer = setTimeout(() => {
-      // 尋找標記對應的 DOM 元素（預期由 NoteMarksLayer 建立的標記視覺化）
-      // 標記通常在 previewRef 内部的某個高亮元素或標註 UI
+  // 滾動到標記位置（當標記 ID 有效且預覽容器已掛載時觸發）。
+  // 為何用「輪詢」而非固定 300ms：NoteMarksLayer 的標註是「非同步抓回＋套用」的（listNoteMarks → useLayoutEffect），
+  // 沒有現成的「套用完成」事件；固定 300ms 計時到期時標註可能根本還沒套進 DOM，會把「還沒套用」誤判成
+  // 「斷錨」而提早發退化 toast（假陽性）。改為每 300ms 查一次、最多 10 次（≈3 秒）：期間找到就捲動＋暫時高亮並停止；
+  // 用盡仍無此錨點元素＝真的斷錨（錨文字被改/刪）→ 才發退化提示。此為即時 DOM 查找，不受 Detached 回寫滯後影響。
+  useEffect(() => {
+    // 閘門看 previewHtml 而非 previewRef：內容就緒的那次 commit 可能仍在 loading 早退（渲染骨架、
+    // 預覽容器未掛載），若以 ref 為閘門會 early-return 且依賴不再變化 → 輪詢永遠不會開始
+    //（E2E 插樁實證：htmlLen>0 而 hasPreview=false）。tryLocate 每輪都重讀 previewRef.current，
+    // 容器晚一拍掛載完全無妨。
+    if (!markId || !previewHtml) return;
+
+    const MAX_ATTEMPTS = 14;
+    const INTERVAL_MS = 300;
+    let attempts = 0;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+    let highlightTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const tryLocate = () => {
       const markElement = previewRef.current?.querySelector(
         `[data-mark-id="${CSS.escape(markId)}"]`
       ) as HTMLElement | null;
 
       if (markElement) {
-        // 滾動到該元素
         markElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
-        // 短暫高亮（添加視覺反饋）
         const originalBackground = markElement.style.backgroundColor;
         markElement.style.backgroundColor = 'rgba(255, 193, 7, 0.3)';
-        const highlightTimer = setTimeout(() => {
+        highlightTimer = setTimeout(() => {
           markElement.style.backgroundColor = originalBackground;
         }, 2000);
-
-        return () => clearTimeout(highlightTimer);
+        return;
       }
-    }, 300);
 
-    return () => clearTimeout(timer);
+      attempts += 1;
+      if (attempts >= MAX_ATTEMPTS) {
+        // 輪詢用盡仍找不到（標註早已套用、但此錨點的錨文字已被改/刪＝真斷錨）→ 退化提示、停留頁頂。
+        showToast('原段落可能已被修改或刪除，無法精準定位', { type: 'info', durationMs: 3500 });
+        return;
+      }
+      pollTimer = setTimeout(tryLocate, INTERVAL_MS);
+    };
+
+    pollTimer = setTimeout(tryLocate, INTERVAL_MS);
+
+    return () => {
+      if (pollTimer) clearTimeout(pollTimer);
+      if (highlightTimer) clearTimeout(highlightTimer);
+    };
   }, [markId, previewHtml]);
 
-  // 載入筆記詳細（分類/標籤選項池與使用者已改由 SWR 供給，故此處只抓筆記本身）
+  // 讀取 ?overlay= 用來從搜尋結果 / 問題清單跳轉到某個浮層元件（便利貼 / T 文字框）位置。
+  // 定位本身交給 NoteOverlay（prop：locateOverlayId）——它握有浮層項目的錨點資料，
+  // 能在捲動前先「循著階層展開」收合的 :::toggle（否則被收合隱藏的項目根本不會渲染、定位必失敗）。
+  const overlayId = searchParams.get('overlay');
+
+  // 載入筆記詳細（分類/標籤選項池與使用者已改由 SWR 供給，故此處只抓筆記本身）。
+  // slug 連動標題後改吃 NoteResolution 三態：kind=note（含 matchedByAlias）／kind=ambiguous（候選）／404。
   useEffect(() => {
+    // 套用「kind=note」的載入結果（正常命中 or ?expect 直達共用）：設 note、編輯基準、標記打開、載入留言。
+    const applyLoadedNote = async (noteData: NoteDetail, viaAlias: boolean) => {
+      setCandidates(null);
+      setNote(noteData);
+      setEditTitle(noteData.title);
+      setEditContent(noteData.contentRaw);
+      setEditCatIds((noteData.categories ?? []).map((c) => c.id));
+      setEditTagIds((noteData.tags ?? []).map((t) => t.id));
+      // 別名橫幅狀態：經舊 slug 進來才顯示；requested slug 記進入時的 URL slug（之後不被 replace 影響）。
+      setMatchedByAlias(viaAlias);
+      setAliasRequestedSlug(viaAlias ? slug : null);
+      setAliasBannerDismissed(false);
+
+      // 記錄「最後打開時間」（供筆記清單依此排序；輕量、失敗靜默）。
+      // 併發修正（#4/#34）：標記打開會 UPDATE 該列、使 xmin 前進，令上面剛記下的 note.version 立刻過期；
+      // 後端會回傳更新後的最新版本，這裡據此把 note.version 同步成最新，避免「開啟後直接編輯→存檔」撲空、
+      // 收到假的 409。只覆寫 version 欄，並確認仍停在同一篇（避免使用者已切走到別篇時誤蓋版本）。
+      markNoteOpened(noteData.id).then((openedVersion) => {
+        if (openedVersion != null) {
+          // 單調取大（防亂序覆寫）：xmin 隨該列每次更新遞增；同一筆記可能觸發多次 /opened，回應可能亂序抵達。
+          setNote((prev) =>
+            prev && prev.id === noteData.id
+              ? { ...prev, version: Math.max(prev.version ?? 0, openedVersion) }
+              : prev
+          );
+        }
+      });
+
+      const commentsList = await listNoteComments(noteData.id);
+      setComments(commentsList);
+    };
+
     const load = async () => {
       try {
         setLoading(true);
-        const noteData = await getNote(slug);
+        const resolution = await getNote(slug);
 
-        if (noteData) {
-          setNote(noteData);
-          setEditTitle(noteData.title);
-          setEditContent(noteData.contentRaw);
-          setEditCatIds((noteData.categories ?? []).map((c) => c.id));
-          setEditTagIds((noteData.tags ?? []).map((t) => t.id));
-
-          // 記錄「最後打開時間」（供筆記清單依此排序；輕量、失敗靜默）。
-          markNoteOpened(noteData.id);
-
-          // 載入留言
-          const commentsList = await listNoteComments(noteData.id);
-          setComments(commentsList);
-        } else {
+        if (!resolution) {
+          // 404：筆記不存在。清掉可能殘留的別名/消歧異狀態。
+          setNote(null);
+          setCandidates(null);
+          setMatchedByAlias(false);
           setError('筆記不存在');
+          return;
+        }
+
+        if (resolution.kind === 'ambiguous') {
+          // 若帶 ?expect=<id> 且該 id 在候選中（複製筆記／改名存檔後導來）→ 以 id 直達渲染、不落消歧異。
+          // 走 getNoteById → applyLoadedNote（與一般直達完全相同的 kind=note 流程：markNoteOpened、
+          // matchedByAlias=false、載入留言…）。此路徑刻意「保留 ?expect」——它是歧義 slug 的持久選擇器，
+          // 重新整理也能再度直達本篇（不因清掉 expect 而回退到消歧異頁）。
+          const expectId = searchParamsRef.current.get('expect');
+          const expected = resolveExpectedCandidate(resolution.candidates, expectId);
+          if (expected) {
+            const direct = await getNoteById(expected.id);
+            if (direct) {
+              await applyLoadedNote(direct, false);
+              return;
+            }
+          }
+          // 真歧義：顯示消歧異頁（note 維持 null；不跑 markNoteOpened/捲動還原/留言）。
+          setNote(null);
+          setMatchedByAlias(false);
+          setAmbiguousRequestedSlug(resolution.requestedSlug);
+          setCandidates(resolution.candidates);
+          return;
+        }
+
+        // kind === 'note'
+        await applyLoadedNote(resolution.note, resolution.matchedByAlias);
+        // 若網址還帶著 ?expect（改名後導來、但新 slug 其實無歧義）→ 清掉保持乾淨。
+        // 這是「query-only」的 replace（path 不變）：不會讓本 effect（相依 [slug]）重跑、也不重掛。
+        if (searchParamsRef.current.get('expect')) {
+          router.replace(noteHref(slug));
         }
       } catch {
         setError('無法載入筆記，請稍後重試。');
@@ -453,7 +961,7 @@ export default function NotesDetailPage() {
     };
 
     load();
-  }, [slug]);
+  }, [slug, router]);
 
   // 保存編輯
   const handleSave = async () => {
@@ -463,6 +971,26 @@ export default function NotesDetailPage() {
     if (!editTitle.trim()) {
       setError('標題不可為空');
       return;
+    }
+    // 防線放在函式本體（非只有按鈕 disabled）：任何呼叫入口都不可在圖片上傳中保存，
+    // 避免把「〔圖片上傳中 #xxx〕」佔位文字永久存進 DB。
+    if (uploadingCount > 0) {
+      setError('圖片上傳中，請稍候再保存');
+      return;
+    }
+
+    // 存檔攔截（錨點保護，包4）：內容有變且會弄斷既有標註 → 先列清單確認再存。
+    // 「原本」基準＝手上的 note.contentHtml（即時重算，不讀 DB 存量 Detached）；新內容走 render dry-run。
+    if (editContent !== note.contentRaw) {
+      const lost = await findLostMarksForSave(note.id, note.contentHtml, editContent);
+      if (lost.length > 0) {
+        const proceed = await confirm({
+          title: '有標註會失去定位',
+          message: formatLostMarksMessage(lost),
+          confirmLabel: '仍要儲存',
+        });
+        if (!proceed) return;
+      }
     }
 
     // 以指定 baseVersion 送出更新（undefined＝不做併發檢查、覆蓋）。
@@ -492,7 +1020,8 @@ export default function NotesDetailPage() {
               '按「取消」以您目前的內容覆蓋。',
           });
           if (reload) {
-            const latest = await getNote(slug);
+            // 以 id 直達重載（GUID 直達永不歧義；不以 slug 重載，避免改名後落入消歧異）。
+            const latest = await getNoteById(note.id);
             if (latest) {
               setNote(latest);
               setEditTitle(latest.title);
@@ -517,14 +1046,34 @@ export default function NotesDetailPage() {
         return;
       }
 
-      // 重新載入
-      const updated = await getNote(slug);
-      if (updated) {
-        setNote(updated);
-        setEditCatIds((updated.categories ?? []).map((c) => c.id));
-        setEditTagIds((updated.tags ?? []).map((t) => t.id));
+      // 存檔成功：以 PUT 回應（saved）判斷是否改名（比較基準＝存檔前已載入的 note.slug，不是 URL 參數）。
+      if (saved.slug !== note.slug) {
+        // slug 隨新標題變了：以 remount-safe 的 ?expect=<本篇id> 換 URL。
+        // 為何用 ?expect 而非「跳過重抓的 ref」：router.replace 會讓 [...slug] 頁「整個卸載重掛」（實測），
+        // ref 在新實例讀到 null → 以新 slug 重抓；而新 slug 可能撞到別篇的歷史 alias 變成歧義 → 使用者
+        // 剛存完檔卻被導進消歧異頁（對抗式復審 CRITICAL #2）。改帶 ?expect 讓重掛後的載入 effect 直達本篇。
         setIsEditing(false);
         setError(null);
+        clearDraft(draftKeyForNote(note.id)); // 存檔成功＝草稿任務完成
+        try { localStorage.setItem('zonwiki:last-note-slug', saved.slug); } catch { /* ignore */ }
+        router.replace(noteHref(saved.slug) + '?expect=' + note.id);
+        return; // 重掛後由載入 effect（透過 ?expect）接手渲染，本處不再重抓
+      }
+
+      // 未改名（含經 alias 進入只改內容）：就地更新（即時回饋）＋以 id 直達補齊分類/標籤
+      //（PUT 回應不含 categories/tags；GUID 直達永不歧義）。
+      // 別名橫幅「保留不動」：使用者此刻仍停留在舊網址上（本路徑不換 URL），
+      // 橫幅正是「你在舊網址」的提示，存個檔就撤掉會誤導（規格 E2E-21，對抗式復審裁決）。
+      setNote(saved);
+      setIsEditing(false);
+      setError(null);
+      clearDraft(draftKeyForNote(note.id)); // 存檔成功＝草稿任務完成
+
+      const fresh = await getNoteById(note.id);
+      if (fresh) {
+        setNote(fresh);
+        setEditCatIds((fresh.categories ?? []).map((c) => c.id));
+        setEditTagIds((fresh.tags ?? []).map((t) => t.id));
       }
     } catch {
       setError('無法保存筆記，請稍後重試。');
@@ -583,7 +1132,16 @@ export default function NotesDetailPage() {
           setEditPopoutContent(d.content);
         }
       } else if (d?.type === 'edit-saved') {
-        getNote(slug).then((updated) => { if (updated) setNote(updated); }).catch(() => {});
+        // 編輯彈窗存檔：以 id 直達重抓（不以 slug，避免改名後落入消歧異）；若 slug 變了同樣以 ?expect 換 URL。
+        getNoteById(note.id).then((updated) => {
+          if (!updated) return;
+          setNote(updated);
+          if (updated.slug !== note.slug) {
+            // 同 handleSave：以 remount-safe 的 ?expect=<本篇id> 換 URL，避免重掛後落入消歧異（CRITICAL #2）。
+            try { localStorage.setItem('zonwiki:last-note-slug', updated.slug); } catch { /* ignore */ }
+            router.replace(noteHref(updated.slug) + '?expect=' + note.id);
+          }
+        }).catch(() => {});
       } else if (d?.type === 'edit-closing') {
         closeEditPopout();
       }
@@ -604,7 +1162,7 @@ export default function NotesDetailPage() {
     editPopupRef.current = popup;
     setEditContent(note.contentRaw);
     setEditPopoutContent(note.contentRaw); // 起始即時預覽＝目前存檔內容
-  }, [note, slug, editPopoutContent, closeEditPopout]);
+  }, [note, slug, editPopoutContent, closeEditPopout, router]);
 
   // 偵測編輯彈窗被關閉（使用者直接關視窗）→ 筆記頁回存檔版。
   // 注意：彈窗初次載入（尤其 dev 首次編譯 /notes/edit-popout 路由）可能數秒後才 attach，
@@ -629,8 +1187,10 @@ export default function NotesDetailPage() {
     return () => window.clearInterval(timer);
   }, [editPopoutContent, closeEditPopout]);
 
-  // 切換到不同筆記（App Router 重用本元件、只有 slug 變）或卸載時，關掉舊筆記的編輯彈窗與即時預覽，
-  // 避免舊筆記的預覽/頻道/視窗殘留到新筆記頁（cleanup 在 slug 改變前與卸載時各跑一次）。
+  // 切換到不同筆記或卸載時，關掉舊筆記的編輯彈窗與即時預覽，避免舊筆記的預覽/頻道/視窗殘留到新筆記頁。
+  // 註（對抗式復審 CRITICAL #2 更正）：實測本頁在 slug 變更時是「整個元件卸載重掛」（非只有 slug prop 變的
+  // 就地重用），故 state/ref 都會重置——這正是改名存檔改用 remount-safe 的 ?expect（而非跨重掛失效的 ref）
+  // 來保持「直達本篇」意圖的原因。此 cleanup 在 slug 改變（舊實例卸載）與整頁卸載時各跑一次。
   useEffect(() => {
     return () => { closeEditPopout(); };
   }, [slug, closeEditPopout]);
@@ -673,6 +1233,24 @@ export default function NotesDetailPage() {
       window.location.href = '/notes';
     } catch {
       setError('無法刪除筆記，請稍後重試。');
+    }
+  };
+
+  // 複製筆記（#7）：以本篇建立一則副本（標題加「(副本)」，帶內容/分類/標籤），成功後導向新筆記。
+  const [duplicatingNote, setDuplicatingNote] = useState(false);
+  const handleDuplicateNote = async () => {
+    if (!note || duplicatingNote) return;
+    setDuplicatingNote(true);
+    try {
+      const dup = await duplicateNote(note);
+      // 副本標題與來源相同（只加「(副本)」），其 slug 可能撞到來源已讓出的別名而變歧義；
+      // 帶 ?expect=<新id> 讓目的頁在遇到消歧異時，以該 id 直達渲染副本本身（URL 不動），不逼使用者消歧異。
+      if (dup?.slug) router.push(noteHref(dup.slug) + '?expect=' + dup.id);
+      else setError('無法複製筆記，請稍後重試。');
+    } catch {
+      setError('無法複製筆記，請稍後重試。');
+    } finally {
+      setDuplicatingNote(false);
     }
   };
 
@@ -720,6 +1298,11 @@ export default function NotesDetailPage() {
     );
   }
 
+  // 消歧異：slug 指向多篇筆記時，就地渲染候選頁（須在「筆記不存在」之前判斷）。
+  if (!note && candidates) {
+    return <NoteDisambiguation requestedSlug={ambiguousRequestedSlug} candidates={candidates} />;
+  }
+
   if (!note) {
     return (
       <div className="note-detail-page">
@@ -744,22 +1327,10 @@ export default function NotesDetailPage() {
   return (
     <div className="note-detail-page" ref={noteScrollRef} onScroll={handleNoteScroll}>
       <div className="note-detail__container">
-        {/* 置頂工具列（sticky，不隨內文捲走）：返回 + 標題 + 編輯 / 匯出 PDF / 刪除，同一行。 */}
-        <div
-          style={{
-            position: 'sticky',
-            top: 0,
-            zIndex: 30,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 'var(--spacing-3)',
-            marginBottom: 'var(--spacing-3)',
-            paddingTop: 'var(--spacing-2)',
-            paddingBottom: 'var(--spacing-2)',
-            background: 'var(--bg-canvas)',
-            borderBottom: '1px solid var(--border-default)',
-          }}
-        >
+        {/* 置頂工具列（sticky，不隨內文捲走）：返回 + 標題 + 編輯 / 匯出 PDF / 刪除，同一行。
+            樣式集中在 globals.css 的 .note-topbar（手機 ≤768px 改為可換行、不 sticky——
+            六顆按鈕在 393px 塞不下一行，硬撐會把整頁撐出水平捲動）。 */}
+        <div className="note-topbar">
           <button
             onClick={async () => {
               // 編輯中：先確認未儲存變更（#16），放棄才退出編輯、切回閱讀（不走返回堆疊、不離開本頁）。
@@ -807,29 +1378,28 @@ export default function NotesDetailPage() {
           >
             ← 返回
           </button>
-          <h1
-            style={{
-              margin: 0,
-              flex: 1,
-              minWidth: 0,
-              fontSize: 'var(--text-xl)',
-              fontWeight: 700,
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-            }}
-            title={note.title}
-          >
+          <h1 className="note-topbar__title" title={note.title}>
             {note.title}
           </h1>
           {/* 編輯中時隱藏「編輯 / 匯出 / 刪除」（避免與下方編輯區的取消/保存混淆）；編輯區自有取消/保存。 */}
           {!isEditing && (
-            <div style={{ display: 'flex', gap: 'var(--spacing-2)', flexShrink: 0 }}>
+            <div className="note-topbar__actions">
+              {/* 問題清單（只在預覽分頁顯示，因浮層問題只在預覽渲染）：點擊開/關由 NoteOverlay 渲染的問題面板。 */}
+              {activeTab === 'preview' && (
+                <button
+                  onClick={() => setQuestionPanelOpen((v) => !v)}
+                  className="btn-secondary"
+                  title="檢視本篇所有問題（便利貼／T 文字框標記為問題者）"
+                  aria-pressed={questionPanelOpen}
+                >
+                  ❓ 問題清單 ({questionCount})
+                </button>
+              )}
               {/* 一鍵收合／展開整頁摺疊區塊（單鈕切換；只在預覽分頁、且內容真的有 toggle 時才出現）。
                   toggle 是後端渲染的原生 <details>，直接設 .open 即可。 */}
               {activeTab === 'preview' && previewHtml.includes('md-toggle') && (
                 <button
-                  onClick={() => setAllTogglesExpanded((v) => !v)}
+                  onClick={() => { setAllTogglesExpanded((v) => !v); setAllTogglesSeq((s) => s + 1); }}
                   className="btn-secondary"
                   title={allTogglesExpanded ? '收合整頁所有摺疊區塊' : '展開整頁所有摺疊區塊'}
                 >
@@ -907,6 +1477,14 @@ export default function NotesDetailPage() {
               </div>
               {/* 🎧 聆聽：AI 語音朗讀本篇筆記（底部迷你播放器由此按鈕以 portal 掛載）。 */}
               <ListenButton noteId={note.id} noteTitle={note.title} />
+              <button
+                onClick={handleDuplicateNote}
+                className="btn-secondary"
+                disabled={duplicatingNote}
+                title="複製成一則新筆記（標題加「(副本)」，帶內容／分類／標籤）"
+              >
+                {duplicatingNote ? '複製中…' : '⧉ 複製'}
+              </button>
               <button onClick={handleExportPdf} className="btn-secondary" title="以瀏覽器列印（可另存為 PDF）">
                 📄 匯出 PDF
               </button>
@@ -933,6 +1511,58 @@ export default function NotesDetailPage() {
           </div>
         )}
 
+        {/* 舊網址（別名）進入橫幅：經舊 slug 命中本篇時提示「你從舊網址進來」＋現行網址＋複製鈕（本次瀏覽可關閉）。 */}
+        {matchedByAlias && !aliasBannerDismissed && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 'var(--spacing-2)',
+              flexWrap: 'wrap',
+              padding: '10px 14px',
+              marginBottom: 'var(--spacing-5)',
+              background: 'var(--bg-surface-secondary)',
+              color: 'var(--text-primary)',
+              border: '1px solid var(--border-default)',
+              borderLeft: '3px solid var(--status-warning-fg)',
+              borderRadius: 'var(--radius-md)',
+              fontSize: 'var(--text-sm)',
+              lineHeight: 1.6,
+            }}
+            role="status"
+          >
+            <span style={{ flex: 1, minWidth: 220 }}>
+              ℹ️ 你是從舊網址進來的（<code>/notes/{aliasRequestedSlug ?? slug}</code>）。
+              本篇現在的網址是 <code>/notes/{note.slug}</code>。
+            </span>
+            <button
+              className="btn-secondary"
+              style={{ fontSize: 'var(--text-xs)', minHeight: 32, flexShrink: 0 }}
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(
+                    window.location.origin + noteHref(note.slug),
+                  );
+                  showToast('已複製新網址', { type: 'success' });
+                } catch {
+                  showToast('複製失敗，請手動複製網址', { type: 'error' });
+                }
+              }}
+            >
+              複製新網址
+            </button>
+            <button
+              className="btn-secondary"
+              style={{ fontSize: 'var(--text-xs)', minHeight: 32, flexShrink: 0 }}
+              title="關閉此提示（本次瀏覽）"
+              aria-label="關閉提示"
+              onClick={() => setAliasBannerDismissed(true)}
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
         {/* 關聯內容已移到下方「關聯」分頁（見標籤頁） */}
 
         {/* 編輯彈窗開啟中：筆記頁顯示「即時預覽」（渲染彈窗當前內容，非永久；關窗回存檔版）。 */}
@@ -944,12 +1574,28 @@ export default function NotesDetailPage() {
               <button className="btn-secondary" style={{ fontSize: 'var(--text-xs)' }} onClick={() => editPopupRef.current?.focus()}>切到編輯視窗</button>
               <button className="btn-secondary" style={{ fontSize: 'var(--text-xs)' }} onClick={closeEditPopout}>結束編輯</button>
             </div>
-            <div className="markdown-prose" style={{ background: 'var(--bg-surface)', padding: 'var(--spacing-6)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-default)' }}>
+            <div ref={setLivePreviewNode} className="markdown-prose" style={{ background: 'var(--bg-surface)', padding: 'var(--spacing-6)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-default)' }}>
               {editPopoutContent.trim() ? <ToggleAwareMarkdown value={editPopoutContent} /> : <span style={{ color: 'var(--text-tertiary)' }}>（空白）</span>}
             </div>
           </div>
         ) : isEditing ? (
           <div style={{ marginBottom: 'var(--spacing-6)' }}>
+            {/* 段落被引用提示（包4）：本篇有 N 處段落被其他筆記引用，存檔時會檢查是否受影響。 */}
+            {referencedAnchorCount > 0 && (
+              <div
+                style={{
+                  marginBottom: 'var(--spacing-3)',
+                  fontSize: 'var(--text-xs)',
+                  color: 'var(--text-secondary)',
+                  background: 'var(--bg-surface-secondary, var(--bg-surface))',
+                  border: '1px solid var(--border-default)',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '6px 10px',
+                }}
+              >
+                🔗 本篇有 {referencedAnchorCount} 處段落被其他筆記引用，存檔時會檢查是否受影響。
+              </div>
+            )}
             {/* 標題列：標題輸入框與「取消／保存」同行 */}
             <div
               style={{
@@ -962,7 +1608,7 @@ export default function NotesDetailPage() {
               <input
                 type="text"
                 value={editTitle}
-                onChange={(e) => setEditTitle(e.target.value)}
+                onChange={(e) => handleEditTitleChange(e.target.value)}
                 style={{
                   flex: 1,
                   minWidth: 0,
@@ -989,13 +1635,69 @@ export default function NotesDetailPage() {
                 <button
                   onClick={handleSave}
                   className="btn-primary"
-                  disabled={isSaving || aiBusy}
-                  title={aiBusy ? 'AI 處理中，請稍候…' : undefined}
+                  disabled={isSaving || aiBusy || uploadingCount > 0}
+                  title={
+                    aiBusy
+                      ? 'AI 處理中，請稍候…'
+                      : uploadingCount > 0
+                        ? '圖片上傳中，請稍候…'
+                        : undefined
+                  }
                 >
-                  {isSaving ? '保存中...' : '💾 保存'}
+                  {isSaving ? '保存中...' : uploadingCount > 0 ? '圖片上傳中…' : '💾 保存'}
                 </button>
               </div>
             </div>
+
+            {/* ⚡ 本地草稿還原橫幅（防停電）：進入編輯當下偵測到「與現行內容不同」的草稿。
+                非 modal、不擋輸入；還原後草稿仍留在 localStorage（存檔/明確放棄才清）。 */}
+            {pendingDraft && (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: 'var(--spacing-3)',
+                  marginBottom: 'var(--spacing-4)',
+                  padding: 'var(--spacing-3)',
+                  background: 'var(--status-warning-bg, var(--bg-surface))',
+                  border: '1px solid var(--border-strong)',
+                  borderRadius: 'var(--radius-md)',
+                  fontSize: 'var(--text-sm)',
+                  color: 'var(--text-primary)',
+                }}
+              >
+                <span style={{ flex: 1, minWidth: 200 }}>
+                  ⚡ 偵測到 {formatFullDateTime(pendingDraft.savedAt, userTimeZone)} 的未儲存草稿
+                  （可能因斷電/當機未存檔）。
+                </span>
+                <div style={{ display: 'flex', gap: 'var(--spacing-2)', flexShrink: 0 }}>
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    onClick={() => {
+                      setEditTitle(pendingDraft.title);
+                      setEditContent(pendingDraft.content);
+                      editTitleDraftRef.current = pendingDraft.title;
+                      editContentDraftRef.current = pendingDraft.content;
+                      setPendingDraft(null);
+                    }}
+                  >
+                    還原草稿
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => {
+                      if (note) clearDraft(draftKeyForNote(note.id));
+                      setPendingDraft(null);
+                    }}
+                  >
+                    捨棄
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* 分類 / 標籤（可搜尋下拉 + 就地新增） */}
             <div
@@ -1019,10 +1721,7 @@ export default function NotesDetailPage() {
                   分類
                 </label>
                 <SearchableMultiSelect
-                  options={allCategories.map((c) => ({
-                    id: c.id,
-                    name: `${categoryPath(c.parentId, allCategories)}${c.name}`,
-                  }))}
+                  options={buildCategoryOptions(allCategories)}
                   selectedIds={editCatIds}
                   onChange={setEditCatIds}
                   onCreate={async (name) => {
@@ -1085,19 +1784,22 @@ export default function NotesDetailPage() {
                 currentContent={editContent}
                 onContentUpdate={handleAiContentUpdate}
                 onError={(message) => setError(message)}
-                disabled={isSaving}
+                disabled={isSaving || uploadingCount > 0}
                 onBusyChange={setAiBusy}
                 taRef={editorTaRef}
+                foldApiRef={editorFoldApiRef}
               />
             </div>
 
             <MarkdownEditor
               value={editContent}
-              onChange={setEditContent}
+              onChange={handleEditContentChange}
               withPreview
               minHeight={400}
               placeholder="用 Markdown 撰寫內容…（可用工具列套用格式；🔒 可框住不想被 AI 重排的內容）"
               taRef={editorTaRef}
+              foldApiRef={editorFoldApiRef}
+              onUploadingChange={setUploadingCount}
             />
           </div>
         ) : (
@@ -1106,15 +1808,195 @@ export default function NotesDetailPage() {
             {/* 建立／更新時間（標題與動作鈕已移至上方置頂工具列） */}
             <div
               style={{
-                marginBottom: 'var(--spacing-5)',
+                marginBottom: 'var(--spacing-3)',
                 display: 'flex',
-                gap: 'var(--spacing-4)',
+                flexWrap: 'wrap', // 手機窄幅：兩個完整日期時間塞不進一行，允許換行避免撐寬頁面
+                gap: 'var(--spacing-2) var(--spacing-4)',
                 fontSize: 'var(--text-sm)',
                 color: 'var(--text-secondary)',
               }}
             >
               <span>建立：{formatNoteFullDateTime(note.createdDateTime)}</span>
               <span>更新：{formatNoteFullDateTime(note.updatedDateTime)}</span>
+            </div>
+
+            {/* 分類／標籤（常駐顯示於時間列下方；分類 chip 可點擊 → 該分類的筆記清單）。
+                樣式沿用全站慣例：📁 分類完整路徑、🏷 標籤名（與全域搜尋結果一致）。
+                ✎ 就地調整（2026-08-13）：不進編輯模式即可改分類/標籤（獨立端點、不產生版本）。 */}
+            <div
+              style={{
+                position: 'relative',
+                marginBottom: 'var(--spacing-5)',
+                display: 'grid',
+                gap: 'var(--spacing-2)',
+                fontSize: 'var(--text-sm)',
+                color: 'var(--text-secondary)',
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: 'var(--spacing-2)',
+                }}
+              >
+                <span style={{ flexShrink: 0 }}>分類：</span>
+                {(note.categories ?? []).length === 0 ? (
+                  <span style={{ color: 'var(--text-tertiary)' }}>未分類</span>
+                ) : (
+                  (note.categories ?? []).map((c) => {
+                    // note.categories 實際來自後端 TagRefDto（只有 id/name、無 parentId），
+                    // 完整路徑需以 SWR 分類選項池（allCategories 含 parentId）反查；
+                    // 池尚未載入完成時退回只顯示葉節點名稱（載入後自動補全）。
+                    const fullCategory = allCategories.find((x) => x.id === c.id);
+                    const pathLabel = fullCategory
+                      ? categoryPathOf(fullCategory.id, allCategories)
+                      : c.name;
+                    return (
+                      <button
+                        key={c.id}
+                        onClick={() => router.push(`/notes?categoryId=${c.id}`)}
+                        title={`查看「${pathLabel}」分類的所有筆記`}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.borderColor = 'var(--border-strong)';
+                          e.currentTarget.style.color = 'var(--text-primary)';
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.borderColor = 'var(--border-default)';
+                          e.currentTarget.style.color = 'var(--text-secondary)';
+                        }}
+                        style={{
+                          padding: '2px 10px',
+                          background: 'var(--bg-surface)',
+                          border: '1px solid var(--border-default)',
+                          borderRadius: 'var(--radius-full)',
+                          color: 'var(--text-secondary)',
+                          fontSize: 'var(--text-xs)',
+                          cursor: 'pointer',
+                          whiteSpace: 'nowrap',
+                          // 名稱無長度上限：截斷防 375px 爆版，完整路徑靠 title 提示。
+                          maxWidth: '240px',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          transition: 'border-color 0.15s ease, color 0.15s ease',
+                        }}
+                      >
+                        📁 {pathLabel}
+                      </button>
+                    );
+                  })
+                )}
+                {/* ✎ 就地調整分類/標籤（不進編輯模式） */}
+                <button
+                  type="button"
+                  onClick={() => setMetaEditOpen((open) => !open)}
+                  title="調整分類與標籤"
+                  aria-label="調整分類與標籤"
+                  style={{
+                    padding: '2px 8px',
+                    background: 'transparent',
+                    border: '1px dashed var(--border-default)',
+                    borderRadius: 'var(--radius-full)',
+                    color: 'var(--text-tertiary)',
+                    fontSize: 'var(--text-xs)',
+                    cursor: 'pointer',
+                    flexShrink: 0,
+                  }}
+                >
+                  ✎
+                </button>
+              </div>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: 'var(--spacing-2)',
+                }}
+              >
+                <span style={{ flexShrink: 0 }}>標籤：</span>
+                {(note.tags ?? []).length === 0 ? (
+                  <span style={{ color: 'var(--text-tertiary)' }}>無標籤</span>
+                ) : (
+                  (note.tags ?? []).map((t) => (
+                    <span
+                      key={t.id}
+                      title={t.name}
+                      style={{
+                        padding: '2px 10px',
+                        background: 'var(--bg-surface)',
+                        border: '1px solid var(--border-default)',
+                        borderRadius: 'var(--radius-full)',
+                        color: 'var(--text-secondary)',
+                        fontSize: 'var(--text-xs)',
+                        whiteSpace: 'nowrap',
+                        // 名稱無長度上限：截斷防 375px 爆版，完整名稱靠 title 提示。
+                        maxWidth: '240px',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      🏷 {t.name}
+                    </span>
+                  ))
+                )}
+              </div>
+              {metaEditOpen && (
+                <NoteMetaQuickEdit
+                  noteId={note.id}
+                  categoryOptions={buildCategoryOptions(allCategories)}
+                  tagOptions={allTags.map((t) => ({ id: t.id, name: t.name }))}
+                  initialCategoryIds={(note.categories ?? []).map((c) => c.id)}
+                  initialTagIds={(note.tags ?? []).map((t) => t.id)}
+                  onCreateCategory={async (name) => {
+                    try {
+                      const cat = await createNoteCategory({ name, parentId: null });
+                      if (cat) {
+                        setAllCategories((c) => [...c, cat]);
+                        mutateCategories();
+                        return { id: cat.id, name: cat.name };
+                      }
+                    } catch (e) {
+                      setError(e instanceof Error ? e.message : '新增分類失敗');
+                    }
+                    return null;
+                  }}
+                  onCreateTag={async (name) => {
+                    try {
+                      const tag = await createNoteTag(name);
+                      if (tag) {
+                        setAllTags((t) => [...t, tag]);
+                        mutateTags();
+                        return { id: tag.id, name: tag.name };
+                      }
+                    } catch (e) {
+                      setError(e instanceof Error ? e.message : '新增標籤失敗');
+                    }
+                    return null;
+                  }}
+                  onSaved={(categoryIds, tagIds) => {
+                    // 就地更新本頁筆記狀態（chip 立即反映），並重新驗證共用快取（側欄計數）。
+                    setNote((prev) => {
+                      if (!prev) return prev;
+                      const catById = new Map(allCategories.map((c) => [c.id, c]));
+                      const tagById = new Map(allTags.map((t) => [t.id, t]));
+                      return {
+                        ...prev,
+                        categories: categoryIds
+                          .map((id) => catById.get(id))
+                          .filter((c): c is NoteCategory => Boolean(c)),
+                        tags: tagIds
+                          .map((id) => tagById.get(id))
+                          .filter((t): t is NoteTag => Boolean(t)),
+                      };
+                    });
+                    mutateCategories();
+                    mutateTags();
+                  }}
+                  onClose={() => setMetaEditOpen(false)}
+                />
+              )}
             </div>
 
             {/* 標籤頁 */}
@@ -1266,23 +2148,29 @@ export default function NotesDetailPage() {
                   className="markdown-prose"
                   style={{
                     background: 'var(--bg-surface)',
-                    padding: 'var(--spacing-6)',
+                    // 手機（≤768px）由 .note-detail__container 覆寫 --note-prose-pad 縮小內距。
+                    padding: 'var(--note-prose-pad, var(--spacing-6))',
                     borderRadius: 'var(--radius-lg)',
                     border: '1px solid var(--border-default)',
                   }}
-                  dangerouslySetInnerHTML={{ __html: previewHtml }}
+                  dangerouslySetInnerHTML={previewHtmlObj}
                 />
                 <NoteMarksLayer
                   noteId={note.id}
                   containerRef={previewRef}
                   contentHtml={previewHtml}
                   active={activeTab === 'preview'}
+                  contentHash={note.contentHash}
                 />
                 <NoteOverlay
                   noteId={note.id}
                   containerRef={previewRef}
                   onToggleToc={() => setTocOpen((v) => !v)}
                   tocOpen={tocOpen}
+                  questionPanelOpen={questionPanelOpen}
+                  onQuestionPanelOpenChange={setQuestionPanelOpen}
+                  onQuestionsChange={(qs) => setQuestionCount(qs.length)}
+                  locateOverlayId={overlayId}
                 />
                 {tocOpen && toc.length > 0 && (
                   <TocPanel noteId={note.id} toc={toc} onClose={() => setTocOpen(false)} />
@@ -1441,8 +2329,10 @@ export default function NotesDetailPage() {
                   }}
                 >
                   <strong style={{ color: 'var(--text-primary)' }}>🔗 反向連結</strong>
-                  ＝系統<strong>自動</strong>偵測「哪些<strong>其他筆記</strong>用 <code>[[本篇標題]]</code> 連到這篇」。
-                  你不用手動建立——只要在別的筆記內文寫 <code>[[{note.title}]]</code>，那篇就會出現在這裡。
+                  ＝系統<strong>自動</strong>彙整「誰指向這篇」的三種來源：
+                  在別的筆記內文寫 <code>[[{note.title}]]</code>（🔗 wiki 連結）、
+                  在別的筆記<strong>框選段落</strong>建立關聯指到這篇（✂️ 段落關聯，可點擊跳回來源段落）、
+                  以及「關聯」分頁建立的整篇關聯（🧩）。三種都不用在這裡手動維護。
                 </div>
                 <div
                   style={{
@@ -1481,7 +2371,12 @@ export default function NotesDetailPage() {
         .note-detail-page {
           width: 100%;
           height: calc(100vh - var(--header-height));
+          /* iOS Safari 的 100vh 含瀏覽器工具列高度會裁到內容；支援 dvh 的瀏覽器用動態視口高度。 */
+          height: calc(100dvh - var(--header-height));
           overflow-y: auto;
+          /* overflow-y:auto 會讓 overflow-x 計算成 auto——任何過寬子元素都會讓整頁可左右橫移
+             （手機閱讀抱怨的元兇之一）。明確關掉：過寬內容一律由各自的捲動容器（表格 wrapper、pre）承接。 */
+          overflow-x: clip;
         }
 
         .note-detail__container {
@@ -1582,7 +2477,19 @@ export default function NotesDetailPage() {
 
         @media (max-width: 768px) {
           .note-detail__container {
-            padding: var(--spacing-4) var(--spacing-3);
+            /* 手機：外框與內文 padding 都縮小，把可讀寬度留給內容（393px 螢幕上每 px 都珍貴）。
+               --note-prose-pad 由內文區的 inline style 引用（var 預設 --spacing-6）。 */
+            padding: var(--spacing-3) var(--spacing-2);
+            --note-prose-pad: var(--spacing-3);
+          }
+          .markdown-prose h1,
+          .markdown-prose h2,
+          .markdown-prose h3,
+          .markdown-prose h4,
+          .markdown-prose h5,
+          .markdown-prose h6 {
+            /* 手機置頂工具列是兩列式（較高），目錄點擊捲動的預留高度要跟著加大 */
+            scroll-margin-top: 116px;
           }
         }
       `}</style>

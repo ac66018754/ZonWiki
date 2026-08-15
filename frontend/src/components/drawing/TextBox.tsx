@@ -54,7 +54,8 @@ interface TextItem {
  */
 export function DrawingTextBox({
   item, zoomRef, toFlow, selected, editing, interactive = true,
-  onSelect, onStartEdit, onStopEdit, onChange, onCommit,
+  onSelect, onStartEdit, onStopEdit, onChange, onCommit, onAdjustWheel, overlayId,
+  isQuestion, onToggleQuestion, hasAnswer, onOpenAnswer,
 }: {
   item: TextItem;
   /** 目前縮放（用 ref 取最新值，供拖曳換算）。筆記頁固定為 1。 */
@@ -72,10 +73,59 @@ export function DrawingTextBox({
   onChange: (patch: Partial<TextItem>) => void;
   /** 持久化（拖曳/縮放/旋轉結束、文字失焦時）。 */
   onCommit: (patch: Partial<TextItem>) => void;
+  /**
+   * 選取/編輯中滾輪滾動時呼叫（deltaY：向上負、向下正），供「滾輪調整大小」（可選；
+   * 未提供＝該端不支援，滾輪維持頁面捲動）。
+   */
+  onAdjustWheel?: (deltaY: number) => void;
+  /**
+   * 選擇性：標註（浮層）識別碼；提供時會標到根元素的 data-overlay-id，
+   * 供筆記頁 ?overlay= 捲動定位與高亮使用（開問啦畫布不需要，故為選擇性）。
+   */
+  overlayId?: string;
+  /**
+   * 選擇性：此文字框是否被標記為「問題」（僅筆記頁使用；開問啦畫布不傳＝零改變）。
+   */
+  isQuestion?: boolean;
+  /**
+   * 選擇性：切換「設為問題／移除問題」的回呼（僅筆記頁傳入；有傳才顯示 ❓ 切換鈕）。
+   */
+  onToggleQuestion?: () => void;
+  /**
+   * 選擇性：此問題是否已有回答（僅筆記頁使用；決定「答」鈕要不要上色標示）。
+   */
+  hasAnswer?: boolean;
+  /**
+   * 選擇性：開啟此問題的答題彈窗（僅筆記頁傳入；已標記為問題時才會在 ❓ 右側顯示「答」鈕）。
+   */
+  onOpenAnswer?: () => void;
 }) {
   const extra = parseTextExtra(item.dataJson);
   const fontColor = item.color || '#ef4444';
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  /** 取 dataJson 的原始物件（保留 anchor 等未知欄位；寫回時必須合併，不可只寫已知三欄）。 */
+  const rawData = (): Record<string, unknown> => {
+    try {
+      const o = JSON.parse(item.dataJson || '{}') as unknown;
+      if (o && typeof o === 'object' && !Array.isArray(o)) return o as Record<string, unknown>;
+    } catch { /* 壞資料 → 空物件 */ }
+    return {};
+  };
+
+  // 選取/編輯中 → 攔截滾輪做「調整大小」（原生監聽器＋passive:false 才能 preventDefault 擋頁面捲動）。
+  useEffect(() => {
+    if (!onAdjustWheel || (!selected && !editing)) return;
+    const el = rootRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      onAdjustWheel(e.deltaY);
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [onAdjustWheel, selected, editing]);
 
   // 進入編輯模式 → 聚焦文字框並把游標移到末端。
   useEffect(() => {
@@ -155,12 +205,12 @@ export function DrawingTextBox({
       const p = toFlow(ev.clientX, ev.clientY);
       // 握把在上方，故 +90 讓「指標朝上」對應 0 度
       nextDeg = Math.round((Math.atan2(p.y - ccy, p.x - ccx) * 180) / Math.PI + 90);
-      onChange({ dataJson: JSON.stringify({ ...extra, rotation: nextDeg }) });
+      onChange({ dataJson: JSON.stringify({ ...rawData(), rotation: nextDeg }) });
     };
     const up = () => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
-      onCommit({ dataJson: JSON.stringify({ ...extra, rotation: nextDeg }) });
+      onCommit({ dataJson: JSON.stringify({ ...rawData(), rotation: nextDeg }) });
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
@@ -173,13 +223,16 @@ export function DrawingTextBox({
 
   return (
     <div
+      ref={rootRef}
       style={{
         position: 'absolute', left: item.x, top: item.y, width: item.width, height: item.height,
         zIndex: item.zIndex, transform: `rotate(${deg}deg)`, transformOrigin: 'center center',
         pointerEvents: interactive ? 'auto' : 'none',
       }}
       data-testid="anno-text"
-      onPointerDown={(e) => { if (!editing) { onSelect(); startMove(e); } }}
+      data-overlay-id={overlayId}
+      // 只有左鍵選取/拖曳（右鍵留給「取消模式」）。
+      onPointerDown={(e) => { if (e.button !== 0) return; if (!editing) { onSelect(); startMove(e); } }}
       onDoubleClick={(e) => { e.stopPropagation(); onStartEdit(); }}
     >
       <textarea
@@ -199,6 +252,69 @@ export function DrawingTextBox({
         }}
         data-testid="anno-text-input"
       />
+
+      {/* 問題標記（僅筆記頁傳入 onToggleQuestion / isQuestion 時顯示；開問啦畫布不傳＝不渲染）。
+          選取且非編輯中時顯示「可點擊的 ❓ 切換鈕」；否則若已是問題，顯示「持續可見的 ❓ 徽章」。 */}
+      {onToggleQuestion && selected && !editing ? (
+        <button
+          type="button"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); onToggleQuestion(); }}
+          title={isQuestion ? '移除問題標記' : '設為問題'}
+          data-testid="anno-text-question-toggle"
+          style={{
+            position: 'absolute', left: -10, top: -10, width: 20, height: 20, borderRadius: '50%',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, lineHeight: 1,
+            // 跟隨 interactive：繪圖模式（interactive=false）時不可點，
+            // 否則子元素的 auto 會覆寫根層的 none、吃掉經過的繪圖筆畫。
+            cursor: 'pointer', pointerEvents: interactive ? 'auto' : 'none', zIndex: 3,
+            border: '1px solid var(--border-strong, #999)',
+            background: isQuestion ? 'var(--action-primary-bg, #2563eb)' : 'var(--bg-surface, #fff)',
+            color: isQuestion ? 'var(--action-primary-fg, #fff)' : 'var(--text-secondary, #555)',
+          }}
+        >
+          ❓
+        </button>
+      ) : (
+        isQuestion && (
+          <span
+            aria-label="已標記為問題"
+            title="已標記為問題"
+            style={{
+              position: 'absolute', left: -8, top: -8, width: 18, height: 18, borderRadius: '50%',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, lineHeight: 1,
+              pointerEvents: 'none', zIndex: 3,
+              background: 'var(--action-primary-bg, #2563eb)', color: 'var(--action-primary-fg, #fff)',
+              border: '1px solid var(--bg-surface, #fff)',
+            }}
+          >
+            ❓
+          </span>
+        )
+      )}
+
+      {/* 「答」鈕（❓ 右側；僅「已標記為問題」的文字框顯示）：點擊開啟答題彈窗。
+          已有回答時比照 ❓ 上色標示（primary 色），尚無回答則維持原始配色（白底灰字）。 */}
+      {onOpenAnswer && isQuestion && !editing && (
+        <button
+          type="button"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); onOpenAnswer(); }}
+          title={hasAnswer ? '開啟答題彈窗（已作答）' : '開啟答題彈窗（尚未作答）'}
+          data-testid="anno-text-answer-open"
+          style={{
+            position: 'absolute', left: 12, top: -10, width: 20, height: 20, borderRadius: '50%',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, lineHeight: 1,
+            // 跟隨 interactive：繪圖模式時不可點（理由同 ❓ 鈕——避免吃掉繪圖 pointerdown）。
+            cursor: 'pointer', pointerEvents: interactive ? 'auto' : 'none', zIndex: 3,
+            border: '1px solid var(--border-strong, #999)',
+            background: hasAnswer ? 'var(--action-primary-bg, #2563eb)' : 'var(--bg-surface, #fff)',
+            color: hasAnswer ? 'var(--action-primary-fg, #fff)' : 'var(--text-secondary, #555)',
+          }}
+        >
+          答
+        </button>
+      )}
 
       {selected && !editing && (
         <>

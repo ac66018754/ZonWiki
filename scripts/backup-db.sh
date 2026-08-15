@@ -34,6 +34,12 @@ DB_NAME="${ZONWIKI_DB_NAME:-zonwiki}"
 BACKUP_DIR="${ZONWIKI_BACKUP_DIR:-$HOME/zonwiki/backup}"
 # 保留份數：超過的較舊備份會被輪替刪除。
 KEEP_COPIES="${ZONWIKI_BACKUP_KEEP:-14}"
+# App_Data（筆記附件圖檔等）容器名與容器內路徑：附件存磁碟不在 DB 裡，
+# 必須跟 DB 一起備份，還原時兩者缺一不可（DB 只有中繼資料、檔案在 App_Data）。
+# API 容器名；留空則自動偵測名稱含 "api" 的第一個容器；設為 "skip" 可明確停用附件備份。
+API_CONTAINER_NAME="${ZONWIKI_API_CONTAINER:-}"
+# 容器內的 App_Data 路徑（compose 掛卷位置）。
+APPDATA_CONTAINER_PATH="${ZONWIKI_APPDATA_PATH:-/app/App_Data}"
 # 選填：失敗（或成功）時要打的告警 webhook（例如 Discord／Slack／自建端點）。
 #   留空則不打；只寫日誌。POST body 為純文字訊息。
 ALERT_WEBHOOK="${ZONWIKI_BACKUP_WEBHOOK:-}"
@@ -127,6 +133,10 @@ main() {
     size_human="$(du -h "$target_file" | cut -f1)"
     log "備份成功：$target_file（大小 $size_human）"
 
+    # --- App_Data（筆記附件）備份：附件檔不在 DB 裡，必須一起備 ---------------
+    # 失敗只告警不中止（DB 備份已成功落地，附件下一輪再補）。
+    backup_appdata || log "App_Data 備份失敗（DB 備份不受影響，詳見上方訊息）"
+
     # --- 輪替：只保留最近 KEEP_COPIES 份，較舊者刪除 ------------------------
     # 備份檔為壓縮產物、非產品資料，屬正常備份輪替（不受軟刪除鐵則約束）。
     rotate_old_backups
@@ -134,12 +144,67 @@ main() {
     send_alert "[ZonWiki 備份成功] $target_file（$size_human，主機：$(hostname)）"
 }
 
-# --- 輪替舊備份：依修改時間排序，保留最新 N 份 ------------------------------
+# --- App_Data（筆記附件圖檔）備份：docker exec tar | gzip → files-*.tar.gz ---
+backup_appdata() {
+    if [[ "$API_CONTAINER_NAME" == "skip" ]]; then
+        log "App_Data 備份已停用（ZONWIKI_API_CONTAINER=skip）"
+        return 0
+    fi
+
+    # 解析 API 容器：未指定則取第一個名稱含 api 的執行中容器。
+    local api_container
+    api_container="$API_CONTAINER_NAME"
+    if [[ -z "$api_container" ]]; then
+        api_container="$(docker ps --format '{{.Names}}' | grep -i api | head -n 1)" || true
+    fi
+    if [[ -z "$api_container" ]]; then
+        log "找不到 API 容器，略過 App_Data 備份（可設 ZONWIKI_API_CONTAINER 指定）"
+        send_alert "[ZonWiki 備份警告] 找不到 API 容器，本輪未備份附件（主機：$(hostname)）"
+        return 1
+    fi
+
+    # 容器內沒有 App_Data（尚無任何附件）→ 視為正常，略過。
+    if ! docker exec "$api_container" test -d "$APPDATA_CONTAINER_PATH" 2>/dev/null; then
+        log "容器 $api_container 內無 $APPDATA_CONTAINER_PATH（尚無附件），略過"
+        return 0
+    fi
+
+    local stamp
+    stamp="$(date '+%Y-%m-%d_%H%M%S')"
+    local files_target="$BACKUP_DIR/files-${stamp}.tar.gz"
+    local files_partial="${files_target}.partial"
+
+    log "開始備份附件：容器=$api_container 路徑=$APPDATA_CONTAINER_PATH → $files_target"
+    # tar 打包容器內整個 App_Data（-C 讓還原時解出相對的 App_Data/ 結構）。
+    if ! docker exec "$api_container" tar -cf - -C "$(dirname "$APPDATA_CONTAINER_PATH")" "$(basename "$APPDATA_CONTAINER_PATH")" \
+            | gzip --best -c > "$files_partial"; then
+        rm -f "$files_partial"
+        send_alert "[ZonWiki 備份警告] 附件 tar/gzip 失敗（主機：$(hostname)）"
+        return 1
+    fi
+    if ! gzip --test "$files_partial" 2>/dev/null || [[ ! -s "$files_partial" ]]; then
+        rm -f "$files_partial"
+        send_alert "[ZonWiki 備份警告] 附件備份檔驗證未通過（主機：$(hostname)）"
+        return 1
+    fi
+    mv "$files_partial" "$files_target"
+    log "附件備份成功：$files_target（大小 $(du -h "$files_target" | cut -f1)）"
+    return 0
+}
+
+# --- 輪替舊備份：依修改時間排序，DB 與附件兩類各保留最新 N 份 -----------------
 rotate_old_backups() {
-    # 用 find + sort 依時間新到舊列出所有備份，跳過最新 KEEP_COPIES 份、刪掉其餘。
+    rotate_pattern 'db-*.sql.gz'
+    rotate_pattern 'files-*.tar.gz'
+}
+
+# --- 輪替單一檔名樣式：跳過最新 KEEP_COPIES 份、刪掉其餘 ---------------------
+rotate_pattern() {
+    # 參數 $1：檔名 glob 樣式（如 db-*.sql.gz）。
+    local pattern="$1"
     local old_files
     old_files="$(
-        find "$BACKUP_DIR" -maxdepth 1 -type f -name 'db-*.sql.gz' -printf '%T@ %p\n' \
+        find "$BACKUP_DIR" -maxdepth 1 -type f -name "$pattern" -printf '%T@ %p\n' \
             | sort -rn \
             | tail -n "+$((KEEP_COPIES + 1))" \
             | cut -d' ' -f2-

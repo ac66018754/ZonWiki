@@ -120,6 +120,8 @@ export function AiProcessingMenu() {
         return '精煉成筆記';
       case 'floatingnote':
         return '框選提問';
+      case 'notequestion':
+        return '筆記提問';
       default:
         return 'AI 工作';
     }

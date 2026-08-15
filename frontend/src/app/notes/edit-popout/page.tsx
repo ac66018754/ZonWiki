@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { MarkdownEditor } from "@/components/MarkdownEditor";
+import { MarkdownEditor, type EditorFoldApi } from "@/components/MarkdownEditor";
 import { NoteAiActions } from "@/components/NoteAiActions";
 import { SearchableMultiSelect } from "@/components/SearchableMultiSelect";
 import { noteEditChannelName, type NoteEditInit, type NoteEditMessage } from "@/lib/noteEditChannel";
@@ -9,18 +9,15 @@ import {
   listNoteCategories,
   listNoteTags,
   updateNote,
+  getNoteById,
   createNoteCategory,
   createNoteTag,
   type NoteCategory,
   type NoteTag,
 } from "@/lib/api";
-
-/** 組出分類的階層路徑前綴（父 / 祖父 / …）。 */
-function categoryPath(parentId: string | null | undefined, cats: NoteCategory[]): string {
-  if (!parentId) return "";
-  const p = cats.find((c) => c.id === parentId);
-  return p ? `${categoryPath(p.parentId, cats)}${p.name} / ` : "";
-}
+import { useConfirm } from "@/components/ConfirmProvider";
+import { findLostMarksForSave, formatLostMarksMessage } from "@/lib/saveGuardRun";
+import { buildCategoryOptions } from "@/lib/categoryOptions";
 
 /**
  * 獨立編輯視窗（由筆記頁「編輯」以 window.open 開啟）。
@@ -40,10 +37,15 @@ export default function NoteEditPopoutPage() {
   const [allTags, setAllTags] = useState<NoteTag[]>([]);
   const [isSaving, setIsSaving] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
+  // 圖片上傳進行中的數量：>0 時擋「保存」與 AI 動作，避免把佔位文字永久存進 DB。
+  const [uploadingCount, setUploadingCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [savedNote, setSavedNote] = useState<string | null>(null);
   const channelRef = useRef<BroadcastChannel | null>(null);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
+  // 編輯模式摺疊 API：MarkdownEditor 填入、NoteAiActions（重排選取）用它映射座標。
+  const foldApiRef = useRef<EditorFoldApi | null>(null);
+  const confirm = useConfirm();
 
   // 頻道：postMessage 型別安全的小包裝。
   const post = (msg: NoteEditMessage) => channelRef.current?.postMessage(msg);
@@ -90,10 +92,26 @@ export default function NoteEditPopoutPage() {
 
   /** 保存到 DB（不關窗）；成功後通知筆記頁重抓。 */
   const handleSave = async () => {
-    if (!init || isSaving || aiBusy) return;
+    if (!init || isSaving || aiBusy || uploadingCount > 0) return;
     try {
       setIsSaving(true);
       setError(null);
+
+      // 存檔攔截（錨點保護，包4）：以目前存檔版為基準，內容有變且會弄斷既有標註 → 先列清單確認。
+      // 彈窗無手上的 contentHtml，故以 getNoteById 取當前存檔版當「舊內容」基準（即時重算）。
+      const current = await getNoteById(init.noteId);
+      if (current && content !== current.contentRaw) {
+        const lost = await findLostMarksForSave(init.noteId, current.contentHtml, content);
+        if (lost.length > 0) {
+          const proceed = await confirm({
+            title: "有標註會失去定位",
+            message: formatLostMarksMessage(lost),
+            confirmLabel: "仍要儲存",
+          });
+          if (!proceed) { setIsSaving(false); return; }
+        }
+      }
+
       const ok = await updateNote(init.noteId, {
         title,
         contentRaw: content,
@@ -134,8 +152,13 @@ export default function NoteEditPopoutPage() {
         {savedNote && <span style={{ fontSize: "var(--text-xs)", color: "var(--status-success-fg, green)" }}>● 已於 {savedNote} 保存</span>}
         {error && <span style={{ fontSize: "var(--text-xs)", color: "var(--status-danger-fg, #c00)" }}>{error}</span>}
         <span style={{ flex: 1 }} />
-        <button onClick={handleSave} className="btn-primary" disabled={isSaving || aiBusy} title={aiBusy ? "AI 處理中…" : "保存到資料庫（不關閉本視窗）"}>
-          {isSaving ? "保存中…" : "💾 保存"}
+        <button
+          onClick={handleSave}
+          className="btn-primary"
+          disabled={isSaving || aiBusy || uploadingCount > 0}
+          title={aiBusy ? "AI 處理中…" : uploadingCount > 0 ? "圖片上傳中，請稍候…" : "保存到資料庫（不關閉本視窗）"}
+        >
+          {isSaving ? "保存中…" : uploadingCount > 0 ? "圖片上傳中…" : "💾 保存"}
         </button>
       </div>
 
@@ -153,7 +176,7 @@ export default function NoteEditPopoutPage() {
           <div style={{ flex: 1, minWidth: 220 }}>
             <label style={{ display: "block", fontSize: "var(--text-xs)", fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>分類</label>
             <SearchableMultiSelect
-              options={allCategories.map((c) => ({ id: c.id, name: `${categoryPath(c.parentId, allCategories)}${c.name}` }))}
+              options={buildCategoryOptions(allCategories)}
               selectedIds={catIds}
               onChange={setCatIds}
               onCreate={async (name) => {
@@ -191,9 +214,10 @@ export default function NoteEditPopoutPage() {
           currentContent={content}
           onContentUpdate={(contentRaw) => setContent(contentRaw)}
           onError={(m) => setError(m)}
-          disabled={isSaving}
+          disabled={isSaving || uploadingCount > 0}
           onBusyChange={setAiBusy}
           taRef={taRef}
+          foldApiRef={foldApiRef}
         />
 
         {/* Markdown 工具列 + 內容區（不含 並排／預覽／彈出預覽） */}
@@ -203,6 +227,8 @@ export default function NoteEditPopoutPage() {
           minHeight={400}
           placeholder="用 Markdown 撰寫內容…（🔒 可框住不想被 AI 重排的內容）"
           taRef={taRef}
+          foldApiRef={foldApiRef}
+          onUploadingChange={setUploadingCount}
         />
       </div>
     </div>

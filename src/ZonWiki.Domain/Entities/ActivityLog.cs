@@ -11,6 +11,11 @@ namespace ZonWiki.Domain.Entities;
 public class ActivityLog : AuditableEntity, IUserOwned
 {
     /// <summary>
+    /// 變更摘要（<see cref="Detail"/>）的最大字元長度。攔截器產生摘要時以此截斷，DB 欄位亦以此設上限。
+    /// </summary>
+    public const int DetailMaxLength = 500;
+
+    /// <summary>
     /// 擁有此活動紀錄的使用者識別碼。
     /// </summary>
     public Guid UserId { get; set; }
@@ -35,6 +40,14 @@ public class ActivityLog : AuditableEntity, IUserOwned
     /// 動作當下該實體的標題 / 名稱（標題級摘要；節點/快速紀錄取首行片段，刻意不存完整內容）。
     /// </summary>
     public string Title { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 變更內容摘要（可空）：僅「編輯（updated）」時填寫，用友善中文描述「改了什麼」，例如
+    /// 「標題「舊」→「新」；內容」或「加入分類「工作」；移出分類「暫存」」。
+    /// 短字串欄位附「舊 → 新」（各截斷）、長文欄位只列名稱、分類/標籤變更列出加入/移出的名稱。
+    /// 刻意只存「摘要」而非完整前後內容（避免膨脹、也不外洩完整敏感內容）。新增/刪除/還原一律為 null。
+    /// </summary>
+    public string? Detail { get; set; }
 
     /// <summary>
     /// 操作來源："web"（人類在瀏覽器以 Cookie 登入操作），或 API 權杖名稱

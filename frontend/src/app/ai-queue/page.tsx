@@ -15,6 +15,7 @@ import { formatDateTime } from "@/lib/formatters";
 import { DEFAULT_TIMEZONE } from "@/lib/constants";
 import { logger } from "@/lib/logger";
 import { markNoteContextSwitch } from "@/lib/noteNav";
+import { noteHref } from "@/lib/noteHref";
 
 /**
  * AI 處理佇列頁面（/ai-queue）。
@@ -32,6 +33,7 @@ const KIND_FILTERS: { value: AskQueueKind | "all"; label: string; icon: string }
   { value: "refine", label: "精煉成筆記", icon: "✨" },
   { value: "node", label: "開問啦提問", icon: "🎨" },
   { value: "floatingnote", label: "框選提問", icon: "✍️" },
+  { value: "notequestion", label: "筆記提問", icon: "❓" },
   { value: "beautify", label: "美化筆記", icon: "💅" },
   { value: "reformat", label: "整理排版", icon: "🧹" },
 ];
@@ -164,7 +166,8 @@ function AiQueueInner() {
     if (d.kind === "node") {
       router.push("/canvas");
     } else if (d.noteSlug) {
-      const url = `/notes/${encodeURIComponent(d.noteSlug)}${d.markId ? `?mark=${encodeURIComponent(d.markId)}` : ""}`;
+      // noteHref 正確編碼 slug（origin/main 修復）；markNoteContextSwitch 截斷返回堆疊（Phase 1 noteNav）。
+      const url = `${noteHref(d.noteSlug)}${d.markId ? `?mark=${encodeURIComponent(d.markId)}` : ""}`;
       // 從「非筆記情境」（AI 佇列）進入筆記＝新脈絡：截斷返回堆疊至該筆記，
       // 使返回走分類階層而非跳回無關舊筆記（對齊 GlobalSearch 的 markNoteContextSwitch）。
       markNoteContextSwitch(url);
@@ -379,7 +382,7 @@ function AiQueueInner() {
               onGoToSource={() => goToSource(detail)}
               onGoToAnswer={() => {
                 if (!detail.answerNoteSlug) return;
-                const url = `/notes/${encodeURIComponent(detail.answerNoteSlug)}`;
+                const url = noteHref(detail.answerNoteSlug);
                 // 從「非筆記情境」（AI 佇列）進入產生的筆記＝新脈絡：先截斷返回堆疊（對齊 GlobalSearch）。
                 markNoteContextSwitch(url);
                 router.push(url);

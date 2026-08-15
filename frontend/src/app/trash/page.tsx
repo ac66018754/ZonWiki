@@ -29,6 +29,7 @@ const GROUP_ORDER: { name: string; icon: string }[] = [
   { name: "任務分類", icon: "📁" },
   { name: "快速記錄", icon: "⚡" },
   { name: "常用連結", icon: "🔗" },
+  { name: "時間追蹤", icon: "⏱️" },
   { name: "便利貼", icon: "🗒️" },
   { name: "開問啦・畫布", icon: "🎨" },
   { name: "開問啦・節點", icon: "🔵" },

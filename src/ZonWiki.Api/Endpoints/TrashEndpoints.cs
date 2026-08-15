@@ -197,6 +197,18 @@ public static class TrashEndpoints
                 string.IsNullOrWhiteSpace(ql.Title) ? "(無標題連結)" : ql.Title,
                 ql.Url, ql.D)));
 
+            // --- 時間追蹤 ---
+            var timeEntries = await db.TimeEntry.IgnoreQueryFilters()
+                .Where(te => te.UserId == userGuid && !te.ValidFlag && te.PurgedDateTime == null)
+                .Select(te => new { te.Id, te.Title, te.Category, te.StartedDateTime, D = te.DeletedDateTime ?? te.UpdatedDateTime })
+                .ToListAsync(ct);
+            items.AddRange(timeEntries.Select(te => new TrashItemDto(
+                te.Id, "TimeEntry", "時間追蹤",
+                string.IsNullOrWhiteSpace(te.Title) ? "(無標題項目)" : te.Title,
+                te.Category,
+                te.D,
+                $"開始於 {FormatDateInTz(te.StartedDateTime, userTimeZone)}")));
+
             // --- 開問啦・畫布 ---
             var canvases = await db.Canvas.IgnoreQueryFilters()
                 .Where(cv => cv.UserId == userGuid && !cv.ValidFlag && cv.PurgedDateTime == null)
@@ -310,6 +322,7 @@ public static class TrashEndpoints
                 "TaskGroup" => await RestoreOwnedAsync(db, db.TaskGroup, id, userGuid, userId, ct),
                 "CaptureItem" => await RestoreOwnedAsync(db, db.CaptureItem, id, userGuid, userId, ct),
                 "QuickLink" => await RestoreOwnedAsync(db, db.QuickLink, id, userGuid, userId, ct),
+                "TimeEntry" => await RestoreOwnedAsync(db, db.TimeEntry, id, userGuid, userId, ct),
                 "Canvas" => await RestoreOwnedAsync(db, db.Canvas, id, userGuid, userId, ct),
                 "NoteOverlayItem" => await RestoreOwnedAsync(db, db.NoteOverlayItem, id, userGuid, userId, ct),
                 "CanvasAnnotation" => await RestoreOwnedAsync(db, db.CanvasAnnotation, id, userGuid, userId, ct),
@@ -346,6 +359,7 @@ public static class TrashEndpoints
                 "TaskGroup" => await PurgeOwnedAsync(db, db.TaskGroup, id, userGuid, ct),
                 "CaptureItem" => await PurgeOwnedAsync(db, db.CaptureItem, id, userGuid, ct),
                 "QuickLink" => await PurgeOwnedAsync(db, db.QuickLink, id, userGuid, ct),
+                "TimeEntry" => await PurgeOwnedAsync(db, db.TimeEntry, id, userGuid, ct),
                 "Canvas" => await PurgeOwnedAsync(db, db.Canvas, id, userGuid, ct),
                 "NoteOverlayItem" => await PurgeOwnedAsync(db, db.NoteOverlayItem, id, userGuid, ct),
                 "CanvasAnnotation" => await PurgeOwnedAsync(db, db.CanvasAnnotation, id, userGuid, ct),

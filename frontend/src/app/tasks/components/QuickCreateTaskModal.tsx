@@ -14,6 +14,7 @@ import {
 import { DateTimePicker } from "@/components/DateTimePicker";
 import { SearchableMultiSelect } from "@/components/SearchableMultiSelect";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
+import { TaskScheduleFields } from "./TaskScheduleFields";
 import { showToast } from "@/lib/toast";
 import { FALLBACK_TZ, PRIORITY_META } from "../taskUtils";
 
@@ -48,7 +49,16 @@ export function QuickCreateTaskModal({
   const [due, setDue] = useState<string | null>(null);
   const [priority, setPriority] = useState(0);
   const [groupId, setGroupId] = useState("");
+  // 釘選到首頁 / 長期任務（需求 #6：首頁「＋待辦」也要有這些功能）。
+  const [isPinnedToHome, setIsPinnedToHome] = useState(false);
+  // 置頂於 Todo 頁側欄「置頂的任務」分頁（與首頁釘選獨立）。
+  const [isPinnedToTodo, setIsPinnedToTodo] = useState(false);
+  const [isLongTerm, setIsLongTerm] = useState(false);
+  const [targetGranularity, setTargetGranularity] = useState("");
+  const [targetIso, setTargetIso] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // 圖片上傳進行中的數量：>0 時擋「建立」，避免把「〔圖片上傳中 #xxx〕」佔位文字存進 DB。
+  const [uploadingCount, setUploadingCount] = useState(0);
   // 分類清單（以 prop 為基底，可就地新增分類後即時反映）
   const [localGroups, setLocalGroups] = useState<TaskGroup[]>(groups);
   // 標籤（與筆記共用標籤庫）
@@ -75,6 +85,11 @@ export function QuickCreateTaskModal({
     setDue(initial.dueDateTime);
     setPriority(0);
     setGroupId("");
+    setIsPinnedToHome(false);
+    setIsPinnedToTodo(false);
+    setIsLongTerm(false);
+    setTargetGranularity("");
+    setTargetIso(null);
     setSelectedTagIds([]);
   }, [initial]);
 
@@ -92,6 +107,12 @@ export function QuickCreateTaskModal({
 
   const save = async () => {
     if (!title.trim() || saving) return;
+    // 防線放在函式本體（非只有按鈕 disabled）：標題欄 Enter 等所有入口一律受阻，
+    // 避免把「〔圖片上傳中 #xxx〕」佔位文字永久存進 DB。
+    if (uploadingCount > 0) {
+      showToast("圖片上傳中，請稍候再建立", { type: "info" });
+      return;
+    }
     setSaving(true);
     try {
       const created = await createTaskCard({
@@ -102,6 +123,12 @@ export function QuickCreateTaskModal({
         groupId: groupId || undefined,
         plannedDateTime: planned,
         dueDateTime: due,
+        isPinnedToHome,
+        isPinnedToTodo,
+        isLongTerm,
+        // 目標期只在「長期 + 有選粒度」時帶入（與完整編輯器一致）。
+        targetGranularity: isLongTerm && targetGranularity ? targetGranularity : undefined,
+        targetDateTime: isLongTerm && targetGranularity ? targetIso : undefined,
       });
       if (created) {
         // 標籤需在卡片建立後另以 PUT 整組指派（沿用編輯器同一流程）
@@ -109,6 +136,8 @@ export function QuickCreateTaskModal({
           await assignTaskTags(created.id, selectedTagIds);
         }
         showToast("任務已建立", { type: "success" });
+        // 通知其他掛在視窗上的任務清單（例如 Todo 側欄「置頂的任務」）重新載入。
+        window.dispatchEvent(new CustomEvent("zonwiki:tasks-changed"));
         onCreated();
         onClose();
       }
@@ -177,6 +206,20 @@ export function QuickCreateTaskModal({
             color: "var(--text-primary)",
             fontSize: "var(--text-base)",
           }}
+        />
+
+        {/* 釘選到首頁 ｜ 長期任務（＋目標期）：與完整編輯器共用同一組欄位 */}
+        <TaskScheduleFields
+          isPinnedToHome={isPinnedToHome}
+          onPinnedChange={setIsPinnedToHome}
+          isPinnedToTodo={isPinnedToTodo}
+          onPinnedTodoChange={setIsPinnedToTodo}
+          isLongTerm={isLongTerm}
+          onLongTermChange={setIsLongTerm}
+          targetGranularity={targetGranularity}
+          onGranularityChange={setTargetGranularity}
+          targetIso={targetIso}
+          onTargetIsoChange={setTargetIso}
         />
 
         <div style={{ display: "flex", gap: "var(--spacing-3)", flexWrap: "wrap" }}>
@@ -268,7 +311,9 @@ export function QuickCreateTaskModal({
             value={content}
             onChange={setContent}
             minHeight={110}
-            placeholder="內容（可留空，建立後也能再編輯）…"
+            withPreview
+            placeholder="內容（可留空，建立後也能再編輯）…（右上可切換 編輯／並排／預覽）"
+            onUploadingChange={setUploadingCount}
           />
         </div>
 
@@ -276,8 +321,14 @@ export function QuickCreateTaskModal({
           <button onClick={onClose} className="tk-btn" style={{ cursor: "pointer" }}>
             取消
           </button>
-          <button onClick={save} disabled={!title.trim() || saving} className="tk-btn tk-btn--primary" style={{ cursor: "pointer" }}>
-            {saving ? "建立中…" : "建立"}
+          <button
+            onClick={save}
+            disabled={!title.trim() || saving || uploadingCount > 0}
+            className="tk-btn tk-btn--primary"
+            style={{ cursor: "pointer" }}
+            title={uploadingCount > 0 ? "圖片上傳中，請稍候…" : undefined}
+          >
+            {saving ? "建立中…" : uploadingCount > 0 ? "圖片上傳中…" : "建立"}
           </button>
         </div>
       </div>

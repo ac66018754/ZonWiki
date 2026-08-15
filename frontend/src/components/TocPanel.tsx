@@ -8,13 +8,13 @@ import { useDraggable } from '@/hooks/useDraggable';
  * 筆記章節目錄表（浮動、可自由拖曳、可關閉）。
  *
  * 與右下角工具列不同：本面板「可自由移動」（不固定在角落），且可關閉（✕）。
- * 關閉後可從右下角工具列的「📖 目錄」鈕重開，或重新整理頁面（預設開啟）。
+ * 預設不開啟；由右下角工具列的「📖 目錄」鈕開啟/關閉（使用者裁示 2026-07-08）。
  *
  * 功能：
- * - 列出筆記的 h1/h2/h3 章節（依層級縮排）。
+ * - 列出筆記的 h1/h2/h3 章節與 :::toggle 摘要（依層級縮排；純 toggle 結構的筆記也有目錄）。
  * - 顯示「閱讀進度」：已讀過（捲過）的章節、目前正在讀的章節、尚未讀到的章節以不同顏色標示，
  *   左側並有顏色條（已讀=綠、目前=主色、未讀=透明）。
- * - 點章節名稱＝平滑捲動到該標題（超連結般）。
+ * - 點章節名稱＝平滑捲動到該標題（超連結般）；目標在收合的 toggle 內時會先自動展開其祖先。
  *
  * 進度追蹤以 IntersectionObserver 監看各標題在視窗中的位置（rootMargin 偏上，
  * 讓「目前章節」抓的是接近頂端、正在閱讀的那個）。
@@ -79,7 +79,19 @@ export function TocPanel({
   const activeIndex = toc.findIndex((t) => t.id === activeId);
 
   const scrollToHeading = (id: string) => {
-    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    const el = document.getElementById(id);
+    if (!el) return;
+    // 目標可能藏在收合的 <details> 裡（收合時內容 display:none、捲不到）→ 先展開「祖先」details。
+    // 注意：若目標本身是 <summary>（toggle 章節），它收合時仍可見，故從其所屬 details 的「上一層」開始展開，
+    // 不動它自己的開合狀態（點目錄＝帶我過去，不替使用者決定要不要展開該章節）。
+    let start: Element | null = el.parentElement;
+    if (el.tagName === 'SUMMARY') {
+      start = el.closest('details')?.parentElement ?? null;
+    }
+    for (let p: Element | null = start; p; p = p.parentElement) {
+      if (p instanceof HTMLDetailsElement && !p.open) p.open = true;
+    }
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
     setActiveId(id);
   };
 

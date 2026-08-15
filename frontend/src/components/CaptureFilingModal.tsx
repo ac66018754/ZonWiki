@@ -11,6 +11,7 @@ import {
   deleteCapture,
 } from "@/lib/api";
 import { logger } from "@/lib/logger";
+import { noteHref } from "@/lib/noteHref";
 import { useConfirm } from "@/components/ConfirmProvider";
 import { markNoteContextSwitch } from "@/lib/noteNav";
 
@@ -174,7 +175,7 @@ export function CaptureFilingModal({
                   );
                 }
                 const isNote = l.targetType === "note" && !!l.slug;
-                const href = isNote ? `/notes/${l.slug}` : "/tasks";
+                const href = isNote ? noteHref(l.slug!) : "/tasks";
                 return (
                   <Link
                     key={l.id}

@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Serilog;
 using Serilog.Events;
+using ZonWiki.Api.Attachments;
 using ZonWiki.Api.Auth;
 using ZonWiki.Api.Coach;
 using ZonWiki.Api.Endpoints;
@@ -126,6 +127,19 @@ builder.Services.AddTransient<CoachProxyService>();
 
 // 重複規則「到期具現化」背景服務（#17）：每日把母規則的到期發生具現化成可打勾的實體任務卡。
 builder.Services.AddHostedService<RecurringTaskMaterializationService>();
+
+// 筆記渲染快取「啟動一次性收斂」（見 docs/DECISIONS.md 2026-08-08）：GET 的自癒是純記憶體（不落 DB，
+// 防跨 session 假 409），DB 收斂由本服務在啟動後背景跑一次（MigrateAsync 於 app.Run() 前完成，schema 必就緒）。
+// 註冊成 Singleton＋HostedService 同一實例：整合測試可自容器解析、直接呼叫核心方法驗證。
+builder.Services.AddSingleton<NoteRenderMigrationService>();
+builder.Services.AddHostedService(provider => provider.GetRequiredService<NoteRenderMigrationService>());
+
+// 筆記附件（貼圖改存磁碟，內文只放短網址；見 docs/DECISIONS.md 2026-07-08）。
+builder.Services.Configure<AttachmentOptions>(builder.Configuration.GetSection(AttachmentOptions.SectionName));
+builder.Services.AddScoped<AttachmentService>();
+builder.Services.AddSingleton<AttachmentOrphanScanner>();
+// 孤兒附件定期清掃：每日一輪，未被內容引用且超過寬限期者軟刪除（絕不硬刪）。
+builder.Services.AddHostedService<AttachmentOrphanCleanupService>();
 
 var connectionString = builder.Configuration.GetConnectionString(
     DependencyInjection.PostgresConnectionName)
@@ -265,6 +279,8 @@ app.MapNoteTaskLinkEndpoints();
 app.MapEntityLinkEndpoints(); // 通用實體關聯：任務/子任務/筆記/節點 互連
 app.MapNoteMarkEndpoints(); // 筆記文字標註：畫重點/做關聯/寫備註
 app.MapNoteOverlayEndpoints(); // 筆記浮層：便利貼/塗鴉/圖片輪播
+app.MapNoteOverlaySnapshotEndpoints(); // 筆記浮層手動快照（右下角工具列儲存鈕）
+app.MapAttachmentEndpoints(); // 筆記附件：貼上/上傳圖片存磁碟，內文只放短網址
 app.MapQuickLinkEndpoints();
 app.MapCaptureItemEndpoints();
 
@@ -280,6 +296,8 @@ app.MapTtsEndpoints();
 // 英文教練（其他功能群 Phase 3・批次 2）：/ws/coach Live 代理（四護欄）＋場次 REST（開課／清單／取單場）。
 app.MapCoachEndpoints();
 
+// 時間追蹤：記錄每天把時間花在什麼上面（支援 iOS 捷徑 PAT 呼叫）
+app.MapTimeEntryEndpoints();
 app.MapCalendarEndpoints();
 app.MapHomePageEndpoints();
 
@@ -304,6 +322,9 @@ app.MapCanvasSystemEndpoints();
 
 // 全站搜尋端點（I6 - 納入筆記、任務、畫布、節點）
 app.MapSearchEndpoints();
+
+// 問題清單端點（列出被標記為「問題」的浮層元件，支援依分類含子孫過濾）
+app.MapQuestionEndpoints();
 
 // 通用 AI 提問（供開問啦畫布便利貼「繼續問」等無筆記脈絡場景）
 app.MapAiEndpoints();

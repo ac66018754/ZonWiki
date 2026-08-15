@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { TaskCard, NoteSummary, getCalendarView, CalendarViewData } from "@/lib/api";
 import { FloatingPanel } from "@/components/FloatingPanel";
 import { logger } from "@/lib/logger";
+import { useRevealThenOpen } from "./useRevealThenOpen";
 import { dateKeyInTz, FALLBACK_TZ } from "../../tasks/taskUtils";
 import {
   localKey,
@@ -40,6 +41,8 @@ export function CalendarMonthView({
   const [events, setEvents] = useState<CalendarViewData | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedDay, setSelectedDay] = useState<Date | null>(null);
+  // 兩段式點擊：窄任務條先點一下放大看完整標題，再點才開任務。
+  const { revealedId, handleTaskClick } = useRevealThenOpen(onTaskClick);
 
   const userTz = (user as { timeZone?: string } | undefined)?.timeZone || FALLBACK_TZ;
 
@@ -49,6 +52,12 @@ export function CalendarMonthView({
     const out: Date[][] = [];
     for (let i = 0; i < grid.length; i += 7) out.push(grid.slice(i, i + 7));
     return out;
+  }, [grid]);
+
+  // 換月份（grid 變）時先清空內容，讓「換範圍」顯示載入中並套用新表頭；單純背景重抓
+  //（refreshKey 變、grid 不變，如關閉任務彈窗後）則保留現有內容、抓完再換，不卸載、不閃動。
+  useEffect(() => {
+    setEvents(null);
   }, [grid]);
 
   // 抓「整個可見網格範圍」的資料（不是只有當月），跨月與補格的任務才完整。
@@ -86,7 +95,9 @@ export function CalendarMonthView({
 
   const weekDayNames = ["日", "一", "二", "三", "四", "五", "六"];
 
-  if (loading) {
+  // 只有「首次載入（尚無資料）」才顯示載入中並卸載內容；背景重抓（如關閉任務彈窗後 refreshKey 變動）
+  // 保留現有內容顯示、抓完再換上新資料——避免整塊卸載重掛造成「閃一下＋捲動跳回」。
+  if (loading && !events) {
     return <div style={{ textAlign: "center", padding: "var(--spacing-8)" }}>載入中...</div>;
   }
 
@@ -217,15 +228,17 @@ export function CalendarMonthView({
                     const c = barColors(s.task);
                     const leftPct = (s.startCol / 7) * 100;
                     const widthPct = (s.span / 7) * 100;
+                    const revealed = revealedId === s.task.id;
                     return (
                       <div
                         key={`${s.task.id}-${i}`}
+                        data-cal-task
                         title={s.task.title}
                         onClick={
                           onTaskClick
                             ? (e) => {
                                 e.stopPropagation();
-                                onTaskClick(s.task.id);
+                                handleTaskClick(s.task.id, e.currentTarget);
                               }
                             : undefined
                         }
@@ -234,8 +247,25 @@ export function CalendarMonthView({
                           left: `calc(${leftPct}% + 3px)`,
                           width: `calc(${widthPct}% - 6px)`,
                           top: `${HEADER_H + s.lane * BAR_STEP + 2}px`,
-                          height: `${BAR_STEP - 5}px`,
-                          lineHeight: `${BAR_STEP - 5}px`,
+                          // 放大中：解除單行截斷、可換行顯示完整標題、疊到最上層加陰影標示。
+                          ...(revealed
+                            ? {
+                                minHeight: `${BAR_STEP - 5}px`,
+                                height: "auto",
+                                lineHeight: 1.3,
+                                whiteSpace: "normal",
+                                overflow: "visible",
+                                zIndex: 20,
+                                boxShadow: "var(--shadow-lg)",
+                                outline: "2px solid var(--action-primary-bg)",
+                              }
+                            : {
+                                height: `${BAR_STEP - 5}px`,
+                                lineHeight: `${BAR_STEP - 5}px`,
+                                whiteSpace: "nowrap",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                              }),
                           background: c.bg,
                           color: c.fg,
                           border: `1px solid ${c.border}`,
@@ -246,9 +276,6 @@ export function CalendarMonthView({
                           padding: "0 6px",
                           fontSize: "var(--text-xs)",
                           fontWeight: 600,
-                          whiteSpace: "nowrap",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
                           textDecoration: s.task.status === "done" ? "line-through" : "none",
                           cursor: onTaskClick ? "pointer" : "default",
                           pointerEvents: "auto",

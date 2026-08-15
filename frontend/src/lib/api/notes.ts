@@ -7,6 +7,7 @@
 
 import { withAiQueueNotify } from "../aiQueue";
 import { ConflictError } from "../errors";
+import { encodeSlugPath } from "../noteHref";
 import { fetchJson } from "./client";
 import { pollAskQueueUntilDone } from "./askQueue";
 import type { NoteCategory } from "./categories";
@@ -74,6 +75,8 @@ export interface NoteDetail {
   isDraft?: boolean;
   /** 樂觀鎖版本（PostgreSQL xmin，#4/#34）；保存時原封帶回為 baseVersion 供後端偵測併發衝突 */
   version?: number;
+  /** 內容雜湊（SHA-256）：包4 Detached 回寫的「當次渲染基準」防過期用 */
+  contentHash?: string;
   /** @deprecated 相容舊欄位名 */
   categoryId?: string;
   /** @deprecated 相容舊欄位名 */
@@ -82,9 +85,53 @@ export interface NoteDetail {
   filePath?: string;
 }
 
+/**
+ * 消歧異候選：某個 slug 目前可能指向的一篇筆記（對應後端 SlugCandidateDto）。
+ */
+export interface SlugCandidate {
+  /** 筆記識別碼（前端以此 GUID 直達，永不再歧義）。 */
+  id: string;
+  /** 筆記目前的標題。 */
+  title: string;
+  /** 筆記目前的（活著的）slug。 */
+  slug: string;
+  /** 是否為「現在正用這個名字」的那一篇（true＝活 slug 命中、false＝僅舊 slug 別名命中）。 */
+  isCurrentHolder: boolean;
+  /** 別名命中者：讓出此 slug 當下的標題（「曾用此名（現名《…》）」辨識用）；現用者為 null。 */
+  originalTitle: string | null;
+  /** 最後更新時間（UTC ISO 字串；候選排序用）。 */
+  updatedAt: string;
+}
+
+/**
+ * 依 slug 解析筆記的結果（GET /api/notes/{slug} 的統一回應形狀）。
+ * - kind="note"：<code>note</code> 有值、<code>matchedByAlias</code> 表示是否經舊 slug（別名）命中；
+ * - kind="ambiguous"：<code>candidates</code> 列出所有候選、<code>requestedSlug</code> 為輸入的 slug。
+ */
+export type NoteResolution =
+  | { kind: 'note'; matchedByAlias: boolean; note: NoteDetail }
+  | { kind: 'ambiguous'; requestedSlug: string; candidates: SlugCandidate[] };
+
 // ============================================================================
 // API 方法 — 筆記與標籤的關聯（標籤庫本身的 CRUD 見 tags.ts）
 // ============================================================================
+
+/**
+ * 更新筆記分類（整組取代；閱讀模式就地編輯與拖曳「切換分類」用）。
+ * 走獨立端點——不動 contentRaw、不產生版本快照（NoteRevision）、無 baseVersion/409 問題。
+ */
+export async function setNoteCategories(
+  noteId: string,
+  categoryIds: string[]
+): Promise<boolean> {
+  // 後端 PUT /api/notes/{id}/categories 的 body 直接是「分類 ID 陣列」(List<Guid>)，
+  // 與 updateNoteTags 同款——送 { categoryIds } 物件會 400。
+  const r = await fetchJson(`/api/notes/${encodeURIComponent(noteId)}/categories`, {
+    method: 'PUT',
+    body: JSON.stringify(categoryIds),
+  });
+  return r.success;
+}
 
 /**
  * 更新標籤（用於分配給筆記）
@@ -160,28 +207,51 @@ export async function listNotes(params?: {
 
 /**
  * 標記筆記「最後打開時間」（開啟筆記詳情時呼叫；輕量、不影響編輯時間）。
- * 失敗時靜默忽略（純排序輔助，不應打斷閱讀）。
+ *
+ * 回傳「更新後的最新併發版本（xmin）」：標記打開會 UPDATE 該列 → xmin 必然前進，
+ * 使前端載入時記下的 Version 立刻過期。呼叫端應以此回傳值把 baseVersion 同步成最新，
+ * 否則存檔會撲空、收到假的 409「此筆記已被其他來源修改」（見後端 /opened 註解）。
+ *
+ * @param noteId 筆記識別碼。
+ * @returns 更新後的最新版本；失敗時回 null（純排序輔助，不應打斷閱讀，靜默忽略）。
  */
-export async function markNoteOpened(noteId: string): Promise<void> {
+export async function markNoteOpened(noteId: string): Promise<number | null> {
   try {
-    await fetchJson<{ id: string }>(`/api/notes/${noteId}/opened`, { method: "POST" });
+    const r = await fetchJson<{ id: string; version: number }>(
+      `/api/notes/${noteId}/opened`,
+      { method: "POST" }
+    );
+    return r.data?.version ?? null;
   } catch {
-    // 忽略
+    return null;
   }
 }
 
 /**
- * 取得單一筆記詳細資訊
+ * 依 slug 解析單篇筆記（slug 連動標題 + 舊 slug 別名 + 消歧異）。
+ *
+ * 回傳統一的 {@link NoteResolution}：唯一命中→kind="note"（含 matchedByAlias）；
+ * 名字被多篇取用過→kind="ambiguous"（含 candidates）；404→null。
+ *
+ * slug 可能含「/」（對應子資料夾層級）。逐段 encode、保留「/」當路徑分隔（含 # fragment 陷阱與
+ * 畸形 Unicode 防禦），對應後端 catch-all 路由 GET /api/notes/{*slug}（整段 slash 視為 slug 的一部分）。
+ * 編碼邏輯與頁面連結共用 noteHref 的 encodeSlugPath，避免同一套規則兩處各寫一次而漂移（收斂 DRY）。
  */
-export async function getNote(slug: string): Promise<NoteDetail | null> {
-  // slug 可能含「/」（對應子資料夾層級）。逐段 encode、保留「/」當路徑分隔，
-  // 對應後端 catch-all 路由 GET /api/notes/{*slug}（整段 slash 視為 slug 的一部分）。
-  const encodedSlug = slug
-    .split('/')
-    .map((segment) => encodeURIComponent(segment))
-    .join('/');
-  const r = await fetchJson<NoteDetail>(`/api/notes/${encodedSlug}`);
+export async function getNote(slug: string): Promise<NoteResolution | null> {
+  const r = await fetchJson<NoteResolution>(`/api/notes/${encodeSlugPath(slug)}`);
   return r.data ?? null;
+}
+
+/**
+ * 以筆記 id（GUID）直達取得筆記詳情。
+ *
+ * 後端 slug 解析支援「把 GUID 當 slug」的錨點路徑，且 GUID 直達永不歧義（只會命中本人那一篇），
+ * 故本函式只在 kind="note" 時回 note、其餘（理論上不會發生的 ambiguous / 查無）回 null。
+ * 供「已知 id 的重抓」——存檔成功重抓、409 衝突重載、編輯彈窗存檔重抓——避免落入消歧異頁。
+ */
+export async function getNoteById(id: string): Promise<NoteDetail | null> {
+  const resolution = await getNote(id);
+  return resolution && resolution.kind === 'note' ? resolution.note : null;
 }
 
 /**
@@ -199,6 +269,22 @@ export async function createNote(payload: {
     body: JSON.stringify(payload),
   });
   return r.data ?? null;
+}
+
+/**
+ * 複製一則筆記：以來源筆記建立一則新筆記（標題加「(副本)」），
+ * 帶入原始 Markdown 內容、分類與標籤。後端會為新筆記另產生 slug。
+ * 註：不複製留言／編輯歷史（那是原筆記的軌跡），畫記/浮層貼圖亦不複製（屬原筆記的疊層資料）。
+ * @param source 來源筆記詳情（需含 contentRaw、categories、tags）。
+ * @returns 新建立的筆記詳情（含新 slug）；失敗回 null。
+ */
+export async function duplicateNote(source: NoteDetail): Promise<NoteDetail | null> {
+  return createNote({
+    title: `${source.title} (副本)`,
+    contentRaw: source.contentRaw ?? "",
+    categoryIds: (source.categories ?? []).map((c) => c.id),
+    tagIds: (source.tags ?? []).map((t) => t.id),
+  });
 }
 
 /**
@@ -258,10 +344,12 @@ export interface NoteRevision {
   title: string;
   /** 該版本的原始內容 */
   contentRaw: string;
-  /** 建立時間 (UTC) */
+  /** 建立時間 (UTC) — 時間窗合併時維持鏈首時間 */
   createdDateTime: string;
   /** 建立者 ID */
   createdUser: string;
+  /** 最後變更時間 (UTC) — 時間窗合併會前進此欄；時間軸排序/分組一律以此欄為準 */
+  updatedDateTime: string;
 }
 
 /**
@@ -276,8 +364,17 @@ export interface Backlink {
   sourceNoteTitle: string;
   /** 來源筆記 slug */
   sourceNoteSlug: string;
-  /** 連結文字 (anchor text，來自 [[X]] 中的 X) */
+  /** 連結文字 (anchor text)：wiki=[[X]] 中的 X；mark=框選段落；entity=空字串 */
   anchorText: string;
+  /** 來源型別：wiki（內文 [[X]]）｜mark（框選段落關聯）｜entity（整篇關聯）；舊資料相容故可選 */
+  kind?: "wiki" | "mark" | "entity";
+  /** mark 來源的標註 ID（供組 ?mark= 深連結跳回段落）；其餘來源為 null */
+  markId?: string | null;
+  /**
+   * （僅 mark 來源）該關聯指向的「本篇段落錨點」ID：有值時前端跳轉改用 ?mark={targetMarkId}
+   * 精準落在被引用段落；null＝整篇關聯（落頁頂）。其餘來源恆為 null。
+   */
+  targetMarkId?: string | null;
 }
 
 /**
@@ -299,8 +396,8 @@ export interface AiTransformResult {
  */
 export interface NoteMark {
   id: string;
-  /** 種類："highlight" | "link" | "annotation" */
-  kind: 'highlight' | 'link' | 'annotation';
+  /** 種類："highlight" | "link" | "annotation" | "anchor"（純錨點＝段落級關聯目標） */
+  kind: 'highlight' | 'link' | 'annotation' | 'anchor';
   anchorText: string;
   anchorStart: number;
   anchorEnd: number;
@@ -321,11 +418,15 @@ export interface NoteMark {
   targetSlug?: string | null;
   /** 備註文字（annotation 用） */
   text?: string | null;
+  /** 段落級關聯的目標錨點 ID（link 用；null＝整篇關聯） */
+  targetMarkId?: string | null;
+  /** （僅 kind="anchor"）此錨點被哪些來源筆記引用（去重、依標題排序）；其他 kind 為空陣列 */
+  referencedBy?: string[];
 }
 
 /** 建立筆記標註的請求內容。 */
 export interface CreateNoteMarkInput {
-  kind: 'highlight' | 'link' | 'annotation';
+  kind: 'highlight' | 'link' | 'annotation' | 'anchor';
   anchorText: string;
   anchorStart: number;
   anchorEnd: number;
@@ -336,6 +437,8 @@ export interface CreateNoteMarkInput {
   targetId?: string;
   targetUrl?: string;
   text?: string;
+  /** 段落級關聯的目標錨點 ID（link 用） */
+  targetMarkId?: string;
 }
 
 /** 框選提問的結果（新建的答案筆記 + 建立的關聯標註）。 */
@@ -405,6 +508,26 @@ export async function askNoteSelectionAnswer(
 }
 
 /**
+ * 問題功能：以「整篇筆記內容」為脈絡向 AI 提問，只取回答案文字（不落地），
+ * 由前端放進答題彈窗的「回答」框。完全模仿 {@link askNoteSelectionAnswer} 的 POST→輪詢→回文字流程。
+ */
+export async function askNoteQuestion(
+  noteId: string,
+  question: string
+): Promise<string | null> {
+  return withAiQueueNotify(async () => {
+    const start = await fetchJson<{ sessionId: string }>(
+      `/api/notes/${encodeURIComponent(noteId)}/ask-question`,
+      { method: 'POST', body: JSON.stringify({ question }) }
+    );
+    const sessionId = start.data?.sessionId;
+    if (!sessionId) return null;
+    const detail = await pollAskQueueUntilDone(sessionId);
+    return detail.resultText ?? null;
+  });
+}
+
+/**
  * 通用 AI 提問（不綁定筆記/節點）：以呼叫端組好的 context + question 請 AI 回答。
  * 用於開問啦畫布便利貼的「繼續問」（沒有單一筆記脈絡）。
  */
@@ -458,6 +581,48 @@ export async function deleteNoteMark(markId: string): Promise<boolean> {
 }
 
 /**
+ * 回寫某標註的「錨點失效狀態（Detached）」。
+ *
+ * 包4 錨點保護：Detached 由前端每次真實渲染後計算並回寫（瀏覽器為唯一座標系，見 DECISIONS）。
+ * 帶「當次渲染所依據的 contentHash」防過期——後端比對非最新即忽略（no-op），
+ * 不讓停在舊內容的分頁覆蓋另一分頁剛寫對的值。fire-and-forget、失敗靜默。
+ *
+ * @param markId 標註識別碼。
+ * @param detached 當次渲染下是否失去定位。
+ * @param contentHash 當次渲染所依據的筆記 contentHash。
+ * @returns 是否成功（含 no-op 也算成功）；網路/權限失敗回 false。
+ */
+export async function patchNoteMarkDetached(
+  markId: string,
+  detached: boolean,
+  contentHash: string
+): Promise<boolean> {
+  try {
+    const r = await fetchJson(`/api/notes/marks/${encodeURIComponent(markId)}/detached`, {
+      method: 'PATCH',
+      body: JSON.stringify({ detached, contentHash }),
+    });
+    return r.success;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 純轉換（dry-run）渲染：把 Markdown 原文轉成 HTML 但不落地。
+ * 存檔攔截以此取得「新內容」的權威 HTML（＝正式儲存管線同一函式），再讀 textContent 預跑 reAnchor。
+ * @param contentRaw 要渲染的 Markdown 原文。
+ * @returns 渲染後 HTML；失敗回 null。
+ */
+export async function renderNoteDryRun(contentRaw: string): Promise<string | null> {
+  const r = await fetchJson<{ contentHtml: string }>(`/api/notes/render`, {
+    method: 'POST',
+    body: JSON.stringify({ contentRaw }),
+  });
+  return r.data?.contentHtml ?? null;
+}
+
+/**
  * 筆記浮層元件（便利貼 / 塗鴉 / 圖片輪播；疊在內文最上層，持久化於 DB）。
  */
 export interface NoteOverlayItem {
@@ -475,6 +640,10 @@ export interface NoteOverlayItem {
   text?: string | null;
   /** 型別專屬資料 JSON：drawing→筆畫；slide→圖片網址陣列；text→{bg,fontSize,rotation} */
   dataJson?: string | null;
+  /** 是否被標記為「問題」（僅 sticky / text 適用）。 */
+  isQuestion?: boolean;
+  /** 問題的回答內容（可空；空字串／null 皆視為未作答）。 */
+  questionAnswer?: string | null;
 }
 
 /** 建立浮層元件的輸入。 */
@@ -527,6 +696,43 @@ export async function deleteNoteOverlay(itemId: string): Promise<boolean> {
 }
 
 /**
+ * 問題清單項目（被標記為「問題」的浮層元件；供分類問題清單頁集中檢視）。
+ */
+export interface NoteQuestionListItem {
+  /** 浮層元件（問題）識別碼。 */
+  itemId: string;
+  /** 所屬筆記識別碼。 */
+  noteId: string;
+  /** 所屬筆記標題。 */
+  noteTitle: string;
+  /** 所屬筆記 slug（供導航 + ?overlay 定位）。 */
+  noteSlug: string;
+  /** 浮層型別："sticky"（便利貼）/ "text"（T 文字框）。 */
+  kind: 'sticky' | 'text';
+  /** 問題顯示標題。 */
+  questionTitle: string;
+  /** 問題完整文字。 */
+  questionText: string;
+  /** 問題回答內容（可空）。 */
+  questionAnswer?: string | null;
+  /** 是否已作答。 */
+  hasAnswer: boolean;
+  /** 所屬筆記的分類識別碼陣列（供前端分類篩選；空＝未分類）。 */
+  categoryIds: string[];
+  /** 問題建立時間（UTC ISO 字串）。 */
+  createdDateTime: string;
+}
+
+/**
+ * 列出問題清單：不帶 categoryId＝使用者全部問題；帶了＝該分類與其所有子孫分類的問題。
+ */
+export async function listQuestions(categoryId?: string | null): Promise<NoteQuestionListItem[]> {
+  const query = categoryId ? `?categoryId=${encodeURIComponent(categoryId)}` : '';
+  const r = await fetchJson<NoteQuestionListItem[]>(`/api/questions${query}`);
+  return r.data ?? [];
+}
+
+/**
  * 取得筆記編輯歷史（版本列表）
  */
 export async function getNoteRevisions(noteId: string): Promise<NoteRevision[]> {
@@ -534,6 +740,70 @@ export async function getNoteRevisions(noteId: string): Promise<NoteRevision[]> 
     `/api/notes/${encodeURIComponent(noteId)}/revisions`
   );
   return r.data ?? [];
+}
+
+/** 筆記活動紀錄（歷史分頁合併時間軸用；含分類/標籤/關聯等變更明細）。 */
+export interface NoteActivity {
+  /** 活動識別碼 */
+  id: string;
+  /** 動作：created / updated / deleted / restored */
+  action: string;
+  /** 動作當下的筆記標題 */
+  title: string;
+  /** 變更明細摘要（分類/標籤/關聯/欄位；可空） */
+  detail: string | null;
+  /** 操作來源（web 或 API 權杖名） */
+  source: string;
+  /** 發生時間（UTC ISO 字串） */
+  at: string;
+}
+
+/**
+ * 取得「這篇筆記」的完整活動紀錄（倒序、上限 200 筆）。
+ */
+export async function getNoteActivities(noteId: string): Promise<NoteActivity[]> {
+  const r = await fetchJson<NoteActivity[]>(
+    `/api/notes/${encodeURIComponent(noteId)}/activities`
+  );
+  return r.data ?? [];
+}
+
+/** 浮層手動快照（清單項目；不含重量級 JSON 內容）。 */
+export interface NoteOverlaySnapshotListItem {
+  /** 快照識別碼 */
+  id: string;
+  /** 快照序號（同一筆記內遞增） */
+  snapshotNo: number;
+  /** 內容摘要（例如「便利貼2・文字框1・畫記3」） */
+  summary: string;
+  /** 儲存時間（UTC ISO 字串） */
+  createdDateTime: string;
+}
+
+/**
+ * 取得筆記的浮層快照清單（依序號倒序）。
+ */
+export async function listOverlaySnapshots(
+  noteId: string
+): Promise<NoteOverlaySnapshotListItem[]> {
+  const r = await fetchJson<NoteOverlaySnapshotListItem[]>(
+    `/api/notes/${encodeURIComponent(noteId)}/overlay/snapshots`
+  );
+  return r.data ?? [];
+}
+
+/**
+ * 建立浮層快照：把「當下」的全部浮層元件與畫記由伺服器端讀取保存一份。
+ * 回傳新快照摘要；失敗（含並發 409）回 null，由呼叫端提示重試。
+ */
+export async function createOverlaySnapshot(
+  noteId: string
+): Promise<NoteOverlaySnapshotListItem | null> {
+  const r = await fetchJson<NoteOverlaySnapshotListItem>(
+    `/api/notes/${encodeURIComponent(noteId)}/overlay/snapshots`,
+    { method: 'POST' }
+  );
+  return r.success ? (r.data ?? null) : null;
 }
 
 /**

@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import type { VocabularyWord } from "@/lib/api";
 import { updateVocabulary, deleteVocabulary } from "@/lib/api";
+import { noteHref } from "@/lib/noteHref";
 import { Input } from "@/components/Input";
 import { Button } from "@/components/Button";
 import { useConfirm } from "@/components/ConfirmProvider";
@@ -61,7 +62,7 @@ function SourceNoteLink({ word }: { word: VocabularyWord }) {
       <div style={labelStyle}>
         來源：
         <Link
-          href={`/notes/${encodeURIComponent(word.sourceNoteSlug)}`}
+          href={noteHref(word.sourceNoteSlug)}
           style={{ color: "var(--action-secondary-fg)", textDecoration: "underline" }}
         >
           {word.sourceNoteTitle ?? "來源筆記"}

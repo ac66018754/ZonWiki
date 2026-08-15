@@ -37,10 +37,11 @@ export interface LeadingSlot {
 /**
  * 共用的右下角手繪工具列（筆記頁與開問啦畫布共用同一版面，避免兩份走樣）。
  *
- * 版面固定為三列（依使用者規格）：
- *   Row1：目錄/工具箱 ｜ 便利貼 ｜ 圖片板
- *   Row2：畫筆 ｜ 螢光筆 ｜ 直線 ｜ 矩形 ｜ 橢圓 ｜ 文字
+ * 版面固定為四列（依使用者規格，2026-08-10 改版：加鍵帽提示後原三列會跑版）：
+ *   Row1：文字框 T ｜ ＋便利貼 ｜ ＋圖片板（新增類）
+ *   Row2：畫筆 ｜ 螢光筆 ｜ 直線 ｜ 矩形 ｜ 橢圓
  *   Row3：局部橡皮擦 ｜ 整體橡皮擦 ｜ 框選橡皮擦 ｜ 清除全部手繪
+ *   Row4：目錄/工具箱（leading）｜ 各端常駐鈕（筆記＝歸位、儲存快照）
  * 之後是「情境控制列」（顏色/線寬/透明度/虛線/微調提示 + 各端專屬按鈕 + 完成），
  * 以及點顏色球球展開的完整色盤（往上開）。
  *
@@ -50,6 +51,7 @@ export interface LeadingSlot {
 export function DrawingToolbar({
   position,
   maxWidth = 320,
+  defaultCollapsed = false,
   leading,
   onAddSticky,
   onAddSlide,
@@ -66,6 +68,9 @@ export function DrawingToolbar({
   onToggleDash,
   highlightOpacity,
   onHighlightOpacityChange,
+  highlightStraight,
+  onToggleHighlightStraight,
+  adjustHint,
   eraseRadius,
   selectedShapeIdx,
   hasShapes,
@@ -73,13 +78,20 @@ export function DrawingToolbar({
   drawingActive,
   onDone,
   extraControls,
+  persistentControls,
   topContent,
   testIdPrefix,
+  shortcutKeys,
 }: {
   /** 固定定位（兩端不同：筆記 bottom:24/right:24、開問啦 bottom:168/right:16）。 */
   position: { bottom: number; right: number };
   /** 面板最大寬度。 */
   maxWidth?: number;
+  /**
+   * 初始是否收合（預設 false＝展開）。筆記閱讀頁在手機（≤768px）傳 true——
+   * 四列工具列會蓋住 393px 螢幕下方約 1/3 的閱讀區；開問啦畫布（工具型頁面）不傳、維持展開。
+   */
+  defaultCollapsed?: boolean;
   leading: LeadingSlot;
   onAddSticky: () => void;
   onAddSlide: () => void;
@@ -97,6 +109,12 @@ export function DrawingToolbar({
   /** 螢光筆透明度（0~1）。 */
   highlightOpacity: number;
   onHighlightOpacityChange: (o: number) => void;
+  /** 螢光筆「直線模式」是否開啟（可選；與 onToggleHighlightStraight 一起提供才顯示開關）。 */
+  highlightStraight?: boolean;
+  /** 切換螢光筆直線模式（可選；未提供＝該端不支援此功能，不顯示開關）。 */
+  onToggleHighlightStraight?: () => void;
+  /** 「調整中」的提示文字（可選；提供時取代預設的「調整剛畫的圖形」提示）。 */
+  adjustHint?: string;
   /** 局部橡皮擦目前半徑（顯示用）。 */
   eraseRadius: number;
   /** 「剛畫完、可即時微調」的形狀索引（null＝無）。 */
@@ -107,21 +125,34 @@ export function DrawingToolbar({
   /** 是否正在使用某個繪圖工具。 */
   drawingActive: boolean;
   onDone: () => void;
-  /** 各端專屬的額外控制（例如筆記的「歸位 / ＋高 / −高」）。 */
+  /** 各端專屬的額外控制（例如筆記的「＋高 / −高」）；有值才會出現情境控制列。 */
   extraControls?: React.ReactNode;
+  /** 常駐於 Row4 尾端（leading 之後）的控制（例如筆記的「↺ 歸位」「💾 儲存浮層快照」）；不影響情境控制列的條件渲染。 */
+  persistentControls?: React.ReactNode;
   /** 疊在工具列「上方」的內容（例如選取文字框時的屬性面板）。 */
   topContent?: React.ReactNode;
   /** data-testid 前綴（筆記＝overlay、開問啦＝canvas-anno）。 */
   testIdPrefix: string;
+  /**
+   * 各按鈕的快捷鍵鍵帽提示（顯示用大寫；未提供的鍵不顯示提示）。
+   * 鍵名：繪圖工具用 DrawTool id（pen/highlight/…/erase-box），
+   * 另有 text（T 文字框）、sticky（便利貼）、slide（圖片板）、leading（第一格）。
+   * 由父層以 useShortcutKeyCaps 算好傳入（隨使用者改鍵即時更新）。
+   */
+  shortcutKeys?: Partial<
+    Record<Exclude<DrawTool, null> | 'text' | 'sticky' | 'slide' | 'leading', string>
+  >;
 }) {
   const isHighlight = tool === 'highlight';
   const showColor = isColorTool(tool);
 
-  // 整個工具列的「收合」狀態（預設展開）。收合後只剩右上角的展開鈕，省畫面、避免擋住內容。
+  // 整個工具列的「收合」狀態（預設展開；呼叫端可用 defaultCollapsed 覆寫初始值——
+  // 筆記閱讀頁在手機傳 true，開問啦畫布維持展開，見各呼叫端）。
+  // lazy 初始化只在首次 render 取一次 defaultCollapsed。
   // 為純呈現元件的局部 UI 狀態，與繪圖/便利貼等業務狀態無關，故放元件內部即可。
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => defaultCollapsed);
 
-  /** Row2 的繪圖工具（含「文字」動作鈕）。 */
+  /** Row2 的繪圖工具（文字框 T 已移至 Row1）。 */
   const drawTools: [Exclude<DrawTool, null>, string, string][] = [
     ['pen', '✏️', '畫筆（自由筆）'],
     ['highlight', '🖍️', '螢光筆（半透明，可調透明度）'],
@@ -136,20 +167,34 @@ export function DrawingToolbar({
     ['erase-box', '⬚', '橡皮擦：框選擦除（框到哪、那裏消失，同一形狀不連帶整個刪除）'],
   ];
 
+  // 加上鍵帽提示後按鈕變寬：改成「整顆按鈕為單位換行」（wrap），
+  // 並在各按鈕上禁止內部斷行（whiteSpace:nowrap）——否則 CJK 標籤（如「儲存」）會被逐字拆行。
   const rowStyle: React.CSSProperties = {
-    display: 'flex', gap: 4, alignItems: 'center', justifyContent: 'flex-start', flexWrap: 'nowrap',
+    display: 'flex', gap: 4, alignItems: 'center', justifyContent: 'flex-start', flexWrap: 'wrap',
   };
+
+  /** 鍵帽提示樣式：縮小字級但「繼承按鈕文字色」（不降透明度，維持對比可讀）。 */
+  const keyCapStyle: React.CSSProperties = { fontSize: 10, lineHeight: 1, marginLeft: 1 };
+
+  /** 按鈕內的鍵帽提示，例如 (6)；沒有配鍵就不渲染。 */
+  const keyCapHint = (cap: string | undefined) =>
+    cap ? <span style={keyCapStyle}>({cap})</span> : null;
+
+  /** 滑鼠提示尾巴加上快捷鍵說明。 */
+  const withKeyTitle = (label: string, cap: string | undefined) =>
+    cap ? `${label}（快捷鍵 ${cap}）` : label;
 
   const renderToolBtn = ([t, icon, label]: [Exclude<DrawTool, null>, string, string]) => (
     <button
       key={t}
       className={`tk-btn ${tool === t ? 'tk-btn--primary' : ''}`}
-      style={{ cursor: 'pointer' }}
-      title={label}
+      style={{ cursor: 'pointer', whiteSpace: 'nowrap' }}
+      title={withKeyTitle(label, shortcutKeys?.[t])}
       onClick={() => onSelectTool(t)}
       data-testid={`${testIdPrefix}-tool-${t}`}
     >
       {icon}
+      {keyCapHint(shortcutKeys?.[t])}
     </button>
   );
 
@@ -164,7 +209,9 @@ export function DrawingToolbar({
       <div style={{
         display: 'flex', flexDirection: 'column', gap: 4,
         background: 'var(--bg-surface)', border: '1px solid var(--border-default)',
-        borderRadius: 'var(--radius-md)', padding: 4, boxShadow: 'var(--shadow-md)', maxWidth,
+        borderRadius: 'var(--radius-md)', padding: 4, boxShadow: 'var(--shadow-md)',
+        // 手機視口夾取：380px 面板＋右緣 24px 在 393px 螢幕會把左緣切出畫面外。
+        maxWidth: `min(${maxWidth}px, calc(100vw - ${position.right + 12}px))`,
       }}>
         {/* 右上角：收合／展開整個工具列（預設展開）。收合時順手結束繪圖，避免工具列收起、畫布卻仍鎖住。 */}
         <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
@@ -189,33 +236,25 @@ export function DrawingToolbar({
 
         {!collapsed && (
           <>
-        {/* Row1：目錄/工具箱 ｜ 便利貼 ｜ 圖片板 */}
+        {/* Row1：文字框 T ｜ ＋便利貼 ｜ ＋圖片板（新增類） */}
         <div style={rowStyle}>
-          <button
-            className={`tk-btn ${leading.active ? 'tk-btn--primary' : ''}`}
-            style={{ cursor: 'pointer' }}
-            onClick={leading.onClick}
-            title={leading.title}
-            data-testid={leading.testId}
-          >
-            {leading.label}
-          </button>
-          <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={onAddSticky} title="新增便利貼" data-testid={`${testIdPrefix}-add-sticky`}>＋便利貼</button>
-          <button className="tk-btn" style={{ cursor: 'pointer' }} onClick={onAddSlide} title="新增圖片板（可放多張圖、手動切換）" data-testid={`${testIdPrefix}-add-slide`}>＋圖片板</button>
-        </div>
-
-        {/* Row2：畫筆 ｜ 螢光筆 ｜ 直線 ｜ 矩形 ｜ 橢圓 ｜ 文字 */}
-        <div style={rowStyle}>
-          {drawTools.map(renderToolBtn)}
           <button
             className="tk-btn"
-            style={{ cursor: 'pointer', fontWeight: 700 }}
+            style={{ cursor: 'pointer', fontWeight: 700, whiteSpace: 'nowrap' }}
             onClick={onAddText}
-            title="新增純文字框（可打字、設背景顏色/透明、旋轉縮放、調字級字色）"
+            title={withKeyTitle('新增純文字框（可打字、設背景顏色/透明、旋轉縮放、調字級字色）', shortcutKeys?.text)}
             data-testid={`${testIdPrefix}-add-text`}
           >
             T
+            {keyCapHint(shortcutKeys?.text)}
           </button>
+          <button className="tk-btn" style={{ cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={onAddSticky} title={withKeyTitle('新增便利貼', shortcutKeys?.sticky)} data-testid={`${testIdPrefix}-add-sticky`}>＋便利貼{keyCapHint(shortcutKeys?.sticky)}</button>
+          <button className="tk-btn" style={{ cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={onAddSlide} title={withKeyTitle('新增圖片板（可放多張圖、手動切換）', shortcutKeys?.slide)} data-testid={`${testIdPrefix}-add-slide`}>＋圖片板{keyCapHint(shortcutKeys?.slide)}</button>
+        </div>
+
+        {/* Row2：畫筆 ｜ 螢光筆 ｜ 直線 ｜ 矩形 ｜ 橢圓 */}
+        <div style={rowStyle}>
+          {drawTools.map(renderToolBtn)}
         </div>
 
         {/* Row3：局部橡皮擦 ｜ 整體橡皮擦 ｜ 框選橡皮擦 ｜ 清除全部手繪 */}
@@ -223,7 +262,7 @@ export function DrawingToolbar({
           {eraseTools.map(renderToolBtn)}
           <button
             className="tk-btn"
-            style={{ cursor: 'pointer', opacity: hasShapes ? 1 : 0.4 }}
+            style={{ cursor: 'pointer', opacity: hasShapes ? 1 : 0.4, whiteSpace: 'nowrap' }}
             onClick={onClear}
             disabled={!hasShapes}
             title="清除全部手繪（可 Ctrl+Z 復原）"
@@ -233,17 +272,45 @@ export function DrawingToolbar({
           </button>
         </div>
 
+        {/* Row4：目錄/工具箱（leading）｜ 各端常駐鈕（筆記＝歸位、儲存快照） */}
+        <div style={rowStyle}>
+          <button
+            className={`tk-btn ${leading.active ? 'tk-btn--primary' : ''}`}
+            style={{ cursor: 'pointer', whiteSpace: 'nowrap' }}
+            onClick={leading.onClick}
+            title={withKeyTitle(leading.title, shortcutKeys?.leading)}
+            data-testid={leading.testId}
+          >
+            {leading.label}
+            {keyCapHint(shortcutKeys?.leading)}
+          </button>
+          {persistentControls}
+        </div>
+
         {/* 情境控制列：顏色／線寬／透明度／虛線／微調提示 + 各端專屬鈕 + 完成 */}
         {(showColor || tool === 'erase-area' || drawingActive || extraControls) && (
           <div style={{ ...rowStyle, flexWrap: 'wrap', borderTop: '1px solid var(--border-default)', paddingTop: 4 }}>
             {showColor && (
+              // 「開色盤」按鈕做成明顯的膠囊（色點＋🎨＋▾ 展開箭頭），並在展開時高亮，
+              // 避免使用者不知道點哪顆才會彈出色盤。
               <button
-                title={isHighlight ? '螢光筆顏色' : '畫筆顏色'}
+                title={isHighlight ? '螢光筆顏色（點此開／收色盤）' : '畫筆顏色（點此開／收色盤）'}
                 onClick={onTogglePenColor}
                 data-testid={`${testIdPrefix}-pen-color`}
                 data-draw-colorbtn
-                style={{ width: 18, height: 18, flexShrink: 0, borderRadius: '50%', background: penColor, border: '1px solid var(--border-strong, #999)', cursor: 'pointer' }}
-              />
+                aria-label="開啟顏色色盤"
+                aria-expanded={showPenColor}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 3, flexShrink: 0,
+                  padding: '2px 5px', borderRadius: 'var(--radius-sm)', cursor: 'pointer',
+                  border: showPenColor ? '1px solid var(--action-primary-bg)' : '1px solid var(--border-strong, #999)',
+                  background: showPenColor ? 'var(--action-secondary-bg)' : 'var(--bg-surface-secondary)',
+                }}
+              >
+                <span style={{ width: 14, height: 14, flexShrink: 0, borderRadius: '50%', background: penColor, border: '1px solid var(--border-strong, #999)' }} />
+                <span style={{ fontSize: 11, lineHeight: 1 }}>🎨</span>
+                <span style={{ fontSize: 9, lineHeight: 1, color: 'var(--text-secondary)' }}>{showPenColor ? '▴' : '▾'}</span>
+              </button>
             )}
             {isWidthTool(tool) && (
               <input
@@ -265,6 +332,18 @@ export function DrawingToolbar({
                 />
               </label>
             )}
+            {/* 螢光筆「直線模式」開關（僅在該端有提供切換回呼時顯示）。 */}
+            {isHighlight && onToggleHighlightStraight && (
+              <button
+                className={`tk-btn ${highlightStraight ? 'tk-btn--primary' : ''}`}
+                style={{ cursor: 'pointer', whiteSpace: 'nowrap' }}
+                title={highlightStraight ? '直線模式：開（拖曳畫出筆直的螢光線）' : '直線模式：關（自由手繪螢光筆）'}
+                onClick={onToggleHighlightStraight}
+                data-testid={`${testIdPrefix}-hl-straight`}
+              >
+                📏 直線
+              </button>
+            )}
             {isDashTool(tool) && (
               <button
                 className={`tk-btn ${penDash ? 'tk-btn--primary' : ''}`}
@@ -279,8 +358,9 @@ export function DrawingToolbar({
               <span
                 style={{ fontSize: 'var(--text-xs)', color: 'var(--action-secondary-fg)', whiteSpace: 'nowrap' }}
                 title="可直接調整工具列的顏色 / 線寬 / 虛線，會即時套用到剛畫的圖形"
+                data-testid={`${testIdPrefix}-adjust-hint`}
               >
-                ✎ 調整剛畫的圖形
+                ✎ {adjustHint ?? '調整剛畫的圖形'}
               </span>
             )}
             {extraControls}
@@ -306,6 +386,7 @@ export function DrawingToolbar({
             initial={penColor}
             onChange={(hex) => onPenColorChange(hex)}
             onPick={(hex) => onPenColorChange(hex)}
+            swatchKey="pen"
           />
         </div>
       )}

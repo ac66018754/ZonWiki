@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import { GlobalSearch } from "./GlobalSearch";
 import { AiProcessingMenu } from "./AiProcessingMenu";
 import { confirmNavigation } from "@/lib/navigationGuard";
+import { getNotesNavTarget } from "@/lib/notesNavTarget";
 import { useCanvasToolbar } from "./CanvasToolbarContext";
 import {
   toggleMobileNav,
@@ -48,16 +49,9 @@ export function Header({ user }: { user: CurrentUser | null }) {
     // 修飾鍵 / 非左鍵（開新分頁、另開視窗等）交給瀏覽器預設行為，不攔。
     if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
     // 一律自行導頁：先算目的地（記得的最後一篇；否則清單），再過守門確認。
+    // 目的地計算抽到 getNotesNavTarget() 與快捷鍵 N 共用（DRY）。
     e.preventDefault();
-    let target = "/notes";
-    try {
-      const slug = localStorage.getItem("zonwiki:last-note-slug");
-      if (slug) {
-        target = `/notes/${slug.split("/").map(encodeURIComponent).join("/")}`;
-      }
-    } catch {
-      /* localStorage 不可用 → 進清單 */
-    }
+    const target = getNotesNavTarget();
     void confirmNavigation().then((canLeave) => {
       if (canLeave) router.push(target);
     });
@@ -93,6 +87,22 @@ export function Header({ user }: { user: CurrentUser | null }) {
   // 帳號選單狀態
   const accountMenuRef = useRef<HTMLDivElement>(null);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+
+  // 手機搜尋框開關（≤768px 搜尋框預設收合、點 🔍 才展開——置頂空間讓給內容頁的
+  // 工具列，使用者裁示 2026-08-11）。桌機不受影響（🔍 鈕與收合規則都只在手機斷點生效）。
+  const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
+  const toggleMobileSearch = () => {
+    setMobileSearchOpen((open) => {
+      const next = !open;
+      if (next) {
+        // 展開後自動聚焦輸入框，點一下就能直接打字（rAF 等展開的列渲染完）。
+        requestAnimationFrame(() => {
+          document.querySelector<HTMLInputElement>(".header .search-box input")?.focus();
+        });
+      }
+      return next;
+    });
+  };
 
   // 是否在導覽列顯示快捷鍵提示（如「日程規劃 (T)」）。預設關閉（避免太雜），
   // 使用者可於「顯示」選單開啟；偏好存 localStorage。
@@ -226,10 +236,11 @@ export function Header({ user }: { user: CurrentUser | null }) {
     <header className="header" role="banner">
       {/* 左側：品牌 + 導覽 */}
       <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
-        {/* 品牌 */}
+        {/* 品牌（≤640px 隱藏「ZonWiki」字標、只留 Z 標誌——第一列要塞下 🔍 與 ☰，
+            否則漢堡鈕會被擠到獨佔第二列浪費垂直空間） */}
         <Link href="/" className="brand">
           <div className="brand__icon">Z</div>
-          <span style={{ fontWeight: 700 }}>ZonWiki</span>
+          <span className="brand__wordmark" style={{ fontWeight: 700 }}>ZonWiki</span>
         </Link>
 
         {/* 主功能導覽 (桌面版)。首頁不放字樣 —— 點左上 Logo (ZonWiki) 即可回首頁。
@@ -270,8 +281,11 @@ export function Header({ user }: { user: CurrentUser | null }) {
           僅登入後顯示（提問佇列 API 需驗證）。 */}
       {user && <AiProcessingMenu />}
 
-      {/* 中央：搜尋框 */}
-      <div className="search-box" style={{ flex: 1, maxWidth: "400px", margin: "0 var(--spacing-6)" }}>
+      {/* 中央：搜尋框（尺寸/邊距移到 globals.css 的 .header .search-box——
+          先前 inline style 的固定 max-width 與左右 24px margin 會蓋掉 640px 斷點的
+          手機規則，讓 Header 在 393px 有溢出風險）。
+          手機（≤768px）預設收合、由 🔍 鈕展開（search-box--mobile-open）。 */}
+      <div className={`search-box ${mobileSearchOpen ? "search-box--mobile-open" : ""}`}>
         <GlobalSearch />
       </div>
 
@@ -280,6 +294,17 @@ export function Header({ user }: { user: CurrentUser | null }) {
         {/* 開問啦工具列：僅在 /canvas 由 KaiWenCanvas 透過 Context 提供功能按鈕，
             其餘頁面為 null。這樣開問啦就不需要自己的第二列標題，畫布高度與原版一致。 */}
         {toolbarHydrated ? canvasToolbar : null}
+
+        {/* 手機搜尋切換鈕（桌機由 CSS 隱藏）：點開/收合整列搜尋框 */}
+        <button
+          className="icon-btn mobile-search-toggle"
+          title={mobileSearchOpen ? "收合搜尋" : "搜尋"}
+          aria-label={mobileSearchOpen ? "收合搜尋" : "開啟搜尋"}
+          aria-expanded={mobileSearchOpen}
+          onClick={toggleMobileSearch}
+        >
+          🔍
+        </button>
 
         {/* 統一垃圾桶入口 */}
         <Link href="/trash" className="icon-btn hide-mobile" title="垃圾桶" aria-label="垃圾桶">

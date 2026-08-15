@@ -45,6 +45,9 @@ public static class TrashTypeRegistry
         // --- 英文教練相關（Phase 3；只登記 CoachSession，CoachMessage 不登記避免逐字稿灌爆）---
         { "CoachSession", typeof(CoachSession) },
 
+        // --- 時間追蹤 ---
+        { "TimeEntry", typeof(TimeEntry) },
+
         // --- 開問啦相關（IUserOwned 的實體） ---
         { "Canvas", typeof(Canvas) },
         { "SystemPrompt", typeof(SystemPrompt) },
@@ -100,6 +103,9 @@ public static class TrashTypeRegistry
 
             // --- 英文教練相關 ---
             CoachSession cs => cs.Title,
+
+            // --- 時間追蹤 ---
+            TimeEntry te => te.Title,
 
             // --- 開問啦相關 ---
             Canvas canvas => canvas.Title,

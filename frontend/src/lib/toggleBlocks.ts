@@ -47,16 +47,16 @@ export interface ProtectSegment {
 /** 預覽用的內容段落。 */
 export type ContentSegment = MarkdownSegment | ToggleSegment | ProtectSegment;
 
-/** 比對程式碼圍欄起訖（``` 或 ~~~，至少 3 個）。 */
-const FENCE_PATTERN = /^(`{3,}|~{3,})/;
-/** 比對 toggle 起始行：`:::toggle` 或 `:::toggle-open`，其後為可選標題。 */
-const TOGGLE_OPEN_PATTERN = /^:::\s*(toggle-open|toggle)\b[ \t]*(.*)$/;
-/** 比對 protect 起始行：`:::protect`（保護區塊，其後文字忽略）。 */
-const PROTECT_OPEN_PATTERN = /^:::\s*protect\b[ \t]*.*$/;
-/** 比對任一自訂容器起始行（`:::名稱…`），用於巢狀深度計數。 */
-const CONTAINER_OPEN_PATTERN = /^:::\s*\S/;
-/** 比對自訂容器結束行（單獨的 `:::`）。 */
-const CONTAINER_CLOSE_PATTERN = /^:::\s*$/;
+/** 比對程式碼圍欄起訖（``` 或 ~~~，至少 3 個）。（匯出供 editorFolding 共用，維持單一真相。） */
+export const FENCE_PATTERN = /^(`{3,}|~{3,})/;
+/** 比對 toggle 起始行：`:::toggle` 或 `:::toggle-open`，其後為可選標題。（匯出供 editorFolding 共用。） */
+export const TOGGLE_OPEN_PATTERN = /^:::\s*(toggle-open|toggle)\b[ \t]*(.*)$/;
+/** 比對 protect 起始行：`:::protect`（保護區塊，其後文字忽略）。（匯出供 editorFolding 共用。） */
+export const PROTECT_OPEN_PATTERN = /^:::\s*protect\b[ \t]*.*$/;
+/** 比對任一自訂容器起始行（`:::名稱…`），用於巢狀深度計數。（匯出供 editorFolding 共用。） */
+export const CONTAINER_OPEN_PATTERN = /^:::\s*\S/;
+/** 比對自訂容器結束行（單獨的 `:::`）。（匯出供 editorFolding 共用。） */
+export const CONTAINER_CLOSE_PATTERN = /^:::\s*$/;
 
 /**
  * 從容器起始行的「下一行」開始，收集容器內文直到「對應的」結束 `:::`（支援巢狀與程式碼圍欄）。

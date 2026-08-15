@@ -50,6 +50,11 @@ namespace ZonWiki.Infrastructure.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("ActivityLog_DeletedDateTime");
 
+                    b.Property<string>("Detail")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("ActivityLog_Detail");
+
                     b.Property<Guid>("EntityId")
                         .HasColumnType("uuid")
                         .HasColumnName("ActivityLog_EntityId");
@@ -2445,6 +2450,10 @@ namespace ZonWiki.Infrastructure.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("Note_PurgedDateTime");
 
+                    b.Property<int>("RenderVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("Note_RenderVersion");
+
                     b.Property<string>("Slug")
                         .IsRequired()
                         .HasMaxLength(500)
@@ -2513,6 +2522,91 @@ namespace ZonWiki.Infrastructure.Migrations
                         .HasDatabaseName("IX_Note_UserId_Kind_JournalDate");
 
                     b.ToTable("Note");
+                });
+
+            modelBuilder.Entity("ZonWiki.Domain.Entities.NoteAttachment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("NoteAttachment_Id");
+
+                    b.Property<string>("ContentType")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("NoteAttachment_ContentType");
+
+                    b.Property<DateTime>("CreatedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("NoteAttachment_CreatedDateTime");
+
+                    b.Property<string>("CreatedUser")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("NoteAttachment_CreatedUser");
+
+                    b.Property<DateTime?>("DeletedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("NoteAttachment_DeletedDateTime");
+
+                    b.Property<string>("FileName")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("NoteAttachment_FileName");
+
+                    b.Property<string>("FilePath")
+                        .IsRequired()
+                        .HasMaxLength(1024)
+                        .HasColumnType("character varying(1024)")
+                        .HasColumnName("NoteAttachment_FilePath");
+
+                    b.Property<long>("FileSizeBytes")
+                        .HasColumnType("bigint")
+                        .HasColumnName("NoteAttachment_FileSizeBytes");
+
+                    b.Property<int>("Height")
+                        .HasColumnType("integer")
+                        .HasColumnName("NoteAttachment_Height");
+
+                    b.Property<DateTime?>("PurgedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("NoteAttachment_PurgedDateTime");
+
+                    b.Property<DateTime>("UpdatedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("NoteAttachment_UpdatedDateTime");
+
+                    b.Property<string>("UpdatedUser")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("NoteAttachment_UpdatedUser");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("NoteAttachment_UserId");
+
+                    b.Property<bool>("ValidFlag")
+                        .HasColumnType("boolean")
+                        .HasColumnName("NoteAttachment_ValidFlag");
+
+                    b.Property<int>("Width")
+                        .HasColumnType("integer")
+                        .HasColumnName("NoteAttachment_Width");
+
+                    b.HasKey("Id")
+                        .HasName("PK_NoteAttachment");
+
+                    b.HasIndex("UserId", "ValidFlag")
+                        .HasDatabaseName("IX_NoteAttachment_UserId_ValidFlag");
+
+                    b.HasIndex("ValidFlag", "CreatedDateTime")
+                        .HasDatabaseName("IX_NoteAttachment_ValidFlag_CreatedDateTime");
+
+                    b.ToTable("NoteAttachment");
                 });
 
             modelBuilder.Entity("ZonWiki.Domain.Entities.NoteCategory", b =>
@@ -2721,6 +2815,10 @@ namespace ZonWiki.Infrastructure.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("NoteMark_TargetId");
 
+                    b.Property<Guid?>("TargetMarkId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("NoteMark_TargetMarkId");
+
                     b.Property<string>("TargetType")
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)")
@@ -2756,6 +2854,9 @@ namespace ZonWiki.Infrastructure.Migrations
 
                     b.HasKey("Id")
                         .HasName("PK_NoteMark");
+
+                    b.HasIndex("UserId", "TargetMarkId")
+                        .HasDatabaseName("IX_NoteMark_UserId_TargetMarkId");
 
                     b.HasIndex("UserId", "NoteId", "ValidFlag")
                         .HasDatabaseName("IX_NoteMark_UserId_NoteId_ValidFlag");
@@ -2797,6 +2898,12 @@ namespace ZonWiki.Infrastructure.Migrations
                         .HasColumnType("double precision")
                         .HasColumnName("NoteOverlayItem_Height");
 
+                    b.Property<bool>("IsQuestion")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("NoteOverlayItem_IsQuestion");
+
                     b.Property<string>("Kind")
                         .IsRequired()
                         .HasMaxLength(16)
@@ -2810,6 +2917,10 @@ namespace ZonWiki.Infrastructure.Migrations
                     b.Property<DateTime?>("PurgedDateTime")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("NoteOverlayItem_PurgedDateTime");
+
+                    b.Property<string>("QuestionAnswer")
+                        .HasColumnType("text")
+                        .HasColumnName("NoteOverlayItem_QuestionAnswer");
 
                     b.Property<string>("Text")
                         .HasMaxLength(4000)
@@ -2853,10 +2964,86 @@ namespace ZonWiki.Infrastructure.Migrations
                     b.HasKey("Id")
                         .HasName("PK_NoteOverlayItem");
 
+                    b.HasIndex("Text")
+                        .HasDatabaseName("IX_NoteOverlayItem_Text_Trgm");
+
+                    NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("Text"), "gin");
+                    NpgsqlIndexBuilderExtensions.HasOperators(b.HasIndex("Text"), new[] { "gin_trgm_ops" });
+
                     b.HasIndex("UserId", "NoteId", "ValidFlag")
                         .HasDatabaseName("IX_NoteOverlayItem_UserId_NoteId_ValidFlag");
 
                     b.ToTable("NoteOverlayItem");
+                });
+
+            modelBuilder.Entity("ZonWiki.Domain.Entities.NoteOverlaySnapshot", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("NoteOverlaySnapshot_Id");
+
+                    b.Property<DateTime>("CreatedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("NoteOverlaySnapshot_CreatedDateTime");
+
+                    b.Property<string>("CreatedUser")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("NoteOverlaySnapshot_CreatedUser");
+
+                    b.Property<DateTime?>("DeletedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("NoteOverlaySnapshot_DeletedDateTime");
+
+                    b.Property<string>("ItemsJson")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("NoteOverlaySnapshot_ItemsJson");
+
+                    b.Property<Guid>("NoteId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("NoteOverlaySnapshot_NoteId");
+
+                    b.Property<DateTime?>("PurgedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("NoteOverlaySnapshot_PurgedDateTime");
+
+                    b.Property<int>("SnapshotNo")
+                        .HasColumnType("integer")
+                        .HasColumnName("NoteOverlaySnapshot_SnapshotNo");
+
+                    b.Property<string>("Summary")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("NoteOverlaySnapshot_Summary");
+
+                    b.Property<DateTime>("UpdatedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("NoteOverlaySnapshot_UpdatedDateTime");
+
+                    b.Property<string>("UpdatedUser")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("NoteOverlaySnapshot_UpdatedUser");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("NoteOverlaySnapshot_UserId");
+
+                    b.Property<bool>("ValidFlag")
+                        .HasColumnType("boolean")
+                        .HasColumnName("NoteOverlaySnapshot_ValidFlag");
+
+                    b.HasKey("Id")
+                        .HasName("PK_NoteOverlaySnapshot");
+
+                    b.HasIndex("NoteId", "SnapshotNo")
+                        .IsUnique()
+                        .HasDatabaseName("UX_NoteOverlaySnapshot_NoteId_SnapshotNo");
+
+                    b.ToTable("NoteOverlaySnapshot");
                 });
 
             modelBuilder.Entity("ZonWiki.Domain.Entities.NoteRevision", b =>
@@ -2933,6 +3120,80 @@ namespace ZonWiki.Infrastructure.Migrations
                         .HasDatabaseName("UX_NoteRevision_NoteId_RevisionNo");
 
                     b.ToTable("NoteRevision");
+                });
+
+            modelBuilder.Entity("ZonWiki.Domain.Entities.NoteSlugAlias", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("NoteSlugAlias_Id");
+
+                    b.Property<DateTime>("CreatedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("NoteSlugAlias_CreatedDateTime");
+
+                    b.Property<string>("CreatedUser")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("NoteSlugAlias_CreatedUser");
+
+                    b.Property<DateTime?>("DeletedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("NoteSlugAlias_DeletedDateTime");
+
+                    b.Property<Guid>("NoteId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("NoteSlugAlias_NoteId");
+
+                    b.Property<string>("OriginalTitle")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("NoteSlugAlias_OriginalTitle");
+
+                    b.Property<DateTime?>("PurgedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("NoteSlugAlias_PurgedDateTime");
+
+                    b.Property<string>("Slug")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("NoteSlugAlias_Slug");
+
+                    b.Property<DateTime>("UpdatedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("NoteSlugAlias_UpdatedDateTime");
+
+                    b.Property<string>("UpdatedUser")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("NoteSlugAlias_UpdatedUser");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("NoteSlugAlias_UserId");
+
+                    b.Property<bool>("ValidFlag")
+                        .HasColumnType("boolean")
+                        .HasColumnName("NoteSlugAlias_ValidFlag");
+
+                    b.HasKey("Id")
+                        .HasName("PK_NoteSlugAlias");
+
+                    b.HasIndex("NoteId")
+                        .HasDatabaseName("IX_NoteSlugAlias_NoteId");
+
+                    b.HasIndex("UserId", "Slug")
+                        .HasDatabaseName("IX_NoteSlugAlias_UserId_Slug");
+
+                    b.HasIndex("UserId", "Slug", "NoteId")
+                        .IsUnique()
+                        .HasDatabaseName("UX_NoteSlugAlias_UserId_Slug_NoteId")
+                        .HasFilter("\"NoteSlugAlias_ValidFlag\" = TRUE");
+
+                    b.ToTable("NoteSlugAlias");
                 });
 
             modelBuilder.Entity("ZonWiki.Domain.Entities.NoteTag", b =>
@@ -3464,6 +3725,10 @@ namespace ZonWiki.Infrastructure.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("TaskCard_IsPinnedToHome");
 
+                    b.Property<bool>("IsPinnedToTodo")
+                        .HasColumnType("boolean")
+                        .HasColumnName("TaskCard_IsPinnedToTodo");
+
                     b.Property<Guid?>("ParentId")
                         .HasColumnType("uuid")
                         .HasColumnName("TaskCard_ParentId");
@@ -3900,6 +4165,85 @@ namespace ZonWiki.Infrastructure.Migrations
                         .HasDatabaseName("IX_TtsAudio_UserId_NoteId_ValidFlag");
 
                     b.ToTable("TtsAudio");
+                });
+
+            modelBuilder.Entity("ZonWiki.Domain.Entities.TimeEntry", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("TimeEntry_Id");
+
+                    b.Property<string>("Category")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("TimeEntry_Category");
+
+                    b.Property<DateTime>("CreatedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("TimeEntry_CreatedDateTime");
+
+                    b.Property<string>("CreatedUser")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("TimeEntry_CreatedUser");
+
+                    b.Property<DateTime?>("DeletedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("TimeEntry_DeletedDateTime");
+
+                    b.Property<DateTime?>("EndedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("TimeEntry_EndedDateTime");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("TimeEntry_Note");
+
+                    b.Property<DateTime?>("PurgedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("TimeEntry_PurgedDateTime");
+
+                    b.Property<DateTime>("StartedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("TimeEntry_StartedDateTime");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("TimeEntry_Title");
+
+                    b.Property<DateTime>("UpdatedDateTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("TimeEntry_UpdatedDateTime");
+
+                    b.Property<string>("UpdatedUser")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("TimeEntry_UpdatedUser");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("TimeEntry_UserId");
+
+                    b.Property<bool>("ValidFlag")
+                        .HasColumnType("boolean")
+                        .HasColumnName("TimeEntry_ValidFlag");
+
+                    b.HasKey("Id")
+                        .HasName("PK_TimeEntry");
+
+                    b.HasIndex("UserId", "EndedDateTime")
+                        .HasDatabaseName("IX_TimeEntry_UserId_EndedDateTime");
+
+                    b.HasIndex("UserId", "StartedDateTime")
+                        .HasDatabaseName("IX_TimeEntry_UserId_StartedDateTime");
+
+                    b.ToTable("TimeEntry");
                 });
 
             modelBuilder.Entity("ZonWiki.Domain.Entities.User", b =>
@@ -4491,6 +4835,18 @@ namespace ZonWiki.Infrastructure.Migrations
                     b.Navigation("TargetNote");
                 });
 
+            modelBuilder.Entity("ZonWiki.Domain.Entities.NoteOverlaySnapshot", b =>
+                {
+                    b.HasOne("ZonWiki.Domain.Entities.Note", "Note")
+                        .WithMany()
+                        .HasForeignKey("NoteId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("FK_NoteOverlaySnapshot_Note_NoteId");
+
+                    b.Navigation("Note");
+                });
+
             modelBuilder.Entity("ZonWiki.Domain.Entities.NoteRevision", b =>
                 {
                     b.HasOne("ZonWiki.Domain.Entities.Note", "Note")
@@ -4499,6 +4855,18 @@ namespace ZonWiki.Infrastructure.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("FK_NoteRevision_Note_NoteId");
+
+                    b.Navigation("Note");
+                });
+
+            modelBuilder.Entity("ZonWiki.Domain.Entities.NoteSlugAlias", b =>
+                {
+                    b.HasOne("ZonWiki.Domain.Entities.Note", "Note")
+                        .WithMany()
+                        .HasForeignKey("NoteId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("FK_NoteSlugAlias_Note_NoteId");
 
                     b.Navigation("Note");
                 });

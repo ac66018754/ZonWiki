@@ -3,15 +3,18 @@ import { getUserSettings, updateUserSettings } from "./api";
 /**
  * 可自訂鍵盤快捷鍵系統（共用模型）。
  *
- * - 動作分兩個範圍（scope）：
+ * - 動作分四個範圍（scope）：
  *   - global：任何頁面皆可觸發（導覽、聚焦搜尋）。
  *   - tasks：僅在 Todo（日程規劃）頁觸發（行事曆檢視切換、顯示模式、新增任務）。
+ *   - notes：僅在筆記頁觸發（新增筆記、開關章節目錄表）。
+ *   - overlay：筆記閱覽頁與開問啦畫布共用的「右下角浮層工具列」動作
+ *     （選繪圖工具、加便利貼/圖片板/文字框）。
  * - 每個動作有「預設鍵」，使用者可重新綁定；只把「與預設不同」的覆寫存進後端
  *   （User.ShortcutsJson），跨裝置同步。前端載入時與預設合併成最終生效鍵位。
  */
 
 /** 快捷鍵作用範圍。 */
-export type ShortcutScope = "global" | "tasks" | "notes";
+export type ShortcutScope = "global" | "tasks" | "notes" | "overlay";
 
 /**
  * 單一快捷鍵動作的定義。
@@ -48,6 +51,23 @@ export const SHORTCUT_ACTIONS: readonly ShortcutAction[] = [
   { id: "newTodo", scope: "tasks", label: "彈出「新增任務」表單", defaultKey: "a" },
   // ── 筆記頁專用 ──
   { id: "newNote", scope: "notes", label: "彈出「新增筆記」表單", defaultKey: "a" },
+  { id: "toggleToc", scope: "notes", label: "開關章節目錄表（僅閱覽時）", defaultKey: "c" },
+  // ── 浮層工具（筆記閱覽頁／開問啦畫布共用的右下角工具列）──
+  // 數字鍵 1-9 依工具列「視覺順序」由上而下、由左而右排（2026-08-10 版面：
+  // Row1 文字框 T ／ Row2 五種繪圖工具 ／ Row3 三種橡皮擦）；瀏覽器對無修飾數字鍵沒有預設行為。
+  // 刻意「不」提供快捷鍵的功能：結束繪圖（滑鼠右鍵已可）、清除全部（破壞性、防誤觸）、
+  // 儲存浮層快照與歸位（低頻）。
+  { id: "addTextBox", scope: "overlay", label: "新增純文字框", defaultKey: "1" },
+  { id: "toolPen", scope: "overlay", label: "畫筆", defaultKey: "2" },
+  { id: "toolHighlight", scope: "overlay", label: "螢光筆", defaultKey: "3" },
+  { id: "toolLine", scope: "overlay", label: "直線", defaultKey: "4" },
+  { id: "toolRect", scope: "overlay", label: "矩形", defaultKey: "5" },
+  { id: "toolEllipse", scope: "overlay", label: "橢圓", defaultKey: "6" },
+  { id: "eraseArea", scope: "overlay", label: "橡皮擦－局部擦除", defaultKey: "7" },
+  { id: "eraseStroke", scope: "overlay", label: "橡皮擦－整體刪除", defaultKey: "8" },
+  { id: "eraseBox", scope: "overlay", label: "橡皮擦－框選擦除", defaultKey: "9" },
+  { id: "addSticky", scope: "overlay", label: "新增便利貼（sticky）", defaultKey: "s" },
+  { id: "addSlide", scope: "overlay", label: "新增圖片板（image）", defaultKey: "i" },
 ];
 
 /** scope → 顯示用中文標題（快捷鍵設定頁分區用）。 */
@@ -55,15 +75,17 @@ export const SHORTCUT_SCOPE_LABEL: Record<ShortcutScope, string> = {
   global: "全域（任何頁面）",
   tasks: "Todo 頁（日程規劃）",
   notes: "筆記頁",
+  overlay: "浮層工具（筆記閱覽頁／開問啦畫布）",
 };
 
 /**
  * 各「頁面情境」會同時生效的範圍集合。global 在每個情境都生效；tasks 只在 Todo 頁、
- * notes 只在筆記頁。用於判斷兩個動作是否「可能同時生效而相撞」。
+ * notes 只在筆記頁、overlay 在筆記頁與畫布頁。用於判斷兩個動作是否「可能同時生效而相撞」。
  */
 const PAGE_CONTEXTS: readonly ShortcutScope[][] = [
   ["global", "tasks"],
-  ["global", "notes"],
+  ["global", "notes", "overlay"],
+  ["global", "overlay"],
 ];
 
 /** 兩個範圍是否「會在同一頁同時生效」（存在某情境同時包含兩者）。 */

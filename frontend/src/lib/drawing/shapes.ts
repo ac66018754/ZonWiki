@@ -25,6 +25,8 @@ export type DrawTool =
 /**
  * 一個繪圖形狀。free＝多點折線；line/rect/ellipse＝起訖兩點。
  * opacity（0~1）＝描邊透明度，供「螢光筆」用（未設＝1＝不透明，沿用一般畫筆）。
+ * anchor＝內容錨點（筆記版「畫記跟著文字走」用；畫布版不使用，維持 undefined）。
+ * 本模組與座標系無關，故錨點型別以結構相容的寬鬆物件持有，實際語意見 lib/overlayAnchor.ts。
  */
 export interface Shape {
   type: 'free' | 'line' | 'rect' | 'ellipse';
@@ -34,23 +36,53 @@ export interface Shape {
   /** 描邊透明度（0~1）；undefined 視為 1（不透明）。螢光筆會給較低值（半透明）。 */
   opacity?: number;
   points: [number, number][];
+  /** 內容錨點（見 lib/overlayAnchor.ts 的 OverlayAnchor）；無＝絕對座標（舊資料/畫布版）。 */
+  anchor?: {
+    text: string;
+    start: number;
+    prefix: string;
+    suffix: string;
+    ex: number;
+    ey: number;
+  };
+}
+
+/** 寬鬆驗證形狀上的內容錨點欄位（壞資料一律丟棄，回退絕對座標行為）。 */
+function normalizeAnchor(raw: unknown): Shape['anchor'] | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const a = raw as Record<string, unknown>;
+  if (
+    typeof a.text === 'string' && a.text.length > 0 &&
+    typeof a.start === 'number' &&
+    typeof a.prefix === 'string' &&
+    typeof a.suffix === 'string' &&
+    typeof a.ex === 'number' &&
+    typeof a.ey === 'number'
+  ) {
+    return { text: a.text, start: a.start, prefix: a.prefix, suffix: a.suffix, ex: a.ex, ey: a.ey };
+  }
+  return undefined;
 }
 
 /** 把（可能是舊版只有 points 的）資料正規化成 Shape（缺 type 視為 free）。 */
 export function normalizeShapes(raw: unknown[]): Shape[] {
   return (raw || [])
     .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
-    .map((s) => ({
-      type: (['free', 'line', 'rect', 'ellipse'].includes(s.type as string) ? s.type : 'free') as Shape['type'],
-      color: typeof s.color === 'string' ? s.color : '#ef4444',
-      width: typeof s.width === 'number' ? s.width : 3,
-      dash: !!s.dash,
-      // 只有合法範圍 (0,1] 的數值才視為透明度；其餘（含舊資料無此欄）回退不透明。
-      ...(typeof s.opacity === 'number' && s.opacity > 0 && s.opacity <= 1
-        ? { opacity: s.opacity }
-        : {}),
-      points: Array.isArray(s.points) ? (s.points as [number, number][]) : [],
-    }));
+    .map((s) => {
+      const anchor = normalizeAnchor(s.anchor);
+      return {
+        type: (['free', 'line', 'rect', 'ellipse'].includes(s.type as string) ? s.type : 'free') as Shape['type'],
+        color: typeof s.color === 'string' ? s.color : '#ef4444',
+        width: typeof s.width === 'number' ? s.width : 3,
+        dash: !!s.dash,
+        // 只有合法範圍 (0,1] 的數值才視為透明度；其餘（含舊資料無此欄）回退不透明。
+        ...(typeof s.opacity === 'number' && s.opacity > 0 && s.opacity <= 1
+          ? { opacity: s.opacity }
+          : {}),
+        ...(anchor ? { anchor } : {}),
+        points: Array.isArray(s.points) ? (s.points as [number, number][]) : [],
+      };
+    });
 }
 
 /** 兩點是否幾乎相同（用於判斷形狀是否有實際拖出大小）。 */
@@ -197,4 +229,72 @@ export function safeParse<T>(json: string, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+/** 點列的外接框中心；空點列回 null。 */
+function bboxCenter(points: [number, number][]): [number, number] | null {
+  if (points.length === 0) return null;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const [x, y] of points) {
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  return [(minX + maxX) / 2, (minY + maxY) / 2];
+}
+
+/**
+ * 以「外接框中心」等比縮放形狀（供「調整中」狀態的滾輪縮放）。
+ * 回傳新形狀（不改動原物件——不可變原則）；空點列或 factor=1 時回傳點列複本。
+ * @param s 原形狀。
+ * @param factor 縮放倍率（>1 放大、<1 縮小）。
+ * @returns 縮放後的新形狀。
+ */
+export function scaleShape(s: Shape, factor: number): Shape {
+  const center = bboxCenter(s.points);
+  if (!center || factor === 1) {
+    return { ...s, points: s.points.map((p) => [p[0], p[1]] as [number, number]) };
+  }
+  const [cx, cy] = center;
+  return {
+    ...s,
+    points: s.points.map(([x, y]) => [cx + (x - cx) * factor, cy + (y - cy) * factor] as [number, number]),
+  };
+}
+
+/**
+ * 形狀的「錨定代表點」：決定這個形狀被視為畫在哪段內文上
+ * （供「跟著 :::toggle 收合一起隱藏」的 DOM 錨點判定）。
+ * - free（自由筆/螢光筆）：點列的中位點——重點畫記通常整條都在目標文字上，取中間最穩。
+ * - line（直線）：兩端中點。
+ * - rect / ellipse：外接框中心——框選重點時中心正是被框的文字。
+ * @param s 形狀。
+ * @returns 代表點；空點列回 null（無錨點＝永遠顯示）。
+ */
+export function shapeAnchorPoint(s: Shape): [number, number] | null {
+  if (s.points.length === 0) return null;
+  if (s.type === 'free') return s.points[Math.floor((s.points.length - 1) / 2)];
+  if (s.type === 'line') {
+    const [a, b] = s.points;
+    if (!a || !b) return a ?? null;
+    return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+  }
+  return bboxCenter(s.points);
+}
+
+/**
+ * 「只擦可見形狀」的包裝：被 toggle 收合而隱藏的形狀原樣保留（不可被使用者看不見地誤擦），
+ * 其餘逐一交給擦除函式處理。逐形狀處理可保留列表順序（隱藏者留在原位）。
+ * @param list 全部形狀（含隱藏者）。
+ * @param isHidden 判斷形狀目前是否因收合而隱藏。
+ * @param erase 實際擦除函式（如 eraseAt / eraseInBox 的偏應用）。
+ * @returns 擦除後的新列表。
+ */
+export function eraseVisibleOnly(
+  list: Shape[],
+  isHidden: (s: Shape) => boolean,
+  erase: (sub: Shape[]) => Shape[]
+): Shape[] {
+  return list.flatMap((s) => (isHidden(s) ? [s] : erase([s])));
 }

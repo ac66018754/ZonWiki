@@ -39,6 +39,14 @@ public sealed class ZonWikiApiFactory : WebApplicationFactory<Program>, IAsyncLi
         Path.Combine(Path.GetTempPath(), "zonwiki-tts-tests-" + Guid.NewGuid().ToString("N"));
 
     /// <summary>
+    /// 附件落地用的暫存根目錄（每次測試回合唯一；避免測試把圖檔寫進 repo 的 App_Data）。
+    /// 注意：必須在此處（host build 之前）以環境變數注入——與連線字串同款的「唯一合法時機窗口」；
+    /// 個別測試類別內再設環境變數已來不及（設定值於 host 首次 build 時凍結）。
+    /// </summary>
+    public string AttachmentRootPath { get; } = Path.Combine(
+        Path.GetTempPath(), "zonwiki-test-attachments", Guid.NewGuid().ToString("N"));
+
+    /// <summary>
     /// 啟動 PostgreSQL 容器，並以「環境變數」注入連線字串與測試設定。
     ///
     /// 為何用環境變數而非 <c>ConfigureAppConfiguration</c>：本 API 採「最小主機」（<c>WebApplication.CreateBuilder</c>），
@@ -67,6 +75,8 @@ public sealed class ZonWikiApiFactory : WebApplicationFactory<Program>, IAsyncLi
         Environment.SetEnvironmentVariable("Coach__AllowedOrigins__0", "http://localhost:3000");
         // 環境設為 Testing：避開 Program.cs 內 IsDevelopment()／IsProduction() 專屬啟動分支。
         Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", "Testing");
+        // 附件落地改指到暫存目錄（絕對路徑會直接採用，不以 ContentRoot 為基準）。
+        Environment.SetEnvironmentVariable("Attachments__RootPath", AttachmentRootPath);
     }
 
     /// <summary>
@@ -80,21 +90,26 @@ public sealed class ZonWikiApiFactory : WebApplicationFactory<Program>, IAsyncLi
         Environment.SetEnvironmentVariable("Tts__CacheDirectory", null);
         Environment.SetEnvironmentVariable("Coach__AllowedOrigins__0", null);
         Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", null);
+        Environment.SetEnvironmentVariable("Attachments__RootPath", null);
         await _postgresContainer.StopAsync();
         await _postgresContainer.DisposeAsync();
         await base.DisposeAsync();
 
-        // 清除 TTS 暫存快取目錄（測試產物，可完全再生；C# runtime 刪除，不經 shell）。
+        // 清除本回合的暫存目錄（TTS 快取＋附件落地；皆測試產物、可完全再生；C# runtime 刪除，不經 shell）。
         try
         {
             if (Directory.Exists(_ttsCacheDirectory))
             {
                 Directory.Delete(_ttsCacheDirectory, recursive: true);
             }
+            if (Directory.Exists(AttachmentRootPath))
+            {
+                Directory.Delete(AttachmentRootPath, recursive: true);
+            }
         }
         catch
         {
-            // 清理失敗不影響測試結果（暫存目錄）。
+            // 暫存目錄清理失敗不影響測試結果（OS 會定期清 Temp）。
         }
     }
 }

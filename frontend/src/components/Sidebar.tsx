@@ -14,9 +14,14 @@ import {
   reorderNoteCategories,
   reorderNoteTags,
   addNoteToCategory,
+  getNoteById,
+  setNoteCategories,
 } from "@/lib/api";
 import { useNoteCategories, useNoteTags, useNotes } from "@/lib/swr";
 import { useConfirm } from "@/components/ConfirmProvider";
+import { ChoiceDialog } from "@/components/ChoiceDialog";
+import { computeSwitchCategoryIds } from "@/lib/categoryDrop";
+import { showToast } from "@/lib/toast";
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useSWRConfig } from "swr";
 import Link from "next/link";
@@ -163,6 +168,19 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
 
   // 預設「全部收合」：分類與筆記首次載入後，把所有「可展開（有子分類或底下有筆記）的分類」
   // 放進收合集合（只做一次）。之後使用者自由展開/收合；CRUD 重抓不會重設（didInitCollapse 守衛）。
+  //
+  // 競態修復（2026-07-10）：直接輸入筆記網址進頁時，「筆記詳情 / 筆記清單 / 分類」三個 API
+  // 是平行起跑的，完成順序不定。若「筆記詳情」先回來，會先透過 emitNoteActiveCategory
+  // 把所屬分類廣播出去（見下方監聽 activeNoteCats 的 effect），但此時 collapsed 還是空集合，
+  // 那個「展開 activeNoteCats 祖先」的 effect 跑起來等於無事可做；等「分類 + 筆記清單」才
+  // 載完，這個初始化 effect 才把「全部可展開分類」一次性塞進 collapsed（此時已包含
+  // activeNoteCats 的祖先）——但 activeNoteCats／categories 之後都沒有再變化，展開 effect
+  // 不會重新觸發，於是 📍 所在分類的祖先就這樣被鎖在收合狀態，樹整棵看起來全收合、找不到
+  // 目前筆記。（若換成「分類 + 筆記清單」先回來，初始化先跑完再收到廣播，則展開 effect 會
+  // 正常補上——這就是「有時候正常、有時候不正常」的原因。）
+  // 解法：初始化當下就先把 activeNoteCats 的所有祖先從「要收合」的集合裡排除，讓兩種到達
+  // 順序都收斂到同一個正確結果。只排除「祖先」、不排除該分類本身——語意與下方展開 effect
+  // 一致（該分類本身的展開/收合仍交由使用者點三角形控制，不被自動展開蓋掉）。
   const didInitCollapse = useRef(false);
   useEffect(() => {
     if (didInitCollapse.current || categories.length === 0 || !notesLoaded) return;
@@ -172,8 +190,19 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
     for (const c of categories) if (c.parentId) expandable.add(c.parentId);
     // 底下有筆記者（一篇筆記可屬多個分類）
     for (const note of notes) for (const cat of note.categories ?? []) expandable.add(cat.id);
+    // 排除目前筆記所屬分類（activeNoteCats）的所有祖先，避免與展開 effect 產生上述競態。
+    if (activeNoteCats.length > 0) {
+      const byId = new Map(categories.map((c) => [c.id, c] as const));
+      for (const id of activeNoteCats) {
+        let cur = byId.get(id);
+        while (cur?.parentId) {
+          expandable.delete(cur.parentId);
+          cur = byId.get(cur.parentId);
+        }
+      }
+    }
     setCollapsed(expandable);
-  }, [categories, notes, notesLoaded]);
+  }, [categories, notes, notesLoaded, activeNoteCats]);
 
   // 筆記頁快捷鍵「A」→ 開「新增筆記」彈窗。ShortcutRuntime 在 /notes 派發 SHORTCUT_ACTION_EVENT，
   // 側欄在所有頁面常駐、又擁有新增筆記彈窗，故由它統一接收並開啟。（全域快捷鍵事件保留為 window 事件。）
@@ -435,19 +464,61 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
     [tags, reorderTagSibling]
   );
 
-  // 把一篇筆記加入某分類（來自筆記清單頁的拖曳；冪等）
+  // 筆記拖放到分類：先跳「切換/增加」選擇框（2026-08-13 使用者裁示），選定後才寫入。
+  // 待決的拖放脈絡（null＝選擇框未開）。
+  const [noteDropPending, setNoteDropPending] = useState<{
+    noteId: string;
+    categoryId: string;
+    sourceCategoryId: string | null;
+    sourceName: string | null;
+  } | null>(null);
+
   const handleDropNoteOnCategory = useCallback(
-    async (noteId: string, categoryId: string) => {
+    (noteId: string, categoryId: string, sourceCategoryId: string | null) => {
       setError(null);
+      // 拖回自己所在的分類：無事可做，提示即可（不彈選擇框）。
+      if (sourceCategoryId !== null && sourceCategoryId === categoryId) {
+        showToast("筆記已在此分類", { type: "info" });
+        return;
+      }
+      const sourceName = sourceCategoryId
+        ? categories.find((c) => c.id === sourceCategoryId)?.name ?? null
+        : null;
+      setNoteDropPending({ noteId, categoryId, sourceCategoryId, sourceName });
+    },
+    [categories]
+  );
+
+  /** 選擇框選定後實際歸類：add＝冪等單加端點；switch＝重抓最新分類集合後整組取代。 */
+  const resolveNoteDrop = useCallback(
+    async (choice: string) => {
+      const pending = noteDropPending;
+      setNoteDropPending(null);
+      if (!pending) return;
       try {
-        await addNoteToCategory(noteId, categoryId);
+        if (choice === "add") {
+          // 「增加」沿用冪等原子的單加端點（無讀-改-寫競態——復審 M2）。
+          await addNoteToCategory(pending.noteId, pending.categoryId);
+        } else {
+          // 「切換」：drop 當下重抓筆記詳情取得最新分類集合（不用可能過期的 SWR 快取）。
+          const detail = await getNoteById(pending.noteId);
+          if (!detail) throw new Error("讀取筆記失敗，未變更分類");
+          const currentIds = (detail.categories ?? []).map((c) => c.id);
+          const nextIds = computeSwitchCategoryIds(
+            currentIds,
+            pending.sourceCategoryId,
+            pending.categoryId
+          );
+          const ok = await setNoteCategories(pending.noteId, nextIds);
+          if (!ok) throw new Error("切換分類失敗");
+        }
         await reload(); // 更新分類的筆記數
         invalidateAllNotes(); // 撤銷所有筆記清單快取，兩邊即時更新
       } catch (err) {
-        setError(err instanceof Error ? err.message : "加入分類失敗");
+        setError(err instanceof Error ? err.message : "歸類失敗");
       }
     },
-    [reload, invalidateAllNotes]
+    [noteDropPending, reload, invalidateAllNotes]
   );
 
   // ─────────── 分類 CRUD ───────────
@@ -687,15 +758,25 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
   // 目前正在閱讀的筆記路徑（用來在樹中高亮該「檔案」）。slug 可能含「/」，路徑直接比對即可。
   const currentNotePath = decodeURIComponent(pathname);
 
-  // 「全部」清除篩選列（分類/標籤共用）
+  // 「全部」也是一個分類篩選：只有在「筆記清單的全部頁」才視為選中並突出——
+  // 即 pathname 精確等於 /notes 且無 categoryId/tagId 篩選。
+  // 為何要加 pathname 精確匹配：讀單篇筆記（/notes/{slug}）時網址同樣沒有 query，
+  // noFilter 會誤為 true；但那時該亮的是筆記所屬分類的 📍，不該讓「全部」跟著亮。
+  const isAllActive = pathname === "/notes" && noFilter;
+
+  // 「全部」清除篩選列（分類/標籤共用）。選中時比照分類列 highlighted（CategoryNode 的
+  // isCurrentNote）：粗體＋強調字色＋背景膠囊（--action-secondary-* 為既有語意 token，
+  // 四主題皆已驗過對比）。未選中維持次要字色、無背景。
   const allRow = (
     <Link
       href="/notes"
       prefetch
       className="nt-all"
+      aria-current={isAllActive ? "page" : undefined}
       style={{
-        fontWeight: noFilter ? 600 : 400,
-        color: noFilter ? "var(--action-secondary-fg)" : "var(--text-secondary)",
+        fontWeight: isAllActive ? 600 : 400,
+        color: isAllActive ? "var(--action-secondary-fg)" : "var(--text-secondary)",
+        background: isAllActive ? "var(--action-secondary-bg)" : undefined,
       }}
     >
       全部
@@ -956,6 +1037,36 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
           mutateNotes();
         }}
         presetCategoryIds={presetCatForNewNote}
+      />
+      {/* 筆記拖放到分類的「切換/增加」選擇框（2026-08-13） */}
+      <ChoiceDialog
+        isOpen={noteDropPending !== null}
+        title="要怎麼歸類這篇筆記？"
+        options={
+          noteDropPending?.sourceCategoryId
+            ? [
+                {
+                  key: "add",
+                  label: "增加分類",
+                  description: `保留原分類「${noteDropPending.sourceName ?? "原分類"}」，同時加入目標分類`,
+                },
+                {
+                  key: "switch",
+                  label: "切換分類",
+                  description: `移出「${noteDropPending.sourceName ?? "原分類"}」，改放到目標分類（其餘分類保留）`,
+                },
+              ]
+            : [
+                { key: "add", label: "增加分類", description: "保留既有分類，同時加入目標分類" },
+                {
+                  key: "switch",
+                  label: "切換分類",
+                  description: "以目標分類「取代」此筆記的全部分類（拖曳來源不明時的切換語意）",
+                },
+              ]
+        }
+        onSelect={resolveNoteDrop}
+        onCancel={() => setNoteDropPending(null)}
       />
     </CategoryEditorContext.Provider>
   );

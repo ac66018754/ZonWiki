@@ -15,6 +15,7 @@ import { useCurrentUser, useNotes, useNoteCategories, useNoteTags } from '@/lib/
 import { formatDateTime } from '@/lib/formatters';
 import { DEFAULT_TIMEZONE, NOTE_DND_MIME } from '@/lib/constants';
 import { recordNoteNav, recordRecentCategory, markBackNavigation } from '@/lib/noteNav';
+import { noteHref } from '@/lib/noteHref';
 import { SkeletonListItem } from '@/components/Skeleton';
 import { NotesBatchToolbar } from './components/NotesBatchToolbar';
 
@@ -341,6 +342,17 @@ export default function NotesPage() {
               </div>
             </div>
             <div style={{ display: 'flex', gap: 'var(--spacing-2)', alignItems: 'center', flexWrap: 'wrap' }}>
+              {/* 問題清單入口（僅「分類 / 全部」檢視顯示；標籤篩選檢視不顯示）：
+                  帶 categoryId＝該分類與其子孫的問題；不帶＝全部筆記的問題。 */}
+              {!selectedTagId && (
+                <Link
+                  href={selectedCategoryId ? `/notes/questions?categoryId=${encodeURIComponent(selectedCategoryId)}` : '/notes/questions'}
+                  className="notes-editbtn"
+                  title="檢視此分類（含子分類）的所有問題"
+                >
+                  ❓ 問題清單
+                </Link>
+              )}
               {/* 排序方式（建立 / 最後編輯 / 最後打開）+ 方向 */}
               <select
                 className="tk-input"
@@ -469,7 +481,7 @@ export default function NotesPage() {
                       />
                     )}
                     <Link
-                      href={`/notes/${note.slug}`}
+                      href={noteHref(note.slug)}
                       prefetch
                       draggable
                       title="可拖曳到左側分類，把這篇筆記歸入該分類"

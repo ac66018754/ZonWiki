@@ -162,51 +162,26 @@ public static class AiIntegrationEndpoints
                     ContentRaw = contentRaw,
                     ContentHtml = contentHtml,
                     ContentHash = contentHash,
+                    // 快取版本：與 ContentHtml 同步寫入現行管線版本（lazy 自癒比對基準）。
+                    RenderVersion = NoteContentHelpers.CurrentRenderVersion,
                     Kind = "note",
                     IsDraft = false,
                     CreatedUser = userKey,
                     UpdatedUser = userKey,
                 };
                 db.Note.Add(note);
+                // 版本快照（create）由 NoteRevisionInterceptor 於下一行 SaveChanges 時自動寫入。
                 await db.SaveChangesAsync(ct);
-
-                db.NoteRevision.Add(new NoteRevision
-                {
-                    UserId = userId,
-                    NoteId = note.Id,
-                    RevisionNo = 1,
-                    ChangeKind = "create",
-                    Title = note.Title,
-                    ContentRaw = note.ContentRaw,
-                    CreatedUser = userKey,
-                    UpdatedUser = userKey,
-                });
             }
             else
             {
-                // upsert 更新：覆寫內容並記一筆 update 版本。
+                // upsert 更新：覆寫內容；update 版本快照由 NoteRevisionInterceptor 自動寫入。
                 note.ContentRaw = contentRaw;
                 note.ContentHtml = contentHtml;
                 note.ContentHash = contentHash;
+                // 快取版本同步為現行管線（與 ContentHtml 一起更新）。
+                note.RenderVersion = NoteContentHelpers.CurrentRenderVersion;
                 note.UpdatedUser = userKey;
-
-                var latestRevisionNo = await db.NoteRevision
-                    .Where(r => r.NoteId == note.Id)
-                    .OrderByDescending(r => r.RevisionNo)
-                    .Select(r => r.RevisionNo)
-                    .FirstOrDefaultAsync(ct);
-
-                db.NoteRevision.Add(new NoteRevision
-                {
-                    UserId = userId,
-                    NoteId = note.Id,
-                    RevisionNo = latestRevisionNo + 1,
-                    ChangeKind = "update",
-                    Title = note.Title,
-                    ContentRaw = note.ContentRaw,
-                    CreatedUser = userKey,
-                    UpdatedUser = userKey,
-                });
 
                 // 重新解析 wiki 連結：先軟刪除舊連結。
                 var oldLinks = await db.NoteLink

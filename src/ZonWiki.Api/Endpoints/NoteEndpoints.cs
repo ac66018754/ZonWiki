@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using ZonWiki.Api.Auth;
+using ZonWiki.Api.Notes;
 using ZonWiki.Domain.Common;
 using ZonWiki.Domain.Dtos;
 using ZonWiki.Infrastructure.Persistence;
@@ -83,7 +84,14 @@ public static class NoteEndpoints
             return Results.Ok(ApiResponse<List<NoteSummaryDto>>.Ok(items));
         });
 
-        // 標記筆記「最後打開時間」：前端開啟筆記詳情時呼叫。輕量、不寫版本、不動 UpdatedDateTime。
+        // 標記筆記「最後打開時間」：前端開啟筆記詳情時呼叫。輕量、不動 UpdatedDateTime。
+        //
+        // 併發權杖（xmin）注意（#4/#34；2026-07-10 修「開啟即假衝突」）：本端點直接 UPDATE 筆記那一列的
+        // Note_LastOpenedDateTime。PostgreSQL 的 xmin 是「整列」的系統欄——只要該列被 UPDATE，xmin 必然
+        // 改變，無法只更新某欄而不動它。若不回傳新版本，前端手上「載入時記下的 Version」會在標記打開後
+        // 立刻過期；使用者接著存檔（帶過期 baseVersion）便撲空、收到假的 409「此筆記已被其他來源修改」，
+        // 即使全程只有本人也沒真的改過別處。故此處於更新後回讀最新 xmin 一併回傳，讓前端把 baseVersion
+        // 同步成最新，消除「開啟即假衝突」。
         app.MapPost("/api/notes/{id:guid}/opened", async (
             ZonWikiDbContext db,
             HttpContext http,
@@ -101,60 +109,213 @@ public static class NoteEndpoints
                 .Where(n => n.Id == id && n.UserId == userGuid && n.ValidFlag)
                 .ExecuteUpdateAsync(s => s.SetProperty(n => n.LastOpenedDateTime, DateTime.UtcNow), ct);
 
-            return affected > 0
-                ? Results.Ok(ApiResponse<object>.Ok(new { id }))
-                : Results.NotFound(ApiResponse<object>.Fail("Note not found", 404));
+            if (affected == 0)
+            {
+                return Results.NotFound(ApiResponse<object>.Fail("Note not found", 404));
+            }
+
+            // 回讀更新後的最新 xmin（原生 xid→uint 讀出、不下推 SQL CAST，避免「42846: cannot cast type
+            // xid to bigint」；材質化後再於記憶體放大為 long），供前端把 baseVersion 同步成最新。
+            // 用 FirstOrDefaultAsync（非 FirstAsync）並帶 ValidFlag：極窄競態下——UPDATE 成功提交後、
+            // 回讀 SELECT 前，該列剛被別處（同帳號另一請求，如垃圾桶軟刪）軟刪除——回讀會撈不到列，
+            // FirstAsync 會對空序列丟未處理例外變成 500；改回 null → 視同筆記已不存在回 404（前端
+            // markNoteOpened 對非 200 靜默回 null、不影響閱讀）。投影成匿名型別以便用 null 判斷「無列」。
+            var row = await db.Note
+                .Where(n => n.Id == id && n.UserId == userGuid && n.ValidFlag)
+                .Select(n => new { Xmin = EF.Property<uint>(n, "xmin") })
+                .FirstOrDefaultAsync(ct);
+
+            if (row is null)
+            {
+                return Results.NotFound(ApiResponse<object>.Fail("Note not found", 404));
+            }
+
+            return Results.Ok(ApiResponse<object>.Ok(new { id, version = (long)row.Xmin }));
         }).RequireAuthorization();
 
-        // 依 slug 取單篇筆記詳情。
+        // 依 slug 解析單篇筆記（slug 連動標題 + 舊 slug 別名 + 消歧異）。
+        //
+        // 回應形狀改為統一的 NoteResolutionDto（見其 summary）：
+        //   { kind:"note", matchedByAlias, note }  或  { kind:"ambiguous", requestedSlug, candidates }
+        // 解析順序（見 docs/DECISIONS.md「筆記 URL 改版」）：
+        //   0. slug 可解析為 GUID → 以 Id 查本人活筆記（永不歧義的錨點）；未命中照常往下（最終 404）；
+        //   1. 「活 slug 命中的筆記」∪「別名命中的筆記」，以 NoteId 去重（活優先）：
+        //      恰 1 → kind=note（matchedByAlias＝命中來源是別名而非活 slug）；≥2 → kind=ambiguous；0 → 404。
+        // 使用者隔離、軟刪連動：全域查詢過濾已把 Note / NoteSlugAlias 都鎖在「本使用者的有效列」，
+        // 且別名 join 活筆記會自動排除「所屬筆記已軟刪」的別名（斷了的別名不produce候選）。
         app.MapGet("/api/notes/{*slug}", async (
             ZonWikiDbContext db,
             string slug,
             CancellationToken ct) =>
         {
-            // 樂觀鎖版本（#4/#34）：xmin 是 PostgreSQL 的 xid 系統欄。若在投影裡直接寫
-            // (long)EF.Property<uint>(n, "xmin")，EF 會把 (long) 轉型下推成 SQL 的
-            // CAST(xmin AS bigint)——但 PostgreSQL 不允許 xid→bigint 轉型，執行期會丟
-            // 「42846: cannot cast type xid to bigint」，導致筆記載入 500。
-            // 因此改以「原生 xid→uint 讀出（不加任何轉型）」，材質化後再於記憶體放大為 long 回填。
-            var noteRow = await db.Note
-                .Where(n => n.ValidFlag && n.Slug == slug)
-                .Select(n => new
-                {
-                    Dto = new NoteDetailDto(
-                        n.Id,
-                        n.Title,
-                        n.Slug,
-                        n.ContentHtml,
-                        n.ContentRaw,
-                        n.Kind,
-                        n.IsDraft,
-                        n.CreatedDateTime,
-                        n.UpdatedDateTime,
-                        n.Comments.Count(c => c.ValidFlag),
-                        // 編輯時用以預選：此筆記目前的分類與標籤（分類/標籤被軟刪除時排除）。
-                        n.NoteCategories
-                            .Where(nc => nc.ValidFlag && nc.Category != null && nc.Category.ValidFlag)
-                            .Select(nc => new TagRefDto(nc.Category!.Id, nc.Category.Name))
-                            .ToList(),
-                        n.NoteTags
-                            .Where(nt => nt.ValidFlag && nt.Tag != null && nt.Tag.ValidFlag)
-                            .Select(nt => new TagRefDto(nt.Tag!.Id, nt.Tag.Name))
-                            .ToList(),
-                        // 版本先以 0 佔位，材質化後再回填（見上方註解）。
-                        0L),
-                    Version = EF.Property<uint>(n, "xmin"),
-                })
-                .FirstOrDefaultAsync(ct);
-
-            if (noteRow is null)
+            // 0. GUID 直達錨點：slug 可被解析為 GUID → 以 Id 查本人活筆記；未命中就照常往下走。
+            if (Guid.TryParse(slug, out var directId))
             {
-                return Results.NotFound(ApiResponse<NoteDetailDto>.Fail("Note not found", 404));
+                var direct = await LoadNoteDetailByIdAsync(db, directId, ct);
+                if (direct is not null)
+                {
+                    return Results.Ok(ApiResponse<NoteResolutionDto>.Ok(
+                        new NoteResolutionDto("note", false, direct, null, null)));
+                }
             }
 
-            var note = noteRow.Dto with { Version = (long)noteRow.Version };
+            // 1a. 活 slug 命中：目前正用這個 slug 的筆記（至多一篇——(UserId,Slug) 活筆記唯一索引）。
+            var activeHolder = await db.Note
+                .Where(n => n.ValidFlag && n.Slug == slug)
+                .Select(n => new { n.Id, n.Title, n.Slug, n.UpdatedDateTime })
+                .FirstOrDefaultAsync(ct);
 
-            return Results.Ok(ApiResponse<NoteDetailDto>.Ok(note));
+            // 1b. 別名命中：曾讓出這個 slug 的別名，join 到「仍活著」的筆記（軟刪筆記的別名自動被排除）。
+            var aliasHits = await db.NoteSlugAlias
+                .Where(a => a.ValidFlag && a.Slug == slug)
+                .Join(
+                    db.Note.Where(n => n.ValidFlag),
+                    a => a.NoteId,
+                    n => n.Id,
+                    (a, n) => new { n.Id, n.Title, n.Slug, n.UpdatedDateTime, a.OriginalTitle })
+                .ToListAsync(ct);
+
+            // 以 NoteId 去重（活優先）組出候選。
+            var candidates = new List<SlugCandidateDto>();
+            var seen = new HashSet<Guid>();
+            if (activeHolder is not null)
+            {
+                candidates.Add(new SlugCandidateDto(
+                    activeHolder.Id,
+                    activeHolder.Title,
+                    activeHolder.Slug,
+                    IsCurrentHolder: true,
+                    OriginalTitle: null,
+                    activeHolder.UpdatedDateTime));
+                seen.Add(activeHolder.Id);
+            }
+            foreach (var hit in aliasHits)
+            {
+                // 同一篇既是活 slug 又有自我別名（理論上已被自我收斂消掉，這裡再保險去重）→ 活優先。
+                if (!seen.Add(hit.Id))
+                {
+                    continue;
+                }
+                candidates.Add(new SlugCandidateDto(
+                    hit.Id,
+                    hit.Title,
+                    hit.Slug,
+                    IsCurrentHolder: false,
+                    hit.OriginalTitle,
+                    hit.UpdatedDateTime));
+            }
+
+            // 2. 依候選數決定回應。
+            if (candidates.Count == 0)
+            {
+                return Results.NotFound(ApiResponse<NoteResolutionDto>.Fail("Note not found", 404));
+            }
+
+            if (candidates.Count == 1)
+            {
+                var only = candidates[0];
+                var detail = await LoadNoteDetailByIdAsync(db, only.Id, ct);
+                if (detail is null)
+                {
+                    // 極窄競態：候選確認後、載入前該筆記剛被軟刪 → 視同不存在。
+                    return Results.NotFound(ApiResponse<NoteResolutionDto>.Fail("Note not found", 404));
+                }
+                // matchedByAlias＝命中來源不是「目前活著的 slug」（即經舊 slug 別名命中）。
+                return Results.Ok(ApiResponse<NoteResolutionDto>.Ok(
+                    new NoteResolutionDto("note", !only.IsCurrentHolder, detail, null, null)));
+            }
+
+            // ≥2 → 消歧異：現用者優先、再依 UpdatedAt 新→舊（記憶體排序，無 SQL 轉譯風險）。
+            var ordered = candidates
+                .OrderByDescending(c => c.IsCurrentHolder)
+                .ThenByDescending(c => c.UpdatedAt)
+                .ToList();
+            return Results.Ok(ApiResponse<NoteResolutionDto>.Ok(
+                new NoteResolutionDto("ambiguous", null, null, slug, ordered)));
         });
+    }
+
+    /// <summary>
+    /// 依 NoteId 載入單篇筆記的完整 <see cref="NoteDetailDto"/>（含分類/標籤/留言數/樂觀鎖版本）。
+    /// slug 解析的三條路徑（GUID 直達 / 活 slug / 別名）共用同一份投影，避免欄位遺漏或前後漂移。
+    /// 全域查詢過濾已把範圍鎖在「本使用者的有效筆記」，故僅以 Id 比對即安全（跨使用者/軟刪列不會命中）。
+    ///
+    /// 另負責「渲染版本自癒・純記憶體」（互動表格設計 v2 修訂第 3 條；復審 HIGH-1 修訂）：
+    /// ContentHtml 是渲染快取，管線升級（表格行號/移除 GenericAttributes/GridTable）後存量筆記的
+    /// 快取形狀過時；此處於讀取時比對 <c>RenderVersion &lt; CurrentRenderVersion</c>，過時就以現行
+    /// 管線從 ContentRaw 重算——**只放進回應、絕不寫 DB**（讀取不可推進 xmin，否則其他 session
+    /// 早先載入的 baseVersion 會過期、存檔撞假 409）。DB 收斂由 NoteRenderMigrationService
+    /// 於啟動後背景一次性完成。
+    /// </summary>
+    /// <param name="db">資料庫內容。</param>
+    /// <param name="noteId">筆記識別碼。</param>
+    /// <param name="ct">取消權杖。</param>
+    /// <returns>筆記詳情；查無（不存在/非本人/已軟刪）時為 null。</returns>
+    private static async Task<NoteDetailDto?> LoadNoteDetailByIdAsync(
+        ZonWikiDbContext db,
+        Guid noteId,
+        CancellationToken ct)
+    {
+        // 樂觀鎖版本（#4/#34）：xmin 為 PostgreSQL xid 系統欄。直接 (long)EF.Property<uint>(...) 會被下推成
+        // SQL CAST(xid AS bigint)（PostgreSQL 丟 42846），故原生 xid→uint 讀出、材質化後於記憶體放大為 long。
+        var row = await db.Note
+            .Where(n => n.ValidFlag && n.Id == noteId)
+            .Select(n => new
+            {
+                Dto = new NoteDetailDto(
+                    n.Id,
+                    n.Title,
+                    n.Slug,
+                    n.ContentHtml,
+                    n.ContentRaw,
+                    n.Kind,
+                    n.IsDraft,
+                    n.CreatedDateTime,
+                    n.UpdatedDateTime,
+                    n.Comments.Count(c => c.ValidFlag),
+                    // 編輯時用以預選：此筆記目前的分類與標籤（分類/標籤被軟刪除時排除）。
+                    n.NoteCategories
+                        .Where(nc => nc.ValidFlag && nc.Category != null && nc.Category.ValidFlag)
+                        .Select(nc => new TagRefDto(nc.Category!.Id, nc.Category.Name))
+                        .ToList(),
+                    n.NoteTags
+                        .Where(nt => nt.ValidFlag && nt.Tag != null && nt.Tag.ValidFlag)
+                        .Select(nt => new TagRefDto(nt.Tag!.Id, nt.Tag.Name))
+                        .ToList(),
+                    // 版本先以 0 佔位，材質化後再回填（見上方註解）。
+                    0L,
+                    // 內容雜湊：供包4 錨點保護的 Detached 回寫做「當次渲染基準」防過期比對。
+                    n.ContentHash),
+                Version = EF.Property<uint>(n, "xmin"),
+                n.RenderVersion,
+            })
+            .FirstOrDefaultAsync(ct);
+
+        if (row is null)
+        {
+            return null;
+        }
+
+        // 快取版本已是現行管線 → 直接回傳（收斂完成後的常態路徑，零額外成本）。
+        if (row.RenderVersion >= NoteContentHelpers.CurrentRenderVersion)
+        {
+            return row.Dto with { Version = (long)row.Version };
+        }
+
+        // ── 純記憶體重渲染（存量筆記顯示自癒；對抗式復審 HIGH-1 修訂）─────────────────────
+        // 快取過時（管線升級後的存量筆記）→ 以現行管線從 ContentRaw 重算，**只放進回應、絕不寫 DB**。
+        //
+        // 為什麼不能回存（初版曾照 /opened 先例走 ExecuteUpdate，實測翻案）：
+        // 任何回存——不管 SaveChanges 或 ExecuteUpdate——都會推進該列的 xmin 樂觀鎖版本。
+        // 「另一個在自癒發生前就載入筆記」的 session（別的分頁/裝置/MCP）手上的 baseVersion
+        // 因此立刻過期，存檔就撞假 409——「讀取」不可以改變併發權杖，這是跨 session 版的
+        // 「開啟即假衝突」（/opened 端點修過的同款坑，但這次連回讀 fresh xmin 都救不了別的 session）。
+        //
+        // 代價與收斂：記憶體重算代表每次 GET 過時筆記都要多付一次渲染；DB 收斂交給
+        // NoteRenderMigrationService（啟動後背景一次性掃描回存），記憶體自癒只需撐
+        // 「部署後、收斂完成前」的短暫窗口。DB 真相（ContentRaw）與併發權杖（xmin）在本函數
+        // 全程唯讀，天然滿足：不產生 NoteRevision、不記 ActivityLog、不動 UpdatedDateTime。
+        var refreshedHtml = NoteContentHelpers.RenderToHtml(row.Dto.ContentRaw);
+        return row.Dto with { ContentHtml = refreshedHtml, Version = (long)row.Version };
     }
 }

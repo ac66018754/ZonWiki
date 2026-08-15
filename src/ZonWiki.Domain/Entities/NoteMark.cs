@@ -7,8 +7,10 @@ namespace ZonWiki.Domain.Entities;
 ///
 /// Kind 決定使用哪些欄位：
 /// - "highlight"：畫重點 → 用 <see cref="Color"/>。
-/// - "link"：做關聯 → 用 <see cref="TargetType"/> + <see cref="TargetId"/>（或外部網址 <see cref="TargetUrl"/>）。
+/// - "link"：做關聯 → 用 <see cref="TargetType"/> + <see cref="TargetId"/>（或外部網址 <see cref="TargetUrl"/>）；
+///   可另帶 <see cref="TargetMarkId"/> 指向「目標筆記內的一個 anchor」＝段落級關聯。
 /// - "annotation"：寫備註 → 用 <see cref="Text"/>。
+/// - "anchor"：純錨點（段落級關聯的目標定位點）→ 只用錨點欄位、無視覺樣式、不入 backlinks 噪音。
 /// </summary>
 public class NoteMark : AuditableEntity, IUserOwned
 {
@@ -82,6 +84,13 @@ public class NoteMark : AuditableEntity, IUserOwned
     /// 外部網址（TargetType = "url" 時使用）。
     /// </summary>
     public string? TargetUrl { get; set; }
+
+    /// <summary>
+    /// 段落級關聯的目標錨點識別碼（僅 link 且 TargetType="note" 時使用）：
+    /// 指向「目標筆記（<see cref="TargetId"/>）內的一個 kind="anchor" 標註」，
+    /// 讓關聯不只落在整篇、而是精準落在目標的某個段落。null＝整篇關聯（既有行為，完全不變）。
+    /// </summary>
+    public Guid? TargetMarkId { get; set; }
 
     // ── annotation ──
 

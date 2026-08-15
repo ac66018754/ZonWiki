@@ -1,6 +1,7 @@
 using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using ZonWiki.Api.Auth;
+using ZonWiki.Api.Notes;
 using ZonWiki.Domain.Common;
 using ZonWiki.Domain.Entities;
 using ZonWiki.Infrastructure.Persistence;
@@ -142,6 +143,9 @@ public static class EntityLinkEndpoints
                 Slug = slug,
                 ContentRaw = "",
                 ContentHtml = "",
+                // 快取版本：空內容的空快取正是現行管線對空字串的輸出，直接標為現行版本，
+                // 避免這種「骨架筆記」一被打開就走一次無意義的 lazy 重渲染。
+                RenderVersion = NoteContentHelpers.CurrentRenderVersion,
                 ContentHash = "",
                 Kind = "note",
                 IsDraft = true,
@@ -422,7 +426,7 @@ public static class EntityLinkEndpoints
                 if (n is null) return null;
                 return new LinkedEntityDto(Guid.Empty, TypeNote, id,
                     string.IsNullOrWhiteSpace(n.Title) ? "(無標題筆記)" : n.Title,
-                    $"/notes/{Uri.EscapeDataString(n.Slug)}", "筆記");
+                    $"/notes/{NoteContentHelpers.EncodeSlugForUrl(n.Slug)}", "筆記");
             }
             case TypeNode:
             {

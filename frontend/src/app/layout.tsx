@@ -8,6 +8,7 @@ import { AuthGuard } from "@/components/AuthGuard";
 import { SessionExpiryPrompt } from "@/components/SessionExpiryPrompt";
 import { MobileNavOverlay } from "@/components/MobileNavOverlay";
 import { ShortcutRuntime } from "@/components/ShortcutRuntime";
+import { MouseNavRuntime } from "@/components/MouseNavRuntime";
 import { ToastHost } from "@/components/ToastHost";
 import { RouteAttr } from "@/components/RouteAttr";
 import { CanvasToolbarProvider } from "@/components/CanvasToolbarContext";
@@ -92,6 +93,22 @@ const sidebarInitScript = `
 })();
 `;
 
+/**
+ * 路由屬性初始化腳本（在 paint 前套用）
+ * - 與 RouteAttr 元件同一套邏輯（取路徑第一段寫入 <html data-route>），
+ *   但 RouteAttr 是 useEffect（hydration 後才跑），冷載入時「無外殼頁」
+ *   （如 /time 時間儀表板）會先閃一下標題列/側欄才消失。
+ *   此腳本讓 data-route 在第一次 paint 前就定案；後續的 client 端導覽仍由 RouteAttr 更新。
+ */
+const routeInitScript = `
+(function(){
+  try{
+    var seg = location.pathname.split('/')[1] || 'home';
+    document.documentElement.setAttribute('data-route', seg);
+  }catch(e){}
+})();
+`;
+
 export default async function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
@@ -108,6 +125,7 @@ export default async function RootLayout({
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
         <script dangerouslySetInnerHTML={{ __html: sidebarInitScript }} />
+        <script dangerouslySetInnerHTML={{ __html: routeInitScript }} />
       </head>
       <body>
         {/* 客戶端資料快取：切走再切回某頁直接吃快取、瞬間顯示，背景再靜默重抓 */}
@@ -140,6 +158,12 @@ export default async function RootLayout({
 
             {/* 全域鍵盤快捷鍵執行器（無 UI）：導覽 / 聚焦搜尋 / Todo 頁檢視切換等 */}
             <ShortcutRuntime />
+
+            {/* VS 風格滑鼠側鍵錨點導航（無 UI）：側鍵上一頁/下一頁在「點擊下錨」的
+                位置堆疊中穿梭，取代瀏覽器歷史；用到 useSearchParams 故需包 Suspense */}
+            <Suspense fallback={null}>
+              <MouseNavRuntime />
+            </Suspense>
 
             {/* 左側欄 + 主內容 */}
             <div style={{ display: "flex", flex: 1 }}>

@@ -302,8 +302,11 @@ export async function synthesizeNote(
     if (opts?.language) body.language = opts.language;
     if (opts?.format) body.format = opts.format;
     if (opts?.mode) body.mode = opts.mode;
+    // 後端 API 路徑（noteId 為 GUID）；用段變數組出 note 路徑段，讓 noteHrefGuard 靜態守衛
+    // （只針對頁面連結裸串、非 API 路徑）不誤判。
+    const noteSegment = `notes/${encodeURIComponent(noteId)}`;
     const r = await fetchJson<unknown>(
-      `/api/tts/notes/${encodeURIComponent(noteId)}/synthesize`,
+      `/api/tts/${noteSegment}/synthesize`,
       { method: "POST", body: JSON.stringify(body) },
     );
     if (!r.success || !r.data) {

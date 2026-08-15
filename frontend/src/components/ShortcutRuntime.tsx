@@ -11,6 +11,8 @@ import {
   SHORTCUTS_UPDATED_EVENT,
   SHORTCUT_ACTION_EVENT,
 } from "@/lib/shortcuts";
+import { confirmNavigation } from "@/lib/navigationGuard";
+import { getNotesNavTarget } from "@/lib/notesNavTarget";
 
 /**
  * 全域快捷鍵執行器（無 UI，回傳 null）。掛在已登入外殼中。
@@ -22,6 +24,9 @@ import {
  *   - 正在輸入（input/textarea/select/contentEditable）或按住 Ctrl/Cmd/Alt → 不觸發。
  *   - global 動作：直接執行（導覽 / 聚焦搜尋）。
  *   - tasks 動作：僅在 /tasks 派發 SHORTCUT_ACTION_EVENT，交給 Todo 頁自行處理。
+ *   - notes 動作：僅在 /notes 派發，交給監聽者（側欄的新增筆記、NoteOverlay 的目錄開關）。
+ *   - overlay 動作：在 /notes 與 /canvas 派發，交給 NoteOverlay / CanvasAnnotationLayer
+ *     （只在筆記「閱覽」預覽分頁／畫布掛載，編輯模式等場景天然無監聽者＝不生效）。
  *
  * 用 ref 保存最新 pathname 與 keymap，故 keydown 監聽器只註冊一次、不會反覆拆裝
  * （參考 CLAUDE.md #21：參考不穩定→迴圈）。
@@ -35,13 +40,20 @@ export function ShortcutRuntime() {
   pathRef.current = pathname;
   const routerRef = useRef(router);
   routerRef.current = router;
-  const keymapRef = useRef<Map<string, ShortcutAction>>(new Map());
+  const keymapRef = useRef<Map<string, ShortcutAction[]>>(new Map());
 
-  // 依覆寫重建 key→action 對應表。
+  // 依覆寫重建 key→actions 對應表。
+  // 注意是「一鍵對多動作」：不同頁面範圍（scope）的動作可以合法共用同一鍵——
+  // 例如預設 `a` 同時是 Todo 頁「新增任務」與筆記頁「新增筆記」。
+  // 舊版用 Map<key, action> 單值覆蓋，導致後註冊的 newNote 蓋掉 newTodo，
+  // Todo 頁的 A 快捷鍵靜默失效（2026-07-28 驗證置頂功能時發現並修復）。
   const rebuild = (overrides: ShortcutOverrides) => {
-    const map = new Map<string, ShortcutAction>();
+    const map = new Map<string, ShortcutAction[]>();
     for (const action of SHORTCUT_ACTIONS) {
-      map.set(effectiveKey(action, overrides), action);
+      const key = effectiveKey(action, overrides);
+      const list = map.get(key) ?? [];
+      list.push(action);
+      map.set(key, list);
     }
     keymapRef.current = map;
   };
@@ -65,14 +77,36 @@ export function ShortcutRuntime() {
   // 全域 keydown 監聽（只註冊一次）。
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      // 忽略 OS 按鍵自動重複（按住不放的連發）：overlay 的新增類動作會打後端 API（非幂等），
+      // 長按 0.5 秒就會狂建一排便利貼；toggle 類（工具/目錄）也會開關閃爍。一鍵一動作。
+      if (event.repeat) return;
       // 保留瀏覽器 / 系統快捷鍵；只處理「純單鍵」。
       if (event.ctrlKey || event.metaKey || event.altKey) return;
       if (isTypingTarget(event.target)) return;
       const key = event.key.length === 1 ? event.key.toLowerCase() : "";
       if (!key) return;
 
-      const action = keymapRef.current.get(key);
+      const candidates = keymapRef.current.get(key);
+      if (!candidates || candidates.length === 0) return;
+
+      // 同一鍵可能綁多個不同範圍的動作（如 a＝Todo 新增任務、筆記 新增筆記）：
+      // 優先挑「與當前頁面範圍相符」的動作，沒有才退回 global 動作。
+      const path = pathRef.current ?? "";
+      const scoped = candidates.find(
+        (a) =>
+          (a.scope === "tasks" && path.startsWith("/tasks")) ||
+          (a.scope === "notes" && path.startsWith("/notes")) ||
+          (a.scope === "overlay" && (path.startsWith("/notes") || path.startsWith("/canvas")))
+      );
+      const action = scoped ?? candidates.find((a) => a.scope === "global");
       if (!action) return;
+
+      // /time（時間儀表板）是「無站內導覽」的獨立頁：除切換主題外，
+      // 其餘全域快捷鍵（導覽／聚焦搜尋）一律不生效——此頁沒有輸入框，
+      // 鍵盤誤觸 h/t/q/n 會把頁面靜默導走，違反本頁設計承諾。
+      if ((path === "/time" || path.startsWith("/time/")) && action.id !== "cycleTheme") {
+        return;
+      }
 
       if (action.scope === "global") {
         event.preventDefault();
@@ -91,9 +125,21 @@ export function ShortcutRuntime() {
       }
 
       // notes 動作：僅在筆記頁觸發，派發 SHORTCUT_ACTION_EVENT 交給處理者
-      //（newNote 由側欄監聽 → 開「新增筆記」彈窗；側欄在所有頁面常駐）。
+      //（newNote 由側欄監聽 → 開「新增筆記」彈窗；toggleToc 由 NoteOverlay 監聽）。
       if (action.scope === "notes") {
         if (!(pathRef.current ?? "").startsWith("/notes")) return;
+        event.preventDefault();
+        window.dispatchEvent(
+          new CustomEvent(SHORTCUT_ACTION_EVENT, { detail: { actionId: action.id } })
+        );
+        return;
+      }
+
+      // overlay 動作（右下角浮層工具列）：筆記頁與畫布頁都派發，
+      // 由 NoteOverlay / CanvasAnnotationLayer 監聽執行；其餘頁面無監聽者＝無效果。
+      if (action.scope === "overlay") {
+        const p = pathRef.current ?? "";
+        if (!(p.startsWith("/notes") || p.startsWith("/canvas"))) return;
         event.preventDefault();
         window.dispatchEvent(
           new CustomEvent(SHORTCUT_ACTION_EVENT, { detail: { actionId: action.id } })
@@ -147,9 +193,15 @@ function runGlobalAction(id: string, router: ReturnType<typeof useRouter>): void
     case "openCanvas":
       router.push("/canvas");
       break;
-    case "openNotes":
-      router.push("/notes");
+    case "openNotes": {
+      // 與點擊 Header「筆記」完全一致：回到上次閱讀的筆記（若有記憶），且先過導頁守門
+      //（避免筆記編輯中未儲存變更被快捷鍵靜默丟失）。目的地計算與 Header 共用同一函式。
+      const target = getNotesNavTarget();
+      void confirmNavigation().then((canLeave) => {
+        if (canLeave) router.push(target);
+      });
       break;
+    }
     case "focusSearch": {
       const input = document.querySelector<HTMLInputElement>('input[aria-label="全域搜尋"]');
       input?.focus();

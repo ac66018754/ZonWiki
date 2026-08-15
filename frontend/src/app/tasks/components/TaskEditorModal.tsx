@@ -11,6 +11,7 @@ import {
   updateTaskCard,
   listTaskCards,
   deleteTaskCard,
+  duplicateTask,
   assignTaskTags,
   listNoteTags,
   createNoteTag,
@@ -25,6 +26,7 @@ import {
   STATUS_ORDER,
   STATUS_META,
   PRIORITY_META,
+  formatDisplay,
 } from "../taskUtils";
 import {
   type RecurrenceState,
@@ -38,6 +40,7 @@ import {
   WEEKDAY_LABELS,
 } from "../recurrence";
 import { SubtaskChecklist, isTempSubtaskId } from "./SubtaskChecklist";
+import { TaskScheduleFields } from "./TaskScheduleFields";
 import { SearchableMultiSelect } from "@/components/SearchableMultiSelect";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
 import { DateTimePicker } from "@/components/DateTimePicker";
@@ -47,6 +50,14 @@ import { logger } from "@/lib/logger";
 import { useConfirm } from "@/components/ConfirmProvider";
 import { showToast } from "@/lib/toast";
 import { ConflictError } from "@/lib/errors";
+import {
+  clearDraft,
+  createDraftWriter,
+  draftKeyForTask,
+  loadDraft,
+  type DraftRecord,
+  type DraftWriter,
+} from "@/lib/draftBackup";
 import type { LinkEntityType } from "@/lib/api";
 
 /** 連結浮動視窗的開啟狀態（針對某個子任務）。 */
@@ -101,6 +112,8 @@ export function TaskEditorModal({
 
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  // 圖片上傳進行中的數量：>0 時擋「儲存」，避免把「〔圖片上傳中 #xxx〕」佔位文字存進 DB。
+  const [uploadingCount, setUploadingCount] = useState(0);
   const [savedFlash, setSavedFlash] = useState(false);
   const [saveError, setSaveError] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -124,6 +137,8 @@ export function TaskEditorModal({
   const [targetIso, setTargetIso] = useState<string | null>(null);
   // 釘選到首頁（#2）。
   const [isPinnedToHome, setIsPinnedToHome] = useState(false);
+  // 置頂於 Todo 頁側欄「置頂的任務」分頁（與首頁釘選獨立）。
+  const [isPinnedToTodo, setIsPinnedToTodo] = useState(false);
   const [subTasks, setSubTasks] = useState<SubTask[]>([]);
   // 父任務（任務之間可有父子關係）。"" = 頂層任務。
   const [parentId, setParentId] = useState<string>("");
@@ -149,6 +164,21 @@ export function TaskEditorModal({
     setSaveError(false);
   }, []);
 
+  // ── 本地草稿備份（防停電，2026-08-13；鍵＝zw:draft:task:{id}）─────────
+  // 任務關窗雖會自動存檔，但「開著彈窗打字中」停電仍會遺失——與筆記編輯頁同款：
+  // 標題/內容的使用者輸入 debounce 落地 localStorage、存檔成功才清。
+  const draftWriterRef = useRef<DraftWriter | null>(null);
+  const titleDraftRef = useRef("");
+  const contentDraftRef = useRef("");
+  const [pendingDraft, setPendingDraft] = useState<DraftRecord | null>(null);
+
+  /** 標題/內容的草稿寫入（僅使用者輸入路徑呼叫；populateFields 程式化 set 不經此處）。 */
+  const writeDraft = useCallback((nextTitle: string, nextContent: string) => {
+    titleDraftRef.current = nextTitle;
+    contentDraftRef.current = nextContent;
+    draftWriterRef.current?.write({ title: nextTitle, content: nextContent });
+  }, []);
+
   /** 開啟連結浮動視窗（定位在被點的 🔗 鈕旁）。 */
   const openLinkPopover = (type: LinkEntityType, id: string, t: string, e: React.MouseEvent) => {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -169,6 +199,7 @@ export function TaskEditorModal({
     setTargetGranularity(c.targetGranularity || "");
     setTargetIso(c.targetDateTime ?? null);
     setIsPinnedToHome(!!c.isPinnedToHome);
+    setIsPinnedToTodo(!!c.isPinnedToTodo);
     setSubTasks(c.subTasks || []);
     setSelectedTagIds((c.tags || []).map((t) => t.id));
     setParentId(c.parentId || "");
@@ -187,12 +218,29 @@ export function TaskEditorModal({
         if (cancelled || !c) return;
         setCard(c);
         populateFields(c);
+        titleDraftRef.current = c.title;
+        contentDraftRef.current = c.content || "";
+        // 載入完成當下比對既有草稿（先讀走再開放寫入——程式化填入不覆寫草稿）。
+        const existing = loadDraft(draftKeyForTask(taskId));
+        setPendingDraft(
+          existing && (existing.title !== c.title || existing.content !== (c.content || ""))
+            ? existing
+            : null,
+        );
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
+    const writer = createDraftWriter(draftKeyForTask(taskId));
+    draftWriterRef.current = writer;
+    const flushOnUnload = () => writer.flush();
+    window.addEventListener("beforeunload", flushOnUnload);
     return () => {
       cancelled = true;
+      window.removeEventListener("beforeunload", flushOnUnload);
+      writer.cancel(); // 只停計時、不清已落地草稿（非正常關閉時要留著救援）
+      if (draftWriterRef.current === writer) draftWriterRef.current = null;
+      setPendingDraft(null);
     };
   }, [taskId, populateFields]);
 
@@ -236,9 +284,10 @@ export function TaskEditorModal({
     else payload.clearParentId = true;
     // 重複規則（#17）：組成 RRULE；不重複時送空字串＝清為 null（停止重複）。
     payload.recurrenceRule = buildRrule(recurrence) ?? "";
-    // 長期任務 + 釘選到首頁（皆送目前值；後端 null＝不更新，故一律明送布林）。
+    // 長期任務 + 釘選到首頁 + Todo 側欄置頂（皆送目前值；後端 null＝不更新，故一律明送布林）。
     payload.isLongTerm = isLongTerm;
     payload.isPinnedToHome = isPinnedToHome;
+    payload.isPinnedToTodo = isPinnedToTodo;
     // 粗粒度目標期：只有「長期 + 有選粒度」才寫入，否則清空。
     if (isLongTerm && targetGranularity) {
       payload.targetGranularity = targetGranularity;
@@ -251,7 +300,7 @@ export function TaskEditorModal({
     return payload;
   }, [
     title, content, status, priority, plannedIso, dueIso, groupId, parentId,
-    isLongTerm, isPinnedToHome, targetGranularity, targetIso, recurrence,
+    isLongTerm, isPinnedToHome, isPinnedToTodo, targetGranularity, targetIso, recurrence,
   ]);
 
   /**
@@ -313,6 +362,12 @@ export function TaskEditorModal({
     await assignTaskTags(taskId, selectedTagIds);
     await flushSubtasks(card?.subTasks ?? [], subTasks, taskId);
     dirtyRef.current = false;
+    // 存檔成功＝本地草稿任務完成（防停電備份，2026-08-13）。
+    draftWriterRef.current?.cancel();
+    clearDraft(draftKeyForTask(taskId));
+    setPendingDraft(null);
+    // 通知其他掛在視窗上的任務清單（例如 Todo 側欄「置頂的任務」）重新載入。
+    window.dispatchEvent(new CustomEvent("zonwiki:tasks-changed"));
     onSaved();
   }, [taskId, title, buildPayload, selectedTagIds, flushSubtasks, card, subTasks, onSaved]);
 
@@ -324,6 +379,12 @@ export function TaskEditorModal({
    */
   const handleSave = useCallback(async () => {
     if (!taskId || !title.trim()) return;
+    // 防線放在函式本體（非只有按鈕 disabled）：任何呼叫入口都不可在圖片上傳中儲存，
+    // 避免把「〔圖片上傳中 #xxx〕」佔位文字永久存進 DB。
+    if (uploadingCount > 0) {
+      showToast("圖片上傳中，請稍候再儲存", { type: "info" });
+      return;
+    }
     setSaving(true);
     setSaveError(false);
     try {
@@ -376,7 +437,7 @@ export function TaskEditorModal({
     } finally {
       setSaving(false);
     }
-  }, [taskId, title, doSave, populateFields]);
+  }, [taskId, title, doSave, populateFields, uploadingCount]);
 
   /** 有未存變更時詢問是否放棄；回傳 Promise<true>＝可離開。 */
   const confirmDiscardIfDirty = useCallback(async () => {
@@ -420,6 +481,8 @@ export function TaskEditorModal({
     setSaving(true);
     try {
       await deleteTaskCard(taskId);
+      // 通知其他任務清單（例如 Todo 側欄「置頂的任務」）同步移除。
+      window.dispatchEvent(new CustomEvent("zonwiki:tasks-changed"));
       onDeleted();
       onClose(); // 刪除後直接關閉（不存檔）
     } finally {
@@ -427,19 +490,49 @@ export function TaskEditorModal({
     }
   }, [taskId, onDeleted, onClose]);
 
-  // 粗粒度目標期：把代表日（UTC）拆成 年/月(1-12)/季(1-4)；無代表日時用今年/本月當預設。
-  const targetParts = (() => {
-    const d = targetIso ? new Date(targetIso) : new Date();
-    const m = d.getUTCMonth() + 1;
-    return { year: d.getUTCFullYear(), month: m, quarter: Math.floor((m - 1) / 3) + 1 };
-  })();
-  /** 依粒度與年 + 月/季組出代表日（該期起始日 UTC）並寫入。 */
-  const setTargetFromParts = (g: string, year: number, monthOrQuarter: number) => {
-    const monthIndex = g === "month" ? monthOrQuarter - 1 : g === "quarter" ? (monthOrQuarter - 1) * 3 : 0;
-    setTargetIso(new Date(Date.UTC(year, monthIndex, 1)).toISOString());
-    markDirty();
-  };
-  // 目標期選單/輸入框的共用樣式。
+  // 複製任務（#7）：以「目前彈窗內的即時內容」（含尚未儲存的編輯）建立一張獨立副本，
+  // 而非只用上次存檔的 card——否則使用者「改了字→按複製→未存」時，副本會漏掉剛改的內容（像掉資料）。
+  const [duplicating, setDuplicating] = useState(false);
+  const handleDuplicate = useCallback(async () => {
+    if (!card) return;
+    setDuplicating(true);
+    try {
+      // 以草稿狀態組出來源（duplicateTask 只讀 tags.id 與 subTasks.title/isDone）。
+      const liveSource: TaskCard = {
+        ...card,
+        title: title.trim(),
+        content,
+        status,
+        priority,
+        groupId: groupId || null,
+        plannedDateTime: plannedIso,
+        dueDateTime: dueIso,
+        isLongTerm,
+        targetGranularity: targetGranularity || null,
+        targetDateTime: targetIso,
+        tags: selectedTagIds.map((id) => ({ id, name: "" })),
+        subTasks,
+      };
+      const dup = await duplicateTask(liveSource);
+      if (dup) {
+        showToast("已複製為副本", { type: "success" });
+        onSaved(); // 刷新清單/看板/行事曆
+        onClose();
+      } else {
+        showToast("複製失敗，請重試", { type: "error" });
+      }
+    } catch (e) {
+      logger.error("複製任務失敗：", e);
+      showToast("複製失敗，請重試", { type: "error" });
+    } finally {
+      setDuplicating(false);
+    }
+  }, [
+    card, title, content, status, priority, groupId, plannedIso, dueIso,
+    isLongTerm, targetGranularity, targetIso, selectedTagIds, subTasks, onSaved, onClose,
+  ]);
+
+  // 目標期選單/輸入框的共用樣式（重複規則的每月/自訂 RRULE 仍用；長期目標期已抽到 TaskScheduleFields）。
   const ctlStyle: React.CSSProperties = {
     padding: "4px 6px", border: "1px solid var(--border-default)", borderRadius: "var(--radius-sm)",
     background: "var(--bg-surface)", color: "var(--text-primary)", fontSize: "var(--text-sm)",
@@ -477,6 +570,7 @@ export function TaskEditorModal({
                 onChange={(e) => {
                   setTitle(e.target.value);
                   markDirty();
+                  writeDraft(e.target.value, contentDraftRef.current);
                 }}
                 placeholder="任務標題"
                 autoFocus
@@ -486,101 +580,71 @@ export function TaskEditorModal({
               </button>
             </div>
 
+            {/* ⚡ 本地草稿還原橫幅（防停電）：開啟時偵測到「與現行內容不同」的草稿 */}
+            {pendingDraft && (
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  gap: 8,
+                  margin: "8px 16px 0",
+                  padding: "8px 12px",
+                  background: "var(--status-warning-bg, var(--bg-surface))",
+                  border: "1px solid var(--border-strong)",
+                  borderRadius: "var(--radius-md)",
+                  fontSize: "var(--text-sm)",
+                  color: "var(--text-primary)",
+                }}
+              >
+                <span style={{ flex: 1, minWidth: 180 }}>
+                  ⚡ 偵測到未儲存的草稿（可能因斷電/當機未存檔）。
+                </span>
+                <button
+                  type="button"
+                  className="tk-btn tk-btn--primary"
+                  onClick={() => {
+                    setTitle(pendingDraft.title);
+                    setContent(pendingDraft.content);
+                    titleDraftRef.current = pendingDraft.title;
+                    contentDraftRef.current = pendingDraft.content;
+                    markDirty();
+                    setPendingDraft(null);
+                  }}
+                >
+                  還原草稿
+                </button>
+                <button
+                  type="button"
+                  className="tk-btn"
+                  onClick={() => {
+                    if (taskId) clearDraft(draftKeyForTask(taskId));
+                    setPendingDraft(null);
+                  }}
+                >
+                  捨棄
+                </button>
+              </div>
+            )}
+
             {/* 兩欄：左＝屬性、右＝內容 */}
             <div className="tk-edit-body">
               {/* 左欄：屬性 */}
               <div className="tk-edit-meta">
-                {/* 首頁釘選 ｜ 長期任務（置於最上方；長期可設粗粒度目標期「月/季/年」，且不列入逾期） */}
-                <div className="tk-field">
-                  <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
-                    <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: "var(--text-sm)", cursor: "pointer" }}>
-                      <input
-                        type="checkbox"
-                        checked={isPinnedToHome}
-                        onChange={(e) => {
-                          setIsPinnedToHome(e.target.checked);
-                          markDirty();
-                        }}
-                      />
-                      📌 釘選到首頁
-                    </label>
-                    <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: "var(--text-sm)", cursor: "pointer" }}>
-                      <input
-                        type="checkbox"
-                        checked={isLongTerm}
-                        onChange={(e) => {
-                          setIsLongTerm(e.target.checked);
-                          markDirty();
-                        }}
-                      />
-                      ♾️ 長期任務
-                    </label>
-                  </div>
-                  {isLongTerm && (
-                    <div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-                      <span style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>目標期（截止日難設定時用）</span>
-                      <select
-                        style={ctlStyle}
-                        value={targetGranularity}
-                        onChange={(e) => {
-                          const g = e.target.value;
-                          setTargetGranularity(g);
-                          if (g && !targetIso) {
-                            setTargetFromParts(g, targetParts.year, g === "quarter" ? targetParts.quarter : targetParts.month);
-                          } else if (!g) {
-                            setTargetIso(null);
-                          }
-                          markDirty();
-                        }}
-                        aria-label="目標期粒度"
-                      >
-                        <option value="">不設定（純長期）</option>
-                        <option value="year">年</option>
-                        <option value="quarter">季</option>
-                        <option value="month">月</option>
-                      </select>
-                      {targetGranularity && (
-                        <input
-                          type="number"
-                          style={{ ...ctlStyle, width: 84 }}
-                          value={targetParts.year}
-                          onChange={(e) =>
-                            setTargetFromParts(
-                              targetGranularity,
-                              Number(e.target.value) || targetParts.year,
-                              targetGranularity === "quarter" ? targetParts.quarter : targetParts.month
-                            )
-                          }
-                          aria-label="目標年份"
-                        />
-                      )}
-                      {targetGranularity === "quarter" && (
-                        <select
-                          style={ctlStyle}
-                          value={targetParts.quarter}
-                          onChange={(e) => setTargetFromParts("quarter", targetParts.year, Number(e.target.value))}
-                          aria-label="目標季"
-                        >
-                          {[1, 2, 3, 4].map((q) => (
-                            <option key={q} value={q}>Q{q}</option>
-                          ))}
-                        </select>
-                      )}
-                      {targetGranularity === "month" && (
-                        <select
-                          style={ctlStyle}
-                          value={targetParts.month}
-                          onChange={(e) => setTargetFromParts("month", targetParts.year, Number(e.target.value))}
-                          aria-label="目標月"
-                        >
-                          {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
-                            <option key={m} value={m}>{m} 月</option>
-                          ))}
-                        </select>
-                      )}
-                    </div>
-                  )}
-                </div>
+                {/* 首頁釘選 ｜ 長期任務（置於最上方；長期可設粗粒度目標期「月/季/年」，且不列入逾期）。
+                    與快速新增共用 TaskScheduleFields，避免兩處走樣。 */}
+                <TaskScheduleFields
+                  isPinnedToHome={isPinnedToHome}
+                  onPinnedChange={(v) => { setIsPinnedToHome(v); markDirty(); }}
+                  isPinnedToTodo={isPinnedToTodo}
+                  onPinnedTodoChange={(v) => { setIsPinnedToTodo(v); markDirty(); }}
+                  isLongTerm={isLongTerm}
+                  onLongTermChange={(v) => { setIsLongTerm(v); markDirty(); }}
+                  targetGranularity={targetGranularity}
+                  onGranularityChange={(v) => { setTargetGranularity(v); markDirty(); }}
+                  targetIso={targetIso}
+                  onTargetIsoChange={(v) => { setTargetIso(v); markDirty(); }}
+                />
 
                 {/* 狀態 */}
                 <div className="tk-field">
@@ -849,6 +913,22 @@ export function TaskEditorModal({
                   <label className="tk-field-label">關聯</label>
                   <LinkedEntitiesBar type="taskcard" id={taskId} sourceTitle={title} label="🔗" />
                 </div>
+
+                {/* 建立日期（唯讀）：後端 CreatedDateTime（UTC 儲存），依使用者時區顯示、含年份。
+                    走共用 formatDisplay（含空值/NaN 防呆）；缺值顯示「—」（與 SubtaskViewerModal 一致）。 */}
+                <div className="tk-field">
+                  <label className="tk-field-label">建立日期</label>
+                  <p
+                    style={{
+                      margin: 0,
+                      fontSize: "var(--text-sm)",
+                      color: "var(--text-secondary)",
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    {card?.createdDateTime ? formatDisplay(card.createdDateTime, tz, true, true) : "—"}
+                  </p>
+                </div>
               </div>
 
               {/* 右欄：內容 */}
@@ -859,9 +939,12 @@ export function TaskEditorModal({
                   onChange={(v) => {
                     setContent(v);
                     markDirty();
+                    writeDraft(titleDraftRef.current, v);
                   }}
                   minHeight={360}
-                  placeholder="補充說明…（可用上方工具列套用 Markdown 格式）"
+                  withPreview
+                  placeholder="補充說明…（可用上方工具列套用 Markdown 格式；右上可切換 編輯／並排／預覽，或彈出獨立預覽視窗）"
+                  onUploadingChange={setUploadingCount}
                 />
               </div>
             </div>
@@ -877,6 +960,14 @@ export function TaskEditorModal({
                   確認刪除
                 </button>
               )}
+              <button
+                className="tk-btn"
+                onClick={handleDuplicate}
+                disabled={saving || duplicating || !card}
+                title="複製成一張新任務（標題加「(副本)」，帶內容／標籤／子任務）"
+              >
+                {duplicating ? "複製中…" : "⧉ 複製"}
+              </button>
               <div style={{ flex: 1 }} />
               {saveError && !saving && (
                 <span style={{ fontSize: "var(--text-xs)", color: "var(--status-danger-fg)" }}>儲存失敗，請重試</span>
@@ -887,9 +978,10 @@ export function TaskEditorModal({
               <button
                 className="tk-btn tk-btn--primary"
                 onClick={handleSave}
-                disabled={!title.trim() || saving}
+                disabled={!title.trim() || saving || uploadingCount > 0}
+                title={uploadingCount > 0 ? "圖片上傳中，請稍候…" : undefined}
               >
-                {saving ? "儲存中…" : "儲存"}
+                {saving ? "儲存中…" : uploadingCount > 0 ? "圖片上傳中…" : "儲存"}
               </button>
             </div>
           </>

@@ -111,6 +111,12 @@ public class TaskCard : AuditableEntity, IUserOwned
     public int HomeSortOrder { get; set; }
 
     /// <summary>
+    /// 是否置頂於 Todo 頁左側欄的「置頂的任務」分頁。
+    /// 與 <see cref="IsPinnedToHome"/>（首頁釘選）完全獨立、互不影響；無排序欄位（清單依建立時間排序）。
+    /// </summary>
+    public bool IsPinnedToTodo { get; set; }
+
+    /// <summary>
     /// 導覽屬性：所屬群組（前端以「分類」呈現）。
     /// </summary>
     public TaskGroup? Group { get; set; }

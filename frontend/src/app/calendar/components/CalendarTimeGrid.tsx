@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { TaskCard } from "@/lib/api";
 import { toLocalInputValue, fromLocalInputValue } from "../../tasks/taskUtils";
 import { localKey, barColors, taskRangeKeys } from "./calendarBars";
+import { useRevealThenOpen } from "./useRevealThenOpen";
 
 const SNAP_MIN = 15; // 拖曳 / 縮放對齊的分鐘格
 const MIN_DUR = 15; // 最短時長（分）
@@ -122,6 +123,8 @@ export function CalendarTimeGrid({
   const colsRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
+  // 兩段式點擊（時間格任務塊）：窄塊先點放大看完整標題，再點才開任務。
+  const { revealedId, handleTaskClick } = useRevealThenOpen(onTaskClick);
 
   // 開啟時捲到約 07:00，省得每次都從 00:00 看起。
   useEffect(() => {
@@ -152,6 +155,10 @@ export function CalendarTimeGrid({
   const startDrag = (e: React.PointerEvent, placed: Placed, dayIndex: number, mode: DragState["mode"]) => {
     e.stopPropagation();
     e.preventDefault();
+    // 捕捉任務塊 DOM（供未拖動時的兩段式點擊做截斷判斷）：move 模式即塊本身；縮放把手則往上找塊。
+    const blockEl = (mode === "move"
+      ? (e.currentTarget as HTMLElement)
+      : (e.currentTarget as HTMLElement).closest("[data-cal-task]")) as HTMLElement | null;
     const startX = e.clientX;
     const startY = e.clientY;
     const colW = colsRef.current ? colsRef.current.clientWidth / days.length : 1;
@@ -197,7 +204,9 @@ export function CalendarTimeGrid({
       // 先清掉拖曳狀態（單純值），父層回呼在 updater 外、於事件時呼叫，避免渲染期更新他元件。
       setDrag(null);
       if (!moved) {
-        onTaskClick?.(placed.task.id);
+        // 兩段式：窄塊先放大看完整標題，再點才開任務（blockEl 拿不到時退回直接開）。
+        if (blockEl) handleTaskClick(placed.task.id, blockEl);
+        else onTaskClick?.(placed.task.id);
       } else {
         const day = days[latest.dayIndex] ?? days[dayIndex];
         onTaskTimeChange?.(
@@ -291,16 +300,20 @@ export function CalendarTimeGrid({
                   const blockWidthPct = fullWidthPct * BLOCK_AREA_RATIO; // 塊實際寬（= 80% 完整寬）
                   const top = (sMin / 60) * HOUR_H + vGap;
                   const height = Math.max(((eMin - sMin) / 60) * HOUR_H - vGap * 2, 12);
+                  const revealed = revealedId === p.task.id;
                   return (
                     <div
                       key={p.task.id}
+                      data-cal-task
                       onPointerDown={(e) => startDrag(e, p, dayIndex, "move")}
                       onClick={(e) => e.stopPropagation()} // 點任務塊不該冒泡到欄位（否則同時觸發新增時段）
                       title={p.task.title}
                       style={{
                         position: "absolute",
                         top,
-                        height,
+                        // 放大中：解除高度限制、疊到最上層加陰影，讓完整標題（可換行）看得到。
+                        height: revealed ? "auto" : height,
+                        minHeight: revealed ? height : undefined,
                         left: `calc(${p.lane * fullWidthPct}% + ${gap}px)`,
                         width: `calc(${blockWidthPct}% - ${gap * 2}px)`,
                         background: c.bg,
@@ -310,12 +323,13 @@ export function CalendarTimeGrid({
                         padding: "1px 5px",
                         fontSize: "var(--text-xs)",
                         fontWeight: 600,
-                        overflow: "hidden",
+                        overflow: revealed ? "visible" : "hidden",
                         boxSizing: "border-box",
                         cursor: "grab",
                         textDecoration: p.task.status === "done" ? "line-through" : "none",
-                        zIndex: isDragging ? 5 : 1,
-                        boxShadow: isDragging ? "var(--shadow-md)" : undefined,
+                        zIndex: revealed ? 6 : isDragging ? 5 : 1,
+                        boxShadow: revealed || isDragging ? "var(--shadow-md)" : undefined,
+                        outline: revealed ? "2px solid var(--action-primary-bg)" : undefined,
                         userSelect: "none",
                       }}
                     >
@@ -324,7 +338,7 @@ export function CalendarTimeGrid({
                         onPointerDown={(e) => startDrag(e, p, dayIndex, "resize-top")}
                         style={{ position: "absolute", top: 0, left: 0, right: 0, height: 6, cursor: "ns-resize" }}
                       />
-                      <div style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", lineHeight: 1.25 }}>
+                      <div style={{ whiteSpace: revealed ? "normal" : "nowrap", overflow: "hidden", textOverflow: "ellipsis", lineHeight: 1.25 }}>
                         {p.task.title}
                       </div>
                       {height >= 28 && (
