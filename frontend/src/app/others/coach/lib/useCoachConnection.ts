@@ -117,6 +117,15 @@ interface ConnectionRefs {
    * 每個 await 之後比對世代，不同就整段放棄。
    */
   epoch: number;
+  /**
+   * 後端是否已回報就緒（收到 <c>ready</c> 或任何 <c>state</c> 訊框）。
+   *
+   * 「WS 對自家後端 open」≠「後端↔Vertex 已接通」：後端要等 Vertex 連上才送 ready，在那之前它
+   * 還沒開始轉送，送什麼都會被丟掉。這個旗標是唯一的就緒真相——麥克風啟動、送文字、送 end
+   * 一律以它為準，避免任何一條路徑「自己宣布就緒」而繞過閘門（免持模式的麥克風就緒就曾如此，
+   * 在 prod 讓開場前 2 秒的訊息整包消失）。
+   */
+  serverReady: boolean;
   attempt: number;
   mode: MicMode;
   sessionId: string | null;
@@ -161,6 +170,7 @@ export function useCoachConnection(sessionId: string | null = null): CoachConnec
     reconnectTimer: null,
     terminal: false,
     epoch: 0,
+    serverReady: false,
     attempt: 0,
     mode: "handsfree",
     sessionId,
@@ -192,6 +202,7 @@ export function useCoachConnection(sessionId: string | null = null): CoachConnec
       case "ready": {
         // 後端連上 Vertex Live 才會送 ready；在此之前它還沒開始轉送，送什麼都會被丟掉。
         // 所以「可以開始講話／打字」必須以這個訊號為準，而不是 WS 一 open 就自稱就緒。
+        refs.current.serverReady = true;
         setState((s) => (canReceiveServerUpdate(s) ? "listening" : s));
         break;
       }
@@ -244,6 +255,8 @@ export function useCoachConnection(sessionId: string | null = null): CoachConnec
         break;
       }
       case "state": {
+        // 後端會在 ready 之後緊接著下發狀態；收到即代表它已開始轉送（ready 若因故漏收也不會卡住）。
+        refs.current.serverReady = true;
         // 放行 reconnecting：訊號式重連成功後的 state:listening 必須能讓 UI 脫離「重連中」（#1）。
         setState((s) => (canReceiveServerUpdate(s) ? event.state : s));
         break;
@@ -319,6 +332,8 @@ export function useCoachConnection(sessionId: string | null = null): CoachConnec
 
   /** 建立 transport 並綁定。 */
   function connectTransport(): void {
+    // 新連線一律先視為未就緒：要等這條連線自己的 ready 才算數（重連後尤其重要）。
+    refs.current.serverReady = false;
     const factories = resolveCoachFactories();
     const transport = factories.createTransport(coachWsUrl(refs.current.sessionId));
     refs.current.transport = transport;
@@ -410,7 +425,9 @@ export function useCoachConnection(sessionId: string | null = null): CoachConnec
         return;
       }
       setMicActive(true);
-      setState((s) => (isActiveState(s) ? "listening" : s));
+      // ⚠️ 麥克風就緒 ≠ 對話就緒：後端還沒回 ready 時不可把 connecting 推成 listening，
+      //    否則 UI 會開放輸入、而使用者講的話與打的字全被丟掉（prod 實測災情）。
+      setState((s) => (refs.current.serverReady && isActiveState(s) ? "listening" : s));
     } catch {
       // 麥克風權限被拒/無裝置：停用麥克風，改文字模式（不視為 fatal）。
       refs.current.recorder = null;
@@ -427,7 +444,7 @@ export function useCoachConnection(sessionId: string | null = null): CoachConnec
     setMicActive(false);
     setMicVolume(0);
     // 僅在連線就緒時送 end，並據此切 thinking（未就緒不假裝在等回應）。
-    if (refs.current.transport?.isOpen) {
+    if (refs.current.serverReady && refs.current.transport?.isOpen) {
       refs.current.transport.send({ type: "end" });
       setState((s) => (isActiveState(s) ? "thinking" : s));
     }
@@ -538,7 +555,7 @@ export function useCoachConnection(sessionId: string | null = null): CoachConnec
   function sendTextImpl(text: string): void {
     const trimmed = text.trim();
     if (!trimmed) return;
-    if (!refs.current.transport?.isOpen) return;
+    if (!refs.current.serverReady || !refs.current.transport?.isOpen) return;
     // 送新回合前先定案上一回合待定的 AI 逐字，避免 turn_end 尚未到達時 delta 串接、泡泡未分（#4）。
     // 標 interrupted：此保險 finalize 只在「AI 仍在串流（liveAssistant 有值）時使用者搶送」才產生氣泡——
     // 那正是使用者打斷了 AI 這一輪，標記中斷讓 UI 可分辨（避免半句被當成一則正常完成的氣泡，#8）。
@@ -550,7 +567,7 @@ export function useCoachConnection(sessionId: string | null = null): CoachConnec
 
   /** 手動 VAD 收尾。連線未就緒時 no-op。 */
   function sendEndImpl(): void {
-    if (!refs.current.transport?.isOpen) return;
+    if (!refs.current.serverReady || !refs.current.transport?.isOpen) return;
     // 收尾一段話前先定案任何待定的 AI 逐字（多回合分泡的保險，#4）。標 interrupted：同 sendText，
     // 只在「AI 仍在串流時使用者搶送 end」才產生氣泡＝使用者打斷了這一輪，標記中斷讓 UI 可分辨（#8）。
     finalizeAssistant(true);
