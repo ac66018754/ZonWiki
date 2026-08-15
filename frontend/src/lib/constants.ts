@@ -29,6 +29,23 @@ export const NOTE_DND_MIME = "application/x-zonwiki-note";
 export const NOTE_DND_SOURCE_MIME = "application/x-zonwiki-note-src-cat";
 
 /**
+ * 筆記區的預設瀏覽器分頁標題（document.title）。
+ *
+ * 由 `app/notes/layout.tsx` 的靜態 metadata 與筆記詳細頁共用：
+ * 詳細頁載入筆記後會把分頁標題換成「筆記標題 — ZonWiki」（方便多分頁辨識），
+ * 離開該篇時再還原成本常數，兩處字串必須一致，故抽出共用避免漂移。
+ */
+export const NOTES_DEFAULT_DOCUMENT_TITLE = "筆記 — ZonWiki";
+
+/**
+ * 瀏覽器分頁標題的品牌後綴（含前置分隔符號）。
+ *
+ * 筆記詳細頁組出「{筆記標題}{此後綴}」。刻意把筆記標題放最前面：
+ * Chrome 分頁變窄時只顯示開頭幾個字，被截斷的應該是品牌而非筆記標題。
+ */
+export const DOCUMENT_TITLE_BRAND_SUFFIX = " — ZonWiki";
+
+/**
  * 任務優先級標籤對應
  */
 export const PRIORITY_LABELS: Record<number, string> = {

@@ -7,8 +7,12 @@
 
 import type { Metadata } from 'next';
 
+import { NOTES_DEFAULT_DOCUMENT_TITLE } from '@/lib/constants';
+
+// 註：這是整個 /notes 子樹的靜態標題。筆記詳細頁（[...slug]）是用戶端元件，
+// 無法使用 generateMetadata，改在載入筆記後以 document.title 覆寫成筆記標題。
 export const metadata: Metadata = {
-  title: '筆記 — ZonWiki',
+  title: NOTES_DEFAULT_DOCUMENT_TITLE,
   description: '管理、編輯、搜尋個人筆記與知識庫',
 };
 
