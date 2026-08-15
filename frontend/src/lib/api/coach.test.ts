@@ -112,6 +112,12 @@ test("parseServerMessage：type=turn_end → kind=turnEnd（回合定案訊號�
   expect(event.kind).toBe("turnEnd");
 });
 
+test("parseServerMessage：type=ready → kind=ready（後端連上 Vertex 才送，UI 據此才開放輸入）", () => {
+  // 沒認得 ready 的話，前端只能靠「WS open」自稱就緒，而後端此時還沒開始轉送——
+  // prod（彰化→us-central1）那 2 秒空窗內送出的訊息會被靜默丟掉。
+  expect(parseServerMessage({ type: "ready" }).kind).toBe("ready");
+});
+
 test("parseServerMessage：reconnecting/state/ended 仍正確（回歸保護）", () => {
   expect(parseServerMessage({ type: "reconnecting" }).kind).toBe("reconnecting");
   expect(parseServerMessage({ type: "ended" }).kind).toBe("ended");

@@ -189,6 +189,12 @@ export function useCoachConnection(sessionId: string | null = null): CoachConnec
   /** 處理一則正規化後的後端事件。 */
   function handleServerEvent(event: CoachServerEvent): void {
     switch (event.kind) {
+      case "ready": {
+        // 後端連上 Vertex Live 才會送 ready；在此之前它還沒開始轉送，送什麼都會被丟掉。
+        // 所以「可以開始講話／打字」必須以這個訊號為準，而不是 WS 一 open 就自稱就緒。
+        setState((s) => (canReceiveServerUpdate(s) ? "listening" : s));
+        break;
+      }
       case "audio": {
         const streamer = refs.current.streamer;
         if (streamer) {
@@ -296,7 +302,10 @@ export function useCoachConnection(sessionId: string | null = null): CoachConnec
     transport.onOpen = () => {
       refs.current.attempt = 0;
       setReconnectAttempt(0);
-      setState((s) => (s === "connecting" || s === "reconnecting" ? "listening" : s));
+      // ⚠️ 這裡刻意**不**切到 listening：WS 對「我們自己的後端」開通，不代表後端↔Vertex 那一段已就緒。
+      // 後端要等 Vertex 連上才送 {type:"ready"}（prod 彰化→us-central1 約多 2 秒），期間它還沒開始轉送，
+      // 使用者這時打的字會被靜默丟掉（2026-08-15 prod 實測到：訊息消失、教練不回）。
+      // 就緒改以 ready／後端 state 訊框為準；在那之前狀態維持 connecting，輸入框也因此保持停用。
     };
     transport.onMessage = handleServerEvent;
     transport.onError = () => {
