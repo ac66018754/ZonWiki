@@ -41,7 +41,7 @@ import { CategoryEditorContext } from "./sidebar/categoryEditorContext";
 import { CategoryEditor } from "./sidebar/CategoryEditor";
 import { CategoryNode } from "./sidebar/CategoryNode";
 import { TagList } from "./sidebar/TagList";
-import { ProfileSidebar, TasksSidebar } from "./sidebar/ContextSidebars";
+import { ProfileSidebar, TasksSidebar, OthersSidebar } from "./sidebar/ContextSidebars";
 
 /**
  * Sidebar 元件（釘選、漂浮在最左側；position:fixed，自身捲動，不會被內容滑掉）
@@ -716,6 +716,22 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
   }
   if (pathname.startsWith("/profile")) {
     return <ProfileSidebar user={user} />;
+  }
+  // 英文教練（/others/coach）走滿版（計畫 §8）：桌機隱藏側欄、保留手機 MobileSectionNav。
+  // 必須放在下方 /others 分支之前，否則會被 OthersSidebar 攔截。
+  // 對應 RouteAttr 把此路由的 data-route 設為 "coach"，globals.css 據此把 .main-content 滿版。
+  if (pathname === "/others/coach" || pathname.startsWith("/others/coach/")) {
+    return (
+      <aside id="app-sidebar" className="sidebar sidebar--hidden" role="complementary">
+        <MobileSectionNav />
+      </aside>
+    );
+  }
+
+  // 「其他」功能群（/others*）：桌機顯示 OthersSidebar 子導覽，與 /profile 同構。
+  // data-route="others" 不在 globals.css 滿版白名單，故 .main-content 保留側欄 margin（正確）。
+  if (pathname.startsWith("/others")) {
+    return <OthersSidebar user={user} />;
   }
 
   // 只有「筆記相關頁面」才顯示左側的「筆記分類 / 標籤」側欄：

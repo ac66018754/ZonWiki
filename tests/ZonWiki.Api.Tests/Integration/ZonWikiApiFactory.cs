@@ -28,7 +28,15 @@ public sealed class ZonWikiApiFactory : WebApplicationFactory<Program>, IAsyncLi
     /// </summary>
     private readonly PostgreSqlContainer _postgresContainer = new PostgreSqlBuilder()
         .WithImage("postgres:16-alpine")
+        // 對齊 prod／本機 docker-compose 的 `TZ: Asia/Taipei`（審查 LOW：修「假綠」）：
+        // 若不設，容器 session 預設 UTC，日/月分組測試會「剛好」通過而抓不到「grouping 未帶 UTC 轉換」的回歸；
+        // 設成非 UTC 時區後，現有 UTC 日界／月界整合測試才真正鎖住「日/月分組必須 AT TIME ZONE 'UTC'」。
+        .WithEnvironment("TZ", "Asia/Taipei")
         .Build();
+
+    /// <summary>TTS 快取檔的暫存目錄（測試專用，避免把合成音檔寫進 repo 的 App_Data；Dispose 時清除）。</summary>
+    private readonly string _ttsCacheDirectory =
+        Path.Combine(Path.GetTempPath(), "zonwiki-tts-tests-" + Guid.NewGuid().ToString("N"));
 
     /// <summary>
     /// 附件落地用的暫存根目錄（每次測試回合唯一；避免測試把圖檔寫進 repo 的 App_Data）。
@@ -57,6 +65,14 @@ public sealed class ZonWikiApiFactory : WebApplicationFactory<Program>, IAsyncLi
             _postgresContainer.GetConnectionString());
         // 用 Fake AI 提供者，測試不相依本機才有的 claude CLI。
         Environment.SetEnvironmentVariable("Ai__Provider", "Fake");
+        // 用 Fake TTS 供應者與音檔合成器，測試不相依 Cloud TTS／ADC 與本機 ffmpeg／ffprobe。
+        Environment.SetEnvironmentVariable("Tts__Provider", "Fake");
+        // TTS 快取檔寫到暫存目錄（絕對路徑；避免污染 repo 的 App_Data）。
+        Directory.CreateDirectory(_ttsCacheDirectory);
+        Environment.SetEnvironmentVariable("Tts__CacheDirectory", _ttsCacheDirectory);
+        // 英文教練（Phase 3 批次 2）：WS 端點 Origin fail-closed 白名單——測試放行 localhost:3000，
+        // 讓 /ws/coach 護欄測試能驗「允許來源時通過 Origin 這關」（缺省空陣列＝拒所有）。
+        Environment.SetEnvironmentVariable("Coach__AllowedOrigins__0", "http://localhost:3000");
         // 環境設為 Testing：避開 Program.cs 內 IsDevelopment()／IsProduction() 專屬啟動分支。
         Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", "Testing");
         // 附件落地改指到暫存目錄（絕對路徑會直接採用，不以 ContentRoot 為基準）。
@@ -70,15 +86,22 @@ public sealed class ZonWikiApiFactory : WebApplicationFactory<Program>, IAsyncLi
     {
         Environment.SetEnvironmentVariable("ConnectionStrings__Postgres", null);
         Environment.SetEnvironmentVariable("Ai__Provider", null);
+        Environment.SetEnvironmentVariable("Tts__Provider", null);
+        Environment.SetEnvironmentVariable("Tts__CacheDirectory", null);
+        Environment.SetEnvironmentVariable("Coach__AllowedOrigins__0", null);
         Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", null);
         Environment.SetEnvironmentVariable("Attachments__RootPath", null);
         await _postgresContainer.StopAsync();
         await _postgresContainer.DisposeAsync();
         await base.DisposeAsync();
 
-        // 清掉本回合的附件暫存目錄（測試自建的暫存資料，非產品資料）。
+        // 清除本回合的暫存目錄（TTS 快取＋附件落地；皆測試產物、可完全再生；C# runtime 刪除，不經 shell）。
         try
         {
+            if (Directory.Exists(_ttsCacheDirectory))
+            {
+                Directory.Delete(_ttsCacheDirectory, recursive: true);
+            }
             if (Directory.Exists(AttachmentRootPath))
             {
                 Directory.Delete(AttachmentRootPath, recursive: true);

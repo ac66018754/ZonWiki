@@ -19,6 +19,7 @@ public sealed class UserConfiguration : IEntityTypeConfiguration<User>
         builder.Property(u => u.ShortcutsJson).HasMaxLength(2048); // nullable；只存與預設不同的快捷鍵覆寫 JSON
         builder.Property(u => u.TranscriptionEngine).IsRequired().HasMaxLength(16).HasDefaultValue("gemini");
         builder.Property(u => u.GroqApiKeyEncrypted).HasMaxLength(1024); // nullable；加密後的 Groq 金鑰
+        builder.Property(u => u.TtsSettingsJson).HasMaxLength(1024); // nullable；TTS 偏好（聲音/語言/格式）JSON
         builder.Property(u => u.CreatedUser).IsRequired().HasMaxLength(128);
         builder.Property(u => u.UpdatedUser).IsRequired().HasMaxLength(128);
 

@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using ZonWiki.Api.Auth;
+using ZonWiki.Api.RateLimiting;
 using ZonWiki.Domain.Common;
 using ZonWiki.Domain.Dtos;
 using ZonWiki.Domain.Entities;
@@ -111,7 +112,10 @@ public static class CaptureItemEndpoints
                 capture.CreatedDateTime);
 
             return Results.Created($"/api/captures/{capture.Id}", ApiResponse<CaptureItemDto>.Ok(dto));
-        });
+        })
+        // 開放 iPhone 捷徑等外部 PAT 呼叫前補掛限流（設計 §5.7：此端點原本完全沒掛限流）。
+        // 只掛 POST（建立）；GET/PUT/DELETE 維持不變。以 UserId／權杖分區的 TokenBucket，逾限回 429。
+        .RequireRateLimiting(RateLimitingExtensions.PatPolicy);
 
         /// <summary>
         /// 取得單一捕捉項目詳情。

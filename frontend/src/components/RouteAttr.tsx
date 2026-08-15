@@ -12,7 +12,12 @@ export function RouteAttr() {
   const pathname = usePathname();
 
   useEffect(() => {
-    const segment = pathname.split("/")[1] || "home";
+    const parts = pathname.split("/");
+    // 特例：/others/coach 走滿版（隱藏側欄），但其餘 /others/* 需保留側欄。
+    // 因 data-route 只取第一段（others）不足以區分，這裡把教練頁單獨標為 "coach"，
+    // 讓 globals.css 的滿版白名單只命中教練頁（計畫 §8）。
+    const segment =
+      parts[1] === "others" && parts[2] === "coach" ? "coach" : parts[1] || "home";
     document.documentElement.setAttribute("data-route", segment);
   }, [pathname]);
 

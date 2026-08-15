@@ -3,6 +3,7 @@ using Serilog;
 using Serilog.Events;
 using ZonWiki.Api.Attachments;
 using ZonWiki.Api.Auth;
+using ZonWiki.Api.Coach;
 using ZonWiki.Api.Endpoints;
 using ZonWiki.Api.RateLimiting;
 using ZonWiki.Api.Realtime;
@@ -57,7 +58,10 @@ builder.Services.AddCors(options =>
         policy.WithOrigins(allowedOrigins)
               .AllowAnyHeader()
               .AllowAnyMethod()
-              .AllowCredentials());
+              .AllowCredentials()
+              // 跨源 <audio> 拖曳/206 需讀得到範圍資訊：暴露 Range 相關回應標頭（TTS 供檔端點，
+              // dev 3000→5009 跨源才觸發；prod 同源無此問題）。審查修正 #8（對齊點 D）。
+              .WithExposedHeaders("Content-Range", "Accept-Ranges", "Content-Length"));
 });
 
 builder.Services.AddZonWikiInfrastructure(builder.Configuration);
@@ -75,6 +79,51 @@ builder.Services.AddScoped<CanvasService>(); // 畫布擁有權驗證＋CRUD 業
 builder.Services.AddScoped<AskOrchestrator>();
 builder.Services.AddScoped<AskQueueService>();
 builder.Services.AddScoped<RefineService>(); // 精煉成筆記協調器
+
+// 記帳（其他功能群 Phase 1）：分類服務（惰性種子＋復活）與文字解析服務（VertexAdc＋保底 JSON）。
+builder.Services.AddScoped<ExpenseCategoryService>();
+builder.Services.AddScoped<ExpenseParsingService>();
+
+// 記帳分析頁（其他功能群 Phase 2）：一次回五大區塊彙總（SQL GROUP BY／SUM、UTC 月界、多租戶＋軟刪除鎖）。
+builder.Services.AddScoped<ExpenseAnalyticsService>();
+
+// 單字庫（其他功能群 Phase 2）：共用資料存取（正規化＋復活 upsert）與 AI 補釋義服務（VertexAdc＋保底 JSON）。
+builder.Services.AddScoped<VocabularyService>();
+builder.Services.AddScoped<VocabularyEnrichmentService>();
+
+// TTS 子系統（其他功能群 Phase 2）：口語稿生成（VertexAdc flash-lite）與合成管線協調（快取＋背景合成）。
+builder.Services.AddScoped<TtsScriptService>();
+builder.Services.AddScoped<TtsSynthesisService>();
+
+// 雙主持人 Podcast（其他功能群 Phase 3）：筆記→2 人對談腳本生成（VertexAdc；仿 TtsScriptService）。
+builder.Services.AddScoped<TtsDialogueScriptService>();
+
+// 英文教練（其他功能群 Phase 3・批次 1）：護欄／日分鐘計量／懶惰殭屍／擁有權／併發 claim 與全站花費熔斷。
+// 短命 DbContext 工廠（供花費熔斷）已於 AddZonWikiInfrastructure 內註冊（與既有 scoped AddDbContext 並存，【審修-A2】）。
+builder.Services.Configure<ZonWiki.Api.Coach.CoachOptions>(
+    builder.Configuration.GetSection(ZonWiki.Api.Coach.CoachOptions.SectionName));
+builder.Services.AddScoped<CoachSessionService>();
+builder.Services.AddSingleton<CoachBudgetService>();
+
+// 英文教練（其他功能群 Phase 3・批次 2）：WS 代理後端核心（CoachLiveClient／CoachProxyService／CoachPromptAssembler）。
+// Live client 工廠為 singleton，連線設定（region／project／model／voice）從 CoachOptions 取快照注入
+// （避免 Infrastructure 反向相依 Api）；proxy 為 transient（連線層不吊 DbContext，內部走短命 scope）。
+var coachOptionsSnapshot = builder.Configuration
+    .GetSection(ZonWiki.Api.Coach.CoachOptions.SectionName)
+    .Get<ZonWiki.Api.Coach.CoachOptions>() ?? new ZonWiki.Api.Coach.CoachOptions();
+builder.Services.AddSingleton<ZonWiki.Infrastructure.Coach.ICoachLiveClientFactory>(sp =>
+    new ZonWiki.Infrastructure.Coach.CoachLiveClientFactory(
+        sp.GetRequiredService<ZonWiki.Infrastructure.Ai.IVertexAdcTokenProvider>(),
+        new ZonWiki.Infrastructure.Coach.CoachLiveConnectionConfig(
+            Region: coachOptionsSnapshot.Region,
+            Project: coachOptionsSnapshot.Project,
+            Model: coachOptionsSnapshot.Model,
+            Voice: coachOptionsSnapshot.Voice,
+            LanguageCode: coachOptionsSnapshot.LanguageCode,
+            TriggerTokens: coachOptionsSnapshot.TriggerTokens),
+        sp.GetRequiredService<ILoggerFactory>()));
+builder.Services.AddScoped<CoachPromptAssembler>();
+builder.Services.AddTransient<CoachProxyService>();
 
 // 重複規則「到期具現化」背景服務（#17）：每日把母規則的到期發生具現化成可打勾的實體任務卡。
 builder.Services.AddHostedService<RecurringTaskMaterializationService>();
@@ -188,6 +237,10 @@ app.UseAuthorization();
 // 具名 policy 於各端點以 RequireRateLimiting 掛載；逾限回 429＋Retry-After（見 RateLimitingExtensions）。
 app.UseRateLimiter();
 
+// WebSocket 支援（英文教練 /ws/coach）：置於 UseAuthentication/UseAuthorization 之後、MapCoachEndpoints 之前，
+// 讓 WS 握手也帶已驗證的 Cookie principal（端點據此拒 PAT、驗擁有權）。
+app.UseWebSockets();
+
 app.MapHealthChecks("/healthz").AllowAnonymous();
 app.MapGet("/", () => Results.Ok(new { name = "ZonWiki API", status = "alive", authConfigured })).AllowAnonymous();
 
@@ -230,7 +283,21 @@ app.MapNoteOverlaySnapshotEndpoints(); // 筆記浮層手動快照（右下角�
 app.MapAttachmentEndpoints(); // 筆記附件：貼上/上傳圖片存磁碟，內文只放短網址
 app.MapQuickLinkEndpoints();
 app.MapCaptureItemEndpoints();
-app.MapTimeEntryEndpoints(); // 時間追蹤：記錄每天把時間花在什麼上面（支援 iOS 捷徑 PAT 呼叫）
+
+// 記帳（其他功能群 Phase 1）：手動 CRUD、分類、本月彙總、文字解析入庫、外部 AI 一句話記帳。
+app.MapExpenseEndpoints();
+
+// 單字庫（其他功能群 Phase 2）：CRUD、到期佇列、四鍵複習（後端 SM-2）、AI 補釋義（PAT）。
+app.MapVocabularyEndpoints();
+
+// TTS 子系統（其他功能群 Phase 2）：觸發合成、狀態輪詢、授權供檔（Range）、聲音清單、TTS 偏好設定。
+app.MapTtsEndpoints();
+
+// 英文教練（其他功能群 Phase 3・批次 2）：/ws/coach Live 代理（四護欄）＋場次 REST（開課／清單／取單場）。
+app.MapCoachEndpoints();
+
+// 時間追蹤：記錄每天把時間花在什麼上面（支援 iOS 捷徑 PAT 呼叫）
+app.MapTimeEntryEndpoints();
 app.MapCalendarEndpoints();
 app.MapHomePageEndpoints();
 

@@ -44,8 +44,32 @@ public static class DependencyInjection
                     sp.GetRequiredService<UserIsolationMaterializationInterceptor>())
                 // 使用者隔離過濾把 UserId 烤進模型，故模型快取需依使用者區分。
                 .ReplaceService<Microsoft.EntityFrameworkCore.Infrastructure.IModelCacheKeyFactory,
-                    Persistence.UserModelCacheKeyFactory>();
+                    Persistence.UserModelCacheKeyFactory>()
+                // 抑制 ManyServiceProvidersCreatedWarning：正式環境是「單一主機＝單一內部服務供應者」，
+                // 此警告永不觸發；但整合測試以 WebApplicationFactory／WithWebHostBuilder 啟動多個主機
+                // （每個主機各建一個 EF 內部服務供應者），會累計超過 EF 的 20 個上限而把警告升級為例外，
+                // 讓後續 DbContext 建立全數失敗。這是純測試情境的副作用，故一律忽略（不影響正式行為）。
+                .ConfigureWarnings(warnings =>
+                    warnings.Ignore(
+                        Microsoft.EntityFrameworkCore.Diagnostics.CoreEventId.ManyServiceProvidersCreatedWarning));
         }, ServiceLifetime.Scoped, ServiceLifetime.Scoped);
+
+        // 教練子系統（其他功能群 Phase 3）短命 DbContext 工廠（【審修-A2】）：與上面既有 scoped AddDbContext
+        // 並存但隔離——捕捉一份獨立選項（同一 Npgsql 連線），供 CoachBudgetService（singleton）跨請求累計
+        // 全站花費。刻意不掛使用者隔離／稽核攔截器（只碰非 IUserOwned 的全站計量表；稽核欄由服務層手動補齊）。
+        var coachFactoryOptions = new DbContextOptionsBuilder<ZonWikiDbContext>()
+            .UseNpgsql(connectionString, npgsql =>
+                npgsql.MigrationsAssembly(typeof(ZonWikiDbContext).Assembly.FullName))
+            // 整合測試以多個 WebApplicationFactory 主機啟動，各建一個 EF 內部服務供應者；忽略「建立過多供應者」
+            // 警告，避免累計超過上限而升級為例外（純測試副作用，不影響正式行為，比照上方 scoped 設定）。
+            .ConfigureWarnings(warnings =>
+                warnings.Ignore(
+                    Microsoft.EntityFrameworkCore.Diagnostics.CoreEventId.ManyServiceProvidersCreatedWarning))
+            .Options;
+        // 刻意註冊「具體型別」而非泛型 IDbContextFactory<ZonWikiDbContext>：此工廠建出的 context 無使用者隔離
+        // 過濾／稽核攔截器，只該供 CoachBudgetService 讀寫全站計量表；不對外暴露泛型介面，避免未來有人天真注入
+        // 泛型工廠而拿到「不套隔離」的 context 去查 IUserOwned 實體造成跨租戶外洩。
+        services.AddSingleton(new CoachDbContextFactory(coachFactoryOptions));
 
         services.AddScoped<UserProvisioningService>();
 
@@ -83,6 +107,9 @@ public static class DependencyInjection
             .SetApplicationName("ZonWiki")
             .PersistKeysToFileSystem(new System.IO.DirectoryInfo(dataProtectionKeysPath));
         services.AddScoped<AiModelResolver>();
+        // VertexAdc 的 ADC token 提供者：singleton 持有 GoogleCredential 以跨請求快取／自動刷新 token。
+        // 註冊在 AiProviderFactory 之前，讓工廠的選填建構參數能自動注入。
+        services.AddSingleton<IVertexAdcTokenProvider, VertexAdcTokenProvider>();
         services.AddScoped<AiProviderFactory>();
 
         // 「精煉成筆記」：yt-dlp 擷取 + 文章抓取 + OpenAI 相容轉錄（Groq）。
@@ -118,6 +145,31 @@ public static class DependencyInjection
         services.AddHttpClient("ai", client =>
         {
             client.Timeout = TimeSpan.FromSeconds(600);
+        });
+
+        // ── TTS 子系統（其他功能群 Phase 2）：文字轉語音供應者＋音檔併檔／量時長合成器 ──────
+        // 條件註冊（照 Ai:Provider 範式）：Tts:Provider=Fake（整合測試）→ Fake 短路真外呼；否則真實實作。
+        // 真實 TTS 走 Cloud TTS API＋ADC token（GeminiCloudTtsService）；併檔重用既有 ffmpeg 路徑設定鍵 Refine:FfmpegPath。
+        var ttsProviderType = configuration["Tts:Provider"] ?? "Default";
+        if (string.Equals(ttsProviderType, "Fake", StringComparison.OrdinalIgnoreCase))
+        {
+            services.AddScoped<Tts.ITextToSpeechService, Tts.FakeTextToSpeechService>();
+            services.AddScoped<Tts.ITtsAudioComposer, Tts.FakeAudioComposer>();
+        }
+        else
+        {
+            services.AddScoped<Tts.ITextToSpeechService, Tts.GeminiCloudTtsService>();
+            var ffprobePath = configuration["Tts:FfprobePath"];
+            services.AddScoped<Tts.ITtsAudioComposer>(sp => new Tts.TtsAudioComposer(
+                sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<Tts.TtsAudioComposer>>(),
+                ffmpegPath, // 重用「精煉」已解析的 ffmpeg 路徑（Refine:FfmpegPath，預設 "ffmpeg"）
+                ffprobePath));
+        }
+
+        // Cloud TTS 命名 client：合成單段（≤4000 bytes）通常數秒內回，給 120 秒上限即足夠。
+        services.AddHttpClient(Tts.GeminiCloudTtsService.HttpClientName, client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(120);
         });
 
         // 文章抓取專用 client：關閉自動轉址（AllowAutoRedirect=false）。

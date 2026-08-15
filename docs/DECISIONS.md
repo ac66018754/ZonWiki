@@ -5,6 +5,166 @@
 
 ---
 
+## 2026-07-08 ｜Phase 3 交付：整合驗證＋兩輪對抗復審（Fable5 監工）
+
+- **背景**：Phase 3（英文教練 Vertex Live WS 代理＋雙主持人 Podcast）由三個並行批次實作（批次1 資料層/護欄/Podcast、批次2 教練 WS 後端、批次3 教練前端），各自對抗復審過。監工做整合驗證與最終跨批復審，記關鍵發現與取捨。
+- **整合驗證（實證，非只 tsc/測試）**：①後端 `dotnet test` **613 綠**（Api 547＋Infra 66）；②**真 Live smoke 經 .NET CoachLiveClient→真 Vertex(us-central1)**：文字回合取回 91KB PCM16 24kHz 音訊＋逐字稿全句，DB 驗 CoachMessage 逐字稿落地＋CoachSession 收尾 ended＋課末摘要生成（vertex-gemini-lite）＋resumption handle 持久化；③**真 Podcast E2E**：筆記→對談腳本(vertex-gemini-lite)→多講者合成(Cloud TTS cmn-TW Kore/Charon)→ffmpeg concat→ready，產 226 秒雙聲 MP3；④多講者 TTS 格式先以獨立探針去風險（975KB cmn-TW 真音檔）；⑤前端 Playwright 四主題（糾錯卡紅綠 diff 對比 4.83–6.81 全 ≥4.5）＋狀態機＋fatal 終態＋375px＋所有事件行為。
+- **跨批契約漂移（監工整合時抓到、各批自審抓不到）**：三個並行批次照同一計畫各自具體化，前端 parseServerMessage 未完全對齊後端實際的 `{type:...}` 信封——①audio 後端送 `data` 欄／前端只讀 `audio`；②interrupted 後端送 `{type:"interrupted"}`／前端讀布林欄；③vocab_added 後端 `type` 值／前端找同名鍵。全修為容忍雙形狀並實測。**教訓：並行開發必須在整合點做真訊息往返驗證，單批自審與單回合 smoke 都抓不到跨批接縫。**
+- **兩輪最終對抗復審（三路：資安/DoS、跨批契約、並發/三不變式）**：
+  - **R1（9 findings）**：最關鍵 HIGH＝**重連狀態機死鎖**——後端 GoAway 訊號式重連送 `{type:"reconnecting"}`，前端 `isActiveState` 不含 reconnecting→重連後的 `state:listening`＋音訊全被守門吞→**每場超過單條連線壽命(~10分)的對話第一次 GoAway 就永久卡死**（會毀掉每場真實 30 分鐘課）。另修 REST 巢狀信封契約、強制終止逐字稿落地遺失、糾錯卡陣列落地、字幕定案（文字模式多回合串接）等。
+  - **R2（在 R1 修正碼上又抽，1 CRITICAL＋2 HIGH）**：CRITICAL＝accept 競態自我終止路徑繞過 SignalDisplaced→幻影分鐘吃日額度＋SessionBudgets 靜態字典洩漏（修：保守當跨場收尾，因 finalize 冪等）；HIGH＝入站 text>2000 靜默丟棄前端卡 thinking（修：回 `{type:"rejected"}`＋前端 notice 條撥回 listening，實測「訊息過長，請縮短後再試」）；HIGH＝背景補釋義 fire-and-forget 未 join 污染跨測試共享計量表 flaky（修：FinishAsync join 加逾時）。
+- **理由與取捨**：兩輪對抗復審各抓到真問題（尤其會毀掉每場長對話的重連死鎖、與窄競態的幻影分鐘 CRITICAL），驗證「並行批次＋各自自審」不足以保證整合正確，跨批整合復審＋真訊息往返驗證是必要關卡。全部修正後 613 測試綠、Live/Podcast/前端行為實測通過。
+- **交付邊界（使用者職責，已於計畫標註）**：prod 需跑 migration `AddCoachTablesAndVocabSourceFk`＋種 `vertex-gemini-lite` 共用列；CF Tunnel×WebSocket 長連逾時、iPhone 實機（Wake Lock/standalone 麥克風權限/MediaSession 鎖屏/送出取樣率確為 16k）、prod CSP 放行 `blob:`（worklet）需實機驗；多講者 cmn-TW（Preview）計費 SKU 待第一張帳單核對。
+
+## 2026-07-08 ｜Phase 3 教練「批次 1」資料層／護欄／Podcast 的三個實作偏離（相對定案計畫）
+
+- **背景**：實作 Phase 3 批次 1（教練資料層＋護欄/預算服務＋雙主持人 Podcast，不含 WS/CoachProxy＝批次 2）時，為滿足計畫要求做了三處計畫未明列的結構決定。
+- **決定 1——新增全站計量表 `CoachBudgetLedger`**：計畫 §1 只列 CoachSession/CoachMessage，但 §3/§4 要求 `CoachBudgetService`「DB 持久化累計」全站每日/每月花費。故新增一張**非 IUserOwned**（全站、無使用者隔離過濾）的 AuditableEntity 計量表（唯一鍵 (Scope, PeriodKey)，每日一列、每月一列），不登記垃圾桶/活動流（比照 TtsAudio 排除）。考慮過「把 token 累加在 CoachSession 上再跨用戶 SUM」——否決（需跨租戶掃全表、CoachSession 無 token 欄、與「全站」語意不符）。
+- **決定 2——自建 `CoachDbContextFactory` 而非 EF `AddDbContextFactory`，且落點在 Infrastructure DI（非 Program.cs）**：既有 `AddDbContext`（scoped）已註冊 `DbContextOptions<ZonWikiDbContext>`，再呼叫 EF 的 `AddDbContextFactory` 會重複註冊該選項並造成生命週期衝突，可能連累整個 App 的 DbContext 解析。故自建極簡工廠捕捉一份**獨立選項**（同一 Npgsql 連線、忽略 ManyServiceProviders 警告），與既有 scoped 註冊完全隔離。放 Infrastructure 是為了與既有 AddDbContext 共用連線字串來源、避免在 Program.cs 重複組態。供 `CoachBudgetService`（singleton）建短命 context 用（【審修-A2】）。
+- **決定 3——`TtsAudio` 新增 `Mode` 欄（read/dialogue）**：計畫 §10「快取鍵含 mode（read≠dialogue 不撞快取）」。除把 mode 併入 ComputeContentHash 外，另加持久欄 `Mode`，讓「同筆記＋聲音重合成即失效舊列」的清理**只在同模式內**作用（read 與 dialogue 兩份快取各自獨立並存，不互相失效）。既有列一次性回填為 "read"。
+- **理由與取捨**：三者皆為「計畫要求的行為」在資料層的最小落地；偏離處都往「不破壞既有 scoped DbContext／既有 TTS 快取語意」的保守方向走。**未做**批次 2（CoachLiveClient/CoachProxyService/CoachPromptAssembler/`/ws/coach`/UseWebSockets/前端音訊層）與批次 3。
+- **對抗式復審後的修正（3 項）**：①日分鐘計量讀路徑（`GetDailyUsedSecondsAsync`）現在<b>先做懶惰殭屍修正</b>並改用「今日交集裁切」演算法——否則死掉的 active 場會以 now 一路累加把使用者整天鎖死（計畫明列要避免的失敗）；②`CoachBudgetService` 花費累計改為<b>伺服器端原子遞增</b>（`SET x = x + n`），正確性不再依賴 in-process 鎖，多實例下也不會 lost-update（低估花費＝熔斷最危險失效）；③短命工廠只註冊<b>具體型別</b> `CoachDbContextFactory`（非泛型 `IDbContextFactory<>`），封住「未來誤注入無隔離 context 查 IUserOwned 實體」的跨租戶地雷。
+- **已知取捨（復審確認、刻意保留）**：(a) mode 併入 ContentHash 後，<b>部署後對既有筆記首次朗讀會 cache-miss 重合成一次</b>（重付一次 TTS 費用）——必要之惡（唯一索引 (UserId, ContentHash) 不含 Mode，若 read/dialogue 不分會撞唯一約束），且會經 mode-scoped 失效自我修復，不留孤兒；(b) 懶惰殭屍修正走 `ExecuteUpdate` 繞過活動流攔截器，故「殭屍收尾」不進活動流（系統清理非使用者動作，避免噪音；正常收尾仍會記）。
+- **驗證**：`dotnet build` 0 error、`dotnet test` 全綠（Api 500+ 綠、Infrastructure 66 綠，新增約 43 筆）、migration `AddCoachTablesAndVocabSourceFk` 生成且 has-pending-model-changes=none、前端 `tsc --noEmit` 0 error。
+
+---
+
+## 2026-07-08 ｜Phase 3 英文教練：Vertex Live region 改 us-central1（實測推翻設計書的 us-west1）＋協定去風險
+
+- **背景**：Phase 3 教練用 Vertex AI Live API（`gemini-live-2.5-flash-native-audio`，GA），架構＝瀏覽器→自家 .NET WS 代理→Vertex Live WS。開工前依準則 4.1「前置實測未過別往下做」先驗協定。
+- **關鍵修正——region 從 `us-west1` 改 `us-central1`**：設計書 §4.1 定 `us-west1`，但研究查官方支援清單發現 **native-audio GA 不含 us-west1**（支援 us-central1／us-east1/4/5／us-south1／europe-west1/4/8）。**本機實跑 Python 探針證實**：`us-central1` 完整打通（WS 握手 200＋ADC Bearer 認證＋setupComplete＋文字回合回 226KB PCM16 24kHz 音訊＋逐字稿全句 "Hello! I'm here to help you practice your English…"＋generationComplete→turnComplete→usageMetadata，exit 0）。故 region 一律 `us-central1`、且**模型 region 設定值化**（退役日 2026-12-13 前換後繼模型）。彰化 VM→us-central1 RTT 比 us-west1 略高但同屬美中西，可接受。
+- **協定去風險定案（實證，非臆測；供實作照抄）**：
+  - WS URL＝`wss://us-central1-aiplatform.googleapis.com/ws/google.cloud.aiplatform.v1.LlmBidiService/BidiGenerateContent`（**Vertex 版 LlmBidiService，非 Developer API 的 generativelanguage**）。
+  - 認證＝WS header `Authorization: Bearer <ADC token>`（重用 `IVertexAdcTokenProvider`）；**不需 x-goog-user-project**（project 已在 model 路徑內）。
+  - `setup.model` ＝完整資源路徑 `projects/zonwiki-prod/locations/us-central1/publishers/google/models/gemini-live-2.5-flash-native-audio`（Vertex 專有格式，非 `models/{m}`）。
+  - setup 帶 `generationConfig.responseModalities:["AUDIO"]`（native-audio 一次只一種 modality）＋`speechConfig`＋`systemInstruction.parts[].text`（物件非字串）＋`inputAudioTranscription:{}`＋`outputAudioTranscription:{}`（空物件即開逐字稿）＋`realtimeInputConfig.automaticActivityDetection`（VAD）＋`contextWindowCompression`＋`sessionResumption:{}`＋`tools.functionDeclarations`（`behavior:"NON_BLOCKING"`）。
+  - 音訊：上行 PCM16 16kHz（`realtimeInput.audio{mimeType:"audio/pcm;rate=16000",data}`）、下行 PCM16 24kHz（`serverContent.modelTurn.parts[].inlineData`）——**代理不可搞混上下行取樣率**。
+  - server→client 一律 camelCase；**一個 frame 可同時含多個頂層 key**（實測見 `{serverContent, usageMetadata}` 同幀）→ .NET parser 不可假設單一頂層 key。三旗標 `interrupted`／`generationComplete`／`turnComplete` 分別出現。
+- **考慮過的選項**：(a) 照設計書用 us-west1——被官方清單＋實測否決；(b) 用 global 端點——native-audio 不支援 global；(c) us-central1——**採用**（官方支援＋實測通）。
+- **理由與取捨**：先花小額（探針幾秒音訊 ≈$0.001）實證換掉一個會讓「setup 後拿不到音訊」的隱藏地雷，遠比實作到一半才發現便宜。此為準則 4.1／鐵則 #21（先實證再動手）的正面案例。探針腳本存 scratchpad/live_probe.py，協定全譜規格存 scratchpad/phase3-live-spec.md。
+
+---
+
+## 2026-07-08 ｜記帳分析頁後端（Phase 2・工作包 A）實作定案
+
+- **背景**：實作設計書 §5.5／§5.6 的記帳分析頁後端——一次回五大區塊彙總（本月總額＋與上月比、近 N 月趨勢、分類佔比、日彙總、商家 Top N），供前端 Recharts 圖表＋Tailwind 日曆熱圖。以下為關鍵取捨與六條審查修正（HIGH×1／MEDIUM×3／LOW×2）的落實。
+- **新增 `GET /api/expenses/analytics`、`/stats` 零改動**：分析回應是重量級彙總，塞進 Phase 1 已被前端消費的輕量 `/stats`（`ExpenseStatsDto(total,count,month)`）會跨波破壞既有消費者、且讓「本月一個數字」被迫收大 payload。故新增獨立端點，`/stats` 維持原狀。取捨：`monthTotal` 在兩端點各算一次 SUM（成本可忽略）。無限流（read-only、不打 LLM，比照 `/stats`）。
+- **月界數學抽 `ExpenseMonthRange` 共用（同時重構 `StatsHandler`）**：把 Phase 1 `StatsHandler` 私有的 `TryResolveMonthRange`／`TryParseMonth` 原封搬到共用靜態類別 `ExpenseMonthRange`，並新增 `TryResolveAnalyticsRange(month, trendMonths)` 產三段 UTC 半開區間（選定月 `[Start,End)`、上月 `[PrevStart,Start)`、趨勢窗 `[TrendStart,End)`）。`StatsHandler` 改呼叫共用版（行為保持的純搬移；既有 `GetStats_*` 測試為回歸鎖，實跑續綠）。沿用 DECISIONS「月界 UTC」慣例。
+- **SQL GROUP BY／SUM（DB 端彙總）＋日/月分組經實證為 UTC 安全**：金額 decimal 在 DB 加總、不拉原始列。日/月分組用 `e.OccurredDateTime.Year/Month/Day`——**經 `ToQueryString()` 實證** Npgsql 譯為 `date_part('day', col AT TIME ZONE 'UTC')`（顯式帶 `AT TIME ZONE 'UTC'`），故不依賴連線 session 時區、恆為 UTC 日/月界（整合測試 I6 以 `2026-07-01T23:30Z`＋`2026-07-02T00:30Z` 鎖死 UTC 分日）。每句彙總皆 `IgnoreQueryFilters()`＋明確 `UserId`＋`ValidFlag`（多租戶＋軟刪除鎖，與 `StatsHandler` 一致）。
+- **分類佔比取 metadata 走「保底方案」（GroupBy 純量 CategoryId＋記憶體 join 名稱/圖示）**：主方案（GroupBy 含導覽欄 `e.Category!.Name/Icon`）有 EF 翻譯風險，故直接採保底——Q1 只按純量 `CategoryId`（含 null 未分類桶）分組彙總，再一句 `ExpenseCategory`（`IgnoreQueryFilters`＋UserId，不濾 ValidFlag 讓「已軟刪分類但仍有歷史消費」的名稱也能顯示）撈 metadata 記憶體 join。多 1 句查詢、確定可翻譯。**另**：商家 Top N 的 `GroupBy→Select(具名 record)→OrderBy/Take` 實測 EF 無法翻譯（`could not be translated`），改用**匿名型別**中繼投影後材質化再映射 DTO（實測修正）。
+- **與上月比 `prevMonthTotal` 用獨立區間、不由趨勢窗推導（審查 MEDIUM：N=1 邊界）**：原計畫從趨勢窗聚合 map 取上月，當 `AnalyticsTrendMonths=1` 時趨勢窗只含選定月→上月恆 0→deltaPct 恆 null（即使上月有消費）。**改為上月專屬區間 `[PrevStart, Start)` 單獨一句 SUM**，與 N 解耦。單元＋服務層 N=1 整合向量鎖死（上月 200、本月 300 → prevMonthTotal=200、deltaPct=50.0，trend 僅 1 筆）。
+- **`deltaPct` 單一擁有者＝後端（審查 LOW：重複計算/死欄位）**：後端計算並回傳 `deltaPct`（`(monthTotal-prevMonthTotal)/prevMonthTotal*100`，`MidpointRounding.AwayFromZero` 1 位；`prevMonthTotal==0`→`null`）。前端應**消費此值、移除自算路徑**；後端不回計畫中的 `previousMonth` 字串（前端如需自 `month` 推導）。避免兩邊各做一份白工。
+- **前後端契約欄名鎖定（審查 HIGH：欄名不一致靜默壞掉）**：後端權威欄名＝`month／monthTotal／monthCount／prevMonthTotal／deltaPct／monthlyTrend／categoryBreakdown／dailyTotals／merchantTopN`；子物件 `monthlyTrend[].{month,total,count}`、`categoryBreakdown[].{categoryId,name,icon,total,count}`、`dailyTotals[].{date,total,count}`、`merchantTopN[].{merchant,total,count}`。以 `ExpenseAnalyticsContractSerializationTests`（`JsonSerializerDefaults.Web` camelCase）逐欄斷言鎖死。**前端 WP-B 的 normalizeAnalytics 別名表必須把這些後端真名全列入 fallback**（`monthTotal→currentTotal`、`monthCount→currentCount`、`prevMonthTotal→previousTotal`、`merchantTopN→merchants` 等），勿只列臆測的 total/count/topMerchants/lastMonthTotal。
+- **`monthlyTrend`／`dailyTotals` 補上 `count`（審查 MEDIUM：宣告卻永遠 undefined）**：前端 TrendPoint/DailyPoint/DayCell 帶 `count`，故後端 Q2/Q3 一併回 `Count()`（缺月/缺日補 0）；避免前端拿到 undefined。
+- **空狀態語意（審查 MEDIUM，前端 WP-B 需落實）**：空月時後端仍回**完整 N 筆趨勢**（含前幾月真實數字，讓趨勢圖有完整軸），`categoryBreakdown/dailyTotals/merchantTopN` 為 `[]`、不報錯。**前端不可用 `monthTotal===0 && monthCount===0` 藏掉整頁**——本月零消費但有跨月歷史時，仍要渲染趨勢圖與 delta（各子圖自帶 mini 空狀態）。整合測試 I1 鎖「空月回零＋6 筆全零趨勢＋末筆＝選定月」。
+- **下鑽區間邊界（審查 LOW，前端 WP-B 注意）**：分析頁分類/日彙總用半開 `< endUtc`；下鑽重用的 `GET /api/expenses` 其 `to` 是 `<=` 閉區間。前端下鑽 `to` 應傳「次月月首前最後一個可表示瞬間」以逼近半開（**不可直接傳次月月首**，否則會多收午夜那筆）。此為已知微秒級容差（個人記帳極低機率），後端不改 list 端點（範圍紀律）。
+- **設定值化**：`Expense:AnalyticsTrendMonths`（預設 6，clamp 1..24）、`Expense:AnalyticsMerchantTopN`（預設 10，clamp 1..50），具名常數、無魔術數字。**無 schema 變更**（分析全走既有欄位與既有索引 `(UserId,OccurredDateTime,ValidFlag)`，不新增 migration）。
+- **自測**：`dotnet build -c Release` 0 error；`dotnet test ZonWiki.slnx -c Release` 全綠（Api 460＋Infra 66＝526）**連跑兩次穩定**（本機後端佔 5009／Debug DLL，全程 Release）。新增 43 筆分析測試（單元 math／month-range／契約序列化＋整合 I1–I15＋N=1）。活體（真實資料打一次端點＋Seq）由監工驗收。
+
+## 2026-07-08 ｜記帳分析頁：對抗復審後修正落實（Fable5 監工）
+
+- **背景**：分析頁前後端實作完成後，三路對抗復審（csharp／frontend／security）回報前端 3 MEDIUM＋3 LOW、後端 3 LOW。以下為 Fable5 監工的修正裁定與落實（全數已修並活體驗收）。
+- **分析載入錯誤語意：真正失敗改 `throw`、只有 not-ready 回 `null`（前端 MEDIUM）**：原 `getExpenseAnalytics` 用 try/catch 把所有失敗吞成 null，導致 5xx／斷線與「真的零消費」無法區分、AnalyticsView 的錯誤四態成死碼。改為 **404（端點未就緒）／401（未登入，另有全站彈窗）回 null；5xx／網路／JSON 損毀／其餘 4xx 一律 throw**，讓 SWR 的 error 被填、進錯誤框並可自動重試。取捨：not-ready 仍走友善空狀態以保前後端平行開發體驗。
+- **趨勢柱過去月 opacity 0.55→0.75（前端 MEDIUM／§11 WCAG 1.4.11）**：過去月柱本身即資料載體且無逐柱數值標籤，0.55 在兩淺色主題對卡面僅 2.30–2.54:1（<3:1）。實算四主題後取 0.75（最低 light 3.21、warmpaper 3.78），四主題過去月柱皆 ≥3:1。
+- **日曆熱圖：階梯下限 0.18→0.4＋所有日格統一邊框（前端 MEDIUM／§11）**：原最低桶對卡面僅 1.2–1.35 幾乎不可見；且「無消費日有實框、最低消費日無框」造成顯著性反轉（消費日看起來比沒消費還空）。修法：opacity 階梯改 `[0.4,0.55,0.7,0.85,1.0]`（桶1 升到 1.6–2.1、五級仍可辨），**所有日格一律 `border-default` 邊框**、綠色填充當唯一差異載體 → 任何消費日一律 ≥ 無消費日。熱圖最低桶在保留 5 級下無法各自達 3:1（sequential 天性），但色非唯一載體（aria-label＋title＋離散 legend）符合準則。
+- **環圈扇形 onClick 索引防護（前端 LOW）**：`onClick={(_, index)=>handleDrill(folded[index])}` 若 recharts@3 傳入非數字/越界 index，`slice.categoryId` 會拋 TypeError 讓整頁崩。改為 `typeof index==='number'?folded[index]:undefined` ＋ handleDrill 對 undefined 早退。
+- **商家 Top N 排除純空白商家（後端 LOW）**：`.Where(e=>e.Merchant!=null && e.Merchant!="")` 漏放 `"   "`，與「排除 null／空白」契約不符。改 `e.Merchant!.Trim()!=""`（EF 譯 btrim，仍 DB 端過濾）。
+- **整合測試容器設 `TZ=Asia/Taipei`（後端 LOW：修「假綠」）**：測試容器原無 TZ（session 預設 UTC），日/月分組測試「剛好」通過而抓不到「分組未帶 UTC 轉換」的回歸。對齊 prod／docker-compose 的 `TZ: Asia/Taipei` 後，既有 I6（`23:30Z`＋`00:30Z` 在台北時區皆落 7/2 本地日、但斷言分成 7/1 與 7/2 UTC 日）成為真正的回歸鎖——實跑 526 測試在 Asia/Taipei 下仍全綠，證實分組確走 `AT TIME ZONE 'UTC'`。
+- **另有 2 LOW 依裁定處理**：下鑽 pageSize=200 截斷 → 面板加「共 N 筆，僅顯示前 200 筆」提示（不加分頁，範圍紀律）；環圈淺主題多色 <3:1 → 維持現況（已文件化取捨：身分靠 legend＋icon＋文字承載，色非唯一載體）。
+- **Fable5 活體驗收**：backend 526 綠（新 TZ）；前端 tsc/eslint/build/純函式向量 73 全綠；本機種 39 筆真實消費（3 月/8 分類/12+ 商家）後 Playwright 實測——四主題（warmpaper/light/dark/night）桌機＋375px 手機截圖（收 `tmp/playwright/phase2-analytics/`）、環圈 legend／扇形／熱圖日三條下鑽皆開正確明細、console 零錯誤、375px 無爆版。
+
+## 2026-07-07 ｜TTS 後端（Phase 2・工作包 A）實作定案
+
+- **背景**：實作設計書 §6.1/§6.3/§6.4 的筆記朗讀 TTS 後端 v1——`TtsAudio` 表＋Gemini-TTS 供應者＋口語稿服務＋背景合成管線＋六端點（synthesize/status/serve/voices/tts-settings GET·PUT）。v1 採監工裁定的「穩健路線」：背景合成全部段落→ffmpeg 併成單一檔→授權供檔＋HTTP Range（分段串流首播留 v2）。以下為關鍵取捨與八條審查修正的落實。
+- **快取鍵以「筆記內容」為上游、非口語稿（達成設計目的的正確實作）**：設計 §6.3 字面寫「快取鍵＝SHA-256(口語稿正規化文字＋…)」，但口語稿由 VertexAdc 產生——若以口語稿當鍵，每次重播都得先打一次 Vertex 才算得出鍵，無法達成 §5 驗收②「重播零成本」。**修正為 `ComputeContentHash(Normalize(note.ContentRaw) ∥ voice ∥ language ∥ format ∥ TtsScriptService.PromptVersion ∥ ttsModelName)`**（0x1F 分隔、SHA-256 hex）：`POST /synthesize` 能在產口語稿與呼叫 TTS 之前就查快取→命中直接回 ready（零 Vertex／零 TTS）。Normalize＝Trim＋`\r\n`→`\n`＋摺疊連續空白。
+- **前端契約欄名鎖定（審查 #1/#2/#7，後端對齊工作包指定契約）**：①合成/狀態回應音檔主鍵欄名一律 **`ttsAudioId`**（非 `id`）；②章節時間欄名一律 **`startSeconds`**（非 `offsetSeconds`）；③聲音顯示標籤欄名一律 **`label`**（非 `styleLabel`）。另 tts-settings 主動對齊前端 `TtsSettings`＝**`{ voice, language, format }`**（非 `defaultVoice`）。以純序列化單元測試（`TtsContractSerializationTests`）＋整合真 JSON 斷言雙鎖，杜絕與 WP-B 靜默分歧。
+- **快取命中路徑也回章節與時長（審查 #3）**：`POST /synthesize` 的 200 ready 回應（含 23505 並發攔截後的 ready 回應）一併帶 `durationSeconds` 與 `chapters`（反序列化自 `ChaptersJson`），讓前端「重播零成本」路徑不需補打 /status 就能顯示章節。
+- **processing 陳舊判定＝重跑（審查 #4：背景死於重啟的孤兒列）**：背景合成靠 fire-and-forget＋記憶體 CTS，後端重啟（本機每日 prod 覆蓋後強制重啟、任何重新部署）會讓合成中的列永遠停在 processing、CTS 消失、無復原。**決策表對「processing ＆ Valid」加陳舊判定**：`UpdatedDateTime` 超過 `Tts:SynthesisBudgetSeconds`（預設 600）即視為背景已死→重置 processing＋重跑（非另建啟動復原 HostedService，決策表內判定更簡且可測）。此門檻恰等於合成硬預算：真正在跑的合成在預算內必然完成或被 CTS 取消標 failed，唯有死掉的孤兒才會超過門檻。整合測試 `陳舊processing_可被重新觸發至ready`（用 `ExecuteUpdate` 回溯 UpdatedDateTime 繞過稽核攔截器）鎖死。
+- **試聽端點延到 v2（審查 #6，二擇一取「延後並落 DECISIONS」）**：設計 §6.2 列 v1 有「▶ 試聽鈕（合成短句試聽）」，但工作包端點清單無 preview 端點。**決策：v1 不做 `POST /api/tts/preview`，延到 v2**。理由：①試聽的回傳形狀（直接回音檔 vs `{ttsAudioId,status}`＋輪詢＋授權供檔）有跨組件契約分歧，兩端無法各自獨立驗證；②試聽非 §5 驗收項（§5=複習/朗讀播放/重播零成本/分析頁），延後不破壞驗收；③前端 WP-B 已對 preview 404 優雅降級（灰掉試聽鈕）。此為明確的延後決策，非無聲砍規格。
+- **前端輪詢上限須 ≥ 後端合成預算（審查 #5，後端契約備註）**：後端 `/status` 在合成期間持續回 processing 直到合成完成或撞硬預算（預設 600 秒）標 failed。**前端不可用固定 90 秒判死**（長筆記切段逐段 us/eu 往返＋ffmpeg concat 極可能 >90 秒，此時後端仍正常進行）。前端應「status 仍回 processing 就持續輪詢，僅在後端回 failed 或連續 N 次取不到才判失敗」——此為 WP-B 需落實項，後端已於契約載明。
+- **CORS 暴露 Range 標頭＋供檔走 Cookie 認證（審查 #8/對齊點 D）**：dev（3000→5009）跨源 `<audio>` 拖曳/206 需讀得到範圍資訊，故 `ZonWikiCors` policy 補 `WithExposedHeaders("Content-Range","Accept-Ranges","Content-Length")`（prod 同源不觸發）。並載明：瀏覽器媒體元素只能帶 Cookie、無法帶 PAT Bearer，故 `GET /api/tts/audio/{id}` 在瀏覽器情境等同 Cookie 認證（可接受）。
+- **白名單「不」登記＋一律軟刪除**：`TtsAudio` 是快取品——`TrashTypeRegistry` 與 `ActivityLogInterceptor.MapEntity` 兩處皆不登記（進垃圾桶語意錯誤、會灌活動流；準則 §2.3、設計 §9）。回歸測試 `TtsWhitelistTests`（GetEntityType 回 null）＋整合 `TtsActivityLogHttpTests`（synthesize/serve 全程零 ActivityLog）鎖死。DB 列一律軟刪除；唯一索引 `(UserId, ContentHash)` 不含 ValidFlag（復活 upsert，並發首建攔 23505 改查既有）。
+- **v1 清理＝同筆記＋聲音重合成即失效舊列與舊檔**：未命中要建新列前，先軟刪同 `(UserId, NoteId, VoiceName)` 但不同 ContentHash 的舊列，並 `File.Delete` 其實體快取檔（快取檔可完全再生，屬快取品定位；DB 列走軟刪保留 metadata）。runtime `File.Delete` 是後端 C# 執行、非 agent 跑 shell，不受 delete-guard 約束。不建 LRU／排程（成本天花板 <$5/月，靠磁碟 80% 告警當保險）。整合測試 `I3` 鎖「舊列 ValidFlag=false＋舊檔已刪」。
+- **ADC token 不外流（沿用 VertexAdc 三道防線）＋供檔無路徑穿越**：`GeminiCloudTtsService` 打的是固定官方端點 `texttospeech.googleapis.com`（設定值 `Tts:Endpoint`，非使用者可控），ADC token 只當 Bearer 送該端點＋固定 `x-goog-user-project`（值取自 `Gcp:QuotaProject`，Cloud TTS URL 無 project 缺此 header 會 403）；口語稿走 `AiProviderFactory.ResolveAsync`（既有安全路徑零改動）。授權供檔核對 `UserId＋ValidFlag＋Status=ready`（他人 404 不洩漏）；`FilePath` 由伺服器以列 Id 生成（`{cacheDir}/{id:N}.{ext}`，非使用者輸入）→ 無路徑穿越。
+- **口語稿降級不 throw＋章節時間 best-effort**：`TtsScriptService` 走 VertexAdc flash-lite（reuse `AiProviderFactory`；記帳教訓避免 claude cold start），LLM 回壞 JSON／空→降級為「Markdown 去記號的單一 speech 片段」（保底至少能唸原文，章節=無）。章節時間位移逐塊 `ffprobe` 量測，量不到→章節退化為 null（`ChaptersJson=null`），總時長退 null 由前端 `<audio>.duration` 補；ffprobe 不可用不讓合成失敗。背景管線任何例外一律 catch 標 failed（安全 ErrorText、保底存檔用 `CancellationToken.None`），絕不冒成未攔截。style prompt v1 不帶（recon 標未確認），param 保留待 v2。
+- **設定值化＋Fake 短路測試**：新增設定鍵 `Tts:Provider`（Fake→測試）、`Tts:Endpoint`、`Tts:ModelName`（gemini-2.5-flash-tts）、`Tts:DefaultVoice/Language/Format`（Kore/cmn-TW/MP3）、`Tts:ScriptModelKey`（vertex-gemini-lite）、`Tts:MaxInputBytes`（4000）、`Tts:CacheDirectory`（App_Data/tts-cache）、`Tts:SynthesisBudgetSeconds`（600）、`Gcp:QuotaProject`（zonwiki-prod）、`Tts:FfprobePath`；ffmpeg 重用既有 `Refine:FfmpegPath`。整合測試以 `Tts__Provider=Fake`（FakeTextToSpeechService＋FakeAudioComposer）短路真外呼與 ffmpeg，並把快取檔導到暫存目錄避免污染 repo。
+- **自測**：`dotnet build -c Release` 0 error；`dotnet test ZonWiki.slnx -c Release` 全綠（Api 399＋Infra 66＝465）連跑兩次穩定（本機後端佔 5009／Debug DLL，全程 Release）。migration `AddTtsAudioAndUserTtsSettings` 人工核對：唯一索引 `UX_TtsAudio_UserId_ContentHash`（無 ValidFlag、無 filter）、`IX_TtsAudio_UserId_NoteId_ValidFlag`、Status varchar(16)、DurationSeconds double、SizeBytes bigint、`timestamptz` 稽核欄齊全、FK→Note Restrict、`User_TtsSettingsJson` nullable varchar(1024) 對既有列零成本後補。**已知小取捨**：極端並發下同一 stale/failed 列被兩請求同時重置＋各自背景合成，會對同一列與同一檔重複寫入（末寫者勝，皆產有效音檔）——單人系統機率極低，v1 接受，未加 xmin 樂觀鎖。
+
+## 2026-07-07 ｜TTS 前端（Phase 2・工作包 B）實作定案
+
+- **背景**：實作設計書 §6.2/§6.6 的筆記朗讀前端——筆記詳情頁「🎧 聆聽」→ 底部迷你播放器（單一 `<audio>`＋合成輪詢＋播放/暫停/±15秒/語速/章節跳段/續聽位置/聲音選擇＋試聽）。只碰 `frontend/`。以下為實作期間的關鍵取捨（審查修正一併記錄）。
+- **契約層「同時容忍兩種欄名」以吸收兩份計畫的分歧（審查 HIGH #1/#2 + MEDIUM #7 + 設定欄）**：後端計畫曾用 `id`/`offsetSeconds`/`styleLabel`/`defaultVoice`，工作包契約用 `ttsAudioId`/`startSeconds`/`label`/`voice`。`lib/api/tts.ts` 的正規化一律讀「兩者擇一」（`id ?? ttsAudioId`、`offsetSeconds ?? startSeconds`、`styleLabel ?? label`、`defaultVoice ?? voice`），對外統一暴露為工作包欄名；PUT tts-settings 兩個欄名（`voice`＋`defaultVoice`）都送。**實讀後端實作 DTO（`TtsDtos.cs`）確認：後端最終對齊工作包欄名（`ttsAudioId`/`startSeconds`/`label`/`voice`）**，落在正規化的 fallback 分支，前端拿到的主鍵不會是 undefined（避免 `ttsAudioUrl(undefined)` 全鏈崩潰）。此容錯讓前端對「後端不論選哪套欄名」都不會壞。
+- **快取命中「重播零成本」仍顯示章節（審查 MEDIUM #3）**：`SynthesizeResult` 一併接收後端在 ready 回應帶的 `chapters`/`durationSeconds`（後端 `TtsSynthesizeResponseDto` 已在快取命中路徑回這兩欄）；若 ready 卻無章節，`applyReady` 才補打一次 `/status` 取章節（`/status` 不打 TTS/Vertex 外呼，不違反「零成本」）。
+- **前端輪詢上限對齊後端合成硬預算（審查 MEDIUM #5）**：不以固定 90 秒判死（長筆記切段合成可能 >90s）。改為「只要 `/status` 持續回 processing 就繼續輪詢」，僅在：①後端回 `failed`、②連續 8 次取不到狀態、或 ③絕對上限 15 分鐘（> 後端 `Tts:SynthesisBudgetSeconds` 預設 600 秒）才判失敗。逾時顯示失敗＋重試；重試對「後端已重啟致 processing 陳舊」的列有效——後端已實作 `IsStale`（UpdatedDateTime 超過合成預算即重置重跑，審查修正 #4），故重試會重新觸發而非卡死。
+- **試聽（▶）端點延到 v2（審查 MEDIUM #6）**：設計 §6.2 列「▶ 試聽鈕」，但後端 v1 無 `POST /api/tts/preview`（實讀 `TtsEndpoints.cs` 確認只有 synthesize/status/audio/voices/tts-settings 五端點）。前端 `previewVoice` 已完整接線：呼叫 `/api/tts/preview`，命中 404 → 灰掉試聽鈕＋tooltip「後端試聽端點尚未就緒」，不阻斷主流程。**決定：試聽端點延到 v2**；當後端補上該端點，前端試聽鈕自動點亮（無需再改前端）。此為「明確記錄的延後決策」而非無聲砍功能。
+- **筆記頁只加單一插入點（範圍紀律，鐵則 #5）**：原計畫在 `page.tsx` 掛兩處（工具列聆聽鈕＋頁尾播放器）。改為 `ListenButton` 一個協調元件——它同時渲染工具列的 🎧 鈕，並以 `createPortal` 把 `position:fixed` 的迷你播放器掛到 `document.body`（避開任何祖先 transform/overflow 影響定位）。`page.tsx` 因此只新增「一顆按鈕＋一行 import」，把對既有超重筆記頁的侵入面降到最小。合成/輪詢/播放整段生命週期收在 `TtsMiniPlayer` 內。
+- **UIUX 對比修正（四主題 WCAG AA 實測）**：①播放主鈕用 `--action-primary-bg/-fg`（深底＋白字，四主題實測 4.63–9.25:1），**不用** `--action-secondary-fg`（暗主題是淺藍，配白字只 ~1.x:1 會失敗）；②當前章節高亮改「左側藍色邊條＋粗體＋▸ 圖示」三載體、文字維持 `--text-primary`（10.86–15.80:1），不把藍字放弱對比底（`--action-secondary-fg` on `--bg-surface-secondary` 在 light 只 4.45:1 差臨界）；③失敗重試鈕改外框式（文字＝`--status-danger-fg` 落在錯誤框的 `--status-danger-bg`，四主題 4.73–5.81:1），不用「白字配亮紅底」（暗主題只 3.35:1）。全部用 CSS token、零硬編色票。
+- **播放手勢鏈**：`play()` 只在使用者手勢（▶ 鈕點擊／鎖屏 MediaSession handler）內呼叫；輪詢/合成會斷開原始手勢鏈，故 ready 後**不自動播**，一律等使用者按 ▶（iOS/桌機 autoplay 規範）。單一 `<audio>` 全生命週期不重建、只換 `src`（iOS 續播特性）。
+- **自測**：TDD 純函式向量（`lib/ttsPlayer.ts` 的 formatDuration/clampSeek/currentChapterIndex/續聽讀寫/語速/狀態機/formatVoiceLabel）以 scratchpad node 腳本鎖死 10 組全過；`pnpm exec tsc --noEmit`、對改動檔 `eslint`、`pnpm run build`（Next 16 生產建置）三者全綠（Node 20.12.2）。Playwright 活體由監工統一驗收。
+
+## 2026-07-07 ｜單字庫後端（Phase 2・工作包 A）實作定案
+
+- **背景**：實作設計書 §3 單字庫後端——`VocabularyWord` 表＋SM-2 排程純函式＋七端點（CRUD/due/review/ai）＋白名單登記。以下為實作期間的關鍵取捨（審查修正一併記錄）。
+- **SM-2 → FSRS 欄位映射（DB 照 FSRS 形狀、值由 SM-2 填，設計 §3.1「換 FSRS 不動表」）**：`_Difficulty`＝EF（1.3~2.5+，方向與 FSRS 相反，僅為容器）、`_Stability`＝目前排程間隔（天，並作為成熟卡下次間隔的乘算基底）、`_Reps`＝連續成功次數 n（Again 歸零，與 FSRS 單調不同）、`_Lapses`＝遺忘次數（僅已畢業卡）、`_State`＝New/Learning/Review/Relearning。四鍵→quality：Again=2/Hard=3/Good=4/Easy=5；EF 每次複習更新（含 Again）並 clamp≥1.3。間隔階梯：n0→1（Easy 4）、n1→6（Easy 8）、n≥2→Hard=round(I×1.2)/Good=round(I×EF)/Easy=round(I×EF×1.3)，保底 max(前一間隔+1, 乘算值)。測試向量鎖死 [1,6,15,38] 等。
+- **排程一律後端計算（DB-as-truth，審查 HIGH）＋預覽=實際**：`Sm2Scheduler.PreviewIntervals` 與 `Review` 共用單一私有 `Compute` 路徑，保證「四鍵下次間隔預覽＝按下去的實際排程」。**每個 `VocabularyWordDto` 都攜帶 `schedulePreview`（again/hard/good/easy → {intervalDays, due=now+interval}）**，前端複習卡按鍵前直接消費（權威值，不再自行降級估算）。複習回應 `ReviewVocabularyResponseDto` 只回 `Card`（其 schedulePreview 即「下一次複習」的預覽），**移除原計畫的獨立 `Preview` 欄（無人消費、會成死碼）**。前端降級估算若保留，其寫死常數須改為與後端一致（Again≈1 天而非 <10 分、早期 Good/Hard 反映 1/6 階梯），或改用純定性詞。
+- **間隔取整鎖 `MidpointRounding.AwayFromZero`（審查 LOW）**：`Math.Round(x, AwayFromZero)` 後套下限 1；.5 邊界一律遠離零進位（例 12.5→13），並補一個 .5 邊界向量鎖死行為，避免日後新增邊界向量時非決定性。
+- **複習高頻更新不灌活動流（審查 MEDIUM）**：`ActivityLogInterceptor` 對 `VocabularyWord` 判斷「本次 Modified 是否只動到 SRS 欄（Due/Stability/Difficulty/State/Reps/Lapses/LastReviewDateTime）」，若是則不記活動流（一場複習數十張卡＝數十筆會洗版）；只有 word／釋義等 CRUD 編輯才記 'updated'；新增/軟刪/復活仍正常進活動流。同理由於設計 §9 把 CoachMessage 排除。
+- **來源筆記連結（審查 LOW，採選項 a）**：`VocabularyWordDto` 補 `SourceNoteSlug`＋`SourceNoteTitle`（投影時 join Note 取用），前端據此做 `/notes/{slug}` 正確連結；**切勿用 SourceNoteId 硬組 /notes/{id}**（notes 路由為 slug 制）。
+- **AI 補釋義（reuse VertexAdc、記帳已定案 Vertex）＋失敗一律降級不 500**：`POST /api/ai/vocabulary` 先 `UpsertAsync`（word 永不丟失、復活軟刪列），再以硬時間預算（`Vocabulary:EnrichBudgetSeconds` 預設 15、clamp 0.2~30）跑 `EnrichAsync`；成功只填「原本為空」的釋義欄（不覆蓋使用者既有內容）、`Enriched=true`；逾時／壞 JSON／供應者建構失敗（ADC 不可用等 InvalidOperationException）／Error 事件 → 一律 catch 吞成降級（word 已存、`Enriched=false`），保底存檔用 `CancellationToken.None`。VertexAdc 三道安全防線零改動沿用 `AiProviderFactory.ResolveAsync`。掛 `PatAiRateLimitMarker` 組合限流（比照記帳）。
+- **唯一索引 (UserId, Word) 不含 ValidFlag＋復活 upsert（含並發）**：`VocabularyService.UpsertAsync` 依 (UserId, Word) find→有軟刪列復活→無則建 SM-2 新卡；並發首建撞 23505 攔截改查既有列（比照 ExpenseCategoryService）。新增並發整合測試（同字並發 POST 只建一列、皆非 500，手動與 AI 兩路徑）＋ `/due` 跨租戶隔離測試（審查 MEDIUM）。
+- **測試隔離修正（實測抓到）**：`VocabularyEnrichmentServiceTests`／`VocabularyAiHttpTests` 的「非-Fake 預設供應者」測試，原依賴 `ResolveAsync` 因「無匹配/共用模型列」回退到注入的測試替身；但 `AiProviderFactoryVertexAdcTests` 會在共用 Testcontainers DB 種 `SharedModelUserId` 名下的 Enabled VertexAdc 列，經「共用預設」退路洩漏進來，使測試依類別執行順序偶發解析到真 provider（實跑第一次全套即抓到 1 例失敗）。**修法：為測試使用者種一筆本人的 ClaudeCli 列（own 勝 shared 排序＋ClaudeCli 分支回退到注入的預設供應者），讓解析確定命中測試替身**，不動其它測試。（此為既有 Expense scripted 測試同款潛在脆弱性，但只在本工作包範圍內修自己的測試。）
+- **自測**：`dotnet build -c Release` 0 error；`dotnet test ZonWiki.slnx -c Release` 全綠（Api 339＋Infra 66＝405）連跑兩次穩定（本機後端佔用 5009／Debug DLL，全程用 Release）。migration `AddVocabularyWord` 人工核對：唯一索引 UX_VocabularyWord_UserId_Word（無 ValidFlag、無 filter）、IX_VocabularyWord_UserId_Due_ValidFlag、State integer、Difficulty/Stability double precision、Due timestamptz、FK→Note Restrict、6 稽核欄齊全。
+
+## 2026-07-07 ｜Phase 2 開工前技術偵察定案（Recharts 3、Gemini-TTS 端點）
+
+- **背景**：設計書 Phase 2 有兩個標「未確認」的技術未知會 gate 實作——Recharts 對 React 19 的相容性、Gemini-TTS 的端點形狀。監工（Fable5）用 ADC 實打確認，供 Opus 直接照用。
+- **Recharts**：`recharts@3.9.2` 的 peerDependencies 明列 `react/react-dom/react-is: ^19.0.0`，前端是 React 19.1.8 → **直接用 recharts@3**（設計書 §5.6「v3 證據不足」已推翻，不必退 v2 或 override react-is）。
+- **Gemini-TTS**：`POST https://texttospeech.googleapis.com/v1/text:synthesize`，body `voice.modelName=gemini-2.5-flash-tts`＋`voice.name`（30 聲選 1）＋`voice.languageCode=cmn-TW`＋`audioConfig.audioEncoding`；認證 ADC Bearer＋**`x-goog-user-project: zonwiki-prod` header（Cloud TTS URL 無 project，user ADC 缺此 header 會 403；prod SA 帶了無害，一律帶）**。實打 cmn-TW 中英夾雜 HTTP 200、MP3 43KB/~15s。細節與 30 聲清單見 scratchpad/phase2-recon.md。
+- **取捨**：cmn-TW 是 Preview 語言，PoC 音檔已存待使用者實聽定案；不過關退 Wavenet cmn-TW／Chirp3 cmn-CN。
+
+## 2026-07-07 ｜記帳 AI 供應者維持 Vertex（claude -p 優先實測撞 cold start，改回 Vertex）
+
+- **背景**：使用者原鐵則「新功能一律用 GCP 服務吃額度」→ 記帳用 Vertex。後實證 **prod api container 內有可用的 claude CLI（2.1.197，`/home/User/.local/bin/claude`，`claude -p --model sonnet` 實跑回 OK）**——先前以為「prod 沒 claude」是照 `Program.cs:104-115` 過時注釋臆測（那段停用的是 DB 的 ClaudeCli **資料列**、不影響注入的 `_default` provider 實例）。claude -p 走 Max 訂閱免費、不吃 GCP 額度，使用者遂要求記帳改「claude -p 優先＋Vertex 備援」。
+- **各功能選型評估（判準：claude -p 是文字 CLI，碰語音的任務做不到）**：記帳／單字庫補釋義＝純文字，claude 能做；**英文教練（即時語音）與 TTS（語音合成）claude 根本做不到，只能 Vertex Live／Gemini・Cloud TTS**。
+- **實作與實測（推翻 claude 優先於記帳的可行性）**：Opus 已實作 `AiProviderFactory.ResolveExpenseChainAsync`（claude 第一棒＋Vertex try-build 備援棒，含 csharp-reviewer 對抗式復審修一個 HIGH，測試 66+279 綠）。但**本機 Playwright 實測**：claude 是 one-shot 子進程、每次記帳都 cold start，`backend.log` 實證 **12,356ms 撞滿 12 秒硬預算 → 降級 CaptureItem**；且 **Vertex 備援因與 claude 共享同一條 12 秒預算的 CancellationToken，claude 吃光後 ct 取消、Vertex 備援沒機會發請求**（Seq 零 aiplatform outbound）。對照 Vertex 直打實測 2,291ms 成功。
+- **最終決定**：**記帳維持 Vertex**（即 commit `0a05b92` 原狀，快 2.3 秒、一筆 gemini-2.5-flash-lite 約 $0.0001／上百筆一個月才幾分錢，成本可忽略）。claude 優先的「真備援」方案（給 claude 較短子預算、超時換 Vertex 接手）評估後**未採用**、改動已 `git stash`（訊息 `expense-claude-priority`）暫存備查。claude -p 留給「不急且 token 量大」的功能再評估。
+- **理由與取捨**：記帳的本質是「手機一句話快速記」，claude cold start（每次都發生）與「快」直接矛盾，且共享預算讓備援形同虛設；而記帳用 claude 想省的錢（$0.0001／筆）在此場景幾近於零，代價卻是 12 秒＋降級要重試。「省額度」的價值在長對話／大量 token 的功能才成立，記帳不適用。真正會固定吃 GCP 額度的是 Phase 3 的教練與 TTS（語音，claude 做不到）——那也是額度最該花的地方。
+
+## 2026-07-07 ｜記帳核心（工作包 A・Phase 1）後端實作定案
+
+- **背景**：實作設計書 §5 記帳核心後端——實體＋migration、VertexAdc 供應者、文字解析服務、CRUD／解析／彙總端點、MCP 工具。以下為實作期間的關鍵取捨。
+- **VertexAdc 供應者＋未知類型一律拋錯**：`AiProviderFactory` 新增 `VertexAdc` 分支（重用 `OpenAiCompatibleStreamingProvider`，僅把「靜態金鑰」換成「ADC access token」——`IVertexAdcTokenProvider`/`VertexAdcTokenProvider` 以 `GoogleCredential.GetApplicationDefaultAsync().CreateScoped(cloud-platform)` 取 token，singleton 持有 credential 讓底層自動快取／刷新）。**同時把原本 `AiProviderFactory.cs:127-129` 對未知 Provider 字串的「靜默退回預設 Claude」改成拋 `InvalidOperationException`**（設計 §1.2 明訂：DB 設定打錯字不得整批靜默走 Claude、既不吃 credits 也無人察覺）。合法的 ClaudeCli／OpenAiCompatible 行為不變（回歸測試鎖死）。新增 NuGet：`Google.Apis.Auth` 1.75.0。
+- **記帳解析主路不加 response_format（§12.6 未決項的取捨）**：設計 §12.6「主路是否小改 provider 加 response_format 拿硬 schema」在設計書中**無「(推薦)」標記**，屬未決；「§12 全採推薦」對它沒有可套用的推薦。本實作選擇**不改動 provider（維持零改動）、改以「prompt 約定＋圍欄剝除（StripFence）＋保底解析」取得 JSON**，與 §5.3「零改動 provider 拿不到 response_format」及工作包「provider 本體零改動」一致。日後若要硬 schema，再走「provider 加 response_format」或「原生 generateContent＋responseSchema」。
+- **跨組件契約：Phase 0 種子的 `AiModel.Key` 必須等於設定鍵 `Expense:VertexModelKey`（預設 `vertex-gemini-lite`）**。`ExpenseParsingService` 以此設定鍵向 `AiProviderFactory.ResolveAsync` 要 VertexAdc 模型；若種子的 Key 與此不一致，`ResolveAsync` 會**靜默退回既有共用鏈（Claude／banana）**（此屬「找不到指定模型鍵→退共用預設」的既有行為，非未知 Provider 類型，故不會被新加的 throw 攔到）。**已知限制**：本地／CI 無 VertexAdc 列時，記帳解析走既有共用退路（非 Vertex），真實 Vertex 路徑屬 Phase 0＋Seq 手動驗收（§1.2「從 Seq 確認請求打到 aiplatform.googleapis.com」）。
+- **金額 decimal(18,2)、時間 UTC、月界 UTC**：金額以 `decimal` + `HasPrecision(18,2)`（Npgsql→numeric(18,2)）避免浮點誤差；`OccurredDateTime` 一律存 UTC（相對時間由 LLM 依裝置時區換算後輸出 UTC）；`GET /api/expenses/stats` 的月彙總 Phase 1 **以 UTC 月界 [firstDayUtc, nextMonthUtc) 計算**並在回應標明 `month`，跨時區精算（使用者時區月界）列後續。
+- **保底 CaptureItem 一律用未取消的權杖寫入（審查 HIGH）**：解析端點以 linked CTS（request ct ＋ 硬時間預算）施加取消；逾時／解析失敗／壞 JSON 的保底 CaptureItem 建立與存檔，一律用 **`CancellationToken.None`**（絕不重用已逾時的 linked token），否則 `SaveChanges` 會立即被取消、CaptureItem 永遠寫不進去——直接推翻設計 §5.3「一句話永不丟失」。整合測試 `PostParse_逾時_降級為CaptureItem且確實落庫` 斷言「逾時後 CaptureItem 確實從 DB 查得到」。
+- **所有「AI 失敗」皆走保底、不回 500（對抗式復審補強）**：端點對解析過程的 catch 一律涵蓋**任何例外**——逾時（OperationCanceledException）、供應者硬錯誤（ExpenseParseException），以及**解析供應者建構失敗（ADC 不可用／未知 Provider／不安全 BaseUrl 拋的 InvalidOperationException）**——全部降級建 CaptureItem。原本只攔前兩者，ADC 不可用會漏成 500，違反設計 §1.6「ADC 不可用時...讓解析走保底路」；逾時記 Information、其餘記 Warning（Seq 可追）。整合測試 `PostParse_供應者拋例外_降級為CaptureItem` 鎖死此行為。
+- **冪等在並發下攔 23505 改回既有（審查 MEDIUM）**：`/api/ai/expenses` 的 clientRequestId 冪等除了「先查既有」外，`INSERT` 時另攔 `(UserId, ClientRequestId)` 過濾式唯一索引違反（`DbUpdateException` 內層 `DbException.SqlState == "23505"`），攔到改查既有列回其 DTO（200），使並發重送不回 500。整合測試含「同 clientRequestId 並發送出仍只建一筆」。
+- **解析硬預算預設 12 秒、clamp 下限放寬到 0.2 秒（測試用）**：設定鍵 `Expense:ParseBudgetSeconds` 預設 12（落在設計 §5.3 的 10–15 秒 band 內）。clamp 上限 15、**下限刻意放寬到 0.2 秒**——純為讓「逾時降級」路徑能寫成快速的確定性整合測試（TDD 要求逾時後 CaptureItem 必落庫）；**生產設定應維持 10–15**。
+- **組合限流：GlobalLimiter＋端點 marker＋CreateChained（TokenBucket＋SlidingWindow）**：`RequireRateLimiting` 疊掛只取最後一筆、單一具名 policy 無法同時跑兩種 limiter。故 `/api/ai/expenses` 改用 `options.GlobalLimiter = PartitionedRateLimiter.CreateChained(tokenBucket, slidingWindow)`＋端點 `.WithMetadata(new PatAiRateLimitMarker())`：只對帶 marker 的端點生效（TokenBucket 15 容量／8 每分鐘＋SlidingWindow 30／分），其餘端點回 `GetNoLimiter`（永不拒絕）故既有端點零影響；逾限共用既有 `OnRejected`（統一 429 JSON）。另 `POST /api/captures` 補掛既有 `PatPolicy`（原本完全沒掛限流）。
+- **並發首建分類撞唯一索引具韌性（審查 LOW）**：`ExpenseCategoryService` 的種子／名稱式 find-or-create 除了復活軟刪列外，`INSERT` 撞 `(UserId, Name)` 唯一索引時也攔 23505 改查既有列使用，確保並發首建不回 500。
+- **測試策略（審查 MEDIUM：整合基座 Fake 回中文散文）**：整合基座 `Ai__Provider=Fake` 的預設 Fake 回中文散文（非 JSON）。成功入庫路徑改以 `WithWebHostBuilder`＋`ConfigureTestServices` 在 Testing 覆寫 `IAiProvider` 為「回定值 JSON 的 Fake」（**不改動基座對其它測試的預設 Fake 行為**）；降級／逾時路徑則用不依賴特定 JSON 的預設 Fake。
+- **對抗式復審後補修（同日）**：①CRITICAL——VertexAdc 供應者三道防線：只允許系統共用身分（SharedModelUserId）名下的列取 ADC token、BaseUrl 只放行 `aiplatform.googleapis.com`／`<region>-aiplatform.googleapis.com`＋https、`SaveModelsConfig` 伺服器端白名單拒收 VertexAdc（堵死「任何登入者自建假模型列把伺服器 GCP token 外流」的攻擊鏈）；②`/api/expenses/parse` 加掛 PatAiRateLimitMarker（堵 PAT 換路繞過組合限流）；③解析文字上限 1000 字＋CRUD 輸入驗證（應用層，無 schema 變更）；④分類 ensure-defaults 批次化（修 N+1；過程實測抓到並發死結 40P01，加攔 40P01/40001 走逐筆 fallback）；⑤清單缺省 limit 預設 50（前端 useExpenses 同步補傳 pageSize）；⑥ParseAndStoreAsync 例外攔截縮小到只包 AI 呼叫，儲存層非預期例外 log Error 後外拋。
+- **前端 PWA manifest 色票寫死之例外（鐵則 #11「禁止硬編碼色票」的記錄在案例外）**：`app/manifest.ts` 的 `background_color`/`theme_color` 直接寫 warmpaper token 實值（`#faf9f7`／`#2d5016`）——manifest 是靜態 JSON、拿不到 CSS 變數，且 OS 只在安裝/啟動畫面用到；值已與 `globals.css` 的 warmpaper token 核對一致，換主題色時需同步這兩處。
+- **noteNav「重訪截斷」修正（Playwright 活體實測抓到）**：原堆疊語意「重訪即截斷」會讓「從分類頁點進曾造訪過的筆記」按返回錯回舊位置（丟失分類脈絡）。改為：返回鈕導頁前 `markBackNavigation(target)` 一次性標記——`recordNoteNav` 遇已存在 URL 時，有標記＝back 移動→截斷（原語意），無標記＝前進→move-to-top（保留新脈絡）。瀏覽器硬體返回鍵無標記會走 move-to-top，屬已知取捨。
+
+---
+
+## 2026-07-06 ｜「其他」功能群定案：GCP 純血選型＋分期實作（設計書 v3.1）
+
+- **背景**：新增「其他」頁功能群——單字庫／英文教練（Midoo 式即時語音對話）／記帳（語音一句話入帳）／筆記 TTS・Podcast 模式／筆記返回鈕重定義／iPhone 快速啟動。使用者裁示鐵則級約束：**新功能所有雲端服務一律用 GCP（讓花費吃既有 credits）、拒絕對其他家付費，接受體驗較差、開發較久的代價**。
+- **考慮過的選項**：AI 供應端 Gemini Developer API（AI Studio key）vs Vertex AI；教練通道「瀏覽器直連＋ephemeral token」vs「.NET 後端 WebSocket 代理」vs「STT→LLM→TTS 管線」；TTS 走 Gemini-TTS vs Chirp 3 HD vs Web Speech；記帳音檔轉錄 Groq Whisper vs Cloud STT vs Vertex 直接吃音訊。
+- **最終決定**：**全面走 Vertex AI**——Gemini Developer API 自 2026-03 起官方明文吃不到 GCP credits，Vertex 是唯一能吃額度的路。教練＝Vertex Live API（gemini-live-2.5-flash-native-audio，GA，退役日 2026-12-13）＋**.NET 後端 WS 代理**（Vertex 無 ephemeral token，瀏覽器直連被堵死）＋接受美區 +120–160ms 延遲；文字解析＝AiProviderFactory 新增 **VertexAdc** 供應者（OpenAI 相容端點＋ADC token）；記帳音檔路＝Vertex generateContent 直吃音訊（棄 Groq）；TTS＝Gemini-TTS via Cloud TTS API（cmn-TW 為 Preview 需 PoC）＋英文內容走 Chirp 3 HD 月 1M 字元免費層。設計書 §12 其餘推薦全數採納：`/others` 路由、CoachSession/CoachMessage 新表、SRS 用 SM-2 起步（DB 欄位照 FSRS）、音檔 Opus 格式、iPhone 實體鍵分工（Action Button=記帳／鎖屏鈕=隨手記／主畫面圖示=教練）、返回鈕乙案（堆疊優先＋階層 fallback 修正版）、不裝核彈級計費斷路器（改應用層三上限＋include-credits budget 告警）、教練每日 60 分鐘上限、記帳音檔直傳路暫不做。分期：Phase 0（GCP 前置）→ 1（骨架＋記帳＋PWA＋捷徑＋返回鈕）→ 2（單字庫＋TTS＋分析頁）→ 3（教練＋Podcast）。
+- **理由與取捨**：完整比較、成本估算（教練 30 分/天約 $17–36/月，吃 credits）、風險與兩輪對抗式評審採納紀錄，見 [docs/design/其他功能群設計書.md](./design/其他功能群設計書.md)（v3.1）。主要取捨：延遲與開發工時，換「花費 100% 吃 GCP 額度」；暫時鎖在 Gemini 2.5 世代（3.1 Live 不在 Vertex）；2026-12-13 模型退役前需換後繼模型（模型代號已設定值化）。
+
+## 2026-07-06 ｜ 本機 DB 每日兩次「用 prod 覆蓋」（本機＝prod 可拋棄副本）
+
+- **背景**：使用者要「本機開發環境直接用 prod 的真實資料」，每日兩次自動把 prod 內容**覆蓋**掉本機 dev DB（`zonwiki`＠5533）。（初版曾做成「另存獨立鏡像 DB、不碰 dev DB」，經使用者澄清後改為「直接覆蓋 dev DB」。）
+- **最終決定**：`scripts/local/pull-backup.ps1` 拉回 prod 備份後，`DROP DATABASE zonwiki WITH (FORCE)` + `CREATE` + 灌入，用 prod **整個覆蓋本機 `zonwiki`**。加雙保險旗標 `$OverwriteLocalDb`（要明確 opt-in 才會執行此破壞性覆蓋）。
+- **schema 落差處理（重要）**：prod 跑的 code 比本機分支舊（少了 xmin／重複規則／搜尋索引等 migration）。覆蓋後本機 DB＝prod 舊 schema；**本機後端下次啟動時 EF `MigrateAsync` 會自動把它補到分支新 schema、prod 資料保留**（實測：覆蓋後 188 notes、後端啟動套用 4 個分支 migration、TaskCard 補上 Recurrence 欄位、資料無損）。因此**每次同步後需重啟本機後端**（腳本會 log 提醒）；若後端在同步當下正運行，`DROP … FORCE` 會斷其連線、需重啟才恢復。
+- **理由與取捨**：使用者明確要「本機用 prod 資料」；本機 dev DB 視為可拋棄副本（prod 為權威來源、只讀）。取捨：本機該 DB 原有的 dev/測試資料每 12 小時被清掉（使用者接受）；此覆蓋屬「刻意用權威來源重建可拋棄的本機副本」，非誤刪正式資料，符合資料安全鐵則的意圖。同步後本機登入帳號＝prod 帳號（本機原 dev 帳號會一起被覆蓋掉）。
+- **實作坑（記給後人）**：① `pull-backup.ps1` 的 gcloud 必須帶 `a0987461866@zonwiki`（不指定 user 會連到空家目錄、抓不到備份）。② PowerShell 5.1 會把傳給原生指令的 `"識別碼"` 雙引號吃掉→psql 收到未加引號 `Note`→摺成 `note`→報「relation 不存在」；SQL 驗證查詢改用純單引號（`information_schema`）或 stdin 管線避開。
+- **備註**：此則原由另一 session 寫入但未提交，期間曾被外部寫入者（疑似編輯器舊緩衝存檔）從工作區抹除；2026-07-06 由本 session 依當時實讀內容原文還原並提交保全。
 ## 2026-08-13 ｜換行體系重整：全域「Enter＝硬換行」＋表格 `<br>` 編輯視圖層（↳ 續行）＋直編對稱＋儲存格多 checkbox＋管線上色（feat/enter-hard-break-and-table-br-view）
 
 ### A. 全域「單一換行＝硬換行」（Notion 式）
