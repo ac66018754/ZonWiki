@@ -14,8 +14,76 @@ import {
   parseServerMessage,
   parseCorrectionJson,
   normalizeSessionDetail,
+  coachWsUrl,
+  resolveSessionIdForStart,
   type CoachMessageDto,
 } from "./coach";
+
+// ── prod 連不上的兩個根因（回歸鎖）────────────────────────────────────────────
+//
+// ① WS 路徑必須掛在 /api 底下：prod 邊緣（cloudflared ingress）只把 `^/api/.*` 導到後端，
+//    其餘一律落到 Next.js。舊路徑 /ws/coach 在 prod 被前端回 404 → 教練永遠連不上。
+// ② 開場前必須先開課拿 sessionId：後端 /api/ws/coach 沒帶 sessionId 一律 400（IDOR 護欄），
+//    前端過去從不呼叫 createCoachSession → 連線必被擋。
+
+test("coachWsUrl：路徑掛在 /api 底下（prod 邊緣只路由 /api/*）", () => {
+  const url = coachWsUrl(null);
+  expect(url).toContain("/api/ws/coach");
+  expect(url.startsWith("ws://") || url.startsWith("wss://")).toBe(true);
+  // 絕不可退回舊路徑（prod 會被 Next.js 接走回 404）。
+  expect(new URL(url).pathname).toBe("/api/ws/coach");
+});
+
+test("coachWsUrl：帶 sessionId → 以 query 傳遞且經過編碼", () => {
+  const url = coachWsUrl("a b/c");
+  expect(new URL(url).searchParams.get("sessionId")).toBe("a b/c");
+});
+
+test("resolveSessionIdForStart：已有 sessionId → 沿用，不重複開課", async () => {
+  let opened = 0;
+  const id = await resolveSessionIdForStart({
+    currentSessionId: "existing-id",
+    isMock: false,
+    openSession: async () => {
+      opened += 1;
+      return { id: "new-id", title: "t", status: "active" };
+    },
+  });
+  expect(id).toBe("existing-id");
+  expect(opened).toBe(0);
+});
+
+test("resolveSessionIdForStart：沒有 sessionId → 開新場並回新 id", async () => {
+  const id = await resolveSessionIdForStart({
+    currentSessionId: null,
+    isMock: false,
+    openSession: async () => ({ id: "fresh-id", title: "t", status: "active" }),
+  });
+  expect(id).toBe("fresh-id");
+});
+
+test("resolveSessionIdForStart：開課失敗 → null（呼叫端據此進 fatal，不去連注定 400 的 WS）", async () => {
+  const id = await resolveSessionIdForStart({
+    currentSessionId: null,
+    isMock: false,
+    openSession: async () => null,
+  });
+  expect(id).toBe(null);
+});
+
+test("resolveSessionIdForStart：e2e 假造模式 → 不打後端", async () => {
+  let opened = 0;
+  const id = await resolveSessionIdForStart({
+    currentSessionId: null,
+    isMock: true,
+    openSession: async () => {
+      opened += 1;
+      return { id: "should-not-happen", title: "t", status: "active" };
+    },
+  });
+  expect(id).toBe(null);
+  expect(opened).toBe(0);
+});
 
 // ── #4 turn_end ────────────────────────────────────────────────────────────
 

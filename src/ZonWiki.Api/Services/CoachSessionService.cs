@@ -12,7 +12,7 @@ namespace ZonWiki.Api.Services;
 ///
 /// 職責：開課／清單（含<b>懶惰殭屍修正</b>）／取單場（歷史逐字稿）／擁有權驗證／
 /// <b>每日分鐘用量計算</b>（權威＝StartedDateTime→(EndedDateTime 或 now)，未收尾 active 以 now 保守計入，
-/// MinBilledMinutes 最小計費顆粒）／<b>每人 1 併發原子 claim</b>（供批次 2 的 /ws/coach 端點呼叫）。
+/// MinBilledMinutes 最小計費顆粒）／<b>每人 1 併發原子 claim</b>（供批次 2 的 /api/ws/coach 端點呼叫）。
 ///
 /// 多租戶隔離鐵則：所有 user-scoped 查詢一律 <c>IgnoreQueryFilters()</c> ＋<b>明確 UserId</b>
 /// （比照 <see cref="VocabularyService"/>），不依賴 SetCurrentUserId 呼叫時機，行為在請求／背景／測試皆確定。
@@ -145,7 +145,7 @@ public sealed class CoachSessionService
 
     /// <summary>
     /// 依 Id 查本人的「有效」教練場次（IgnoreQueryFilters ＋明確 UserId ＋ValidFlag）。
-    /// 供擁有權驗證使用（批次 2 的 /ws/coach 帶既有 sessionId 時，先驗過才載入 handle／summary）。
+    /// 供擁有權驗證使用（批次 2 的 /api/ws/coach 帶既有 sessionId 時，先驗過才載入 handle／summary）。
     /// </summary>
     /// <param name="userId">使用者識別碼。</param>
     /// <param name="sessionId">教練場次 Id。</param>
@@ -240,7 +240,7 @@ public sealed class CoachSessionService
 
     /// <summary>
     /// 今日教練用量是否已達每日分鐘上限（<see cref="CoachOptions.DailyMinuteLimit"/>）。
-    /// 供批次 2 的 /ws/coach 在建線前判斷是否拒絕新場。<=0 的上限視為「不設限」。
+    /// 供批次 2 的 /api/ws/coach 在建線前判斷是否拒絕新場。<=0 的上限視為「不設限」。
     /// </summary>
     /// <param name="userId">使用者識別碼。</param>
     /// <param name="cancellationToken">取消權杖。</param>

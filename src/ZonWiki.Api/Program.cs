@@ -237,7 +237,7 @@ app.UseAuthorization();
 // 具名 policy 於各端點以 RequireRateLimiting 掛載；逾限回 429＋Retry-After（見 RateLimitingExtensions）。
 app.UseRateLimiter();
 
-// WebSocket 支援（英文教練 /ws/coach）：置於 UseAuthentication/UseAuthorization 之後、MapCoachEndpoints 之前，
+// WebSocket 支援（英文教練 /api/ws/coach）：置於 UseAuthentication/UseAuthorization 之後、MapCoachEndpoints 之前，
 // 讓 WS 握手也帶已驗證的 Cookie principal（端點據此拒 PAT、驗擁有權）。
 app.UseWebSockets();
 
@@ -293,7 +293,7 @@ app.MapVocabularyEndpoints();
 // TTS 子系統（其他功能群 Phase 2）：觸發合成、狀態輪詢、授權供檔（Range）、聲音清單、TTS 偏好設定。
 app.MapTtsEndpoints();
 
-// 英文教練（其他功能群 Phase 3・批次 2）：/ws/coach Live 代理（四護欄）＋場次 REST（開課／清單／取單場）。
+// 英文教練（其他功能群 Phase 3・批次 2）：/api/ws/coach Live 代理（四護欄）＋場次 REST（開課／清單／取單場）。
 app.MapCoachEndpoints();
 
 // 時間追蹤：記錄每天把時間花在什麼上面（支援 iOS 捷徑 PAT 呼叫）

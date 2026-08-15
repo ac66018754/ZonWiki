@@ -24,7 +24,7 @@
  *   - { type:"rejected", reason }                   入站訊框被拒（超長文字／過大音訊）→ 前端撥回 listening＋提示
  *   - { type:"reconnecting" } / { type:"fatal", reason } / { type:"ended" }
  *
- * WS 路徑：`/ws/coach`（同源、Cookie 認證；跨埠 dev 3000→5009 由 BROWSER_API_BASE 導向）。
+ * WS 路徑：`/api/ws/coach`（同源、Cookie 認證；跨埠 dev 3000→5009 由 BROWSER_API_BASE 導向）。
  */
 
 import useSWR from "swr";
@@ -285,16 +285,57 @@ export function parseServerMessage(raw: unknown): CoachServerEvent {
 // ============================================================================
 
 /**
- * 組出 /ws/coach 的 WebSocket URL（同源、Cookie 認證；http→ws、https→wss）。
+ * 教練 Live WebSocket 的端點路徑。
+ *
+ * ⚠️ **必須掛在 `/api` 底下，不可改回 `/ws/coach`**：正式環境的邊緣路由（VM 上的 cloudflared
+ * ingress）只有一條 `path: ^/api/.*` 把流量導到 .NET 後端，其餘一律落到 Next.js。舊路徑
+ * `/ws/coach` 因此在 prod 被前端接走回 404，WebSocket 一連就關、教練完全沒反應
+ * （2026-08-15 實證：`/ws/coach` 回應帶 `x-powered-by: Next.js`）。
+ * 端點路徑由 repo 自帶才不會依賴 VM 上看不見的設定。
+ */
+export const COACH_WS_PATH = "/api/ws/coach";
+
+/**
+ * 組出教練 Live 的 WebSocket URL（同源、Cookie 認證；http→ws、https→wss）。
  * ⚠️ resumption handle 不由前端帶（由後端從 DB 取，防跨使用者盜用，計畫 §3/§4）；
  *    這裡只帶 sessionId 供後端驗擁有權後續用該場歷史。
- * @param sessionId 既有場次 ID（續接歷史時帶；開新場不帶）。
+ * @param sessionId 既有場次 ID（後端強制要求；缺就回 400）。
  * @returns 絕對 ws(s):// URL。
  */
 export function coachWsUrl(sessionId?: string | null): string {
   const wsBase = BROWSER_API_BASE.replace(/^http/i, "ws");
   const qs = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
-  return `${wsBase}/ws/coach${qs}`;
+  return `${wsBase}${COACH_WS_PATH}${qs}`;
+}
+
+/**
+ * 決定「本次開場」要用的 sessionId。
+ *
+ * 後端的 `/api/ws/coach` **強制要求既有且屬本人的 sessionId**（跨使用者 resumption 的 IDOR 護欄，
+ * 見 CoachEndpoints 第 4 道護欄），沒帶一律 400。過去前端從不開課、URL 永遠不帶 sessionId，
+ * 因此就算路由通了也連不上——這個函式就是補上這一段。
+ *
+ * @param options 決策輸入。
+ * @param options.currentSessionId 目前已持有的場次 ID（續接既有場次／重連時沿用；null 代表要開新場）。
+ * @param options.isMock 是否為 e2e 假造模式（假傳輸不驗 sessionId，也不該打真後端）。
+ * @param options.openSession 開課函式（預設 <see cref="createCoachSession"/>，測試可注入）。
+ * @returns 要用的 sessionId；e2e 假造模式或開課失敗回 null（呼叫端據此決定不連線並進 fatal）。
+ */
+export async function resolveSessionIdForStart(options: {
+  currentSessionId: string | null;
+  isMock: boolean;
+  openSession?: () => Promise<CoachSessionSummary | null>;
+}): Promise<string | null> {
+  const { currentSessionId, isMock, openSession = createCoachSession } = options;
+
+  // 已有場次（續接歷史／前端退避重連）：沿用同一場，不重複開課、不重複計費。
+  if (currentSessionId) return currentSessionId;
+
+  // e2e 假造模式：不打後端（假傳輸忽略 URL）。
+  if (isMock) return null;
+
+  const session = await openSession();
+  return session?.id ?? null;
 }
 
 // ============================================================================

@@ -5,6 +5,7 @@ import { audioContext, base64ToArrayBuffer } from "@/lib/audio/utils";
 import { AudioStreamer } from "@/lib/audio/audio-streamer";
 import {
   coachWsUrl,
+  resolveSessionIdForStart,
   type CoachCorrection,
   type CoachServerEvent,
   type CoachState,
@@ -122,7 +123,7 @@ interface ConnectionRefs {
  * 教練連線狀態機（計畫 §6 審修-F3）。
  *
  * 關鍵不變式：
- *  - 收 {type:"fatal"} → 進 fatal 終態，**禁止自身退避再開 /ws/coach**（不繞過後端斷路器）。
+ *  - 收 {type:"fatal"} → 進 fatal 終態，**禁止自身退避再開 /api/ws/coach**（不繞過後端斷路器）。
  *  - 退避只處理「非 fatal 的瀏覽器↔後端傳輸斷線」，且先確認未收 fatal/ended。
  *  - 事件處理器只讀 ref＋呼叫穩定 setState；直接指派 transport.onMessage / recorder.onData，
  *    **不以 useEffect 訂閱**，因此不受函式識別變動影響、無重訂閱迴圈。
@@ -261,6 +262,7 @@ export function useCoachConnection(sessionId: string | null = null): CoachConnec
       }
       case "fatal": {
         refs.current.terminal = true;
+        refs.current.sessionId = null; // 場次已被後端收尾 → 下次「重新開始」開新場（沿用會 409）。
         setFatalReason(event.reason);
         setState("fatal");
         teardown(refs.current);
@@ -268,6 +270,7 @@ export function useCoachConnection(sessionId: string | null = null): CoachConnec
       }
       case "ended": {
         refs.current.terminal = true;
+        refs.current.sessionId = null; // 同上：已 ended 的場次不可再開 Live。
         setState("ended");
         teardown(refs.current);
         break;
@@ -314,6 +317,8 @@ export function useCoachConnection(sessionId: string | null = null): CoachConnec
     if (attempt > MAX_RECONNECT_ATTEMPTS) {
       // 前端傳輸重連耗盡 → 終態（非後端 fatal，但同樣不再嘗試）。
       refs.current.terminal = true;
+      // 這一場的後端狀態已不可知（可能已被收尾）：清掉以免「重新開始」拿舊 id 撞 409 又空轉一輪退避。
+      refs.current.sessionId = null;
       setFatalReason("connection_lost");
       setState("fatal");
       teardown(refs.current);
@@ -390,6 +395,8 @@ export function useCoachConnection(sessionId: string | null = null): CoachConnec
 
     try {
       // 播放用 AudioContext（手勢後建立；預設率即可，24k buffer 會自動重採樣播放）。
+      // ⚠️ 順序不可調換：AudioContext 必須「緊接使用者手勢」建立（iOS/Safari 的自動播放限制），
+      //    所以開課（會 await 一次網路往返）一定排在音訊之後、連線之前。
       const ctx = await audioContext({ id: "coach-playback" });
       refs.current.playbackContext = ctx;
       const streamer = new AudioStreamer(ctx);
@@ -400,6 +407,21 @@ export function useCoachConnection(sessionId: string | null = null): CoachConnec
         setState((s) => (s === "speaking" ? "listening" : s));
       };
       refs.current.streamer = streamer;
+
+      // 開課：後端 WS 強制要求既有且屬本人的 sessionId（沒帶一律 400），故連線前先確保有一場。
+      const sessionId = await resolveSessionIdForStart({
+        currentSessionId: refs.current.sessionId,
+        isMock: factories.isMock,
+      });
+      if (sessionId === null && !factories.isMock) {
+        // 開課失敗（未登入／後端錯誤／額度）：不去連注定被擋的 WS，直接給使用者明確終態。
+        refs.current.terminal = true;
+        setFatalReason("session_open_failed");
+        setState("fatal");
+        teardown(refs.current);
+        return;
+      }
+      refs.current.sessionId = sessionId;
 
       connectTransport();
 
@@ -416,6 +438,8 @@ export function useCoachConnection(sessionId: string | null = null): CoachConnec
   /** 使用者主動結束。 */
   function stopImpl(): void {
     refs.current.terminal = true;
+    // 後端會在連線關閉時收尾這一場 → 清掉，讓「重新開始」開新場而不是撞已 ended 的場次（409）。
+    refs.current.sessionId = null;
     teardown(refs.current);
     setMicActive(false);
     setMicVolume(0);

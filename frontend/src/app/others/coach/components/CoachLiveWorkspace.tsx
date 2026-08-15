@@ -21,6 +21,9 @@ function friendlyFatalReason(reason: string | null): string {
     return "教練額度已用完（每日/每月上限或全站預算），請稍後或明天再試。";
   }
   if (reason === "connection_lost") return "與伺服器的連線中斷且無法恢復，請重新開始。";
+  if (reason === "session_open_failed") {
+    return "無法建立這堂課（可能是登入已過期或後端異常），請重新整理頁面後再試一次。";
+  }
   return `對話已中止（${reason}）。`;
 }
 

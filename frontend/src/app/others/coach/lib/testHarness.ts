@@ -37,6 +37,11 @@ export interface CoachTestHarness {
   factories: CoachFactories;
   /** client→server 送出的封包（依序，供斷言）。 */
   sentToServer: CoachClientMessage[];
+  /**
+   * 最近一次建立傳輸時使用的 WS URL（供 e2e 斷言端點路徑）。
+   * 路徑必須落在 `/api/...`——prod 邊緣只把 `^/api/.*` 導到後端，其餘會被 Next.js 接走回 404。
+   */
+  readonly lastTransportUrl: string | null;
   /** 模擬「後端→前端」。 */
   server: {
     /** 推一則**原始**後端封包（會過 parseServerMessage，等同真後端）。 */
@@ -178,11 +183,13 @@ export function ensureCoachTestHarness(): CoachTestHarness | null {
   let activeTransport: FakeTransport | null = null;
   let activeRecorder: FakeRecorder | null = null;
   let sampleRate = 16000;
+  let lastTransportUrl: string | null = null;
 
   const sentToServer: CoachClientMessage[] = [];
 
   const factories: CoachFactories = {
-    createTransport: () => {
+    createTransport: (url: string) => {
+      lastTransportUrl = url;
       const t = new FakeTransport((message) => sentToServer.push(message));
       activeTransport = t;
       return t;
@@ -199,6 +206,9 @@ export function ensureCoachTestHarness(): CoachTestHarness | null {
     installed: true,
     factories,
     sentToServer,
+    get lastTransportUrl() {
+      return lastTransportUrl;
+    },
     server: {
       emit: (raw) => activeTransport?.emitRaw(raw),
       open: () => activeTransport?.forceOpen(),
@@ -217,6 +227,7 @@ export function ensureCoachTestHarness(): CoachTestHarness | null {
       activeTransport = null;
       activeRecorder = null;
       sampleRate = 16000;
+      lastTransportUrl = null;
     },
   };
 
