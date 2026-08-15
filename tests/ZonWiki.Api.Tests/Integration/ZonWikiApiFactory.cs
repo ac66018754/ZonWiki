@@ -71,7 +71,7 @@ public sealed class ZonWikiApiFactory : WebApplicationFactory<Program>, IAsyncLi
         Directory.CreateDirectory(_ttsCacheDirectory);
         Environment.SetEnvironmentVariable("Tts__CacheDirectory", _ttsCacheDirectory);
         // 英文教練（Phase 3 批次 2）：WS 端點 Origin fail-closed 白名單——測試放行 localhost:3000，
-        // 讓 /ws/coach 護欄測試能驗「允許來源時通過 Origin 這關」（缺省空陣列＝拒所有）。
+        // 讓 /api/ws/coach 護欄測試能驗「允許來源時通過 Origin 這關」（缺省空陣列＝拒所有）。
         Environment.SetEnvironmentVariable("Coach__AllowedOrigins__0", "http://localhost:3000");
         // 環境設為 Testing：避開 Program.cs 內 IsDevelopment()／IsProduction() 專屬啟動分支。
         Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", "Testing");

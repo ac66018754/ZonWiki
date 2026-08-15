@@ -5,6 +5,18 @@
 
 ---
 
+## 2026-08-15 ｜英文教練 prod 完全連不上：WS 端點改掛 `/api/ws/coach`（不改 cloudflared 設定）＋前端補開課
+
+- **背景**：Phase 3 教練部署到 prod 後「完全沒反應」。實證（非臆測）：`GET https://zonwiki.pee-yang.com/ws/coach` 回 **404 且帶 `x-powered-by: Next.js`**（後端匿名端點 `/healthz`、`/` 亦同），而 `/api/*` 才進後端；SSH 進 VM 讀 `/etc/cloudflared/config.yml` 確認 ingress **只有一條 `path: ^/api/.*` 導到 8080**，其餘全落 Next.js（3000）。同時抓 prod 前端 bundle 核對，瀏覽器確實連 `wss://zonwiki.pee-yang.com/ws/coach`。
+- **第二個獨立缺陷（路由修好也連不上）**：後端 `/ws/coach` 第 4 道護欄要求既有且屬本人的 `sessionId`（跨使用者 resumption 的 IDOR 防護），沒帶一律 400；但前端 `useCoachConnection()` 從不帶 sessionId、`createCoachSession()` **全前端零呼叫**。成因是 Phase 3 三批並行：真 Live smoke 走 .NET 直連、前端 Playwright 走假造 transport，「瀏覽器→開課→WS」這條真實接縫兩邊都沒跑到。
+- **考慮過的選項**：(a) 在 VM 的 cloudflared ingress 加一條 `^/ws/.*` 規則——可行但把「教練能不能用」綁在 repo 看不見的 VM 設定上，換機/重建就再壞一次；(b) 把 WS 端點移進 `/api` 底下——**採用**，路徑由 repo 自帶、沿用既有 ingress 規則，零 prod 設定漂移；(c) 兩者都做——否決，多一個沒必要的 prod 設定點。
+- **最終決定**：端點改為 **`/api/ws/coach`**（後端 `CoachEndpoints.WebSocketPath` 與前端 `COACH_WS_PATH` 各一個常數、註解互指），並在前端開場流程補上「先 `POST /api/coach/sessions` 開課、拿 id 再連 WS」；開課失敗給明確 fatal（`session_open_failed`）而不是去連注定 400 的 WS。另補：**終態（ended/fatal/重連耗盡/使用者結束）一律清掉 sessionId**，讓「重新開始」開新場——沿用已 ended 的場次會被後端回 409，使用者會看到重連五次後再度中止。prod 另需 `Coach__AllowedOrigins__0=https://zonwiki.pee-yang.com`（fail-closed 設計，compose 沒設＝拒所有）。
+- **理由與取捨**：取捨是「網址好看（`/ws/coach`）」換「部署自足、不依賴 VM 上看不見的設定」——選後者。順帶把兩個常數與回歸測試綁死：後端測試掃 `EndpointDataSource` 斷言教練 WS 路由必須以 `/api/` 開頭，前端測試斷言 `coachWsUrl()` 的 pathname 就是 `/api/ws/coach`，避免有人改回去。
+- **驗證（真連線，非假造）**：本機 Playwright 真跑一輪——註冊取 Cookie→`/others/coach`→開始對話→WS 連上 `ws://localhost:5009/api/ws/coach?sessionId=<guid>`→送文字回合→**真 Vertex Live 回逐字稿＋糾錯卡＋下行 audio 訊框**→結束→**重新開始開出第二個不同的 sessionId**；開課 REST 兩次皆 201、WS 連線數恰 2（無退避重連）、console 零錯。後端測試 844＋73 綠、前端 504 綠、tsc/eslint 0。截圖與腳本：`tmp/playwright/coach-ws-fix/`。
+- **教訓（跨批並行的通病，第二次踩）**：Phase 3 交付紀錄已寫過「並行批次必須在整合點做真訊息往返驗證」，但驗的是 .NET→Vertex 那一段；**瀏覽器→自家後端這一段（含路由前綴與 REST 前置步驟）沒有任何一個測試涵蓋**。日後任何「前端→後端新協定端點」都必須有一次真瀏覽器連線的驗證，且**部署後要對 prod 實打一次端點**（本次若部署後打過一次 `/ws/coach`，當場就會看到 404）。
+
+---
+
 ## 2026-07-08 ｜Phase 3 交付：整合驗證＋兩輪對抗復審（Fable5 監工）
 
 - **背景**：Phase 3（英文教練 Vertex Live WS 代理＋雙主持人 Podcast）由三個並行批次實作（批次1 資料層/護欄/Podcast、批次2 教練 WS 後端、批次3 教練前端），各自對抗復審過。監工做整合驗證與最終跨批復審，記關鍵發現與取捨。

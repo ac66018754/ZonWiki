@@ -9,10 +9,10 @@ using ZonWiki.Domain.Entities;
 namespace ZonWiki.Api.Endpoints;
 
 /// <summary>
-/// 英文教練（其他功能群 Phase 3・批次 2）端點：<c>/ws/coach</c> Live 代理（四護欄）＋場次 REST。
+/// 英文教練（其他功能群 Phase 3・批次 2）端點：<c>/api/ws/coach</c> Live 代理（四護欄）＋場次 REST。
 ///
 /// 安全（【審修-S7/S3/S2/A5/S1】）：
-/// - <c>/ws/coach</c> <b>只接受 Cookie 驗證的 principal，明確拒 PAT</b>（一顆外洩 PAT 不得開燒 Live 音訊的教練）。
+/// - <c>/api/ws/coach</c> <b>只接受 Cookie 驗證的 principal，明確拒 PAT</b>（一顆外洩 PAT 不得開燒 Live 音訊的教練）。
 /// - 四護欄：Origin fail-closed（缺失／不在白名單一律拒）、建線速率限流、每人 1 併發原子 claim（搶到令舊 Abort）、
 ///   每日分鐘上限（權威計量）。
 /// - <b>跨使用者 resumption 防護（IDOR）</b>：指定既有 sessionId 一律先經 <see cref="CoachSessionService"/>
@@ -22,6 +22,17 @@ namespace ZonWiki.Api.Endpoints;
 /// </summary>
 public static class CoachEndpoints
 {
+    /// <summary>
+    /// 教練 Live WebSocket 的路徑。
+    ///
+    /// ⚠️ <b>必須留在 <c>/api</c> 底下，不可改回 <c>/ws/coach</c></b>：正式環境的邊緣路由
+    /// （VM 上的 cloudflared ingress）只有一條 <c>path: ^/api/.*</c> 把流量導到本後端，其餘一律
+    /// 落到 Next.js。舊路徑因此在 prod 被前端接走回 404（回應帶 <c>x-powered-by: Next.js</c>，
+    /// 2026-08-15 實證），WebSocket 一連就關、教練完全沒反應。路徑由 repo 自帶才不會依賴
+    /// VM 上看不見的設定；前端對應常數為 <c>frontend/src/lib/api/coach.ts</c> 的 <c>COACH_WS_PATH</c>。
+    /// </summary>
+    public const string WebSocketPath = "/api/ws/coach";
+
     /// <summary>標題長度上限（對齊 DB CoachSession.Title HasMaxLength(200)）。</summary>
     private const int MaxTitleLength = 200;
 
@@ -35,15 +46,15 @@ public static class CoachEndpoints
     public static void MapCoachEndpoints(this WebApplication app)
     {
         // Live 代理（WebSocket）：Cookie 驗證＋四護欄；AllowAnonymous 讓端點自行決定回應碼（而非 fallback 401 挑戰）。
-        app.MapGet("/ws/coach", CoachWebSocketHandler).AllowAnonymous();
+        app.MapGet(WebSocketPath, CoachWebSocketHandler).AllowAnonymous();
 
-        // 場次 REST（Cookie 或 PAT 皆可——僅場次 CRUD，燒錢的 Live 音訊只在 /ws/coach）。
+        // 場次 REST（Cookie 或 PAT 皆可——僅場次 CRUD，燒錢的 Live 音訊只在 /api/ws/coach）。
         app.MapPost("/api/coach/sessions", OpenSessionHandler);
         app.MapGet("/api/coach/sessions", ListSessionsHandler);
         app.MapGet("/api/coach/sessions/{id:guid}", GetSessionHandler);
     }
 
-    // ── /ws/coach（Live 代理＋四護欄）─────────────────────────────────────────────
+    // ── /api/ws/coach（Live 代理＋四護欄）─────────────────────────────────────────────
 
     /// <summary>
     /// 教練 Live WebSocket 端點。依序：Cookie 驗證（拒 PAT）→Origin→建線限流→擁有權（IDOR 防護）→日分鐘上限
@@ -189,6 +200,16 @@ public static class CoachEndpoints
         {
             return Results.Json(
                 ApiResponse<CoachSessionDto>.Fail($"主題過長，請縮短到 {MaxTopicLength} 字元以內", 400), statusCode: 400);
+        }
+
+        // 每日分鐘上限：在「開課」這一步就擋。
+        // 若留到 WS 端點才擋（第 5 道護欄），此處已先建出一筆 active 場次，而該場永遠不會有連線來收尾，
+        // 會以「未收尾 active 一律以 now 保守計入」的規則持續灌大今日用量，直到殭屍修正才收——
+        // 使用者會被一筆從沒講過話的幽靈場次鎖住一整天。
+        if (await sessionService.IsDailyLimitReachedAsync(userId, ct))
+        {
+            return Results.Json(
+                ApiResponse<CoachSessionDto>.Fail("今日教練時間已達上限，請明天再繼續", 429), statusCode: 429);
         }
 
         var session = await sessionService.OpenSessionAsync(userId, title, topic, ct);

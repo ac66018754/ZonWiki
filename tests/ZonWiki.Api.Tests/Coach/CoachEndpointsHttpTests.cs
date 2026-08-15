@@ -2,9 +2,11 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json.Nodes;
 using FluentAssertions;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
+using ZonWiki.Api.Endpoints;
 using ZonWiki.Api.Tests.Integration;
 using ZonWiki.Domain.Entities;
 using ZonWiki.Infrastructure.Persistence;
@@ -12,7 +14,7 @@ using ZonWiki.Infrastructure.Persistence;
 namespace ZonWiki.Api.Tests.Coach;
 
 /// <summary>
-/// <c>/ws/coach</c> 四護欄的「真 HTTP」端點測試（護欄在 WS upgrade 之前判定，故可用純 HTTP GET 驗回應碼）：
+/// <c>/api/ws/coach</c> 四護欄的「真 HTTP」端點測試（護欄在 WS upgrade 之前判定，故可用純 HTTP GET 驗回應碼）：
 /// PAT 拒（S7）、Origin fail-closed（S7）、每日分鐘上限拒開（S1/S9）、跨使用者 resumption 擋（IDOR，S3）、
 /// 護欄全過的合法請求走到「需 WebSocket」（400）。REST 場次 CRUD 一併覆蓋。
 ///
@@ -57,10 +59,10 @@ public sealed class CoachEndpointsHttpTests
         return Guid.Parse(json["data"]!["id"]!.GetValue<string>());
     }
 
-    /// <summary>對 /ws/coach 發一個「非 WS」的 GET（可帶 Origin），驗護欄回應碼。</summary>
+    /// <summary>對 /api/ws/coach 發一個「非 WS」的 GET（可帶 Origin），驗護欄回應碼。</summary>
     private static async Task<HttpResponseMessage> GetWsAsync(HttpClient client, Guid? sessionId, string? origin)
     {
-        var url = sessionId is Guid id ? $"/ws/coach?sessionId={id}" : "/ws/coach";
+        var url = sessionId is Guid id ? $"{CoachEndpoints.WebSocketPath}?sessionId={id}" : CoachEndpoints.WebSocketPath;
         var request = new HttpRequestMessage(HttpMethod.Get, url);
         if (origin is not null)
         {
@@ -68,6 +70,29 @@ public sealed class CoachEndpointsHttpTests
         }
 
         return await client.SendAsync(request);
+    }
+
+    // ── 路由前綴（prod 邊緣只路由 /api/*，回歸鎖）─────────────────────────────────────
+
+    [Fact]
+    public void WsCoach_路由必須掛在api前綴下_否則prod邊緣會被前端接走()
+    {
+        // 正式環境（VM 上的 cloudflared ingress）只有一條規則把 `^/api/.*` 導到本後端，
+        // 其餘路徑一律落到 Next.js。舊路徑 /ws/coach 因此在 prod 被前端回 404、教練完全連不上
+        // （2026-08-15 實證）。這條測試鎖住「WS 端點必須在 /api 底下」，避免有人改回去。
+        var endpoints = _factory.Services.GetRequiredService<EndpointDataSource>().Endpoints;
+
+        var coachWebSocketRoutes = endpoints
+            .OfType<RouteEndpoint>()
+            .Select(endpoint => endpoint.RoutePattern.RawText ?? string.Empty)
+            .Where(pattern => pattern.Contains("ws/coach", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        coachWebSocketRoutes.Should().NotBeEmpty("教練 WS 端點必須有註冊");
+        coachWebSocketRoutes.Should().OnlyContain(
+            pattern => pattern.StartsWith("/api/", StringComparison.Ordinal),
+            "prod 邊緣只把 ^/api/.* 導到後端，掛在別處等於沒部署");
+        CoachEndpoints.WebSocketPath.Should().StartWith("/api/");
     }
 
     // ── 認證護欄 ───────────────────────────────────────────────────────────────────
@@ -174,6 +199,23 @@ public sealed class CoachEndpointsHttpTests
         var json = (await response.Content.ReadFromJsonAsync<JsonNode>())!;
         json["data"]!["status"]!.GetValue<string>().Should().Be("active");
         json["data"]!["title"]!.GetValue<string>().Should().Be("我的練習");
+    }
+
+    [Fact]
+    public async Task OpenSession_每日上限已達_回429且不留下幽靈active場次()
+    {
+        // 上限檢查若只掛在 WS 端點，開課這一步仍會建出一筆 active 場次；該場永遠等不到連線收尾，
+        // 又因「未收尾 active 以 now 保守計入」而持續灌大今日用量，把使用者鎖住一整天。
+        var (userId, client) = await NewCookieUserAsync();
+        await SeedEndedUsageAsync(userId, minutes: 61);
+
+        var response = await client.PostAsJsonAsync("/api/coach/sessions", new { topic = "small talk" });
+        response.StatusCode.Should().Be(HttpStatusCode.TooManyRequests);
+
+        var listJson = (await (await client.GetAsync("/api/coach/sessions")).Content.ReadFromJsonAsync<JsonNode>())!;
+        var activeCount = listJson["data"]!.AsArray()
+            .Count(node => node!["status"]!.GetValue<string>() == CoachSession.StatusActive);
+        activeCount.Should().Be(0, "被擋下的開課不可留下任何 active 場次");
     }
 
     [Fact]

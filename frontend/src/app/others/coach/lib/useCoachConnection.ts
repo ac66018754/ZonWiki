@@ -5,6 +5,7 @@ import { audioContext, base64ToArrayBuffer } from "@/lib/audio/utils";
 import { AudioStreamer } from "@/lib/audio/audio-streamer";
 import {
   coachWsUrl,
+  resolveSessionIdForStart,
   type CoachCorrection,
   type CoachServerEvent,
   type CoachState,
@@ -107,6 +108,15 @@ interface ConnectionRefs {
   reconnectTimer: number | null;
   /** 終態旗標：收到 fatal/ended 或使用者主動停止 → 一律不再重連。 */
   terminal: boolean;
+  /**
+   * 開場世代序號：每次 start()／每次終止都遞增。
+   *
+   * 為什麼需要它：開場流程含 `await`（建 AudioContext、開課的 REST 往返），而
+   * `fetchJson` 不支援中止，這個 Promise 一定會跑完。若使用者在等待期間按「結束對話」或離開頁面，
+   * 續跑下去的舊流程會**復活一條已被終止的連線、甚至重新開麥克風**（背景錄音＋計費）。
+   * 每個 await 之後比對世代，不同就整段放棄。
+   */
+  epoch: number;
   attempt: number;
   mode: MicMode;
   sessionId: string | null;
@@ -122,7 +132,7 @@ interface ConnectionRefs {
  * 教練連線狀態機（計畫 §6 審修-F3）。
  *
  * 關鍵不變式：
- *  - 收 {type:"fatal"} → 進 fatal 終態，**禁止自身退避再開 /ws/coach**（不繞過後端斷路器）。
+ *  - 收 {type:"fatal"} → 進 fatal 終態，**禁止自身退避再開 /api/ws/coach**（不繞過後端斷路器）。
  *  - 退避只處理「非 fatal 的瀏覽器↔後端傳輸斷線」，且先確認未收 fatal/ended。
  *  - 事件處理器只讀 ref＋呼叫穩定 setState；直接指派 transport.onMessage / recorder.onData，
  *    **不以 useEffect 訂閱**，因此不受函式識別變動影響、無重訂閱迴圈。
@@ -150,6 +160,7 @@ export function useCoachConnection(sessionId: string | null = null): CoachConnec
     playbackContext: null,
     reconnectTimer: null,
     terminal: false,
+    epoch: 0,
     attempt: 0,
     mode: "handsfree",
     sessionId,
@@ -261,6 +272,7 @@ export function useCoachConnection(sessionId: string | null = null): CoachConnec
       }
       case "fatal": {
         refs.current.terminal = true;
+        refs.current.sessionId = null; // 場次已被後端收尾 → 下次「重新開始」開新場（沿用會 409）。
         setFatalReason(event.reason);
         setState("fatal");
         teardown(refs.current);
@@ -268,6 +280,7 @@ export function useCoachConnection(sessionId: string | null = null): CoachConnec
       }
       case "ended": {
         refs.current.terminal = true;
+        refs.current.sessionId = null; // 同上：已 ended 的場次不可再開 Live。
         setState("ended");
         teardown(refs.current);
         break;
@@ -314,6 +327,8 @@ export function useCoachConnection(sessionId: string | null = null): CoachConnec
     if (attempt > MAX_RECONNECT_ATTEMPTS) {
       // 前端傳輸重連耗盡 → 終態（非後端 fatal，但同樣不再嘗試）。
       refs.current.terminal = true;
+      // 這一場的後端狀態已不可知（可能已被收尾）：清掉以免「重新開始」拿舊 id 撞 409 又空轉一輪退避。
+      refs.current.sessionId = null;
       setFatalReason("connection_lost");
       setState("fatal");
       teardown(refs.current);
@@ -326,8 +341,45 @@ export function useCoachConnection(sessionId: string | null = null): CoachConnec
       refs.current.reconnectTimer = null;
       if (refs.current.terminal) return;
       refs.current.transport = null; // 丟舊建新（後端負責 Vertex 端 resumption）。
-      connectTransport();
+      void reconnectNow(attempt);
     }, delay);
+  }
+
+  /**
+   * 實際執行一次重連。
+   *
+   * 【為什麼第 2 次起要開新場】後端只要偵測到瀏覽器端非乾淨斷線，就會立刻 `Terminate(client_closed)`
+   * 並把該場 `Status` 落成 ended（CoachProxyService.FinalizeSessionAsync）。而端點第 4 道護欄對
+   * 已 ended 的場次一律回 409 —— 沿用同一個 sessionId 重試，只會五次全部 409、白等 25 秒才進終態。
+   * 因此：第 1 次仍沿用（賭後端還沒收尾，能走同場交棒、保住 Vertex 端 resumption），
+   * 第 2 次起改開新場，讓使用者真的接得回去。
+   *
+   * @param attempt 這是第幾次重連（1 起算）。
+   */
+  async function reconnectNow(attempt: number): Promise<void> {
+    const myEpoch = refs.current.epoch;
+    if (attempt >= 2) refs.current.sessionId = null;
+
+    const factories = resolveCoachFactories();
+    const resolution = await resolveSessionIdForStart({
+      currentSessionId: refs.current.sessionId,
+      isMock: factories.isMock,
+    });
+
+    // await 期間可能已被結束／卸載／重新開始：放棄這條在途的重連。
+    if (refs.current.epoch !== myEpoch || refs.current.terminal) return;
+
+    if (!resolution.ok) {
+      refs.current.terminal = true;
+      refs.current.sessionId = null;
+      setFatalReason(resolution.reason);
+      setState("fatal");
+      teardown(refs.current);
+      return;
+    }
+
+    refs.current.sessionId = resolution.sessionId;
+    connectTransport();
   }
 
   /** 開始麥克風擷取。 */
@@ -342,6 +394,12 @@ export function useCoachConnection(sessionId: string | null = null): CoachConnec
     refs.current.recorder = recorder;
     try {
       await recorder.start();
+      // 取得麥克風要一次權限／裝置初始化的等待：期間若已被結束或卸載，立刻收掉，不留背景錄音。
+      if (refs.current.terminal) {
+        recorder.stop();
+        if (refs.current.recorder === recorder) refs.current.recorder = null;
+        return;
+      }
       setMicActive(true);
       setState((s) => (isActiveState(s) ? "listening" : s));
     } catch {
@@ -380,6 +438,8 @@ export function useCoachConnection(sessionId: string | null = null): CoachConnec
   async function startImpl(mode: MicMode): Promise<void> {
     const factories = resolveCoachFactories();
     setIsMock(factories.isMock);
+    // 這一輪開場的世代：每個 await 之後都比對，讓「開場途中被結束／卸載／再次開始」的舊流程整段作廢。
+    const myEpoch = ++refs.current.epoch;
     refs.current.mode = mode;
     refs.current.terminal = false;
     refs.current.attempt = 0;
@@ -390,7 +450,10 @@ export function useCoachConnection(sessionId: string | null = null): CoachConnec
 
     try {
       // 播放用 AudioContext（手勢後建立；預設率即可，24k buffer 會自動重採樣播放）。
+      // ⚠️ 順序不可調換：AudioContext 必須「緊接使用者手勢」建立（iOS/Safari 的自動播放限制），
+      //    所以開課（會 await 一次網路往返）一定排在音訊之後、連線之前。
       const ctx = await audioContext({ id: "coach-playback" });
+      if (refs.current.epoch !== myEpoch) return; // 已被結束／卸載／再次開始：整段作廢。
       refs.current.playbackContext = ctx;
       const streamer = new AudioStreamer(ctx);
       streamer.onComplete = () => {
@@ -400,6 +463,25 @@ export function useCoachConnection(sessionId: string | null = null): CoachConnec
         setState((s) => (s === "speaking" ? "listening" : s));
       };
       refs.current.streamer = streamer;
+
+      // 開課：後端 WS 強制要求既有且屬本人的 sessionId（沒帶一律 400），故連線前先確保有一場。
+      const resolution = await resolveSessionIdForStart({
+        currentSessionId: refs.current.sessionId,
+        isMock: factories.isMock,
+      });
+      // 開課是一次真實 REST 往返（手機網路可能數秒）：期間使用者很可能已按「結束對話」或離開頁面。
+      // 沒有這道檢查，舊流程會續跑成一條沒人要的連線並重新開麥克風（背景錄音＋計費）。
+      if (refs.current.epoch !== myEpoch) return;
+
+      if (!resolution.ok) {
+        // 開課失敗（未登入／額度已滿／後端錯誤）：不去連注定被擋的 WS，直接給使用者可分辨的終態。
+        refs.current.terminal = true;
+        setFatalReason(resolution.reason);
+        setState("fatal");
+        teardown(refs.current);
+        return;
+      }
+      refs.current.sessionId = resolution.sessionId;
 
       connectTransport();
 
@@ -416,6 +498,10 @@ export function useCoachConnection(sessionId: string | null = null): CoachConnec
   /** 使用者主動結束。 */
   function stopImpl(): void {
     refs.current.terminal = true;
+    // 讓任何在途的開場／重連流程（例如正卡在開課 REST 的 await）續跑時整段作廢。
+    refs.current.epoch += 1;
+    // 後端會在連線關閉時收尾這一場 → 清掉，讓「重新開始」開新場而不是撞已 ended 的場次（409）。
+    refs.current.sessionId = null;
     teardown(refs.current);
     setMicActive(false);
     setMicVolume(0);
@@ -525,6 +611,9 @@ export function useCoachConnection(sessionId: string | null = null): CoachConnec
     const connection = refs.current;
     return () => {
       connection.terminal = true;
+      // 讓任何在途的開場／重連流程（卡在 await 的那些）在續跑時整段作廢，不會在卸載後才開連線或麥克風。
+      connection.epoch += 1;
+      connection.sessionId = null;
       teardown(connection);
     };
   }, []);

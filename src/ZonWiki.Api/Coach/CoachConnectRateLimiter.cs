@@ -3,7 +3,7 @@ using System.Collections.Concurrent;
 namespace ZonWiki.Api.Coach;
 
 /// <summary>
-/// <c>/ws/coach</c> 建線速率限流（【審修-S2】）：既有 <c>RateLimiter</c> 中介軟體只掛 HTTP 端點，
+/// <c>/api/ws/coach</c> 建線速率限流（【審修-S2】）：既有 <c>RateLimiter</c> 中介軟體只掛 HTTP 端點，
 /// WebSocket upgrade 不經任何限流，故此處以「單機記憶體固定視窗」對每 user／IP 每分鐘的建線次數設限
 /// （防被盜 Cookie 或前端 bug 狂開 Live 連線灌爆計費）。單實例部署，不引入 Redis（比照既有限流決策）。
 /// </summary>

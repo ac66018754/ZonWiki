@@ -24,7 +24,7 @@
  *   - { type:"rejected", reason }                   入站訊框被拒（超長文字／過大音訊）→ 前端撥回 listening＋提示
  *   - { type:"reconnecting" } / { type:"fatal", reason } / { type:"ended" }
  *
- * WS 路徑：`/ws/coach`（同源、Cookie 認證；跨埠 dev 3000→5009 由 BROWSER_API_BASE 導向）。
+ * WS 路徑：`/api/ws/coach`（同源、Cookie 認證；跨埠 dev 3000→5009 由 BROWSER_API_BASE 導向）。
  */
 
 import useSWR from "swr";
@@ -285,16 +285,127 @@ export function parseServerMessage(raw: unknown): CoachServerEvent {
 // ============================================================================
 
 /**
- * 組出 /ws/coach 的 WebSocket URL（同源、Cookie 認證；http→ws、https→wss）。
+ * 教練 Live WebSocket 的端點路徑。
+ *
+ * ⚠️ **必須掛在 `/api` 底下，不可改回 `/ws/coach`**：正式環境的邊緣路由（VM 上的 cloudflared
+ * ingress）只有一條 `path: ^/api/.*` 把流量導到 .NET 後端，其餘一律落到 Next.js。舊路徑
+ * `/ws/coach` 因此在 prod 被前端接走回 404，WebSocket 一連就關、教練完全沒反應
+ * （2026-08-15 實證：`/ws/coach` 回應帶 `x-powered-by: Next.js`）。
+ * 端點路徑由 repo 自帶才不會依賴 VM 上看不見的設定。
+ */
+export const COACH_WS_PATH = "/api/ws/coach";
+
+/**
+ * 組出教練 Live 的 WebSocket URL（同源、Cookie 認證；http→ws、https→wss）。
  * ⚠️ resumption handle 不由前端帶（由後端從 DB 取，防跨使用者盜用，計畫 §3/§4）；
  *    這裡只帶 sessionId 供後端驗擁有權後續用該場歷史。
- * @param sessionId 既有場次 ID（續接歷史時帶；開新場不帶）。
+ * @param sessionId 既有場次 ID（後端強制要求；缺就回 400）。
  * @returns 絕對 ws(s):// URL。
  */
 export function coachWsUrl(sessionId?: string | null): string {
   const wsBase = BROWSER_API_BASE.replace(/^http/i, "ws");
   const qs = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
-  return `${wsBase}/ws/coach${qs}`;
+  return `${wsBase}${COACH_WS_PATH}${qs}`;
+}
+
+/**
+ * 開課失敗的原因碼（前端據此給使用者不同說法；對應 <see cref="friendlyFatalReason"/>）。
+ */
+export type CoachOpenFailureReason =
+  | "unauthorized"
+  | "daily_limit_reached"
+  | "session_open_failed";
+
+/**
+ * 開課結果（成功帶場次；失敗帶可分辨的原因碼）。
+ */
+export type OpenCoachSessionResult =
+  | { ok: true; session: CoachSessionSummary }
+  | { ok: false; reason: CoachOpenFailureReason };
+
+/**
+ * 把 HTTP 狀態碼轉成開課失敗原因碼。
+ * @param status HTTP 狀態碼（可空）。
+ * @returns 原因碼。
+ */
+function openFailureReasonFrom(status: number | undefined): CoachOpenFailureReason {
+  if (status === 401) return "unauthorized";
+  if (status === 429) return "daily_limit_reached";
+  return "session_open_failed";
+}
+
+/**
+ * 開新課（POST /api/coach/sessions）。
+ *
+ * 為什麼要回傳原因碼而不是單純的 null：使用者看到的終態訊息完全靠它分辨——
+ * 登入過期要說「請重新登入」、額度用完要說「今天已達上限」，而不是一律「後端異常」。
+ *
+ * @param opts 標題/主題（皆可選，後端可自動命名）。
+ * @returns 成功帶場次；失敗帶原因碼。
+ */
+export async function openCoachSession(opts?: {
+  title?: string | null;
+  topic?: string | null;
+}): Promise<OpenCoachSessionResult> {
+  const body: Record<string, string> = {};
+  if (opts?.title) body.title = opts.title;
+  if (opts?.topic) body.topic = opts.topic;
+
+  try {
+    const response = await fetchJson<unknown>("/api/coach/sessions", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    if (response.success && response.data) {
+      const session = normalizeSession(response.data);
+      if (session) return { ok: true, session };
+    }
+    return { ok: false, reason: openFailureReasonFrom(response.statusCode) };
+  } catch (error) {
+    // fetchJson 對 429（限流／額度）等狀態會 throw，訊息內含狀態碼——沿用 tts.ts 既有慣例判讀。
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      reason: /\b429\b/.test(message) ? "daily_limit_reached" : "session_open_failed",
+    };
+  }
+}
+
+/**
+ * 「本次開場要用哪個 sessionId」的決策結果。
+ */
+export type StartSessionResolution =
+  | { ok: true; sessionId: string | null }
+  | { ok: false; reason: CoachOpenFailureReason };
+
+/**
+ * 決定「本次開場」要用的 sessionId。
+ *
+ * 後端的 `/api/ws/coach` **強制要求既有且屬本人的 sessionId**（跨使用者 resumption 的 IDOR 護欄，
+ * 見 CoachEndpoints 第 4 道護欄），沒帶一律 400。過去前端從不開課、URL 永遠不帶 sessionId，
+ * 因此就算路由通了也連不上——這個函式就是補上這一段。
+ *
+ * @param options 決策輸入。
+ * @param options.currentSessionId 目前已持有的場次 ID（沿用；null 代表要開新場）。
+ * @param options.isMock 是否為 e2e 假造模式（假傳輸不驗 sessionId，也不該打真後端）。
+ * @param options.openSession 開課函式（預設 <see cref="openCoachSession"/>，測試可注入）。
+ * @returns 成功帶要用的 sessionId（e2e 假造模式為 null）；失敗帶原因碼。
+ */
+export async function resolveSessionIdForStart(options: {
+  currentSessionId: string | null;
+  isMock: boolean;
+  openSession?: () => Promise<OpenCoachSessionResult>;
+}): Promise<StartSessionResolution> {
+  const { currentSessionId, isMock, openSession = openCoachSession } = options;
+
+  // 已有場次（沿用）：不重複開課、不重複計費。
+  if (currentSessionId) return { ok: true, sessionId: currentSessionId };
+
+  // e2e 假造模式：不打後端（假傳輸忽略 URL）。
+  if (isMock) return { ok: true, sessionId: null };
+
+  const result = await openSession();
+  return result.ok ? { ok: true, sessionId: result.session.id } : { ok: false, reason: result.reason };
 }
 
 // ============================================================================
@@ -336,30 +447,6 @@ function normalizeMessage(raw: unknown): CoachMessageDto | null {
     interruptedFlag: pickBool(rec, "interruptedFlag"),
     approxCutChars: pickNum(rec, "approxCutChars"),
   };
-}
-
-/**
- * 開新課（POST /api/coach/sessions）。
- * @param opts 標題/主題（皆可選，後端可自動命名）。
- * @returns 建立的場次摘要；失敗回 null。
- */
-export async function createCoachSession(opts?: {
-  title?: string | null;
-  topic?: string | null;
-}): Promise<CoachSessionSummary | null> {
-  try {
-    const body: Record<string, string> = {};
-    if (opts?.title) body.title = opts.title;
-    if (opts?.topic) body.topic = opts.topic;
-    const r = await fetchJson<unknown>("/api/coach/sessions", {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
-    if (!r.success || !r.data) return null;
-    return normalizeSession(r.data);
-  } catch {
-    return null;
-  }
 }
 
 /**
