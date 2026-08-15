@@ -85,6 +85,7 @@ export interface CoachCorrection {
  * 正規化後的「後端→前端」事件（app 層離散 union，吸收欄名分歧）。
  */
 export type CoachServerEvent =
+  | { kind: "ready" }
   | { kind: "audio"; data: string }
   | { kind: "assistantTranscript"; text: string; final: boolean }
   | { kind: "userTranscript"; text: string }
@@ -231,6 +232,9 @@ export function parseServerMessage(raw: unknown): CoachServerEvent {
   }
   if (type === "ended") return { kind: "ended" };
   if (type === "reconnecting") return { kind: "reconnecting" };
+  // 就緒訊號：後端**成功連上 Vertex Live 之後**才送（CoachProxyService 的 EnqueueBrowser(new{type="ready"})）。
+  // 在這之前後端根本還沒開始轉送，任何送出的文字／音訊都會被丟掉——所以 UI 必須等這個訊號才開放輸入。
+  if (type === "ready") return { kind: "ready" };
   // 入站訊框被後端拒絕（超長文字／過大音訊）：前端據此撥回 listening 並提示使用者（不可靜默丟棄）。
   if (type === "rejected") {
     return { kind: "rejected", reason: pickStr(rec, "reason") ?? "unknown" };
