@@ -5,6 +5,20 @@
 
 ---
 
+## 2026-08-16 ｜筆記分頁標題：用「每次繪製後同步 document.title」而不是渲染 `<title>` 元素
+
+- **背景**：需求是「開某篇筆記時，Chrome 分頁上顯示該篇筆記的標題」。原本 `/notes` 子樹只有 `app/notes/layout.tsx` 的靜態 metadata「筆記 — ZonWiki」，每篇筆記的分頁長得一模一樣。筆記詳細頁 `app/notes/[...slug]/page.tsx` 是 `'use client'`（內容須帶登入 Cookie 在用戶端抓），**用不了 `generateMetadata`**（Next 文件明載伺服器元件限定，見 `node_modules/next/dist/docs/.../generate-metadata.md`），所以只能在用戶端解決。
+- **考慮過的選項（前兩個都實作後被實測推翻，不是紙上比較）**：
+  - **(a) `useEffect` 相依 `[note.title]` 寫 `document.title`**——標題只正確到「下一次重繪」為止。React 19 把 Next metadata 的 `<title>` 當成自己的元素持有，任何重繪（SWR、`markNoteOpened` 回填 version、留言載入…）都把它重設回「筆記 — ZonWiki」，而 effect 因相依沒變不會再跑。**這個坑很陰險：`waitForFunction` 只要「曾經相等」就通過，第一版 E2E 因此給出假綠**，是逐拍輪詢 `document.title` 才抓到。
+  - **(b) 在 JSX 直接渲染 `<title>{...}</title>`（React 19 Document Metadata）**——初次載入正確，但 `<head>` 會同時存在兩個 `<title>`（這顆＋Next metadata 那顆），而 `document.title` 取的是**第一個**。實測改標題存檔後 `router.replace` 讓本頁整個重掛，重掛後兩者**順序反轉** → 分頁標題又變回「筆記 — ZonWiki」。
+  - **(c) 沒有相依陣列的 effect（每次繪製後同步 `document.title`）**——**採用**。
+- **最終決定**：採 (c)。`useEffect(() => { ... })` 不給相依陣列＝每次繪製後都執行，直接寫 `document.title`（作用在 `<head>` 的第一個 `<title>`，不管那顆是誰渲染的），因此不論 React 何時重設、兩顆 `<title>` 順序如何，都會被拉回正確值；寫入前先比對，值相同就不動。另以一個 `[]` 相依的 effect 在卸載時還原成「筆記 — ZonWiki」。品牌後綴與預設標題抽成 `lib/constants.ts` 的 `DOCUMENT_TITLE_BRAND_SUFFIX` / `NOTES_DEFAULT_DOCUMENT_TITLE`，與 layout 共用避免字串漂移。標題刻意放最前面（`{筆記標題} — ZonWiki`）：分頁變窄時被截掉的應該是品牌，不是筆記標題。
+- **理由與取捨**：取捨是「每次繪製多做一次字串比較」換「標題永遠正確」——這個成本可忽略，而 (a)/(b) 的失敗模式都是**間歇性、看起來會動但實際會壞**，遠更糟。副作用是與「匯出 PDF」有交互：那邊會把標題暫時改成**純筆記標題**當作另存檔名，故加 `isExportingPdfRef` 讓同步 effect 在匯出期間讓路，否則檔名會被加回「 — ZonWiki」。
+- **驗證**：`zonwiki-ui-tests/2026-08-16-note-tab-title/` 的 E2E **9/9 通過（production build，非只 dev）**：冷進入／觸發重繪後不被蓋回／SPA 換筆記／導回清單還原／改標題存檔即時更新／特殊字元標題／導到 `/time` 不污染他頁標題／匯出 PDF 檔名不含後綴／console 零錯誤。另用 headed 瀏覽器＋`PrintWindow` **實拍到瀏覽器分頁列**（`05/06-real-browser-tab-bar*.png`）——Playwright 的頁面截圖拍不到分頁列。
+- **教訓（兩條，都值得帶到別的功能）**：①**「曾經相等」不等於「穩定正確」**——凡是驗證「某個全域狀態被設成某值」，斷言後必須隔一段時間複驗，否則會抓不到「設完又被框架蓋回」；本次 T3（導回 `/notes`）也一度是無效測試，因為它的期望值剛好等於卸載還原值，後來補了導去 `/time` 的 T7 才真的驗到。②**用視窗標題找視窗來截圖會拍到使用者自己的瀏覽器**（他也開著同名分頁），必須用命令列特徵（`--remote-debugging-pipe`）鎖定自動化開的那個行程，且要用 `PrintWindow` 而非 `CopyFromScreen`（後者在視窗非前景時截到的是蓋在上面的其他視窗）。
+
+---
+
 ## 2026-08-15 ｜英文教練 prod 完全連不上：WS 端點改掛 `/api/ws/coach`（不改 cloudflared 設定）＋前端補開課
 
 - **背景**：Phase 3 教練部署到 prod 後「完全沒反應」。實證（非臆測）：`GET https://zonwiki.pee-yang.com/ws/coach` 回 **404 且帶 `x-powered-by: Next.js`**（後端匿名端點 `/healthz`、`/` 亦同），而 `/api/*` 才進後端；SSH 進 VM 讀 `/etc/cloudflared/config.yml` 確認 ingress **只有一條 `path: ^/api/.*` 導到 8080**，其餘全落 Next.js（3000）。同時抓 prod 前端 bundle 核對，瀏覽器確實連 `wss://zonwiki.pee-yang.com/ws/coach`。

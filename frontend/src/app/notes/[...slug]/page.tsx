@@ -34,7 +34,11 @@ import { findLostMarksForSave, formatLostMarksMessage } from '@/lib/saveGuardRun
 import { useCurrentUser, useNoteCategories, useNoteTags } from '@/lib/swr';
 import { ConflictError } from '@/lib/errors';
 import { formatFullDateTime, formatDateTime as formatDateTimeUtil } from '@/lib/formatters';
-import { DEFAULT_TIMEZONE } from '@/lib/constants';
+import {
+  DEFAULT_TIMEZONE,
+  DOCUMENT_TITLE_BRAND_SUFFIX,
+  NOTES_DEFAULT_DOCUMENT_TITLE,
+} from '@/lib/constants';
 import { SkeletonCard } from '@/components/Skeleton';
 import { NoteAiActions } from '@/components/NoteAiActions';
 import type { EditorFoldApi } from '@/components/MarkdownEditor';
@@ -963,6 +967,43 @@ export default function NotesDetailPage() {
     load();
   }, [slug, router]);
 
+  // 匯出 PDF 進行中：期間分頁標題被暫時改成「純筆記標題」（＝另存 PDF 的預設檔名），
+  // 下方的標題同步 effect 必須讓路，否則檔名會被加回「 — ZonWiki」後綴。
+  const isExportingPdfRef = useRef(false);
+
+  // ── 瀏覽器分頁標題連動筆記標題（開很多分頁時才分得出哪個是哪篇）──────────────────
+  //
+  // 背景：本頁是 'use client'（筆記內容須帶登入 cookie 在用戶端抓），因此用不了
+  // generateMetadata（伺服器元件限定）；/notes 子樹的 layout 只有靜態 metadata「筆記 — ZonWiki」。
+  //
+  // 為何是「每次繪製後都寫一次」而不是相依 [note.title] 寫一次，也不是渲染 <title> 元素
+  //（兩種都試過、都被實測推翻，見 zonwiki-ui-tests/2026-08-16-note-tab-title）：
+  //   1) 相依 [note.title] 的 effect：標題只正確到下一次重繪為止。React 19 會把 Next metadata
+  //      的 <title> 當成自己的元素持有，任何一次重繪（SWR、markNoteOpened、留言載入…）都會把
+  //      它重設回「筆記 — ZonWiki」，而 effect 因相依沒變不會再跑。
+  //   2) 在 JSX 渲染 <title>：React 19 會把它提升到 <head>，於是 head 同時存在兩個 <title>
+  //      （這顆＋Next metadata 那顆），而 document.title 取的是「第一個」。實測改標題存檔後
+  //      router.replace 會讓本頁整個重掛，重掛後兩者順序反轉 → 分頁標題變回「筆記 — ZonWiki」。
+  //   3) 本方案：沒有相依陣列＝每次繪製後都執行，且直接寫 document.title（作用在 head 的第一個
+  //      <title>，不管那顆是誰渲染的），所以無論 React 何時重設、兩顆順序如何，都會被拉回正確值。
+  //      寫入前先比對，值相同就不動，避免無謂的 DOM 寫入。
+  useEffect(() => {
+    if (!note?.title) return; // 載入中／404／slug 消歧異：維持 layout 的預設標題
+    // 匯出 PDF 期間讓路：那邊會把標題暫時改成「純筆記標題」當作另存檔名（見 handleExportPdf）。
+    if (isExportingPdfRef.current) return;
+    const desired = `${note.title}${DOCUMENT_TITLE_BRAND_SUFFIX}`;
+    if (document.title !== desired) document.title = desired;
+  });
+
+  // 離開本頁（切到別的功能頁）時把標題還原成筆記區預設值，避免殘留上一篇的標題。
+  // 刻意獨立成「只在卸載時執行」的 effect——上面那個沒有相依陣列，其 cleanup 每次繪製都會跑，
+  // 不適合放還原邏輯。
+  useEffect(() => {
+    return () => {
+      document.title = NOTES_DEFAULT_DOCUMENT_TITLE;
+    };
+  }, []);
+
   // 保存編輯
   const handleSave = async () => {
     if (!note) return;
@@ -1211,10 +1252,14 @@ export default function NotesDetailPage() {
   const handleExportPdf = () => {
     if (!note) return;
     setActiveTab('preview');
+    // 先舉旗再改標題：setActiveTab 觸發的重繪會跑「標題同步 effect」，
+    // 沒有這面旗子它會把「 — ZonWiki」後綴加回去、汙染另存 PDF 的預設檔名。
+    isExportingPdfRef.current = true;
     const prevTitle = document.title;
     document.title = note.title || '筆記';
     // 等標題套用後再叫出列印對話框；列印結束後還原標題。
     const restore = () => {
+      isExportingPdfRef.current = false;
       document.title = prevTitle;
       window.removeEventListener('afterprint', restore);
     };
