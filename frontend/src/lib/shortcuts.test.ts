@@ -34,8 +34,11 @@ function actionById(id: string) {
 }
 
 describe('A1 新動作齊全且預設鍵正確', () => {
-  it('overlay scope 的 11 個動作與預設鍵完全符合裁示（數字照 2026-08-10 版面視覺順序、便利貼 s、圖片板 i）', () => {
-    /** 使用者裁示的鍵位規格（id → 預設鍵）：Row1 文字框=1、Row2 工具=2-6、Row3 橡皮擦=7-9。 */
+  it('overlay scope 的 12 個動作與預設鍵完全符合裁示（數字照 2026-08-10 版面視覺順序、便利貼 s、圖片板 i、工具列開關 0）', () => {
+    /**
+     * 使用者裁示的鍵位規格（id → 預設鍵）：Row1 文字框=1、Row2 工具=2-6、Row3 橡皮擦=7-9，
+     * 另 2026-08-28 新增 toggleToolbar=0（收合／展開整個右下角工具列，排在 1-9 的同一列）。
+     */
     const expected: Record<string, string> = {
       addTextBox: '1',
       toolPen: '2',
@@ -48,6 +51,7 @@ describe('A1 新動作齊全且預設鍵正確', () => {
       eraseBox: '9',
       addSticky: 's',
       addSlide: 'i',
+      toggleToolbar: '0',
     };
     const overlayActions = SHORTCUT_ACTIONS.filter((a) => a.scope === 'overlay');
     const actual = Object.fromEntries(overlayActions.map((a) => [a.id, a.defaultKey]));
@@ -127,11 +131,19 @@ describe('A8 overlay 內部自撞＝衝突', () => {
 });
 
 describe('A9 數字↔字母互換改鍵', () => {
-  it('toolPen 改字母 x、addSticky 改數字 0（無人使用）→ 都被保留、無衝突', () => {
-    const parsed = parseOverrides(JSON.stringify({ toolPen: 'x', addSticky: '0' }));
+  // 註：本例原本用 addSticky→'0'，但 2026-08-28 起 '0' 已是 toggleToolbar 的預設鍵，
+  // 改鍵到 '0' 會（正確地）判定為衝突。改用仍無人使用的 'z' 來測「字母↔數字互換」這件事本身。
+  it("toolPen 改字母 x、addSticky 改字母 z（無人使用）→ 都被保留、無衝突", () => {
+    const parsed = parseOverrides(JSON.stringify({ toolPen: 'x', addSticky: 'z' }));
     expect(parsed.toolPen).toBe('x');
-    expect(parsed.addSticky).toBe('0');
+    expect(parsed.addSticky).toBe('z');
     expect(findConflicts(parsed)).toEqual({});
+  });
+
+  it("addSticky 改成 0（撞 toggleToolbar 的預設鍵）→ 衝突偵測抓到", () => {
+    const conflicts = findConflicts({ addSticky: '0' });
+    expect(conflicts.addSticky).toContain('toggleToolbar');
+    expect(conflicts.toggleToolbar).toContain('addSticky');
   });
 
   it('addSticky 改成 3（撞 toolHighlight）→ 衝突偵測照樣抓到', () => {

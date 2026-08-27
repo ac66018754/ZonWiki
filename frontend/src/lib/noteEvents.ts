@@ -25,7 +25,7 @@ export interface NoteActiveCategoryDetail {
 }
 
 /**
- * 廣播「目前閱讀的筆記所屬分類」給側欄（供其標示「📍 此筆記在這」）。
+ * 廣播「目前閱讀的筆記所屬分類」給側欄（供其把該分類那列的底色加深）。
  * @param categoryIds 目前筆記所屬的分類 ID 清單。
  */
 export function emitNoteActiveCategory(categoryIds: string[]): void {

@@ -5,6 +5,25 @@
 
 ---
 
+## 2026-08-28 ｜UI 收斂八項：Header 瘦身＋筆記工具列改「兩顆下拉」＋Todo 側欄三分頁
+
+- **背景**：使用者一次提出八項 UI 調整。共同的痛點是「元件本身太大、太吵」——Header 有字標＋大按鈕＋兩層框的搜尋框；筆記頁工具列六顆帶 emoji 的大按鈕橫躺一整排；側欄分類樹除了底色還多一個 📍。另外要補兩個功能缺口：Todo 側欄「置頂的任務」沒有新增入口、缺一個「今日任務」視角，以及右下角繪圖工具列沒有鍵盤開關。
+- **考慮過的選項與取捨（只記三個「選了會後悔」的岔路）**：
+  - **品牌 Z：用文字還是向量？** 規格寫死「Z 要佔元件 80~90%」。文字的實際墨水高度取決於平台字體的 cap height（Courier New 只有字級的 0.57、Segoe UI 約 0.70），同一個 `font-size` 在不同機器上佔比可以差 20 個百分點，**用文字就沒辦法保證落在規格內**。→ 改用 `viewBox="0 0 100 100"` 的內嵌 SVG，Z 的外框固定畫在 7.5~92.5（＝85%），跨平台一致；實測（Playwright 讀 `getBBox()`）寬高皆 85.0%。取捨是多了約 15 行標記，換「規格可被機器驗證」。
+  - **工具列開關快捷鍵放哪一層？** 想過只寫在共用元件 `DrawingToolbar` 裡一次搞定，但**開問啦畫布收合工具列時會把整個 `DrawingToolbar` 卸載**（換成一顆 🧰），監聽器跟著消失＝按下去收得起來、再也展不開。→ 共用元件加一個 `shortcutTogglesCollapse` 旗標，筆記端（收合狀態住在元件內）自己接手；畫布端由 `CanvasAnnotationLayer`（永遠掛著的那一層）處理自己的 `toolbarOpen`。這是「同一個快捷鍵、兩端各自對應到自己的收合概念」，不是重複實作。
+  - **「今日任務」怎麼取資料？** 選項是 (a) 抓全部任務再前端用 `isToday()` 過濾，或 (b) 走既有的 `GET /api/tasks?view=calendar&from&to`。→ 選 (b)：DB 端就篩掉範圍外，不會被 list 視圖的 2000 筆上限截掉，也不用把整個任務庫拉到瀏覽器。「今天」的邊界用**使用者設定的時區**換算（不是瀏覽器時區），避免帳號時區與電腦時區不同時列錯天。
+- **最終決定**：
+  1. Header 只留一個大寫 Z 的 SVG 標誌（拿掉 ZonWiki 字標，`aria-label` 補回可讀名稱）；導覽項、搜尋框統一 `--text-xs`＋`--font-body`，圖示鈕 36→30px；`.search-box` 外層不再畫框（框線只留給裡面的 `<input>`）。
+  2. `AiProcessingMenu` 觸發鈕移除 inline 的 `font: 'inherit'`——那個**簡寫**會一次覆蓋 family/size/weight/line-height，把 `.nav-item` 的 13px 蓋成外層的 15px，這正是使用者說「AI 處理中跟其他人不太一樣」的原因；字體字級一律交給 `.nav-item`（該類補上 `font-family`，因為 `<button>` 不像 `<a>` 會繼承 body 字體）。
+  3. 筆記頁工具列固定為 `返回｜標題｜問題清單｜全部展開｜聆聽 ▾｜編輯 ▾`，全部移除 emoji（只留下拉三角 ▾）。「複製 / 匯出 PDF / 刪除」收進「編輯 ▾」，「雙人 Podcast」收進「聆聽 ▾」。按鈕高度以 `--note-topbar-btn-h: calc(var(--text-xl) * 1.3)` 綁在標題字級上（＝標題那行文字的高度，實測 26px），日後改標題字級按鈕會自動跟著走；手機斷點仍保 44px 觸控高度。
+  4. 側欄分類樹拿掉 📍，只留 `isCurrentNote` 的底色加深，資訊改由 `title` 提供給滑鼠/輔助技術。
+  5. Todo 側欄分頁改三個：`置頂的任務`（預設）/`今日任務`/`快捷鍵`；「＋ 新增」放在「置頂的任務」清單的標題列右側，按下派發 `zonwiki:new-task` 事件（新增 `lib/taskEvents.ts`）請 Todo 頁彈出快速新增表單，並**預先勾選「置頂（Todo 側欄）」**。分頁標籤刻意不放 emoji——260px 側欄擠三個分頁時，圖示＋文字會互相疊字（截圖實測後才發現並修掉）。
+  6. 新增 overlay scope 快捷鍵 `toggleToolbar`，預設鍵 **`0`**（與 1-9 的工具鍵同一排，語意上是「第 0 號＝工具列本身」）。
+- **驗證**：`zonwiki-ui-tests/scripts/ui-2026-08-28-header-todo-note.mjs` 對**正式建置**（`pnpm build` + `next start`，非 dev server）跑 Playwright，41 項斷言全綠，含：Z 佔比 85.0%（`getBBox()` 實測）、Header 五個導覽項字級/字體皆一致、搜尋框外層 `border-width: 0px` 而內層 `1px`、工具列五顆鈕等高 26px＝標題行高 26px、兩個下拉的項目內容、`0` 鍵一收一展、分類列無 📍 但底色仍在、1280/375 兩種寬度 × 暖紙/暗色兩主題無水平溢出、console 零錯誤。截圖在 `zonwiki-ui-tests/2026-08-28-header-and-todo-ui/`。單元測試 40 檔 519 綠、`tsc --noEmit` 乾淨。
+- **教訓**：**CSS 簡寫屬性是「靜默的越權覆蓋」**——`font: inherit` 看起來只是「繼承字體」，實際上把 size/weight/line-height 一起接管，於是類別上寫好的 `font-size` 全部失效。在只想改單一面向時一律用長寫（`font-family`），簡寫只用在「這一整組我都要重設」的場合。
+
+---
+
 ## 2026-08-16 ｜筆記分頁標題：用「每次繪製後同步 document.title」而不是渲染 `<title>` 元素
 
 - **背景**：需求是「開某篇筆記時，Chrome 分頁上顯示該篇筆記的標題」。原本 `/notes` 子樹只有 `app/notes/layout.tsx` 的靜態 metadata「筆記 — ZonWiki」，每篇筆記的分頁長得一模一樣。筆記詳細頁 `app/notes/[...slug]/page.tsx` 是 `'use client'`（內容須帶登入 Cookie 在用戶端抓），**用不了 `generateMetadata`**（Next 文件明載伺服器元件限定，見 `node_modules/next/dist/docs/.../generate-metadata.md`），所以只能在用戶端解決。

@@ -68,6 +68,9 @@ export const SHORTCUT_ACTIONS: readonly ShortcutAction[] = [
   { id: "eraseBox", scope: "overlay", label: "橡皮擦－框選擦除", defaultKey: "9" },
   { id: "addSticky", scope: "overlay", label: "新增便利貼（sticky）", defaultKey: "s" },
   { id: "addSlide", scope: "overlay", label: "新增圖片板（image）", defaultKey: "i" },
+  // 收合／展開整個右下角工具列本身。用「0」而非字母：它與 1-9 的工具鍵同一排，
+  // 語意上是「第 0 號＝工具列開關」，且 0 未被其他動作佔用（見下方 findConflicts 的判定）。
+  { id: "toggleToolbar", scope: "overlay", label: "收合／展開右下角工具列", defaultKey: "0" },
 ];
 
 /** scope → 顯示用中文標題（快捷鍵設定頁分區用）。 */

@@ -14,6 +14,7 @@
  * B6: 輸入框聚焦時按 2 → 不觸發。
  * B7: 筆記頁按 c → 派發 toggleToc（新動作走 notes scope 既有派發分支）。
  * B8: 一鍵多動作 scope 解析不回歸（筆記頁 a＝newNote、Todo 頁 a＝newTodo）。
+ * B10: 筆記頁／畫布頁按 0 → 派發 toggleToolbar（右下角工具列收合／展開）；首頁按 0 不派發。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, render } from '@testing-library/react';
@@ -167,5 +168,27 @@ describe('B8 一鍵多動作 scope 解析不回歸', () => {
     await renderRuntime('/tasks');
     pressKey('a');
     expect(received).toEqual(['newTodo']);
+  });
+});
+
+describe('B10 工具列開關（0）', () => {
+  it('筆記頁按 0 → 派發 toggleToolbar 且 preventDefault', async () => {
+    await renderRuntime('/notes/test-note');
+    const evt = pressKey('0');
+    expect(received).toEqual(['toggleToolbar']);
+    expect(evt.defaultPrevented).toBe(true);
+  });
+
+  it('畫布頁按 0 → 同樣派發（工具列兩端共用）', async () => {
+    await renderRuntime('/canvas');
+    pressKey('0');
+    expect(received).toEqual(['toggleToolbar']);
+  });
+
+  it('首頁按 0 → 不派發（overlay scope 只在筆記／畫布生效）', async () => {
+    await renderRuntime('/');
+    const evt = pressKey('0');
+    expect(received).toEqual([]);
+    expect(evt.defaultPrevented).toBe(false);
   });
 });

@@ -145,9 +145,12 @@ export function AiProcessingMenu() {
         title="AI 處理中的工作"
         style={{
           // 只重置 <button> 的預設外觀，其餘交給 .nav-item（與其他導覽項一致，不特立獨行）。
+          // ⚠ 這裡刻意「不」寫 font/fontSize：先前寫 font:'inherit' 的簡寫會一次覆蓋
+          //    font-family/size/weight/line-height，把 .nav-item 的 13px 蓋成外層 <div> 的 15px，
+          //    於是「AI處理中」比旁邊的導覽項明顯大一號（使用者 2026-08-28 回報）。
+          //    字體與字級一律交給 .nav-item（該類已補 font-family: var(--font-body)）。
           background: 'transparent',
           border: 'none',
-          font: 'inherit',
           cursor: 'pointer',
         }}
       >

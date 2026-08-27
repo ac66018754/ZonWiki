@@ -370,16 +370,11 @@ export function GlobalSearch() {
             setIsOpen(results.length > 0);
           }
         }}
-        style={{
-          width: "100%",
-          padding: "var(--spacing-2) var(--spacing-3)",
-          borderRadius: "var(--radius-md)",
-          border: "1px solid var(--border-default)",
-          background: "var(--bg-surface)",
-          color: "var(--text-primary)",
-          fontSize: "var(--text-sm)",
-          transition: "all 0.2s ease",
-        }}
+        // 2026-08-28：外觀（框線、內距、字級、hover/focus 的聚焦圈）全部移到 globals.css 的
+        // `.search-box input`。原因：inline style 的優先序高於樣式表，先前寫成 inline 的
+        // `border` 簡寫會讓 CSS 的 `:hover/:focus { border-color }` 靜默失效——
+        // 看起來有規則、實際永遠不生效。只留「填滿容器寬度」這種與外觀無關的版面設定。
+        style={{ width: "100%" }}
         aria-label="全域搜尋"
         aria-autocomplete="list"
         aria-expanded={isOpen}

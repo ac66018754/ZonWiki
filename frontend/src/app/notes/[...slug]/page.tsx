@@ -444,7 +444,7 @@ export default function NotesDetailPage() {
   const [tocOpen, setTocOpen] = useState(false);
 
   // 問題清單：面板開關由本頁工具列鈕控制，面板本體由 NoteOverlay 渲染（需存取 overlay items）。
-  // 問題數由 NoteOverlay 透過 onQuestionsChange 回報，供工具列鈕顯示 "❓ 問題清單 (N)"。
+  // 問題數由 NoteOverlay 透過 onQuestionsChange 回報，供工具列鈕顯示 "問題清單 (N)"。
   const [questionPanelOpen, setQuestionPanelOpen] = useState(false);
   const [questionCount, setQuestionCount] = useState(0);
 
@@ -1372,9 +1372,10 @@ export default function NotesDetailPage() {
   return (
     <div className="note-detail-page" ref={noteScrollRef} onScroll={handleNoteScroll}>
       <div className="note-detail__container">
-        {/* 置頂工具列（sticky，不隨內文捲走）：返回 + 標題 + 編輯 / 匯出 PDF / 刪除，同一行。
-            樣式集中在 globals.css 的 .note-topbar（手機 ≤768px 改為可換行、不 sticky——
-            六顆按鈕在 393px 塞不下一行，硬撐會把整頁撐出水平捲動）。 */}
+        {/* 置頂工具列（sticky，不隨內文捲走）。版面（2026-08-28 使用者裁示）：
+              返回（靠左）｜標題（靠左）｜問題清單、全部展開、聆聽、編輯（皆靠右）
+            「複製 / 匯出 PDF / 刪除」收進「編輯 ▾」下拉，「雙人 Podcast」收進「聆聽 ▾」下拉。
+            樣式集中在 globals.css 的 .note-topbar（按鈕高度＝標題文字高度；手機 ≤768px 另有觸控規則）。 */}
         <div className="note-topbar">
           <button
             onClick={async () => {
@@ -1419,14 +1420,16 @@ export default function NotesDetailPage() {
             }}
             className="btn-secondary"
             title={isEditing ? '返回本篇筆記（退出編輯）' : '返回上一個筆記情境頁（別篇筆記／分類頁）'}
-            style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 'var(--spacing-1)' }}
+            style={{ flexShrink: 0 }}
           >
-            ← 返回
+            返回
           </button>
           <h1 className="note-topbar__title" title={note.title}>
             {note.title}
           </h1>
-          {/* 編輯中時隱藏「編輯 / 匯出 / 刪除」（避免與下方編輯區的取消/保存混淆）；編輯區自有取消/保存。 */}
+          {/* 編輯中時隱藏整組動作鈕（避免與下方編輯區的取消/保存混淆）；編輯區自有取消/保存。
+              版面順序（使用者裁示 2026-08-28）：問題清單｜全部展開｜聆聽｜編輯，全部靠右。
+              一律「只有字樣＋下拉三角形」，不放 emoji 圖示。 */}
           {!isEditing && (
             <div className="note-topbar__actions">
               {/* 問題清單（只在預覽分頁顯示，因浮層問題只在預覽渲染）：點擊開/關由 NoteOverlay 渲染的問題面板。 */}
@@ -1437,7 +1440,7 @@ export default function NotesDetailPage() {
                   title="檢視本篇所有問題（便利貼／T 文字框標記為問題者）"
                   aria-pressed={questionPanelOpen}
                 >
-                  ❓ 問題清單 ({questionCount})
+                  問題清單 ({questionCount})
                 </button>
               )}
               {/* 一鍵收合／展開整頁摺疊區塊（單鈕切換；只在預覽分頁、且內容真的有 toggle 時才出現）。
@@ -1448,44 +1451,31 @@ export default function NotesDetailPage() {
                   className="btn-secondary"
                   title={allTogglesExpanded ? '收合整頁所有摺疊區塊' : '展開整頁所有摺疊區塊'}
                 >
-                  {allTogglesExpanded ? '⊟ 全部收合' : '⊞ 全部展開'}
+                  {allTogglesExpanded ? '全部收合' : '全部展開'}
                 </button>
               )}
-              {/* 「編輯」→ 展開兩種編輯方式：頁內編輯頁 或 獨立編輯彈窗。 */}
+              {/* 聆聽 ▾：展開後可選「朗讀（單人）」或「雙人 Podcast」（底部迷你播放器由此以 portal 掛載）。 */}
+              <ListenButton noteId={note.id} noteTitle={note.title} />
+              {/* 編輯 ▾：本篇筆記的所有「改動類」動作都收在這個下拉裡——
+                  編輯頁 / 編輯彈窗 / 複製 / 匯出 PDF / 刪除（使用者裁示 2026-08-28，工具列只留四顆鈕）。 */}
               <div style={{ position: 'relative', flexShrink: 0 }}>
                 <button
                   onClick={() => setShowEditMenu((v) => !v)}
                   className="btn-primary"
-                  style={{ minHeight: 44 }}
-                  title="編輯此筆記（可選編輯頁或編輯彈窗）"
+                  title="編輯此筆記，或複製／匯出／刪除"
                   aria-haspopup="menu"
                   aria-expanded={showEditMenu}
                 >
-                  ✏️ 編輯 ▾
+                  編輯 ▾
                 </button>
                 {showEditMenu && (
                   <>
                     {/* 點空白處關閉選單 */}
                     <div onClick={() => setShowEditMenu(false)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
-                    <div
-                      role="menu"
-                      style={{
-                        position: 'absolute',
-                        top: 'calc(100% + 4px)',
-                        right: 0,
-                        zIndex: 41,
-                        minWidth: 220,
-                        background: 'var(--bg-surface)',
-                        border: '1px solid var(--border-default)',
-                        borderRadius: 'var(--radius-md)',
-                        boxShadow: 'var(--shadow-lg, 0 8px 24px rgba(0,0,0,0.18))',
-                        overflow: 'hidden',
-                        display: 'flex',
-                        flexDirection: 'column',
-                      }}
-                    >
+                    <div role="menu" className="note-topbar__menu">
                       <button
                         role="menuitem"
+                        className="note-topbar__menuitem"
                         onClick={() => {
                           setEditTitle(note.title);
                           setEditContent(note.contentRaw);
@@ -1494,48 +1484,50 @@ export default function NotesDetailPage() {
                           setIsEditing(true);
                           setShowEditMenu(false);
                         }}
-                        style={{
-                          display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2,
-                          padding: '10px 14px', background: 'transparent', border: 'none',
-                          borderBottom: '1px solid var(--border-default)', cursor: 'pointer',
-                          textAlign: 'left', fontSize: 'var(--text-sm)', color: 'var(--text-primary)',
-                        }}
                       >
-                        📄 編輯頁
-                        <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>在本頁內直接編輯</span>
+                        編輯頁
+                        <span className="note-topbar__menuitem-desc">在本頁內直接編輯</span>
                       </button>
                       <button
                         role="menuitem"
+                        className="note-topbar__menuitem"
                         onClick={() => { setShowEditMenu(false); openEditPopout(); }}
-                        style={{
-                          display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2,
-                          padding: '10px 14px', background: 'transparent', border: 'none',
-                          cursor: 'pointer', textAlign: 'left', fontSize: 'var(--text-sm)', color: 'var(--text-primary)',
-                        }}
                       >
-                        🪟 編輯彈窗
-                        <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>獨立視窗；本頁即時預覽</span>
+                        編輯彈窗
+                        <span className="note-topbar__menuitem-desc">獨立視窗；本頁即時預覽</span>
+                      </button>
+                      <button
+                        role="menuitem"
+                        className="note-topbar__menuitem"
+                        disabled={duplicatingNote}
+                        // 刻意「先跑完再關選單」（與其他項相反）：複製要打後端，
+                        // 選單留著才看得到下面那行「複製中…」的進度回饋。
+                        // 成功會導到副本（本頁整個換掉）；失敗才走到 setShowEditMenu(false) 並顯示錯誤橫幅。
+                        onClick={async () => { await handleDuplicateNote(); setShowEditMenu(false); }}
+                      >
+                        {duplicatingNote ? '複製中…' : '複製'}
+                        <span className="note-topbar__menuitem-desc">複製成一則新筆記（帶內容／分類／標籤）</span>
+                      </button>
+                      <button
+                        role="menuitem"
+                        className="note-topbar__menuitem"
+                        onClick={() => { setShowEditMenu(false); void handleExportPdf(); }}
+                      >
+                        匯出 PDF
+                        <span className="note-topbar__menuitem-desc">以瀏覽器列印（可另存為 PDF）</span>
+                      </button>
+                      <button
+                        role="menuitem"
+                        className="note-topbar__menuitem note-topbar__menuitem--danger"
+                        onClick={() => { setShowEditMenu(false); void handleDelete(); }}
+                      >
+                        刪除
+                        <span className="note-topbar__menuitem-desc">移到垃圾桶（可還原）</span>
                       </button>
                     </div>
                   </>
                 )}
               </div>
-              {/* 🎧 聆聽：AI 語音朗讀本篇筆記（底部迷你播放器由此按鈕以 portal 掛載）。 */}
-              <ListenButton noteId={note.id} noteTitle={note.title} />
-              <button
-                onClick={handleDuplicateNote}
-                className="btn-secondary"
-                disabled={duplicatingNote}
-                title="複製成一則新筆記（標題加「(副本)」，帶內容／分類／標籤）"
-              >
-                {duplicatingNote ? '複製中…' : '⧉ 複製'}
-              </button>
-              <button onClick={handleExportPdf} className="btn-secondary" title="以瀏覽器列印（可另存為 PDF）">
-                📄 匯出 PDF
-              </button>
-              <button onClick={handleDelete} className="btn-danger">
-                🗑️ 刪除
-              </button>
             </div>
           )}
         </div>

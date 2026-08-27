@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { listPinnedTodoTasks, type TaskCard } from "@/lib/api";
 import { STATUS_META } from "@/app/tasks/taskUtils";
 
@@ -13,8 +13,11 @@ import { STATUS_META } from "@/app/tasks/taskUtils";
  * - 監聽 `zonwiki:tasks-changed`（任務儲存/建立/刪除後由編輯器派發）即時重新載入，
  *   讓「勾了置頂→儲存」立刻反映在側欄。
  * - 已完成（done）的任務仍會顯示（劃刪除線、降低透明度），由使用者自行決定何時取消置頂。
+ *
+ * @param headerAction 放在「置頂的任務」標題右側的動作元件（側欄用它塞「＋ 新增」鈕）。
+ *   做成插槽而非寫死按鈕：本元件只負責「列出置頂任務」，新增任務的行為屬於側欄（要派發事件給 Todo 頁）。
  */
-export function TasksPinnedList() {
+export function TasksPinnedList({ headerAction }: { headerAction?: ReactNode } = {}) {
   const [tasks, setTasks] = useState<TaskCard[]>([]);
   const [loading, setLoading] = useState(true);
   // 請求序號：防止「後發先至」——連續兩次 reload 時，較早發出但較晚回來的舊回應
@@ -50,7 +53,10 @@ export function TasksPinnedList() {
 
   return (
     <div className="tpl-wrap">
-      <p className="tpl-head">置頂的任務</p>
+      <div className="tpl-headrow">
+        <p className="tpl-head">置頂的任務</p>
+        {headerAction}
+      </div>
 
       {loading && <p className="tpl-hint">載入中…</p>}
 
@@ -91,6 +97,13 @@ export function TasksPinnedList() {
           display: flex;
           flex-direction: column;
           gap: var(--spacing-2);
+        }
+        .tpl-headrow {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: var(--spacing-2);
+          min-height: 28px;
         }
         .tpl-head {
           margin: 0;
