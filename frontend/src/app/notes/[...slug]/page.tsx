@@ -2149,56 +2149,84 @@ export default function NotesDetailPage() {
                 ))}
               </div>
 
-              {/* 捲動後才出現：把分類與標籤帶上來，這樣捲到內文深處仍看得到本篇的歸屬。 */}
+              {/* 捲動後才出現：把分類與標籤帶上來，這樣捲到內文深處仍看得到本篇的歸屬。
+                  分類與標籤「各只顯示第一個」＋「還有幾個」的計數（使用者裁示 2026-08-28）：
+                  這一列的寬度有限，全部攤開時後面的 ✎ 會被擠出可視範圍、變成點不到。
+                  完整清單靠 title 提示，要改就按 ✎ 開面板。 */}
               {stickyCompact && (
                 <div className="note-tabs__meta">
                   <span className="note-tabs__meta-label">分類：</span>
-                  {(note.categories ?? []).length === 0 ? (
-                    <span className="note-meta-empty">未分類</span>
-                  ) : (
-                    (note.categories ?? []).map((c) => {
-                      const fullCategory = allCategories.find((x) => x.id === c.id);
-                      const pathLabel = fullCategory
-                        ? categoryPathOf(fullCategory.id, allCategories)
-                        : c.name;
-                      return (
+                  {(() => {
+                    const cats = note.categories ?? [];
+                    if (cats.length === 0) return <span className="note-meta-empty">未分類</span>;
+                    /** 分類的完整路徑（分類池尚未載入時退回葉節點名稱）。 */
+                    const pathOf = (id: string, fallback: string) =>
+                      allCategories.some((x) => x.id === id)
+                        ? categoryPathOf(id, allCategories)
+                        : fallback;
+                    const first = cats[0];
+                    const firstLabel = pathOf(first.id, first.name);
+                    const allLabels = cats.map((c) => pathOf(c.id, c.name)).join('、');
+                    return (
+                      <>
                         <button
-                          key={c.id}
                           className="note-meta-chip"
-                          onClick={() => router.push(`/notes?categoryId=${c.id}`)}
-                          title={`查看「${pathLabel}」分類的所有筆記`}
+                          onClick={() => router.push(`/notes?categoryId=${first.id}`)}
+                          title={
+                            cats.length > 1
+                              ? `本篇分類：${allLabels}（點擊查看「${firstLabel}」）`
+                              : `查看「${firstLabel}」分類的所有筆記`
+                          }
                         >
-                          📁 {pathLabel}
+                          📁 {firstLabel}
                         </button>
-                      );
-                    })
-                  )}
+                        {cats.length > 1 && (
+                          <span className="note-meta-more" title={`本篇分類：${allLabels}`}>
+                            +{cats.length - 1}
+                          </span>
+                        )}
+                      </>
+                    );
+                  })()}
                   <button
                     type="button"
                     className="note-meta-edit"
                     onClick={() => setMetaEditOpen((open) => !open)}
                     title="調整分類與標籤"
                     aria-label="調整分類"
+                    data-testid="sticky-edit-categories"
                   >
                     ✎
                   </button>
 
                   <span className="note-tabs__meta-label">標籤：</span>
-                  {(note.tags ?? []).length === 0 ? (
-                    <span className="note-meta-empty">無標籤</span>
-                  ) : (
-                    (note.tags ?? []).map((t) => (
-                      <span key={t.id} className="note-meta-chip" title={t.name}>
-                        🏷 {t.name}
-                      </span>
-                    ))
-                  )}
+                  {(() => {
+                    const tags = note.tags ?? [];
+                    if (tags.length === 0) return <span className="note-meta-empty">無標籤</span>;
+                    const allLabels = tags.map((t) => t.name).join('、');
+                    return (
+                      <>
+                        <span
+                          className="note-meta-chip"
+                          title={tags.length > 1 ? `本篇標籤：${allLabels}` : tags[0].name}
+                        >
+                          🏷 {tags[0].name}
+                        </span>
+                        {tags.length > 1 && (
+                          <span className="note-meta-more" title={`本篇標籤：${allLabels}`}>
+                            +{tags.length - 1}
+                          </span>
+                        )}
+                      </>
+                    );
+                  })()}
                   <button
                     type="button"
                     className="note-meta-edit"
                     onClick={() => setMetaEditOpen((open) => !open)}
                     title="調整分類與標籤"
                     aria-label="調整標籤"
+                    data-testid="sticky-edit-tags"
                   >
                     ✎
                   </button>

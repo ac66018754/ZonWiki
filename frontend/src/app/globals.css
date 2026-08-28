@@ -806,7 +806,14 @@ html[data-route="time"] .header {
   z-index: 100010;
 }
 
+/* 對話框本體。必須自己是 fixed 並置中——.modal-overlay 只是背後那層暗幕，
+   兩者是兄弟節點（非父子），先前少了定位會讓對話框掉回正常流、跑到頁面最底下。 */
 .modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 101;
   background: var(--bg-surface);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-lg);
@@ -814,7 +821,106 @@ html[data-route="time"] .header {
   padding: var(--spacing-6);
   max-width: 500px;
   width: 90%;
+  max-height: calc(100vh - var(--spacing-8, 32px));
+  overflow-y: auto;
   animation: slide-up 0.3s ease;
+}
+
+/* ── 圓形圖片裁切編輯器（品牌標誌 / 大頭貼共用）───────────────────────────── */
+.crop-modal {
+  max-width: 640px;
+}
+.crop-modal__layout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-5);
+  align-items: flex-start;
+}
+/* 編輯區：畫布 + 圓形遮罩疊在一起 */
+.crop-modal__stage {
+  position: relative;
+  flex-shrink: 0;
+  border-radius: var(--radius-md);
+  background: var(--bg-canvas);
+  overflow: hidden;
+}
+.crop-modal__canvas {
+  display: block;
+  cursor: grab;
+  touch-action: none; /* 讓 pointer 拖曳不被瀏覽器的捲動手勢搶走 */
+}
+.crop-modal__canvas:active {
+  cursor: grabbing;
+}
+/* 圓外打暗：用一個超大的 box-shadow 把圓形以外的區域蓋住，圓內完全不受影響。
+   內縮一圈白線是刻意的——深色圖片上，只靠打暗看不出圓的邊界在哪。 */
+.crop-modal__mask {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-full);
+  box-shadow:
+    0 0 0 9999px rgba(0, 0, 0, 0.45),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.7);
+  pointer-events: none;
+}
+.crop-modal__side {
+  flex: 1;
+  min-width: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-3);
+}
+.crop-modal__previews {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-2);
+}
+.crop-modal__preview-label {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+.crop-modal__preview-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-3);
+}
+.crop-modal__preview {
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-default);
+  background: var(--bg-canvas);
+}
+.crop-modal__control {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+.crop-modal__control input[type='range'] {
+  width: 100%;
+}
+.crop-modal__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-2);
+}
+.crop-modal__buttons .btn-secondary {
+  font-size: var(--text-xs);
+  padding: var(--spacing-1) var(--spacing-3);
+}
+.crop-modal__hint {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  line-height: 1.6;
+}
+.crop-modal__error {
+  margin: 0 0 var(--spacing-3);
+  padding: var(--spacing-2) var(--spacing-3);
+  background: var(--status-danger-bg);
+  color: var(--status-danger-fg);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
 }
 
 .modal__header {
@@ -1505,6 +1611,54 @@ html[data-route="time"] .header {
   color: var(--action-secondary-fg);
 }
 
+/* 帳號大頭貼：有上傳圖片就顯示圖片（切成圓形），沒有就顯示暱稱首字。 */
+.account-avatar {
+  width: var(--header-control-h);
+  height: var(--header-control-h);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+  background: var(--action-secondary-bg);
+  color: var(--action-secondary-fg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  font-size: var(--text-base);
+}
+.account-avatar__img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* 個人頁的大頭貼預覽（比 Header 的 40px 大，方便確認細節）。 */
+.profile-avatar {
+  width: 96px;
+  height: 96px;
+  flex-shrink: 0;
+  border-radius: var(--radius-full);
+  overflow: hidden;
+  background: var(--action-secondary-bg);
+  color: var(--action-secondary-fg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 40px;
+  font-weight: 700;
+}
+.profile-avatar__img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* 標誌旁的快捷鍵提示（「首頁」導覽項移除後，H 的提示改掛這裡）。 */
+.brand__hint {
+  margin-left: 4px;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
 /* 帳號選單 */
 .account-menu {
   display: flex;
@@ -1878,17 +2032,14 @@ th {
   font-weight: 600;
 }
 
-/* 右側的分類／標籤區：空間不足時自己橫向捲動，不擠壓左邊的分頁。 */
+/* 右側的分類／標籤區：分類與標籤各只顯示一顆 chip，所以整區寬度有界、不需要捲動。
+   flex-shrink: 0 是關鍵——先前允許壓縮時，分類名一長就把後面的 ✎ 擠出可視範圍（使用者回報
+   「標籤的筆不見了」）。改成不壓縮，過長的是 chip 自己以省略號截斷。 */
 .note-tabs__meta {
   display: flex;
   align-items: center;
   gap: var(--spacing-1);
-  min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.note-tabs__meta::-webkit-scrollbar {
-  display: none;
+  flex-shrink: 0;
 }
 .note-tabs__meta-label {
   flex-shrink: 0;
@@ -1905,8 +2056,9 @@ th {
   font-size: var(--text-xs);
 }
 .note-meta-chip {
-  flex-shrink: 0;
-  max-width: 200px;
+  flex-shrink: 1;
+  min-width: 40px;
+  max-width: 180px;
   padding: 2px 10px;
   background: var(--bg-surface);
   border: 1px solid var(--border-default);
@@ -1925,6 +2077,14 @@ button.note-meta-chip:hover {
   color: var(--text-primary);
 }
 span.note-meta-chip {
+  cursor: default;
+}
+/* 「還有幾個」的計數（例如 +3）：只佔一點寬度，完整清單靠 title 提示。 */
+.note-meta-more {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+  white-space: nowrap;
   cursor: default;
 }
 .note-meta-edit {

@@ -216,7 +216,7 @@ public static class AuthExtensions
             {
                 var prefs = await db.User
                     .Where(u => u.Id == userGuid && u.ValidFlag)
-                    .Select(u => new { u.TimeZone, u.DisplayMode, u.BrandLogoUrl })
+                    .Select(u => new { u.TimeZone, u.DisplayMode, u.BrandLogoUrl, u.AvatarUrl })
                     .FirstOrDefaultAsync(ct);
 
                 // 找不到（不存在或已刪帳號）→ 回 401，不靜默回預設值掩蓋已登出狀態。
@@ -240,6 +240,9 @@ public static class AuthExtensions
                         // 自訂品牌標誌（Header 左上角）。放進 /api/me 而非另開一支設定請求：
                         // 外殼本來就在伺服端取這支，跟著回傳才不會有「先閃內建 Z 再換圖」的畫面。
                         brandLogoUrl = prefs.BrandLogoUrl,
+                        // 帳號大頭貼（Header 右上角）。與品牌標誌同理放在 /api/me，
+                        // 外殼首次繪製就有圖，不會先閃「暱稱首字」再換成照片。
+                        avatarUrl = prefs.AvatarUrl,
                     }
                 });
             }

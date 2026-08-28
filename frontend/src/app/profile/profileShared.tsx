@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   updateMyProfile,
+  updateMyAvatar,
   changePassword,
   deleteMyAccount,
   getLogoutUrl,
@@ -16,6 +17,9 @@ import {
 } from "@/lib/api";
 import { formatDateTime } from "@/lib/formatters";
 import { getDeviceTimeZone, TIMEZONE_OPTIONS } from "@/lib/timezone";
+import { ImageCropModal } from "@/components/ImageCropModal";
+import { emitAvatarChanged } from "@/lib/avatarEvents";
+import { showToast } from "@/lib/toast";
 
 // ============================================================================
 // 個人頁共用：頁面外殼（標題 + 載入 / 錯誤狀態）
@@ -54,6 +58,133 @@ export function ProfileShell({
         children
       )}
     </div>
+  );
+}
+
+// ============================================================================
+// 區塊：大頭貼（上傳 → 裁切 → 存 DB → Header 右上角即時換圖）
+// ============================================================================
+
+/**
+ * 大頭貼區塊：顯示目前的大頭貼、可更換或移除。
+ *
+ * 上傳流程刻意「先開裁切編輯器再存」（與左上角品牌標誌同一個元件）：
+ * 自動置中裁切常常把人像切掉半顆頭，使用者要看到預覽才知道最後長什麼樣。
+ * 圖片以 data URI 存在 User_AvatarUrl 欄位（跨裝置同步），不走附件——
+ * 每日的孤兒附件掃描只認「被筆記引用」的附件，大頭貼沒有筆記引用它，隔天就會被當孤兒刪掉。
+ *
+ * @param profile 目前的個人資料（取其大頭貼與暱稱首字）。
+ * @param onChanged 存檔後重新載入個人資料。
+ */
+export function AvatarSection({
+  profile,
+  onChanged,
+}: {
+  profile: MyProfile;
+  onChanged: () => Promise<void>;
+}) {
+  // 目前顯示的大頭貼（樂觀更新用；null＝未設定，顯示暱稱首字）。
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(profile.avatarUrl ?? null);
+  // 待裁切的檔案（非 null＝裁切編輯器開著）。
+  const [cropFile, setCropFile] = useState<File | null>(null);
+  const [saving, setSaving] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setAvatarUrl(profile.avatarUrl ?? null);
+  }, [profile.avatarUrl]);
+
+  /**
+   * 存下大頭貼（空字串＝移除）。樂觀更新：先換畫面再送出，失敗回滾並提示。
+   * @param nextDataUrl 裁切後的 data URI；空字串代表移除。
+   */
+  const save = async (nextDataUrl: string) => {
+    const previous = avatarUrl;
+    const next = nextDataUrl === "" ? null : nextDataUrl;
+    setSaving(true);
+    setAvatarUrl(next);
+    emitAvatarChanged(next); // Header 右上角即時換圖（兩者是獨立的 React 樹）
+    try {
+      const ok = await updateMyAvatar(nextDataUrl);
+      if (!ok) throw new Error("儲存失敗");
+      showToast(next ? "大頭貼已更新" : "已移除大頭貼", { type: "success" });
+      await onChanged();
+    } catch (err) {
+      setAvatarUrl(previous);
+      emitAvatarChanged(previous);
+      showToast(err instanceof Error ? err.message : "大頭貼更新失敗", { type: "error" });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section style={cardStyle}>
+      <h2 style={sectionTitleStyle}>大頭貼</h2>
+
+      <div style={{ display: "flex", alignItems: "center", gap: "var(--spacing-5)", flexWrap: "wrap" }}>
+        <div className="profile-avatar" data-testid="profile-avatar">
+          {avatarUrl ? (
+            /* eslint-disable-next-line @next/next/no-img-element -- data URI 不需要 next/image 最佳化 */
+            <img className="profile-avatar__img" src={avatarUrl} alt="目前的大頭貼" />
+          ) : (
+            <span aria-hidden>{profile.displayName?.charAt(0).toUpperCase() || "?"}</span>
+          )}
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-2)" }}>
+          <div style={{ display: "flex", gap: "var(--spacing-2)", flexWrap: "wrap" }}>
+            <button
+              type="button"
+              style={primaryBtnStyle}
+              disabled={saving}
+              onClick={() => fileRef.current?.click()}
+              data-testid="profile-avatar-pick"
+            >
+              {avatarUrl ? "更換大頭貼…" : "上傳大頭貼…"}
+            </button>
+            {avatarUrl && (
+              <button
+                type="button"
+                style={secondaryBtnStyle}
+                disabled={saving}
+                onClick={() => void save("")}
+                data-testid="profile-avatar-remove"
+              >
+                移除
+              </button>
+            )}
+          </div>
+          <p style={hintTextStyle}>
+            上傳後可拖曳、縮放、旋轉調整構圖，並即時看到最終樣子。
+            設定後右上角的帳號圖示會改顯示這張圖。
+          </p>
+        </div>
+      </div>
+
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*"
+        hidden
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = ""; // 同一個檔案連選兩次也要能觸發 change
+          if (file) setCropFile(file);
+        }}
+      />
+
+      <ImageCropModal
+        open={cropFile !== null}
+        file={cropFile}
+        title="調整大頭貼"
+        onCancel={() => setCropFile(null)}
+        onConfirm={(dataUrl) => {
+          setCropFile(null);
+          void save(dataUrl);
+        }}
+      />
+    </section>
   );
 }
 

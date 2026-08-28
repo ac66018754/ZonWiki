@@ -6,6 +6,7 @@ import { useCurrentUser } from "@/lib/swr";
 import { getDeviceTimeZone } from "@/lib/timezone";
 import {
   ProfileShell,
+  AvatarSection,
   AccountInfoSection,
   ChangePasswordSection,
   TimeZoneSection,
@@ -56,6 +57,7 @@ export default function ProfileAccountPage() {
     <ProfileShell title="帳號資訊" loading={loading} error={loadError}>
       {profile && (
         <>
+          <AvatarSection profile={profile} onChanged={reloadProfile} />
           <AccountInfoSection profile={profile} tz={tz} onChanged={reloadProfile} />
           <TimeZoneSection />
           <ChangePasswordSection />
