@@ -372,10 +372,8 @@ export function Header({ user }: { user: CurrentUser | null }) {
                 <BrandZ />
               )}
             </span>
-            {/* 「首頁」導覽項移除後，H 鍵的提示改掛在標誌旁（只在使用者開啟提示時顯示）。 */}
-            {showHints && hintKeys.openHome && (
-              <span className="nav-hint brand__hint">({hintKeys.openHome})</span>
-            )}
+            {/* 刻意不在標誌旁顯示 (H) 鍵帽（使用者裁示 2026-08-28）：那顆圓形標誌旁多一段文字很雜。
+                H 快捷鍵本身照常有效，說明改放在 title / aria-label 裡。 */}
           </Link>
 
           {/* 隱藏的檔案選擇器：由選單的「更換圖片」觸發 */}
