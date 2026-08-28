@@ -1652,13 +1652,6 @@ html[data-route="time"] .header {
   object-fit: cover;
 }
 
-/* 標誌旁的快捷鍵提示（「首頁」導覽項移除後，H 的提示改掛這裡）。 */
-.brand__hint {
-  margin-left: 4px;
-  font-size: var(--text-xs);
-  color: var(--text-tertiary);
-}
-
 /* 帳號選單 */
 .account-menu {
   display: flex;
