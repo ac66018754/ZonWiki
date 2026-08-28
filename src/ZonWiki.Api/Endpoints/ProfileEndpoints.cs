@@ -17,6 +17,21 @@ public static class ProfileEndpoints
     public sealed record UpdateProfileRequest(string DisplayName);
 
     /// <summary>
+    /// 更新大頭貼的請求。
+    /// </summary>
+    /// <param name="AvatarUrl">
+    /// 已在瀏覽器端裁切好的圖片 data URI；傳空字串代表移除大頭貼（改回顯示暱稱首字）。
+    /// </param>
+    public sealed record UpdateAvatarRequest(string? AvatarUrl);
+
+    /// <summary>
+    /// 大頭貼 data URI 的長度上限（字元數，約 64KB）。
+    /// 前端會先裁切縮成 256×256 WebP（實測 10~30KB），這個上限只是防呆——擋掉沒縮圖就送整張原圖。
+    /// 與品牌標誌（UserSettingsEndpoints）採同一個數值與同一套驗證邏輯。
+    /// </summary>
+    private const int MaxAvatarLength = 64 * 1024;
+
+    /// <summary>
     /// 註冊個人頁端點。
     /// </summary>
     public static void MapProfileEndpoints(this IEndpointRouteBuilder app)
@@ -62,6 +77,45 @@ public static class ProfileEndpoints
             await AuthPasswordEndpoints.SignInUserAsync(http, u); // 重發 Cookie（更新 Name claim）
 
             return Results.Ok(new { success = true, data = new { displayName = u.DisplayName } });
+        }).RequireAuthorization();
+
+        // 更換 / 移除大頭貼。
+        // 獨立於 PUT /api/me/profile：換頭像不該被迫一起送暱稱，也不需要重發 Cookie
+        //（Cookie 只帶 Name claim，沒有頭像）。前端改以事件通知 Header 即時換圖。
+        app.MapPut("/api/me/avatar", async (
+            UpdateAvatarRequest req, HttpContext http, ZonWikiDbContext db, CancellationToken ct) =>
+        {
+            if (!TryUser(http, out var userGuid)) return Results.Unauthorized();
+
+            var u = await db.User.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(x => x.Id == userGuid && x.ValidFlag, ct);
+            if (u is null) return Results.Unauthorized();
+
+            var avatar = (req.AvatarUrl ?? string.Empty).Trim();
+            if (avatar.Length == 0)
+            {
+                u.AvatarUrl = null;
+            }
+            else
+            {
+                // 只收「前端裁切過的圖片 data URI」：不收任意外部網址（避免混合內容與外連追蹤），
+                // 也不收過大的內容（欄位是 text，但不該被塞進整張原圖）。
+                if (!avatar.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase))
+                {
+                    return Results.BadRequest(new { success = false, error = "大頭貼只接受圖片的 data URI（data:image/...）" });
+                }
+                if (avatar.Length > MaxAvatarLength)
+                {
+                    return Results.BadRequest(new { success = false, error = $"大頭貼過大（上限約 {MaxAvatarLength / 1024} KB，請改用較小的圖片）" });
+                }
+                u.AvatarUrl = avatar;
+            }
+
+            u.UpdatedDateTime = DateTime.UtcNow;
+            u.UpdatedUser = userGuid.ToString();
+            await db.SaveChangesAsync(ct);
+
+            return Results.Ok(new { success = true, data = new { avatarUrl = u.AvatarUrl } });
         }).RequireAuthorization();
 
         // 統計數據（筆記/任務/畫布/節點/常用連結/快速記錄/標籤/分類）

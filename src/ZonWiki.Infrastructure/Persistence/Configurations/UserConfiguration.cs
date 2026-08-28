@@ -14,7 +14,11 @@ public sealed class UserConfiguration : IEntityTypeConfiguration<User>
         builder.Property(u => u.GoogleSub).HasMaxLength(255);
         builder.Property(u => u.Email).IsRequired().HasMaxLength(320);
         builder.Property(u => u.DisplayName).IsRequired().HasMaxLength(255);
-        builder.Property(u => u.AvatarUrl).HasMaxLength(1024);
+        // 大頭貼：原本是 varchar(1024)（只放外部網址）。2026-08-28 起改成「使用者自己上傳、
+        // 裁切後的圖片 data URI」，內容約 10~30KB，1024 字元完全裝不下（實測回 500）。
+        // 改為不限長度（text）；實際上限改由端點驗證（PUT /api/me/avatar 限 64KB），
+        // 與品牌標誌 BrandLogoUrl 同一套做法。
+        builder.Property(u => u.AvatarUrl);
         builder.Property(u => u.PasswordHash).HasMaxLength(256); // nullable，本機帳號才有值
         builder.Property(u => u.ShortcutsJson).HasMaxLength(2048); // nullable；只存與預設不同的快捷鍵覆寫 JSON
         builder.Property(u => u.TranscriptionEngine).IsRequired().HasMaxLength(16).HasDefaultValue("gemini");

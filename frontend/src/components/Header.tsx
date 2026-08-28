@@ -22,7 +22,8 @@ import {
   SHORTCUTS_UPDATED_EVENT,
 } from "@/lib/shortcuts";
 import { THEME_CHANGED_EVENT } from "@/components/ShortcutRuntime";
-import { fileToBrandLogoDataUrl } from "@/lib/brandLogo";
+import { ImageCropModal } from "@/components/ImageCropModal";
+import { subscribeAvatarChanged } from "@/lib/avatarEvents";
 import { showToast } from "@/lib/toast";
 
 /**
@@ -128,11 +129,23 @@ export function Header({ user }: { user: CurrentUser | null }) {
   const [brandLogoSaving, setBrandLogoSaving] = useState(false);
   const brandMenuRef = useRef<HTMLDivElement>(null);
   const brandFileRef = useRef<HTMLInputElement>(null);
+  // 待裁切的檔案（非 null＝裁切編輯器開著）。
+  const [brandCropFile, setBrandCropFile] = useState<File | null>(null);
 
   // 切換帳號 / 伺服端資料更新時，同步標誌（例如在另一台裝置換過圖後重新整理）。
   useEffect(() => {
     setBrandLogoUrl(user?.brandLogoUrl ?? null);
   }, [user?.brandLogoUrl]);
+
+  // 帳號大頭貼：同樣由 SSR 帶下來的 user 起始；在個人頁換完後由事件即時同步
+  //（個人頁與 Header 是兩棵獨立的樹，且不想為了換頭像整頁重載）。
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(user?.avatarUrl ?? null);
+  useEffect(() => {
+    setAvatarUrl(user?.avatarUrl ?? null);
+  }, [user?.avatarUrl]);
+  useEffect(() => {
+    return subscribeAvatarChanged(setAvatarUrl);
+  }, []);
 
   // 標誌選單：點外部 / 按 Esc 關閉（與帳號、主題選單一致）。
   useEffect(() => {
@@ -154,16 +167,15 @@ export function Header({ user }: { user: CurrentUser | null }) {
   }, [brandMenuOpen]);
 
   /**
-   * 套用使用者選的圖片為品牌標誌：瀏覽器端縮成 128×128 → 存進 DB → 立即反映。
+   * 套用「裁切編輯器輸出的圖片」為品牌標誌：存進 DB 並立即反映。
    * 樂觀更新：先換畫面再送出；失敗則回滾成原圖並提示（避免「看起來成功、重整後不見」）。
-   * @param file 使用者選的圖片檔。
+   * @param dataUrl 裁切後的圖片 data URI。
    */
-  const applyBrandLogoFile = async (file: File) => {
+  const applyBrandLogo = async (dataUrl: string) => {
     const previous = brandLogoUrl;
     setBrandLogoSaving(true);
+    setBrandLogoUrl(dataUrl);
     try {
-      const dataUrl = await fileToBrandLogoDataUrl(file);
-      setBrandLogoUrl(dataUrl);
       await updateUserSettings({ brandLogoUrl: dataUrl });
       showToast("已更換標誌", { type: "success" });
     } catch (err) {
@@ -340,13 +352,13 @@ export function Header({ user }: { user: CurrentUser | null }) {
       <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
         {/* 品牌：圓形標誌（像大頭照），內容是使用者自訂圖片，未設定時用內建的「Z」向量。
             右鍵點它 → 小選單（更換圖片 / 還原預設）。用右鍵而非左鍵：左鍵要留給「回首頁」。
-            圖片存 DB（User_BrandLogoUrl），故跨裝置同步；詳見 lib/brandLogo.ts 的縮圖說明。 */}
+            圖片存 DB（User_BrandLogoUrl），故跨裝置同步；裁切與縮圖見 lib/imageCrop.ts。 */}
         <div ref={brandMenuRef} style={{ position: "relative", display: "inline-flex" }}>
           <Link
             href="/"
             className="brand"
-            aria-label="ZonWiki 首頁（在標誌上按右鍵可更換圖片）"
-            title="回首頁（在標誌上按右鍵可更換圖片）"
+            aria-label={`ZonWiki 首頁${hintKeys.openHome ? `（快捷鍵 ${hintKeys.openHome}）` : ''}（在標誌上按右鍵可更換圖片）`}
+            title={`回首頁${hintKeys.openHome ? `（快捷鍵 ${hintKeys.openHome}）` : ''}；在標誌上按右鍵可更換圖片`}
             onContextMenu={(e) => {
               e.preventDefault();
               setBrandMenuOpen((open) => !open);
@@ -360,6 +372,10 @@ export function Header({ user }: { user: CurrentUser | null }) {
                 <BrandZ />
               )}
             </span>
+            {/* 「首頁」導覽項移除後，H 鍵的提示改掛在標誌旁（只在使用者開啟提示時顯示）。 */}
+            {showHints && hintKeys.openHome && (
+              <span className="nav-hint brand__hint">({hintKeys.openHome})</span>
+            )}
           </Link>
 
           {/* 隱藏的檔案選擇器：由選單的「更換圖片」觸發 */}
@@ -372,7 +388,9 @@ export function Header({ user }: { user: CurrentUser | null }) {
               const file = e.target.files?.[0];
               // 先清空 value：同一個檔案連選兩次也要能觸發 change。
               e.target.value = "";
-              if (file) void applyBrandLogoFile(file);
+              // 不直接套用：先開裁切編輯器讓使用者調整構圖（使用者裁示 2026-08-28——
+              // 自動置中裁切常常切掉半顆頭，跟預期落差很大）。
+              if (file) setBrandCropFile(file);
             }}
           />
 
@@ -406,16 +424,10 @@ export function Header({ user }: { user: CurrentUser | null }) {
         </div>
 
         {/* 主功能導覽 (桌面版)。
-            「首頁」原本沒有字樣、只靠左上角的 ZonWiki 字標進入；2026-08-28 字標移除後
-            那顆可點的文字按鈕就消失了（標誌縮成 32px 圖示不好認），故補回成第一顆導覽項。
-            順序：首頁 → 日程規劃 → 開問啦 → 筆記 → 其他。行事曆已併入「日程規劃」的視圖。 */}
+            「首頁」不放導覽項——左上角的圓形標誌本身就是回首頁的入口，功能完全重疊
+            （使用者裁示 2026-08-28）；快捷鍵 H 的提示改顯示在標誌旁邊。
+            順序：日程規劃 → 開問啦 → 筆記 → 其他。行事曆已併入「日程規劃」的視圖。 */}
         <nav className="nav" role="navigation">
-          <Link href="/" className="nav-item">
-            首頁
-            {showHints && hintKeys.openHome && (
-              <span className="nav-hint">({hintKeys.openHome})</span>
-            )}
-          </Link>
           <Link href="/tasks" className="nav-item">
             日程規劃
             {showHints && hintKeys.openTasks && (
@@ -614,23 +626,16 @@ export function Header({ user }: { user: CurrentUser | null }) {
               aria-expanded={accountMenuOpen}
             >
               <div
-                style={{
-                  // 2026-08-28 使用者裁示：右側三顆（垃圾桶／顯示設定／帳號）相對 56px 的 Header
-                  // 顯得太小，統一放大到 40px。
-                  width: "40px",
-                  height: "40px",
-                  borderRadius: "50%",
-                  background: "var(--action-secondary-bg)",
-                  color: "var(--action-secondary-fg)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontWeight: 600,
-                  fontSize: "var(--text-base)",
-                }}
+                className="account-avatar"
                 title={user.email}
+                data-testid="header-avatar"
               >
-                {user.displayName?.charAt(0).toUpperCase()}
+                {avatarUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element -- data URI 不需要 next/image 最佳化
+                  <img className="account-avatar__img" src={avatarUrl} alt="" />
+                ) : (
+                  user.displayName?.charAt(0).toUpperCase()
+                )}
               </div>
             </button>
 
@@ -748,6 +753,18 @@ export function Header({ user }: { user: CurrentUser | null }) {
       {/* 注意：抽屜遮罩 .mobnav-overlay 已移至版面根層（<MobileNavOverlay/>），
           不可放在 Header 內——否則會被困在 Header 的堆疊環境而蓋住抽屜，
           導致點抽屜連結反而點到遮罩、頁面切換不了。 */}
+
+      {/* 品牌標誌的裁切編輯器（拖曳／縮放／旋轉＋即時預覽） */}
+      <ImageCropModal
+        open={brandCropFile !== null}
+        file={brandCropFile}
+        title="調整品牌標誌"
+        onCancel={() => setBrandCropFile(null)}
+        onConfirm={(dataUrl) => {
+          setBrandCropFile(null);
+          void applyBrandLogo(dataUrl);
+        }}
+      />
     </header>
   );
 }

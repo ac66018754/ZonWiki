@@ -196,6 +196,20 @@ export async function updateMyProfile(displayName: string): Promise<boolean> {
 }
 
 /**
+ * 更換 / 移除帳號大頭貼。
+ *
+ * @param avatarUrl 已在瀏覽器端裁切好的圖片 data URI；傳空字串代表移除（改回顯示暱稱首字）。
+ * @returns 是否成功。
+ */
+export async function updateMyAvatar(avatarUrl: string): Promise<boolean> {
+  const r = await fetchJson<{ avatarUrl: string | null }>("/api/me/avatar", {
+    method: "PUT",
+    body: JSON.stringify({ avatarUrl }),
+  });
+  return r.success;
+}
+
+/**
  * 取得個人統計數據
  */
 export async function getMyStats(): Promise<MyStats | null> {

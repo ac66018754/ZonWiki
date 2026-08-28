@@ -222,7 +222,15 @@ export function ProfileSidebar({ user }: { user: CurrentUser | null }): React.Re
     <aside id="app-sidebar" className="sidebar" role="complementary">
       <MobileSectionNav />
       <div className="pf-head">
-        <div className="pf-avatar">{user?.displayName?.charAt(0).toUpperCase() ?? "?"}</div>
+        {/* 有大頭貼就顯示圖片，與 Header 右上角一致；沒有才退回暱稱首字。 */}
+        <div className="pf-avatar">
+          {user?.avatarUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element -- data URI 不需要 next/image 最佳化
+            <img className="pf-avatar__img" src={user.avatarUrl} alt="" />
+          ) : (
+            (user?.displayName?.charAt(0).toUpperCase() ?? "?")
+          )}
+        </div>
         <div className="pf-head-text">
           <div className="pf-head-name">{user?.displayName ?? "個人頁面"}</div>
           <div className="pf-head-sub">個人頁面</div>
@@ -265,6 +273,7 @@ export function ProfileSidebar({ user }: { user: CurrentUser | null }): React.Re
           width: 40px;
           height: 40px;
           border-radius: var(--radius-full);
+          overflow: hidden;
           background: var(--action-secondary-bg);
           color: var(--action-secondary-fg);
           display: flex;
@@ -272,6 +281,11 @@ export function ProfileSidebar({ user }: { user: CurrentUser | null }): React.Re
           justify-content: center;
           font-weight: 700;
           font-size: var(--text-lg);
+        }
+        .pf-avatar__img {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
         }
         .pf-head-text {
           min-width: 0;
