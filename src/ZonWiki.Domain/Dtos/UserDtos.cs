@@ -13,7 +13,8 @@ public sealed record UserSettingsDto(
     string TimeZone,
     string? ShortcutsJson,
     string TranscriptionEngine = "gemini",
-    bool GroqKeySet = false);
+    bool GroqKeySet = false,
+    string? BrandLogoUrl = null);
 
 /// <summary>
 /// 使用者設定更新請求（欄位皆選擇性）。
@@ -23,12 +24,17 @@ public sealed record UserSettingsDto(
 /// <param name="ShortcutsJson">新的快捷鍵覆寫 JSON（可選；傳空字串代表清除＝還原全部預設）。</param>
 /// <param name="TranscriptionEngine">轉錄引擎（"gemini" / "groq"；可選）。</param>
 /// <param name="GroqApiKey">新的 Groq 金鑰（可選）：非 null 才更新；傳空字串＝清除既有金鑰；金鑰會加密儲存。</param>
+/// <param name="BrandLogoUrl">
+/// 新的自訂品牌標誌（可選）：非 null 才更新；傳空字串＝清除（還原內建的「Z」標誌）。
+/// 只接受已縮圖的 <c>data:image/...;base64,</c> 形式，且有大小上限，詳見端點驗證。
+/// </param>
 public sealed record UpdateUserSettingsRequest(
     string? DisplayMode,
     string? TimeZone,
     string? ShortcutsJson,
     string? TranscriptionEngine = null,
-    string? GroqApiKey = null);
+    string? GroqApiKey = null,
+    string? BrandLogoUrl = null);
 
 /// <summary>
 /// 垃圾桶項目摘要資料傳輸物件（含型別、所屬模組、標題、內容預覽、刪除時間）。

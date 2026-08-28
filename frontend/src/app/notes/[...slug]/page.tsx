@@ -142,6 +142,20 @@ function resolveSameOriginAnchorTarget(event: MouseEvent): URL | null {
   return destination;
 }
 
+/** 筆記詳情頁的分頁定義（順序即顯示順序）。抽成表格：五個分頁的樣式與行為完全一致，
+ *  寫成五段幾乎相同的 JSX 只會讓「改一個忘了改其他四個」。 */
+const NOTE_TABS: {
+  id: 'preview' | 'comments' | 'history' | 'backlinks' | 'links';
+  icon: string;
+  label: string;
+}[] = [
+  { id: 'preview', icon: '📖', label: '預覽' },
+  { id: 'comments', icon: '💬', label: '留言' },
+  { id: 'history', icon: '⏰', label: '歷史' },
+  { id: 'backlinks', icon: '🔗', label: '反向連結' },
+  { id: 'links', icon: '🧷', label: '關聯' },
+];
+
 /**
  * 筆記詳細編輯與查看頁面
  *
@@ -434,6 +448,16 @@ export default function NotesDetailPage() {
 
   // 標籤頁
   const [activeTab, setActiveTab] = useState<'preview' | 'comments' | 'history' | 'backlinks' | 'links'>('preview');
+
+  // 「置頂精簡版面」是否生效：捲動到分頁列黏住之後為 true。
+  // true＝日期併進標題列、分類/標籤併進分頁列（使用者裁示 2026-08-28）；
+  // false（尚未捲動）時版面與改版前完全一致。
+  const [stickyCompact, setStickyCompact] = useState(false);
+  // 置頂偵測哨兵（渲染在分頁列正上方的 1px 空元素）。
+  // 用「callback ref 存成 state」而不是 useRef：ref 物件的 .current 變動不會觸發重新渲染，
+  // 底下的 effect 只能靠相依陣列猜「哨兵應該已經掛好了」——猜錯就永遠沒掛上觀察器（實測踩過）。
+  // 存成 state 則是「節點一掛上就重跑 effect」，時序保證正確。
+  const [stickySentinelEl, setStickySentinelEl] = useState<HTMLDivElement | null>(null);
   // 「全部收合／展開」單鈕的狀態：false=目前視為全收合（後端 toggle 預設收合），點擊會展開全部並翻轉。
   const [allTogglesExpanded, setAllTogglesExpanded] = useState(false);
   // 「全部收合／展開」的觸發序號：0＝尚未按過。批次寫入 details.open 的 effect 只在序號變動時執行一次——
@@ -874,6 +898,28 @@ export default function NotesDetailPage() {
     };
   }, [markId, previewHtml]);
 
+  // 置頂偵測：哨兵被捲出「扣掉第一列高度」的視口上緣時 → 分頁列已黏住 → 進入 compact 版面。
+  // rootMargin 的上緣取第一列高度（--note-sticky-row1-h）的負值，讓觸發點正好是「分頁列貼到第一列底下」。
+  // root 是筆記頁自己的捲動容器（.note-detail-page），不是整頁。
+  useEffect(() => {
+    const root = noteScrollRef.current;
+    if (!stickySentinelEl || !root) {
+      // 沒有哨兵（編輯模式／編輯彈窗預覽時整個查看區塊被換掉）→ 版面回到非 compact，不留殘影。
+      setStickyCompact(false);
+      return;
+    }
+    const rowHeight =
+      parseFloat(
+        getComputedStyle(document.documentElement).getPropertyValue('--note-sticky-row1-h'),
+      ) || 42;
+    const observer = new IntersectionObserver(
+      ([entry]) => setStickyCompact(!entry.isIntersecting),
+      { root, rootMargin: `-${rowHeight}px 0px 0px 0px`, threshold: 0 },
+    );
+    observer.observe(stickySentinelEl);
+    return () => observer.disconnect();
+  }, [stickySentinelEl]);
+
   // 讀取 ?overlay= 用來從搜尋結果 / 問題清單跳轉到某個浮層元件（便利貼 / T 文字框）位置。
   // 定位本身交給 NoteOverlay（prop：locateOverlayId）——它握有浮層項目的錨點資料，
   // 能在捲動前先「循著階層展開」收合的 :::toggle（否則被收合隱藏的項目根本不會渲染、定位必失敗）。
@@ -1003,6 +1049,73 @@ export default function NotesDetailPage() {
       document.title = NOTES_DEFAULT_DOCUMENT_TITLE;
     };
   }, []);
+
+  /**
+   * 「就地調整分類/標籤」面板（✎ 按鈕打開的那個）。
+   *
+   * 做成函式而非 JSX 常數：面板要「跟著 ✎ 所在的那一列」渲染——未捲動時在原本的分類列底下，
+   * 捲動進 compact 版面後改掛在置頂的分頁列底下（否則面板會定位到已捲出畫面的原位、使用者看不到）。
+   * 兩處共用同一份定義，避免兩份 JSX 各自漂移。
+   * @returns 面板元素；未開啟或筆記尚未載入時回 null。
+   */
+  const renderMetaQuickEdit = () => {
+    if (!metaEditOpen || !note) return null;
+    return (
+      <NoteMetaQuickEdit
+        noteId={note.id}
+        categoryOptions={buildCategoryOptions(allCategories)}
+        tagOptions={allTags.map((t) => ({ id: t.id, name: t.name }))}
+        initialCategoryIds={(note.categories ?? []).map((c) => c.id)}
+        initialTagIds={(note.tags ?? []).map((t) => t.id)}
+        onCreateCategory={async (name) => {
+          try {
+            const cat = await createNoteCategory({ name, parentId: null });
+            if (cat) {
+              setAllCategories((c) => [...c, cat]);
+              mutateCategories();
+              return { id: cat.id, name: cat.name };
+            }
+          } catch (e) {
+            setError(e instanceof Error ? e.message : '新增分類失敗');
+          }
+          return null;
+        }}
+        onCreateTag={async (name) => {
+          try {
+            const tag = await createNoteTag(name);
+            if (tag) {
+              setAllTags((t) => [...t, tag]);
+              mutateTags();
+              return { id: tag.id, name: tag.name };
+            }
+          } catch (e) {
+            setError(e instanceof Error ? e.message : '新增標籤失敗');
+          }
+          return null;
+        }}
+        onSaved={(categoryIds, tagIds) => {
+          // 就地更新本頁筆記狀態（chip 立即反映），並重新驗證共用快取（側欄計數）。
+          setNote((prev) => {
+            if (!prev) return prev;
+            const catById = new Map(allCategories.map((c) => [c.id, c]));
+            const tagById = new Map(allTags.map((t) => [t.id, t]));
+            return {
+              ...prev,
+              categories: categoryIds
+                .map((id) => catById.get(id))
+                .filter((c): c is NoteCategory => Boolean(c)),
+              tags: tagIds
+                .map((id) => tagById.get(id))
+                .filter((t): t is NoteTag => Boolean(t)),
+            };
+          });
+          mutateCategories();
+          mutateTags();
+        }}
+        onClose={() => setMetaEditOpen(false)}
+      />
+    );
+  };
 
   // 保存編輯
   const handleSave = async () => {
@@ -1427,6 +1540,16 @@ export default function NotesDetailPage() {
           <h1 className="note-topbar__title" title={note.title}>
             {note.title}
           </h1>
+          {/* 捲動後（compact 版面）把建立/更新日期併進標題列——原本那列會捲走，
+              但使用者要它「永久看得到」；同時避免置頂區域多佔一整列高度。 */}
+          {stickyCompact && !isEditing && (
+            <div className="note-topbar__dates">
+              <span className="note-topbar__date">建立：{formatNoteFullDateTime(note.createdDateTime)}</span>
+              <span className="note-topbar__date">更新：{formatNoteFullDateTime(note.updatedDateTime)}</span>
+            </div>
+          )}
+          {/* 彈性間隔：把動作鈕推到最右邊（標題與日期都只佔自身寬度）。 */}
+          <span className="note-topbar__spacer" />
           {/* 編輯中時隱藏整組動作鈕（避免與下方編輯區的取消/保存混淆）；編輯區自有取消/保存。
               版面順序（使用者裁示 2026-08-28）：問題清單｜全部展開｜聆聽｜編輯，全部靠右。
               一律「只有字樣＋下拉三角形」，不放 emoji 圖示。 */}
@@ -1978,179 +2101,112 @@ export default function NotesDetailPage() {
                     </span>
                   ))
                 )}
+                {/* ✎ 就地調整（與分類列那顆是同一個面板；使用者裁示：標籤這列也要有入口）。 */}
+                <button
+                  type="button"
+                  onClick={() => setMetaEditOpen((open) => !open)}
+                  title="調整分類與標籤"
+                  aria-label="調整標籤"
+                  style={{
+                    padding: '2px 8px',
+                    background: 'transparent',
+                    border: '1px dashed var(--border-default)',
+                    borderRadius: 'var(--radius-full)',
+                    color: 'var(--text-tertiary)',
+                    fontSize: 'var(--text-xs)',
+                    cursor: 'pointer',
+                    flexShrink: 0,
+                  }}
+                >
+                  ✎
+                </button>
               </div>
-              {metaEditOpen && (
-                <NoteMetaQuickEdit
-                  noteId={note.id}
-                  categoryOptions={buildCategoryOptions(allCategories)}
-                  tagOptions={allTags.map((t) => ({ id: t.id, name: t.name }))}
-                  initialCategoryIds={(note.categories ?? []).map((c) => c.id)}
-                  initialTagIds={(note.tags ?? []).map((t) => t.id)}
-                  onCreateCategory={async (name) => {
-                    try {
-                      const cat = await createNoteCategory({ name, parentId: null });
-                      if (cat) {
-                        setAllCategories((c) => [...c, cat]);
-                        mutateCategories();
-                        return { id: cat.id, name: cat.name };
-                      }
-                    } catch (e) {
-                      setError(e instanceof Error ? e.message : '新增分類失敗');
-                    }
-                    return null;
-                  }}
-                  onCreateTag={async (name) => {
-                    try {
-                      const tag = await createNoteTag(name);
-                      if (tag) {
-                        setAllTags((t) => [...t, tag]);
-                        mutateTags();
-                        return { id: tag.id, name: tag.name };
-                      }
-                    } catch (e) {
-                      setError(e instanceof Error ? e.message : '新增標籤失敗');
-                    }
-                    return null;
-                  }}
-                  onSaved={(categoryIds, tagIds) => {
-                    // 就地更新本頁筆記狀態（chip 立即反映），並重新驗證共用快取（側欄計數）。
-                    setNote((prev) => {
-                      if (!prev) return prev;
-                      const catById = new Map(allCategories.map((c) => [c.id, c]));
-                      const tagById = new Map(allTags.map((t) => [t.id, t]));
-                      return {
-                        ...prev,
-                        categories: categoryIds
-                          .map((id) => catById.get(id))
-                          .filter((c): c is NoteCategory => Boolean(c)),
-                        tags: tagIds
-                          .map((id) => tagById.get(id))
-                          .filter((t): t is NoteTag => Boolean(t)),
-                      };
-                    });
-                    mutateCategories();
-                    mutateTags();
-                  }}
-                  onClose={() => setMetaEditOpen(false)}
-                />
+              {/* 就地調整分類/標籤的面板：未捲動時掛在這一列（原位）。 */}
+              {!stickyCompact && renderMetaQuickEdit()}
+            </div>
+
+            {/* 置頂偵測用的哨兵：這 1px 的空元素就在「分頁列」正上方。
+                它被捲出「扣掉第一列高度後的視口」時，代表分頁列已經黏住 → 進入 compact 版面
+                （日期併進標題列、分類/標籤併進分頁列）。
+                為什麼用哨兵而不是量 scrollTop：門檻值不必寫死，元素怎麼長都自動正確；
+                也刻意「不」把原本的日期列／分類列從版面移除——移除會改變文件高度，
+                在門檻附近容易來回抖動（顯示→變矮→未達門檻→隱藏→…）。它們會自然捲到置頂列底下被蓋住。 */}
+            <div ref={setStickySentinelEl} aria-hidden style={{ height: 1 }} />
+
+            {/* 標籤頁（置頂第二列）：分頁靠左、分類/標籤靠右（捲動後才顯示）。 */}
+            <div className="note-tabs" data-sticky-compact={stickyCompact ? '1' : '0'}>
+              <div className="note-tabs__list">
+                {NOTE_TABS.map((tab) => (
+                  <button
+                    key={tab.id}
+                    onClick={() => setActiveTab(tab.id)}
+                    className={`note-tab ${activeTab === tab.id ? 'note-tab--active' : ''}`}
+                    aria-current={activeTab === tab.id ? 'page' : undefined}
+                  >
+                    {tab.icon} {tab.label}
+                    {tab.id === 'comments' ? ` (${comments.length})` : ''}
+                  </button>
+                ))}
+              </div>
+
+              {/* 捲動後才出現：把分類與標籤帶上來，這樣捲到內文深處仍看得到本篇的歸屬。 */}
+              {stickyCompact && (
+                <div className="note-tabs__meta">
+                  <span className="note-tabs__meta-label">分類：</span>
+                  {(note.categories ?? []).length === 0 ? (
+                    <span className="note-meta-empty">未分類</span>
+                  ) : (
+                    (note.categories ?? []).map((c) => {
+                      const fullCategory = allCategories.find((x) => x.id === c.id);
+                      const pathLabel = fullCategory
+                        ? categoryPathOf(fullCategory.id, allCategories)
+                        : c.name;
+                      return (
+                        <button
+                          key={c.id}
+                          className="note-meta-chip"
+                          onClick={() => router.push(`/notes?categoryId=${c.id}`)}
+                          title={`查看「${pathLabel}」分類的所有筆記`}
+                        >
+                          📁 {pathLabel}
+                        </button>
+                      );
+                    })
+                  )}
+                  <button
+                    type="button"
+                    className="note-meta-edit"
+                    onClick={() => setMetaEditOpen((open) => !open)}
+                    title="調整分類與標籤"
+                    aria-label="調整分類"
+                  >
+                    ✎
+                  </button>
+
+                  <span className="note-tabs__meta-label">標籤：</span>
+                  {(note.tags ?? []).length === 0 ? (
+                    <span className="note-meta-empty">無標籤</span>
+                  ) : (
+                    (note.tags ?? []).map((t) => (
+                      <span key={t.id} className="note-meta-chip" title={t.name}>
+                        🏷 {t.name}
+                      </span>
+                    ))
+                  )}
+                  <button
+                    type="button"
+                    className="note-meta-edit"
+                    onClick={() => setMetaEditOpen((open) => !open)}
+                    title="調整分類與標籤"
+                    aria-label="調整標籤"
+                  >
+                    ✎
+                  </button>
+                </div>
               )}
+              {/* 捲動後：面板改掛在這一列底下（跟著置頂的 ✎ 走）。 */}
+              {stickyCompact && renderMetaQuickEdit()}
             </div>
-
-            {/* 標籤頁 */}
-            <div
-              style={{
-                display: 'flex',
-                gap: 'var(--spacing-2)',
-                borderBottom: '1px solid var(--border-default)',
-                marginBottom: 'var(--spacing-4)',
-                overflowX: 'auto',
-              }}
-            >
-              <button
-                onClick={() => setActiveTab('preview')}
-                style={{
-                  padding: 'var(--spacing-2) var(--spacing-4)',
-                  border: 'none',
-                  background: 'transparent',
-                  cursor: 'pointer',
-                  borderBottom:
-                    activeTab === 'preview'
-                      ? '2px solid var(--action-primary-bg)'
-                      : '2px solid transparent',
-                  color:
-                    activeTab === 'preview'
-                      ? 'var(--action-primary-bg)'
-                      : 'var(--text-secondary)',
-                  fontWeight: activeTab === 'preview' ? 600 : 400,
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                📖 預覽
-              </button>
-              <button
-                onClick={() => setActiveTab('comments')}
-                style={{
-                  padding: 'var(--spacing-2) var(--spacing-4)',
-                  border: 'none',
-                  background: 'transparent',
-                  cursor: 'pointer',
-                  borderBottom:
-                    activeTab === 'comments'
-                      ? '2px solid var(--action-primary-bg)'
-                      : '2px solid transparent',
-                  color:
-                    activeTab === 'comments'
-                      ? 'var(--action-primary-bg)'
-                      : 'var(--text-secondary)',
-                  fontWeight: activeTab === 'comments' ? 600 : 400,
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                💬 留言 ({comments.length})
-              </button>
-              <button
-                onClick={() => setActiveTab('history')}
-                style={{
-                  padding: 'var(--spacing-2) var(--spacing-4)',
-                  border: 'none',
-                  background: 'transparent',
-                  cursor: 'pointer',
-                  borderBottom:
-                    activeTab === 'history'
-                      ? '2px solid var(--action-primary-bg)'
-                      : '2px solid transparent',
-                  color:
-                    activeTab === 'history'
-                      ? 'var(--action-primary-bg)'
-                      : 'var(--text-secondary)',
-                  fontWeight: activeTab === 'history' ? 600 : 400,
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                ⏰ 歷史
-              </button>
-              <button
-                onClick={() => setActiveTab('backlinks')}
-                style={{
-                  padding: 'var(--spacing-2) var(--spacing-4)',
-                  border: 'none',
-                  background: 'transparent',
-                  cursor: 'pointer',
-                  borderBottom:
-                    activeTab === 'backlinks'
-                      ? '2px solid var(--action-primary-bg)'
-                      : '2px solid transparent',
-                  color:
-                    activeTab === 'backlinks'
-                      ? 'var(--action-primary-bg)'
-                      : 'var(--text-secondary)',
-                  fontWeight: activeTab === 'backlinks' ? 600 : 400,
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                🔗 反向連結
-              </button>
-              <button
-                onClick={() => setActiveTab('links')}
-                style={{
-                  padding: 'var(--spacing-2) var(--spacing-4)',
-                  border: 'none',
-                  background: 'transparent',
-                  cursor: 'pointer',
-                  borderBottom:
-                    activeTab === 'links'
-                      ? '2px solid var(--action-primary-bg)'
-                      : '2px solid transparent',
-                  color:
-                    activeTab === 'links' ? 'var(--action-primary-bg)' : 'var(--text-secondary)',
-                  fontWeight: activeTab === 'links' ? 600 : 400,
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                🧷 關聯
-              </button>
-            </div>
-
             {/* 關聯分頁：此筆記關聯的任務/子任務/節點，可搜尋既有項目來關聯（點任務→回到當天行事曆） */}
             {activeTab === 'links' && (
               <div>

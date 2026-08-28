@@ -1,6 +1,6 @@
 "use client";
 
-import { CurrentUser, getLogoutUrl, getLoginUrl } from "@/lib/api";
+import { CurrentUser, getLogoutUrl, getLoginUrl, updateUserSettings } from "@/lib/api";
 import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -22,6 +22,8 @@ import {
   SHORTCUTS_UPDATED_EVENT,
 } from "@/lib/shortcuts";
 import { THEME_CHANGED_EVENT } from "@/components/ShortcutRuntime";
+import { fileToBrandLogoDataUrl } from "@/lib/brandLogo";
+import { showToast } from "@/lib/toast";
 
 /**
  * 品牌標誌裡的大寫「Z」向量圖形。
@@ -117,6 +119,76 @@ export function Header({ user }: { user: CurrentUser | null }) {
   // 帳號選單狀態
   const accountMenuRef = useRef<HTMLDivElement>(null);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+
+  // ── 自訂品牌標誌（Header 左上角圓形圖示）──────────────────────────────
+  // 初始值取自 SSR 帶下來的 user（外殼在伺服端就拿到 /api/me），故首次繪製就是正確的圖，
+  // 不會先閃內建「Z」再換圖；之後使用者換圖時以本地 state 立即反映。
+  const [brandLogoUrl, setBrandLogoUrl] = useState<string | null>(user?.brandLogoUrl ?? null);
+  const [brandMenuOpen, setBrandMenuOpen] = useState(false);
+  const [brandLogoSaving, setBrandLogoSaving] = useState(false);
+  const brandMenuRef = useRef<HTMLDivElement>(null);
+  const brandFileRef = useRef<HTMLInputElement>(null);
+
+  // 切換帳號 / 伺服端資料更新時，同步標誌（例如在另一台裝置換過圖後重新整理）。
+  useEffect(() => {
+    setBrandLogoUrl(user?.brandLogoUrl ?? null);
+  }, [user?.brandLogoUrl]);
+
+  // 標誌選單：點外部 / 按 Esc 關閉（與帳號、主題選單一致）。
+  useEffect(() => {
+    if (!brandMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (brandMenuRef.current && !brandMenuRef.current.contains(e.target as Node)) {
+        setBrandMenuOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setBrandMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [brandMenuOpen]);
+
+  /**
+   * 套用使用者選的圖片為品牌標誌：瀏覽器端縮成 128×128 → 存進 DB → 立即反映。
+   * 樂觀更新：先換畫面再送出；失敗則回滾成原圖並提示（避免「看起來成功、重整後不見」）。
+   * @param file 使用者選的圖片檔。
+   */
+  const applyBrandLogoFile = async (file: File) => {
+    const previous = brandLogoUrl;
+    setBrandLogoSaving(true);
+    try {
+      const dataUrl = await fileToBrandLogoDataUrl(file);
+      setBrandLogoUrl(dataUrl);
+      await updateUserSettings({ brandLogoUrl: dataUrl });
+      showToast("已更換標誌", { type: "success" });
+    } catch (err) {
+      setBrandLogoUrl(previous);
+      showToast(err instanceof Error ? err.message : "更換標誌失敗", { type: "error" });
+    } finally {
+      setBrandLogoSaving(false);
+    }
+  };
+
+  /** 還原成內建的「Z」向量標誌（後端以空字串代表清除）。 */
+  const clearBrandLogo = async () => {
+    const previous = brandLogoUrl;
+    setBrandLogoSaving(true);
+    try {
+      setBrandLogoUrl(null);
+      await updateUserSettings({ brandLogoUrl: "" });
+      showToast("已還原預設標誌", { type: "success" });
+    } catch {
+      setBrandLogoUrl(previous);
+      showToast("還原標誌失敗", { type: "error" });
+    } finally {
+      setBrandLogoSaving(false);
+    }
+  };
 
   // 手機搜尋框開關（≤768px 搜尋框預設收合、點 🔍 才展開——置頂空間讓給內容頁的
   // 工具列，使用者裁示 2026-08-11）。桌機不受影響（🔍 鈕與收合規則都只在手機斷點生效）。
@@ -266,21 +338,84 @@ export function Header({ user }: { user: CurrentUser | null }) {
     <header className="header" role="banner">
       {/* 左側：品牌 + 導覽 */}
       <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
-        {/* 品牌：只留「Z」標誌，不再放 ZonWiki 字標（使用者裁示 2026-08-28）。
-            Z 以「向量圖形」而非文字繪製：需求是「Z 要佔滿元件 80～90%」，
-            而文字的實際墨水高度取決於各平台字體的 cap height（Courier New 只有字級的 0.57，
-            Segoe UI 約 0.70），同一個 font-size 在不同機器上佔比會差很多、無法保證落在 80~90%。
-            向量的 viewBox 是固定座標系，佔比由座標直接決定（見下方 7.5~92.5＝85%），跨平台一致。
-            aria-label 補回字標拿掉後失去的可讀名稱（螢幕閱讀器仍讀得到「ZonWiki 首頁」）。 */}
-        <Link href="/" className="brand" aria-label="ZonWiki 首頁" title="ZonWiki 首頁">
-          <span className="brand__icon" aria-hidden>
-            <BrandZ />
-          </span>
-        </Link>
+        {/* 品牌：圓形標誌（像大頭照），內容是使用者自訂圖片，未設定時用內建的「Z」向量。
+            右鍵點它 → 小選單（更換圖片 / 還原預設）。用右鍵而非左鍵：左鍵要留給「回首頁」。
+            圖片存 DB（User_BrandLogoUrl），故跨裝置同步；詳見 lib/brandLogo.ts 的縮圖說明。 */}
+        <div ref={brandMenuRef} style={{ position: "relative", display: "inline-flex" }}>
+          <Link
+            href="/"
+            className="brand"
+            aria-label="ZonWiki 首頁（在標誌上按右鍵可更換圖片）"
+            title="回首頁（在標誌上按右鍵可更換圖片）"
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setBrandMenuOpen((open) => !open);
+            }}
+          >
+            <span className="brand__icon" aria-hidden>
+              {brandLogoUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element -- data URI 不需要 next/image 最佳化
+                <img className="brand__img" src={brandLogoUrl} alt="" />
+              ) : (
+                <BrandZ />
+              )}
+            </span>
+          </Link>
 
-        {/* 主功能導覽 (桌面版)。首頁不放字樣 —— 點左上 Logo (ZonWiki) 即可回首頁。
-            順序：ZonWiki(Logo) → 日程規劃 → 開問啦 → 筆記。行事曆已併入「日程規劃」的視圖。 */}
+          {/* 隱藏的檔案選擇器：由選單的「更換圖片」觸發 */}
+          <input
+            ref={brandFileRef}
+            type="file"
+            accept="image/*"
+            hidden
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              // 先清空 value：同一個檔案連選兩次也要能觸發 change。
+              e.target.value = "";
+              if (file) void applyBrandLogoFile(file);
+            }}
+          />
+
+          {brandMenuOpen && (
+            <div role="menu" className="brand__menu">
+              <button
+                type="button"
+                role="menuitem"
+                className="brand__menuitem"
+                onClick={() => {
+                  setBrandMenuOpen(false);
+                  brandFileRef.current?.click();
+                }}
+              >
+                更換圖片…
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="brand__menuitem"
+                disabled={!brandLogoUrl || brandLogoSaving}
+                onClick={() => {
+                  setBrandMenuOpen(false);
+                  void clearBrandLogo();
+                }}
+              >
+                還原預設標誌
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* 主功能導覽 (桌面版)。
+            「首頁」原本沒有字樣、只靠左上角的 ZonWiki 字標進入；2026-08-28 字標移除後
+            那顆可點的文字按鈕就消失了（標誌縮成 32px 圖示不好認），故補回成第一顆導覽項。
+            順序：首頁 → 日程規劃 → 開問啦 → 筆記 → 其他。行事曆已併入「日程規劃」的視圖。 */}
         <nav className="nav" role="navigation">
+          <Link href="/" className="nav-item">
+            首頁
+            {showHints && hintKeys.openHome && (
+              <span className="nav-hint">({hintKeys.openHome})</span>
+            )}
+          </Link>
           <Link href="/tasks" className="nav-item">
             日程規劃
             {showHints && hintKeys.openTasks && (
@@ -480,8 +615,10 @@ export function Header({ user }: { user: CurrentUser | null }) {
             >
               <div
                 style={{
-                  width: "26px",
-                  height: "26px",
+                  // 2026-08-28 使用者裁示：右側三顆（垃圾桶／顯示設定／帳號）相對 56px 的 Header
+                  // 顯得太小，統一放大到 40px。
+                  width: "40px",
+                  height: "40px",
                   borderRadius: "50%",
                   background: "var(--action-secondary-bg)",
                   color: "var(--action-secondary-fg)",
@@ -489,7 +626,7 @@ export function Header({ user }: { user: CurrentUser | null }) {
                   alignItems: "center",
                   justifyContent: "center",
                   fontWeight: 600,
-                  fontSize: "var(--text-xs)",
+                  fontSize: "var(--text-base)",
                 }}
                 title={user.email}
               >

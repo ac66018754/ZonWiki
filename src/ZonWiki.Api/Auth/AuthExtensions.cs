@@ -216,7 +216,7 @@ public static class AuthExtensions
             {
                 var prefs = await db.User
                     .Where(u => u.Id == userGuid && u.ValidFlag)
-                    .Select(u => new { u.TimeZone, u.DisplayMode })
+                    .Select(u => new { u.TimeZone, u.DisplayMode, u.BrandLogoUrl })
                     .FirstOrDefaultAsync(ct);
 
                 // 找不到（不存在或已刪帳號）→ 回 401，不靜默回預設值掩蓋已登出狀態。
@@ -237,6 +237,9 @@ public static class AuthExtensions
                         displayName = name,
                         timeZone = prefs.TimeZone,
                         displayMode = prefs.DisplayMode,
+                        // 自訂品牌標誌（Header 左上角）。放進 /api/me 而非另開一支設定請求：
+                        // 外殼本來就在伺服端取這支，跟著回傳才不會有「先閃內建 Z 再換圖」的畫面。
+                        brandLogoUrl = prefs.BrandLogoUrl,
                     }
                 });
             }

@@ -66,6 +66,17 @@ public class User : AuditableEntity
     public string? GroqApiKeyEncrypted { get; set; }
 
     /// <summary>
+    /// 使用者自訂的站台品牌標誌（Header 左上角那顆圓形圖示）。
+    ///
+    /// 內容為「已在瀏覽器端縮圖成 128×128 的 WebP data URI」，而非附件網址——刻意如此：
+    /// (1) 這張圖只顯示成 32px，縮圖後約 5~15KB，直接放欄位最單純；
+    /// (2) 若改走附件（/api/attachments），每天的「孤兒附件掃描器」只認得被筆記內容引用的附件，
+    ///     沒有筆記引用它 → 會把使用者的 Logo 當孤兒軟刪除。存欄位就完全繞開這個生命週期問題。
+    /// null 代表未設定，前端顯示內建的「Z」向量標誌。
+    /// </summary>
+    public string? BrandLogoUrl { get; set; }
+
+    /// <summary>
     /// 筆記朗讀（TTS）的偏好設定（JSON 字串，形狀 <c>{ "voice", "language", "format" }</c>）。
     /// 比照 <see cref="ShortcutsJson"/> 慣例：DB 為真實來源，故朗讀聲音等偏好可跨裝置同步。
     /// null 代表尚未設定（讀取時回系統預設）。
