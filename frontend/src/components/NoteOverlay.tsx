@@ -1564,7 +1564,7 @@ export function NoteOverlay({
   const keyCaps = useShortcutKeyCaps([
     'toolPen', 'toolHighlight', 'toolLine', 'toolRect', 'toolEllipse',
     'addTextBox', 'eraseArea', 'eraseStroke', 'eraseBox',
-    'addSticky', 'addSlide', 'toggleToc',
+    'addSticky', 'addSlide', 'toggleToc', 'toggleToolbar',
   ]);
 
   // 「剛畫完的形狀」缺少「點畫布外即取消」→ 選取可能一直殘留，之後一次無關的 Del 就會靜默刪掉它。
@@ -1896,6 +1896,8 @@ export function NoteOverlay({
           testIdPrefix="overlay"
           position={{ bottom: 24, right: 24 }}
           maxWidth={380}
+          // 筆記端：收合狀態就住在 DrawingToolbar 內，快捷鍵（預設 0）直接交給它切。
+          shortcutTogglesCollapse
           // 手機（≤768px）預設收合：四列工具列會蓋住小螢幕下方約 1/3 的「閱讀」區，
           // 需要時點右上角 ▴ 展開（只影響筆記閱讀端；開問啦畫布端維持展開）。
           defaultCollapsed={
@@ -1923,6 +1925,7 @@ export function NoteOverlay({
             sticky: keyCaps.addSticky,
             slide: keyCaps.addSlide,
             leading: keyCaps.toggleToc,
+            toolbar: keyCaps.toggleToolbar,
           }}
           onAddSticky={addSticky}
           onAddSlide={addSlide}

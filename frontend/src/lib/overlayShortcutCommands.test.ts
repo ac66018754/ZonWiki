@@ -16,11 +16,33 @@ vi.mock('./api', () => ({
   updateUserSettings: vi.fn(),
 }));
 
+/**
+ * 刻意「不」進 OVERLAY_SHORTCUT_COMMANDS 的 overlay 動作白名單。
+ *
+ * 這張表描述的是「選工具 / 新增元件」這類指令，兩端（筆記、畫布）行為一致才有意義。
+ * toggleToolbar 切的是「工具列自身的收合狀態」，兩端的實作對象根本不同——
+ * 筆記端住在 DrawingToolbar 內部；畫布端住在 CanvasAnnotationLayer（收合時 DrawingToolbar
+ * 會整個卸載，交給它處理才展得回來）。硬塞進表裡只會讓表失真。
+ *
+ * 白名單刻意用「明列」而非「跳過全部沒對應的」：日後再加新動作若忘了接，C1 仍會失敗。
+ */
+const ACTIONS_NOT_IN_COMMAND_TABLE = new Set(['toggleToolbar']);
+
 describe('C1 完備性', () => {
-  it('每個 overlay scope 動作 id 都有對應指令', () => {
+  it('每個 overlay scope 動作 id 都有對應指令（白名單者除外）', () => {
     const overlayIds = SHORTCUT_ACTIONS.filter((a) => a.scope === 'overlay').map((a) => a.id);
     for (const id of overlayIds) {
+      if (ACTIONS_NOT_IN_COMMAND_TABLE.has(id)) continue;
       expect(OVERLAY_SHORTCUT_COMMANDS[id], `overlay 動作 "${id}" 缺對應指令`).toBeDefined();
+    }
+  });
+
+  it('白名單本身不得含「已經有對應指令」的動作（防白名單過期後被忽略）', () => {
+    for (const id of ACTIONS_NOT_IN_COMMAND_TABLE) {
+      expect(
+        OVERLAY_SHORTCUT_COMMANDS[id],
+        `動作 "${id}" 已在對應表內，應從白名單移除`,
+      ).toBeUndefined();
     }
   });
 

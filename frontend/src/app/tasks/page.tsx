@@ -16,6 +16,7 @@ import { TaskListView } from "./components/TaskListView";
 import { TaskEditorModal } from "./components/TaskEditorModal";
 import { TaskFilterPopup } from "./components/TaskFilterPopup";
 import { QuickCreateTaskModal, type QuickCreateInitial } from "./components/QuickCreateTaskModal";
+import { subscribeNewTaskRequest } from "@/lib/taskEvents";
 import { CalendarMonthView } from "@/app/calendar/components/CalendarMonthView";
 import { CalendarWeekView } from "@/app/calendar/components/CalendarWeekView";
 import { CalendarDayView } from "@/app/calendar/components/CalendarDayView";
@@ -121,6 +122,19 @@ export default function TasksPage() {
     };
     window.addEventListener("zonwiki:open-task", onOpenTask);
     return () => window.removeEventListener("zonwiki:open-task", onOpenTask);
+  }, []);
+
+  // 左側欄「置頂的任務」分頁的「＋ 新增」→ 彈出快速新增表單（並預先勾選「置頂」）。
+  // 側欄與本頁是兩棵獨立的 React 樹，沒有共同父層可傳 callback，故走事件（見 lib/taskEvents）。
+  // setQuickCreateInitial 參考穩定 → 空相依、只註冊一次。
+  useEffect(() => {
+    return subscribeNewTaskRequest((detail) => {
+      setQuickCreateInitial({
+        plannedDateTime: null,
+        dueDateTime: null,
+        isPinnedToTodo: detail.pinnedToTodo === true,
+      });
+    });
   }, []);
 
   // Todo 頁專用快捷鍵：由全域執行器（ShortcutRuntime）派發 SHORTCUT_ACTION_EVENT，

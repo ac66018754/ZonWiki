@@ -342,8 +342,9 @@ a:hover {
 .header .search-box {
   min-width: 0;
   /* 桌機尺寸（原為 Header.tsx 的 inline style；inline 會蓋掉 640px 手機規則故移到這裡）。 */
-  max-width: 400px;
-  margin: 0 var(--spacing-6);
+  max-width: 360px;
+  /* 2026-08-28 Header 整體縮小：左右 24px 的外距改 12px，讓導覽與搜尋不會離太遠。 */
+  margin: 0 var(--spacing-3);
 }
 @media (max-width: 640px) {
   .header .search-box {
@@ -1294,9 +1295,6 @@ html[data-route="time"] .header {
 .brand {
   display: flex;
   align-items: center;
-  gap: var(--spacing-2);
-  font-weight: 700;
-  font-size: var(--text-lg);
   color: var(--text-primary);
   transition: opacity 0.2s ease;
   cursor: pointer;
@@ -1306,6 +1304,7 @@ html[data-route="time"] .header {
   opacity: 0.7;
 }
 
+/* 品牌方塊：只放一個大寫 Z 的向量圖（ZonWiki 字標已於 2026-08-28 依使用者裁示移除）。 */
 .brand__icon {
   display: flex;
   align-items: center;
@@ -1315,9 +1314,14 @@ html[data-route="time"] .header {
   background: var(--action-primary-bg);
   color: var(--action-primary-fg);
   border-radius: var(--radius-md);
-  font-family: var(--font-mono);
-  font-weight: 700;
-  font-size: var(--text-sm);
+}
+
+/* Z 的向量圖：撐滿整個方塊，實際的「Z 佔 85%」由 SVG 內的 viewBox 座標決定
+   （見 Header.tsx 的 BrandZ），不受各平台字體 cap height 差異影響。 */
+.brand__z {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 /* 導航選單 */
@@ -1327,17 +1331,23 @@ html[data-route="time"] .header {
   gap: var(--spacing-2);
 }
 
+/* Header 導覽項（含 <a> 與「AI處理中」<button>）：字體、字級、內距全部統一。
+   font-family 必須明寫——<button> 不像 <a> 會繼承 body 字體，預設會落到系統 UI 字體，
+   同一列裡就會出現兩種字型（使用者 2026-08-28 回報「AI 處理中好像跟其他人不太一樣」）。 */
 .nav-item {
   display: flex;
   align-items: center;
-  gap: var(--spacing-2);
-  padding: var(--spacing-2) var(--spacing-3);
+  gap: var(--spacing-1);
+  padding: var(--spacing-1) var(--spacing-2);
   color: var(--text-secondary);
   border-radius: var(--radius-md);
   cursor: pointer;
   transition: all 0.2s ease;
   white-space: nowrap;
-  font-size: var(--text-sm);
+  font-family: var(--font-body);
+  font-size: var(--text-xs);
+  font-weight: 400;
+  line-height: 1.6;
 }
 
 .nav-item:hover {
@@ -1359,63 +1369,64 @@ html[data-route="time"] .header {
   }
 }
 
-/* 全域搜尋框 */
+/* 全域搜尋框（外層只是「版面容器」，不再自己畫框）。
+   原本這層有 border + padding + 背景，裡面 GlobalSearch 的 <input> 又有自己的 border，
+   於是視覺上是「框中框」、整體被撐得過大（使用者 2026-08-28 回報「被包了兩層」）。
+   現在框線只留給裡面那顆 input；外層負責寬度、置中與手機的收合/展開。 */
 .search-box {
   display: flex;
   align-items: center;
-  gap: var(--spacing-2);
   flex: 1;
   max-width: 300px;
-  padding: var(--spacing-2) var(--spacing-3);
-  background: var(--bg-canvas);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  transition: border-color 0.2s ease;
-  cursor: text;
+  padding: 0;
+  background: transparent;
+  border: none;
 }
 
-.search-box:hover,
-.search-box:focus-within {
+/* 使用者看到的「那個框框」＝這顆 input。外觀全部寫在這裡（不要寫回 GlobalSearch 的 inline
+   style：inline 的優先序高於樣式表，會讓下面的 :hover/:focus 規則靜默失效）。 */
+.search-box input {
+  padding: var(--spacing-1) var(--spacing-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  font-size: var(--text-xs);
+  outline: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.search-box input::placeholder {
+  color: var(--text-tertiary);
+}
+/* 聚焦圈畫在真正的輸入框上（不是外層容器），與「只留中間那個框」一致。 */
+.search-box input:hover,
+.search-box input:focus {
   border-color: var(--focus-ring);
   box-shadow: 0 0 0 2px var(--focus-ring), 0 0 0 4px rgba(12, 90, 192, 0.1);
 }
 
-.search-box__input {
-  flex: 1;
-  border: none;
-  background: transparent;
-  color: var(--text-primary);
-  font-size: var(--text-sm);
-  outline: none;
-  font-family: var(--font-body);
-}
+/* 註：舊的 .search-box__input / .search-box__icon 已於 2026-08-28 移除——
+   GlobalSearch 從未套用這兩個類別（它自己畫 input），留著只會與上面的
+   `.search-box input` 規則互相混淆。 */
 
-.search-box__input::placeholder {
-  color: var(--text-tertiary);
-}
-
-.search-box__icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  color: var(--text-tertiary);
-}
-
-/* 標題按鈕 (主功能切換、設定、帳號) */
+/* 標題按鈕 (主功能切換、設定、帳號)。
+   2026-08-28 依使用者裁示由 36px 縮到 30px；觸控裝置的 44px 命中區由下方
+   @media (hover: none) 的 ::after 透明擴大層維持（視覺變小、可點範圍不變）。 */
 .icon-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
+  width: 30px;
+  height: 30px;
   padding: 0;
   background: transparent;
   border: none;
   border-radius: var(--radius-md);
   color: var(--text-secondary);
   cursor: pointer;
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
   transition: all 0.2s ease;
 }
 
@@ -1433,8 +1444,8 @@ html[data-route="time"] .header {
 .account-menu {
   display: flex;
   align-items: center;
-  gap: var(--spacing-3);
-  padding-left: var(--spacing-3);
+  gap: var(--spacing-2);
+  padding-left: var(--spacing-2);
   border-left: 1px solid var(--border-default);
 }
 
@@ -1694,18 +1705,24 @@ th {
   z-index: 30;
   display: flex;
   align-items: center;
-  gap: var(--spacing-3);
+  gap: var(--spacing-2);
   margin-bottom: var(--spacing-3);
   padding-top: var(--spacing-2);
   padding-bottom: var(--spacing-2);
   background: var(--bg-canvas);
   border-bottom: 1px solid var(--border-default);
+  /* 工具列按鈕的高度＝標題那行文字的高度（使用者裁示 2026-08-28：
+     「按鈕元件變得跟 Title 字體的高度一樣高就好」）。
+     用 calc 綁在同一組 token 上，日後改標題字級時按鈕會自動跟著改，不會走樣。 */
+  --note-topbar-btn-h: calc(var(--text-xl) * 1.3);
 }
 .note-topbar__title {
   margin: 0;
   flex: 1;
   min-width: 0;
   font-size: var(--text-xl);
+  /* 這個 1.3 必須與上面 --note-topbar-btn-h 的係數一致（兩者是同一個「標題文字高度」）。 */
+  line-height: 1.3;
   font-weight: 700;
   white-space: nowrap;
   overflow: hidden;
@@ -1713,8 +1730,79 @@ th {
 }
 .note-topbar__actions {
   display: flex;
+  align-items: center;
   gap: var(--spacing-2);
   flex-shrink: 0;
+}
+
+/* 工具列上「所有」按鈕（返回、問題清單、全部展開、聆聽、編輯）一律同高、同字體、同字級。
+   字級刻意維持 --text-sm（使用者裁示：字樣大小不必改，只是元件本身太大），
+   靠壓縮上下內距把按鈕縮到標題文字的高度。 */
+.note-topbar > button,
+.note-topbar__actions button {
+  height: var(--note-topbar-btn-h);
+  min-height: 0;
+  padding: 0 var(--spacing-3);
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+/* 筆記工具列的下拉選單（「聆聽 ▾」與「編輯 ▾」共用同一套外觀，避免兩處各自走樣）。 */
+.note-topbar__menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 41;
+  min-width: 220px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.18));
+  overflow: hidden;
+}
+/* 選單項目：主字樣 + 下方一行灰色說明；不放 icon（使用者裁示 2026-08-28）。 */
+.note-topbar__menu .note-topbar__menuitem {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  /* 選單項目「不套用」上面工具列按鈕的固定高度——它有兩行文字，需要自然高度。 */
+  height: auto;
+  padding: 8px 14px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border-default);
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  font-weight: 400;
+  line-height: 1.5;
+  white-space: normal;
+  color: var(--text-primary);
+}
+.note-topbar__menu .note-topbar__menuitem:last-child {
+  border-bottom: none;
+}
+.note-topbar__menu .note-topbar__menuitem:hover:not(:disabled) {
+  background: var(--action-secondary-bg);
+}
+.note-topbar__menu .note-topbar__menuitem:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+/* 刪除是破壞性動作 → 用危險色的文字（前景色，已與 --bg-surface 驗過對比）。 */
+.note-topbar__menu .note-topbar__menuitem--danger {
+  color: var(--status-danger-fg);
+}
+.note-topbar__menuitem-desc {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
 }
 
 @media (max-width: 768px) {
@@ -1740,12 +1828,21 @@ th {
     scrollbar-width: thin;
     padding-bottom: 2px; /* 細捲軸的呼吸空間，不壓到按鈕 */
   }
+  /* 桌機把按鈕壓到「與標題同高」（26px），但手機必須維持 44px 觸控命中高度，
+     故此處把 height 放開、改由 min-height 決定（返回鈕也一起，它不在 __actions 內）。 */
+  .note-topbar > button,
   .note-topbar__actions button {
     flex-shrink: 0; /* 不要換行、不要壓縮——過寬交給橫向捲動 */
     white-space: nowrap;
+    height: auto;
     padding: var(--spacing-1) var(--spacing-2);
     font-size: var(--text-sm);
     min-height: 44px; /* 觸控命中高度維持鐵則 */
+  }
+  /* 下拉選單項目不受上面 44px 規則影響（它本來就是兩行、天然高於 44px）。 */
+  .note-topbar__menu .note-topbar__menuitem {
+    min-height: 44px;
+    padding: 8px 14px;
   }
 }
 
@@ -1832,10 +1929,8 @@ th {
     gap: var(--spacing-2);
   }
 
-  /* 品牌只留 Z 標誌：第一列要同時容納 AI處理中、🔍、主題、頭像、☰（393px 塞不下全字標） */
-  .brand__wordmark {
-    display: none;
-  }
+  /* 品牌本來就只剩 Z 標誌（ZonWiki 字標已於 2026-08-28 全域移除），
+     故此處不再需要「手機隱藏字標」的規則。 */
 
   /* 註：.sidebar 抽屜寬度/位移統一由 768px 斷點處理，此處不再覆寫 width，
      以免把抽屜寬度改回滿版（iPhone 等 ≤640px 也適用 min(86vw,320px)）。 */

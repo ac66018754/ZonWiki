@@ -1,9 +1,10 @@
 'use client';
 
 import type React from 'react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ColorPickerInline } from '@/components/ColorPicker';
 import type { DrawTool } from '@/lib/drawing/shapes';
+import { SHORTCUT_ACTION_EVENT } from '@/lib/shortcuts';
 
 /**
  * 「畫筆/螢光筆」共用顏色按鈕適用的工具（顏色對所有手繪形狀都有意義）。
@@ -82,6 +83,7 @@ export function DrawingToolbar({
   topContent,
   testIdPrefix,
   shortcutKeys,
+  shortcutTogglesCollapse = false,
 }: {
   /** 固定定位（兩端不同：筆記 bottom:24/right:24、開問啦 bottom:168/right:16）。 */
   position: { bottom: number; right: number };
@@ -136,12 +138,21 @@ export function DrawingToolbar({
   /**
    * 各按鈕的快捷鍵鍵帽提示（顯示用大寫；未提供的鍵不顯示提示）。
    * 鍵名：繪圖工具用 DrawTool id（pen/highlight/…/erase-box），
-   * 另有 text（T 文字框）、sticky（便利貼）、slide（圖片板）、leading（第一格）。
+   * 另有 text（T 文字框）、sticky（便利貼）、slide（圖片板）、leading（第一格）、
+   * toolbar（整個工具列的收合／展開）。
    * 由父層以 useShortcutKeyCaps 算好傳入（隨使用者改鍵即時更新）。
    */
   shortcutKeys?: Partial<
-    Record<Exclude<DrawTool, null> | 'text' | 'sticky' | 'slide' | 'leading', string>
+    Record<Exclude<DrawTool, null> | 'text' | 'sticky' | 'slide' | 'leading' | 'toolbar', string>
   >;
+  /**
+   * 是否由「本元件」接手 toggleToolbar 快捷鍵（預設 false）。
+   *
+   * 筆記端傳 true：工具列的收合狀態就住在這裡，快捷鍵直接切它最單純。
+   * 開問啦畫布端維持 false：那邊的收合是「整個工具列換成一顆 🧰」（狀態在 CanvasAnnotationLayer，
+   * 收合時本元件根本不存在、聽不到事件），故由該層自行處理，否則收下去就再也展不開。
+   */
+  shortcutTogglesCollapse?: boolean;
 }) {
   const isHighlight = tool === 'highlight';
   const showColor = isColorTool(tool);
@@ -151,6 +162,37 @@ export function DrawingToolbar({
   // lazy 初始化只在首次 render 取一次 defaultCollapsed。
   // 為純呈現元件的局部 UI 狀態，與繪圖/便利貼等業務狀態無關，故放元件內部即可。
   const [collapsed, setCollapsed] = useState(() => defaultCollapsed);
+
+  /**
+   * 收合／展開工具列（右上角 ▾▴ 鈕與快捷鍵共用同一個進入點）。
+   * 收合時順手結束繪圖，避免「工具列收起來了、畫布卻還鎖在繪圖模式」。
+   */
+  const toggleCollapsed = () =>
+    setCollapsed((prev) => {
+      const next = !prev;
+      if (next && drawingActive) onDone();
+      return next;
+    });
+
+  // 以 ref 鏡像「最新一版的 toggleCollapsed」（在 effect 內指派，不在 render 期改 ref）。
+  // 目的：讓下面的快捷鍵監聽器只註冊一次——若把 toggleCollapsed 放進相依陣列，
+  // 監聽器會隨每次渲染反覆拆裝（見全域鐵則 #21：不穩定參考 → 反覆重訂閱）。
+  const toggleCollapsedRef = useRef<() => void>(toggleCollapsed);
+  useEffect(() => {
+    toggleCollapsedRef.current = toggleCollapsed;
+  });
+
+  // 快捷鍵「收合／展開工具列」：由全域執行器（ShortcutRuntime）派發 SHORTCUT_ACTION_EVENT。
+  // 只在 shortcutTogglesCollapse=true（筆記端）時接手，理由見該 prop 的說明。
+  useEffect(() => {
+    if (!shortcutTogglesCollapse) return;
+    const onShortcut = (e: Event) => {
+      const actionId = (e as CustomEvent<{ actionId?: string }>).detail?.actionId;
+      if (actionId === 'toggleToolbar') toggleCollapsedRef.current();
+    };
+    window.addEventListener(SHORTCUT_ACTION_EVENT, onShortcut);
+    return () => window.removeEventListener(SHORTCUT_ACTION_EVENT, onShortcut);
+  }, [shortcutTogglesCollapse]);
 
   /** Row2 的繪圖工具（文字框 T 已移至 Row1）。 */
   const drawTools: [Exclude<DrawTool, null>, string, string][] = [
@@ -218,19 +260,14 @@ export function DrawingToolbar({
           <button
             className="tk-btn"
             style={{ cursor: 'pointer', padding: '0 6px', lineHeight: 1.4 }}
-            onClick={() =>
-              setCollapsed((prev) => {
-                const next = !prev;
-                if (next && drawingActive) onDone();
-                return next;
-              })
-            }
-            title={collapsed ? '展開工具列' : '收合工具列'}
+            onClick={toggleCollapsed}
+            title={withKeyTitle(collapsed ? '展開工具列' : '收合工具列', shortcutKeys?.toolbar)}
             aria-label={collapsed ? '展開工具列' : '收合工具列'}
             aria-expanded={!collapsed}
             data-testid={`${testIdPrefix}-toolbar-collapse`}
           >
             {collapsed ? '▴' : '▾'}
+            {keyCapHint(shortcutKeys?.toolbar)}
           </button>
         </div>
 

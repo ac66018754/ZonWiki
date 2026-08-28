@@ -181,6 +181,27 @@ export async function listPinnedTodoTasks(): Promise<TaskCard[]> {
 }
 
 /**
+ * 列出「日期範圍內」的任務卡片（PlannedDateTime 或 DueDateTime 落在範圍內者）。
+ *
+ * 走後端的行事曆視圖（`GET /api/tasks?view=calendar&from&to`），由 DB 端就篩掉範圍外的資料——
+ * 比「抓全部再前端過濾」省流量，也不會被 list 視圖的 2000 筆上限截掉。
+ *
+ * @param fromIso 範圍起（UTC ISO，含）。
+ * @param toIso 範圍迄（UTC ISO，含）。
+ * @returns 範圍內的任務卡片；失敗回空陣列。
+ */
+export async function listTaskCardsInRange(
+  fromIso: string,
+  toIso: string
+): Promise<TaskCard[]> {
+  const path =
+    `/api/tasks?view=calendar` +
+    `&from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}`;
+  const r = await fetchJson<{ cards: TaskCard[] }>(path);
+  return r.data?.cards ?? [];
+}
+
+/**
  * 取得單張任務卡片詳情（含內容與子任務清單）。
  */
 export async function getTaskCard(id: string): Promise<TaskCard | null> {

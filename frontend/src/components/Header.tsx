@@ -24,6 +24,36 @@ import {
 import { THEME_CHANGED_EVENT } from "@/components/ShortcutRuntime";
 
 /**
+ * 品牌標誌裡的大寫「Z」向量圖形。
+ *
+ * 為什麼不用文字：見 Header 內品牌區塊的註解（各平台字體 cap height 不同，
+ * 文字無法保證「佔滿元件 80~90%」這個明確規格）。
+ *
+ * 座標系固定為 100×100 的 viewBox，Z 的外框佔 7.5~92.5（＝邊長的 85%，落在需求的 80~90% 內）。
+ * 由三塊組成：上橫槓、下橫槓、以及連接兩者的斜槓（平行四邊形）。
+ * 斜槓的水平寬度 25.5 ＝ 垂直厚度 18 × √2，如此斜槓的「垂直於自身」的厚度才與橫槓一致（不會看起來偏細）。
+ * @returns 可隨父層 color 變色（fill="currentColor"）的 SVG 元素。
+ */
+function BrandZ(): React.ReactElement {
+  return (
+    <svg
+      className="brand__z"
+      viewBox="0 0 100 100"
+      fill="currentColor"
+      focusable="false"
+      aria-hidden
+    >
+      {/* 上橫槓 */}
+      <rect x="7.5" y="7.5" width="85" height="18" />
+      {/* 斜槓（右上 → 左下的平行四邊形） */}
+      <polygon points="67,7.5 92.5,7.5 33,92.5 7.5,92.5" />
+      {/* 下橫槓 */}
+      <rect x="7.5" y="74.5" width="85" height="18" />
+    </svg>
+  );
+}
+
+/**
  * Header 元件
  * - 品牌標誌
  * - 主功能導覽 (首頁、筆記、日程規劃、行事曆、開問啦)
@@ -236,11 +266,16 @@ export function Header({ user }: { user: CurrentUser | null }) {
     <header className="header" role="banner">
       {/* 左側：品牌 + 導覽 */}
       <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
-        {/* 品牌（≤640px 隱藏「ZonWiki」字標、只留 Z 標誌——第一列要塞下 🔍 與 ☰，
-            否則漢堡鈕會被擠到獨佔第二列浪費垂直空間） */}
-        <Link href="/" className="brand">
-          <div className="brand__icon">Z</div>
-          <span className="brand__wordmark" style={{ fontWeight: 700 }}>ZonWiki</span>
+        {/* 品牌：只留「Z」標誌，不再放 ZonWiki 字標（使用者裁示 2026-08-28）。
+            Z 以「向量圖形」而非文字繪製：需求是「Z 要佔滿元件 80～90%」，
+            而文字的實際墨水高度取決於各平台字體的 cap height（Courier New 只有字級的 0.57，
+            Segoe UI 約 0.70），同一個 font-size 在不同機器上佔比會差很多、無法保證落在 80~90%。
+            向量的 viewBox 是固定座標系，佔比由座標直接決定（見下方 7.5~92.5＝85%），跨平台一致。
+            aria-label 補回字標拿掉後失去的可讀名稱（螢幕閱讀器仍讀得到「ZonWiki 首頁」）。 */}
+        <Link href="/" className="brand" aria-label="ZonWiki 首頁" title="ZonWiki 首頁">
+          <span className="brand__icon" aria-hidden>
+            <BrandZ />
+          </span>
         </Link>
 
         {/* 主功能導覽 (桌面版)。首頁不放字樣 —— 點左上 Logo (ZonWiki) 即可回首頁。
@@ -445,8 +480,8 @@ export function Header({ user }: { user: CurrentUser | null }) {
             >
               <div
                 style={{
-                  width: "32px",
-                  height: "32px",
+                  width: "26px",
+                  height: "26px",
                   borderRadius: "50%",
                   background: "var(--action-secondary-bg)",
                   color: "var(--action-secondary-fg)",
@@ -454,7 +489,7 @@ export function Header({ user }: { user: CurrentUser | null }) {
                   alignItems: "center",
                   justifyContent: "center",
                   fontWeight: 600,
-                  fontSize: "var(--text-sm)",
+                  fontSize: "var(--text-xs)",
                 }}
                 title={user.email}
               >

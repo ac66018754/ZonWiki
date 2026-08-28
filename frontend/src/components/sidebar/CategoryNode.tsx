@@ -260,6 +260,7 @@ function CategoryNodeImpl(props: CategoryNodeProps): React.ReactElement {
           prefetch
           className="nt-name"
           data-cat-id={cat.id}
+          title={isCurrentNote ? "目前閱讀的筆記在此分類" : undefined}
           onClick={(e) => {
             if (sortMode) {
               e.preventDefault();
@@ -276,11 +277,9 @@ function CategoryNodeImpl(props: CategoryNodeProps): React.ReactElement {
             borderRadius: isCurrentNote ? "var(--radius-sm)" : undefined,
           }}
         >
-          {isCurrentNote && (
-            <span title="目前閱讀的筆記在此分類" style={{ marginRight: 2 }}>
-              📍
-            </span>
-          )}
+          {/* 「目前閱讀的筆記在此分類」不再放 📍 圖示（使用者裁示 2026-08-28）：
+              只保留上方 isCurrentNote 的底色加深當作視覺標示，避免圖示佔掉窄側欄的字寬。
+              a11y：改以 title 提供同等資訊給滑鼠/輔助技術。 */}
           <span className="nt-name-text">{cat.name}</span>
         </Link>
         {(cat.tags ?? []).slice(0, 1).map((t) => (

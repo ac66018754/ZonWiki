@@ -664,6 +664,7 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
     addSticky: () => void;
     addSlide: () => void;
     addTextBox: () => void;
+    toggleToolbar: () => void;
   }>(null!);
   useEffect(() => {
     shortcutRef.current = {
@@ -672,15 +673,23 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
       addSlide,
       // 鍵盤路徑不展開工具箱（裁示 #5）；文字屬性面板此時不可見，屬可接受的取捨。
       addTextBox: () => void addTextBox({ expandToolbar: false }),
+      // 「收合／展開工具列」快捷鍵在畫布端必須由這一層處理：收合後 DrawingToolbar 整個被
+      // 換成一顆 🧰（元件卸載），它自己的監聽器就聽不到事件、永遠展不回來。
+      toggleToolbar: () => (toolbarOpen ? collapseToolbar() : expandToolbar()),
     };
   });
   useEffect(() => {
     const onShortcut = (e: Event) => {
       const actionId = (e as CustomEvent<{ actionId?: string }>).detail?.actionId;
       if (!actionId) return;
+      const s = shortcutRef.current;
+      // 收合／展開整個工具列：不在 OVERLAY_SHORTCUT_COMMANDS 表內（那張表只描述「工具/新增」類動作）。
+      if (actionId === 'toggleToolbar') {
+        s.toggleToolbar();
+        return;
+      }
       const cmd = OVERLAY_SHORTCUT_COMMANDS[actionId];
       if (!cmd) return; // toggleToc 等筆記頁動作：畫布端不處理
-      const s = shortcutRef.current;
       switch (cmd.type) {
         case 'tool':
           s.selectTool(cmd.tool); // 與點按鈕同語意：再按同鍵＝關閉該工具
@@ -704,7 +713,7 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
   const keyCaps = useShortcutKeyCaps([
     'toolPen', 'toolHighlight', 'toolLine', 'toolRect', 'toolEllipse',
     'addTextBox', 'eraseArea', 'eraseStroke', 'eraseBox',
-    'addSticky', 'addSlide',
+    'addSticky', 'addSlide', 'toggleToolbar',
   ]);
 
   const allShapes = eraseWork.current
@@ -948,6 +957,7 @@ export function CanvasAnnotationLayer({ canvasId, onDrawingActiveChange }: Props
               text: keyCaps.addTextBox,
               sticky: keyCaps.addSticky,
               slide: keyCaps.addSlide,
+              toolbar: keyCaps.toggleToolbar,
             }}
             tool={tool}
             onSelectTool={selectTool}

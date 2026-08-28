@@ -18,10 +18,18 @@ import { TaskScheduleFields } from "./TaskScheduleFields";
 import { showToast } from "@/lib/toast";
 import { FALLBACK_TZ, PRIORITY_META } from "../taskUtils";
 
-/** 行事曆點格子帶入的初始時間（UTC ISO；可為 null）。null=不開啟。 */
+/** 開啟「快速新增任務」表單時要帶入的初始值。整個物件為 null＝不開啟。 */
 export interface QuickCreateInitial {
+  /** 預填的開始（排程）時間（UTC ISO；行事曆點格子時帶入，其他入口給 null）。 */
   plannedDateTime: string | null;
+  /** 預填的截止時間（UTC ISO；同上）。 */
   dueDateTime: string | null;
+  /**
+   * 是否預先勾選「置頂（Todo 側欄）」。
+   * 由 Todo 左側欄「置頂的任務」分頁的「＋ 新增」按鈕帶 true——從那裡新增的任務，
+   * 使用者的意圖就是「要出現在這個分頁裡」，預設幫他勾好（仍可在表單內取消）。
+   */
+  isPinnedToTodo?: boolean;
 }
 
 /**
@@ -86,7 +94,7 @@ export function QuickCreateTaskModal({
     setPriority(0);
     setGroupId("");
     setIsPinnedToHome(false);
-    setIsPinnedToTodo(false);
+    setIsPinnedToTodo(initial.isPinnedToTodo ?? false);
     setIsLongTerm(false);
     setTargetGranularity("");
     setTargetIso(null);

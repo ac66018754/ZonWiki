@@ -712,7 +712,7 @@ export function Sidebar({ user }: { user: CurrentUser | null }) {
 
   // ─────────── 其它頁面的情境側欄（已抽成獨立元件）───────────
   if (pathname === "/tasks") {
-    return <TasksSidebar />;
+    return <TasksSidebar user={user} />;
   }
   if (pathname.startsWith("/profile")) {
     return <ProfileSidebar user={user} />;
