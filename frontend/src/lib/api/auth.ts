@@ -24,6 +24,11 @@ export interface CurrentUser {
   timeZone?: string;
   /** 顯示模式 (warmpaper|light|dark|night) */
   displayMode?: "warmpaper" | "light" | "dark" | "night";
+  /**
+   * 自訂品牌標誌（Header 左上角圓形圖示）的圖片 data URI；null/缺省＝用內建的「Z」向量標誌。
+   * 隨 /api/me 一起回傳（而非另開請求），外殼首次繪製就有圖，不會先閃 Z 再換圖。
+   */
+  brandLogoUrl?: string | null;
 }
 
 /**
@@ -40,6 +45,11 @@ export interface UserSettings {
   transcriptionEngine?: "gemini" | "groq";
   /** 是否已設定 Groq 金鑰（唯讀；後端絕不回傳金鑰本身） */
   groqKeySet?: boolean;
+  /**
+   * 自訂品牌標誌的圖片 data URI（存 DB，故跨裝置同步）。
+   * 更新時：傳 data URI＝設定；傳空字串＝清除（還原內建「Z」）；不傳＝不動。
+   */
+  brandLogoUrl?: string | null;
 }
 
 // ============================================================================

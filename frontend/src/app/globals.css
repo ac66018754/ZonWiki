@@ -105,6 +105,17 @@
 
   /* — 版面 — */
   --header-height:      56px;
+  /* Header 內文字的字級。刻意不進 --text-* 字階：14px 是「Header 專用」的一階
+     （介於 --text-sm 13 與 --text-base 15 之間），使用者裁示 2026-08-28。 */
+  --header-text-size:   14px;
+  /* Header 內互動元件（導覽項、圖示鈕、帳號頭像）的統一高度。
+     56px 的 Header 放 40px 的控制項，上下各留 8px 呼吸空間。 */
+  --header-control-h:   40px;
+  /* 筆記頁的兩條置頂列高度。左側欄「筆記／＋新增筆記」與「分類／標籤」兩列共用同一組值，
+     讓左右兩邊看起來像同一列（使用者裁示 2026-08-28）。
+     第一列＝返回/標題/動作；第二列＝分頁 + 分類標籤。 */
+  --note-sticky-row1-h: 42px;
+  --note-sticky-row2-h: 36px;
   --sidebar-width:      260px;
   --sidebar-width-mobile: 0;  /* 手機收成抽屜 */
   --max-content-width:  1400px;
@@ -1304,7 +1315,8 @@ html[data-route="time"] .header {
   opacity: 0.7;
 }
 
-/* 品牌方塊：只放一個大寫 Z 的向量圖（ZonWiki 字標已於 2026-08-28 依使用者裁示移除）。 */
+/* 品牌標誌：圓形（像大頭照，使用者裁示 2026-08-28）。內容是自訂圖片，未設定時放內建的 Z 向量。
+   尺寸維持 32px（使用者指定不調整）。 */
 .brand__icon {
   display: flex;
   align-items: center;
@@ -1313,15 +1325,61 @@ html[data-route="time"] .header {
   height: 32px;
   background: var(--action-primary-bg);
   color: var(--action-primary-fg);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-full);
+  overflow: hidden; /* 自訂圖片要被切成圓形 */
 }
 
-/* Z 的向量圖：撐滿整個方塊，實際的「Z 佔 85%」由 SVG 內的 viewBox 座標決定
+/* Z 的向量圖：撐滿整個圓，實際的「Z 佔 85%」由 SVG 內的 viewBox 座標決定
    （見 Header.tsx 的 BrandZ），不受各平台字體 cap height 差異影響。 */
 .brand__z {
   display: block;
   width: 100%;
   height: 100%;
+}
+
+/* 自訂圖片：填滿圓形並置中裁切（圖片本身已在上傳前縮成正方形，這裡只是保險）。 */
+.brand__img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* 右鍵選單（更換圖片 / 還原預設）。位置與外觀比照 Header 其他下拉。 */
+.brand__menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 1000;
+  min-width: 160px;
+  margin-top: var(--spacing-2);
+  padding: var(--spacing-1);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+}
+.brand__menuitem {
+  padding: var(--spacing-2) var(--spacing-3);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  font-size: var(--header-text-size);
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.brand__menuitem:hover:not(:disabled) {
+  background: var(--action-secondary-bg);
+  color: var(--action-secondary-fg);
+}
+.brand__menuitem:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* 導航選單 */
@@ -1338,16 +1396,19 @@ html[data-route="time"] .header {
   display: flex;
   align-items: center;
   gap: var(--spacing-1);
-  padding: var(--spacing-1) var(--spacing-2);
+  /* 使用者裁示 2026-08-28：字放大、左右內距縮小、整顆高度與右側控制項一致——
+     先前是「按鈕框很大、字很小」，看起來 Logo 反而比文字大一號。 */
+  height: var(--header-control-h);
+  padding: 0 var(--spacing-2);
   color: var(--text-secondary);
   border-radius: var(--radius-md);
   cursor: pointer;
   transition: all 0.2s ease;
   white-space: nowrap;
   font-family: var(--font-body);
-  font-size: var(--text-xs);
+  font-size: var(--header-text-size);
   font-weight: 400;
-  line-height: 1.6;
+  line-height: 1;
 }
 
 .nav-item:hover {
@@ -1386,13 +1447,14 @@ html[data-route="time"] .header {
 /* 使用者看到的「那個框框」＝這顆 input。外觀全部寫在這裡（不要寫回 GlobalSearch 的 inline
    style：inline 的優先序高於樣式表，會讓下面的 :hover/:focus 規則靜默失效）。 */
 .search-box input {
-  padding: var(--spacing-1) var(--spacing-2);
+  height: var(--header-control-h);
+  padding: 0 var(--spacing-3);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
   background: var(--bg-surface);
   color: var(--text-primary);
   font-family: var(--font-body);
-  font-size: var(--text-xs);
+  font-size: var(--header-text-size);
   outline: none;
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
@@ -1411,14 +1473,14 @@ html[data-route="time"] .header {
    `.search-box input` 規則互相混淆。 */
 
 /* 標題按鈕 (主功能切換、設定、帳號)。
-   2026-08-28 依使用者裁示由 36px 縮到 30px；觸控裝置的 44px 命中區由下方
-   @media (hover: none) 的 ::after 透明擴大層維持（視覺變小、可點範圍不變）。 */
+   2026-08-28 第二輪裁示：相對 56px 的 Header，30px 太小 → 改 40px（見 --header-control-h）。
+   觸控裝置的 44px 命中區仍由下方 @media (hover: none) 的 ::after 透明擴大層維持。 */
 .icon-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  width: var(--header-control-h);
+  height: var(--header-control-h);
   padding: 0;
   background: transparent;
   border: none;
@@ -1426,7 +1488,10 @@ html[data-route="time"] .header {
   color: var(--text-secondary);
   cursor: pointer;
   font-family: var(--font-body);
-  font-size: var(--text-sm);
+  /* 圖示是 emoji：字級要跟著鈕放大，否則 40px 的框裡飄一顆 13px 的小圖示。
+     20px 是實測（截圖）後選的：再大就會頂到 40px 框的上下緣。 */
+  font-size: 20px;
+  line-height: 1;
   transition: all 0.2s ease;
 }
 
@@ -1706,9 +1771,9 @@ th {
   display: flex;
   align-items: center;
   gap: var(--spacing-2);
-  margin-bottom: var(--spacing-3);
-  padding-top: var(--spacing-2);
-  padding-bottom: var(--spacing-2);
+  /* 固定高度：左側欄的「筆記／＋新增筆記」列用同一個 token，兩邊才會對齊成一條線。 */
+  height: var(--note-sticky-row1-h);
+  padding: 0;
   background: var(--bg-canvas);
   border-bottom: 1px solid var(--border-default);
   /* 工具列按鈕的高度＝標題那行文字的高度（使用者裁示 2026-08-28：
@@ -1716,9 +1781,30 @@ th {
      用 calc 綁在同一組 token 上，日後改標題字級時按鈕會自動跟著改，不會走樣。 */
   --note-topbar-btn-h: calc(var(--text-xl) * 1.3);
 }
+
+/* 捲動後併進標題列的「建立／更新」日期。灰色小字、不搶標題；空間不足時整組先被壓縮。 */
+.note-topbar__dates {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  min-width: 0;
+  overflow: hidden;
+}
+.note-topbar__date {
+  padding: 2px var(--spacing-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  white-space: nowrap;
+}
 .note-topbar__title {
   margin: 0;
-  flex: 1;
+  /* flex: 0 1 auto ＋ 後面的 spacer：標題只佔自己需要的寬度，日期緊接其後，
+     動作鈕仍靠右（原本 flex:1 會把日期推到最右邊、和動作鈕擠在一起）。 */
+  flex: 0 1 auto;
   min-width: 0;
   font-size: var(--text-xl);
   /* 這個 1.3 必須與上面 --note-topbar-btn-h 的係數一致（兩者是同一個「標題文字高度」）。 */
@@ -1728,11 +1814,133 @@ th {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* 彈性間隔：吃掉標題/日期與動作鈕之間的剩餘空間，讓動作鈕永遠靠右。 */
+.note-topbar__spacer {
+  flex: 1 1 auto;
+  min-width: 0;
+}
 .note-topbar__actions {
   display: flex;
   align-items: center;
   gap: var(--spacing-2);
   flex-shrink: 0;
+}
+
+/* ── 筆記頁置頂第二列：分頁（靠左）＋ 分類/標籤（靠右，捲動後才出現）─────────────
+   sticky 的 top 用第一列高度，兩列疊起來就是整個置頂區（共 78px），
+   不像原本要把日期列與分類列也算進去。 */
+.note-tabs {
+  position: sticky;
+  top: var(--note-sticky-row1-h);
+  z-index: 29; /* 低於第一列（30）：捲動時第一列要蓋在它上面 */
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: var(--spacing-3);
+  height: var(--note-sticky-row2-h);
+  margin-bottom: var(--spacing-4);
+  background: var(--bg-canvas);
+  border-bottom: 1px solid var(--border-default);
+}
+.note-tabs__list {
+  display: flex;
+  align-items: stretch;
+  gap: var(--spacing-1);
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.note-tabs__list::-webkit-scrollbar {
+  display: none;
+}
+/* 分頁鈕：原本左右內距 16px，五顆排開後彼此離很遠、也吃掉右側放分類標籤的空間。
+   使用者裁示 2026-08-28 → 縮到 8px。 */
+.note-tab {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--spacing-2);
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  font-weight: 400;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.note-tab:hover {
+  color: var(--text-primary);
+}
+.note-tab--active {
+  border-bottom-color: var(--action-primary-bg);
+  color: var(--action-primary-bg);
+  font-weight: 600;
+}
+
+/* 右側的分類／標籤區：空間不足時自己橫向捲動，不擠壓左邊的分頁。 */
+.note-tabs__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-1);
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.note-tabs__meta::-webkit-scrollbar {
+  display: none;
+}
+.note-tabs__meta-label {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+.note-tabs__meta-label:not(:first-child) {
+  margin-left: var(--spacing-2);
+}
+.note-meta-empty {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+}
+.note-meta-chip {
+  flex-shrink: 0;
+  max-width: 200px;
+  padding: 2px 10px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
+  color: var(--text-secondary);
+  font-family: var(--font-body);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+button.note-meta-chip:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+span.note-meta-chip {
+  cursor: default;
+}
+.note-meta-edit {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  background: transparent;
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-full);
+  color: var(--text-tertiary);
+  font-family: var(--font-body);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+.note-meta-edit:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
 }
 
 /* 工具列上「所有」按鈕（返回、問題清單、全部展開、聆聽、編輯）一律同高、同字體、同字級。
@@ -1813,8 +2021,22 @@ th {
   .note-topbar {
     position: sticky;
     top: 0;
+    /* 手機是「兩列式」（第一列返回＋標題、第二列動作鈕），固定 42px 會把第二列擠出框外。 */
+    height: auto;
+    padding: var(--spacing-2) 0;
     flex-wrap: wrap;
     gap: var(--spacing-2);
+  }
+  /* 手機不啟用「置頂精簡版面」：第一列本身就是兩列高，再疊一條置頂分頁列會吃掉一半螢幕。
+     日期與分類/標籤仍在原本的位置（那兩列從未被移除），資訊不會消失，只是不跟著置頂。 */
+  .note-topbar__dates,
+  .note-tabs__meta {
+    display: none;
+  }
+  .note-tabs {
+    position: static;
+    height: auto;
+    min-height: var(--note-sticky-row2-h);
   }
   .note-topbar__title {
     font-size: var(--text-lg);
@@ -2119,13 +2341,16 @@ button:disabled,
    放在全域樣式而非 styled-jsx：因為節點是由遞迴 render 函式產生，
    styled-jsx 的作用域 class 不會加到「非頂層 return」的 JSX 上，導致樣式漏套。
    ============================================================================ */
+/* 第一列（筆記 ／ ＋新增筆記）：高度與筆記頁置頂第一列相同（使用者裁示 2026-08-28），
+   兩邊看起來像同一列。裡面的元件也一起縮小，不再比右邊的標題列還粗壯。 */
 .nt-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--spacing-2);
-  margin-bottom: var(--spacing-4);
-  padding-bottom: var(--spacing-3);
+  height: var(--note-sticky-row1-h);
+  margin-bottom: 0;
+  padding-bottom: 0;
   border-bottom: 1px solid var(--border-default);
 }
 .nt-title {
@@ -2142,9 +2367,12 @@ button:disabled,
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 6px 12px;
+  /* 高度對齊筆記頁工具列的按鈕（--note-topbar-btn-h 26px 的等價值）。 */
+  height: 26px;
+  padding: 0 10px;
   font-size: var(--text-xs);
   font-weight: 600;
+  line-height: 1;
   background: var(--action-primary-bg);
   color: var(--action-primary-fg);
   border: none;
@@ -2160,23 +2388,29 @@ button:disabled,
   transform: translateY(1px);
 }
 
+/* 第二列（分類 ／ 標籤）：高度與筆記頁的置頂分頁列相同（使用者裁示 2026-08-28），
+   兩邊同樣看起來像同一列。marginTop 為 0 才會緊接在第一列下方。 */
 .nt-tabs {
   display: flex;
+  align-items: stretch;
   gap: var(--spacing-1);
-  margin-bottom: var(--spacing-3);
-  padding: 3px;
+  height: var(--note-sticky-row2-h);
+  margin: 0 0 var(--spacing-2);
+  padding: 4px;
   background: var(--bg-canvas);
   border-radius: var(--radius-md);
 }
 .nt-tab {
   flex: 1;
-  padding: 5px 0;
+  padding: 0;
   background: transparent;
   color: var(--text-secondary);
   border: none;
   border-radius: calc(var(--radius-md) - 2px);
+  font-family: var(--font-body);
   font-size: var(--text-xs);
   font-weight: 600;
+  line-height: 1;
   transition: background 0.15s ease, color 0.15s ease;
 }
 .nt-tab:hover {
@@ -2958,9 +3192,11 @@ html[data-route="time"] .sidebar-toggle {
   display: flex;
   flex-direction: column;
 }
+/* 置頂固定區。padding-top 為 0：讓「筆記／＋新增筆記」那一列的頂端與筆記頁的置頂第一列
+   對齊在同一條線上（兩者都從全站 Header 下緣起算），看起來像左右延伸的同一列。 */
 .nt-pinned {
   flex-shrink: 0;
-  padding: var(--spacing-4) var(--spacing-4) var(--spacing-2);
+  padding: 0 var(--spacing-4) var(--spacing-2);
   border-bottom: 1px solid var(--border-default);
 }
 .nt-scroll {

@@ -17,6 +17,12 @@ public static class UserSettingsEndpoints
     /// 註冊使用者設定相關的 HTTP 端點。
     /// </summary>
     /// <param name="app">端點路由建構器。</param>
+    /// <summary>
+    /// 自訂品牌標誌 data URI 的長度上限（字元數，約 64KB）。
+    /// 前端會先縮成 128×128 WebP（實測約 5~15KB），這個上限只是防呆——擋掉沒縮圖就直接送整張原圖。
+    /// </summary>
+    private const int MaxBrandLogoLength = 64 * 1024;
+
     public static void MapUserSettingsEndpoints(this IEndpointRouteBuilder app)
     {
         /// <summary>
@@ -41,7 +47,8 @@ public static class UserSettingsEndpoints
                     TimeZone: u.TimeZone,
                     ShortcutsJson: u.ShortcutsJson,
                     TranscriptionEngine: u.TranscriptionEngine,
-                    GroqKeySet: u.GroqApiKeyEncrypted != null && u.GroqApiKeyEncrypted != ""))
+                    GroqKeySet: u.GroqApiKeyEncrypted != null && u.GroqApiKeyEncrypted != "",
+                    BrandLogoUrl: u.BrandLogoUrl))
                 .FirstOrDefaultAsync(ct);
 
             if (user is null)
@@ -127,6 +134,32 @@ public static class UserSettingsEndpoints
                 user.ShortcutsJson = request.ShortcutsJson.Length == 0 ? null : request.ShortcutsJson;
             }
 
+            // 自訂品牌標誌：非 null 才動作。空字串＝清除（還原內建「Z」標誌）。
+            // 只收「已在前端縮圖過的圖片 data URI」——不收任意網址（避免把外部網址存進來造成
+            // 混合內容／外連追蹤），也不收過大的內容（欄位是 text，但不該被塞進整張原圖）。
+            if (request.BrandLogoUrl != null)
+            {
+                var logo = request.BrandLogoUrl.Trim();
+                if (logo.Length == 0)
+                {
+                    user.BrandLogoUrl = null;
+                }
+                else
+                {
+                    if (!logo.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return Results.BadRequest(ApiResponse<UserSettingsDto>.Fail(
+                            "品牌標誌只接受圖片的 data URI（data:image/...）", 400));
+                    }
+                    if (logo.Length > MaxBrandLogoLength)
+                    {
+                        return Results.BadRequest(ApiResponse<UserSettingsDto>.Fail(
+                            $"品牌標誌過大（上限約 {MaxBrandLogoLength / 1024} KB，請改用較小的圖片）", 400));
+                    }
+                    user.BrandLogoUrl = logo;
+                }
+            }
+
             user.UpdatedDateTime = DateTime.UtcNow;
             user.UpdatedUser = userId;
 
@@ -137,7 +170,8 @@ public static class UserSettingsEndpoints
                 TimeZone: user.TimeZone,
                 ShortcutsJson: user.ShortcutsJson,
                 TranscriptionEngine: user.TranscriptionEngine,
-                GroqKeySet: !string.IsNullOrEmpty(user.GroqApiKeyEncrypted));
+                GroqKeySet: !string.IsNullOrEmpty(user.GroqApiKeyEncrypted),
+                BrandLogoUrl: user.BrandLogoUrl);
 
             return Results.Ok(ApiResponse<UserSettingsDto>.Ok(resultDto));
         });
