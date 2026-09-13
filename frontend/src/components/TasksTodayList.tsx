@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listTaskCardsInRange, type CurrentUser, type TaskCard } from "@/lib/api";
 import { FALLBACK_TZ, STATUS_META, dateKeyInTz, fromLocalInputValue } from "@/app/tasks/taskUtils";
+import { TagGroupedTaskList } from "./tasks/TagGroupedTaskList";
 
 /**
  * 算出「使用者時區的今天」對應的 UTC 起訖時間（含頭含尾）。
@@ -32,6 +33,8 @@ export function computeTodayRangeUtc(tz: string): { fromIso: string; toIso: stri
  * - 點擊任一項派發 `zonwiki:open-task` 事件 → Todo 頁監聽後開啟該任務的完整編輯器
  *   （與「置頂的任務」分頁同一機制）。
  * - 監聽 `zonwiki:tasks-changed`（任務儲存/建立/刪除後由編輯器派發）即時重新載入。
+ * - **依標籤分組、每組可獨立收合**（交給 TagGroupedTaskList）：分組不影響上面那條排序規則，
+ *   排序結果原封不動帶進各群組內；收合狀態與「置頂的任務」分開記，互不干擾。
  *
  * @param user 目前登入者（只用其時區；未登入或未設定時退回 Asia/Taipei）。
  */
@@ -114,29 +117,29 @@ export function TasksTodayList({ user }: { user: CurrentUser | null }) {
       )}
 
       {!loading && sorted.length > 0 && (
-        <ul className="ttl-list">
-          {sorted.map((task) => {
+        <TagGroupedTaskList
+          storageKey="today"
+          tasks={sorted}
+          renderTask={(task) => {
             const meta = STATUS_META[task.status] ?? STATUS_META.todo;
             const isDone = task.status === "done";
             const time = timeLabel(task);
             return (
-              <li key={task.id}>
-                <button
-                  type="button"
-                  className={`ttl-item ${isDone ? "ttl-item--done" : ""}`}
-                  onClick={() => openTask(task.id)}
-                  title={`開啟「${task.title}」`}
-                >
-                  <span className="ttl-icon" aria-hidden>
-                    {meta.icon}
-                  </span>
-                  <span className="ttl-title">{task.title}</span>
-                  {time && <span className="ttl-time">{time}</span>}
-                </button>
-              </li>
+              <button
+                type="button"
+                className={`ttl-item ${isDone ? "ttl-item--done" : ""}`}
+                onClick={() => openTask(task.id)}
+                title={`開啟「${task.title}」`}
+              >
+                <span className="ttl-icon" aria-hidden>
+                  {meta.icon}
+                </span>
+                <span className="ttl-title">{task.title}</span>
+                {time && <span className="ttl-time">{time}</span>}
+              </button>
             );
-          })}
-        </ul>
+          }}
+        />
       )}
 
       <style jsx>{`
@@ -157,14 +160,6 @@ export function TasksTodayList({ user }: { user: CurrentUser | null }) {
           font-size: var(--text-sm);
           color: var(--text-secondary);
           line-height: 1.7;
-        }
-        .ttl-list {
-          margin: 0;
-          padding: 0;
-          list-style: none;
-          display: flex;
-          flex-direction: column;
-          gap: var(--spacing-1);
         }
         .ttl-item {
           width: 100%;

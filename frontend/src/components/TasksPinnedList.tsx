@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { listPinnedTodoTasks, type TaskCard } from "@/lib/api";
 import { STATUS_META } from "@/app/tasks/taskUtils";
+import { TagGroupedTaskList } from "./tasks/TagGroupedTaskList";
 
 /**
  * Todo 頁左側欄的「置頂的任務」清單。
@@ -13,6 +14,8 @@ import { STATUS_META } from "@/app/tasks/taskUtils";
  * - 監聽 `zonwiki:tasks-changed`（任務儲存/建立/刪除後由編輯器派發）即時重新載入，
  *   讓「勾了置頂→儲存」立刻反映在側欄。
  * - 已完成（done）的任務仍會顯示（劃刪除線、降低透明度），由使用者自行決定何時取消置頂。
+ * - **依標籤分組、每組可獨立收合**（交給 TagGroupedTaskList）：一個任務貼了幾個標籤就會
+ *   在幾個群組各出現一次，沒貼標籤的落在「未標籤」並排最後；收合狀態記在瀏覽器本機。
  *
  * @param headerAction 放在「置頂的任務」標題右側的動作元件（側欄用它塞「＋ 新增」鈕）。
  *   做成插槽而非寫死按鈕：本元件只負責「列出置頂任務」，新增任務的行為屬於側欄（要派發事件給 Todo 頁）。
@@ -69,27 +72,27 @@ export function TasksPinnedList({ headerAction }: { headerAction?: ReactNode } =
       )}
 
       {!loading && tasks.length > 0 && (
-        <ul className="tpl-list">
-          {tasks.map((task) => {
+        <TagGroupedTaskList
+          storageKey="pinned"
+          tasks={tasks}
+          renderTask={(task) => {
             const meta = STATUS_META[task.status] ?? STATUS_META.todo;
             const isDone = task.status === "done";
             return (
-              <li key={task.id}>
-                <button
-                  type="button"
-                  className={`tpl-item ${isDone ? "tpl-item--done" : ""}`}
-                  onClick={() => openTask(task.id)}
-                  title={`開啟「${task.title}」`}
-                >
-                  <span className="tpl-icon" aria-hidden>
-                    {meta.icon}
-                  </span>
-                  <span className="tpl-title">{task.title}</span>
-                </button>
-              </li>
+              <button
+                type="button"
+                className={`tpl-item ${isDone ? "tpl-item--done" : ""}`}
+                onClick={() => openTask(task.id)}
+                title={`開啟「${task.title}」`}
+              >
+                <span className="tpl-icon" aria-hidden>
+                  {meta.icon}
+                </span>
+                <span className="tpl-title">{task.title}</span>
+              </button>
             );
-          })}
-        </ul>
+          }}
+        />
       )}
 
       <style jsx>{`
@@ -117,14 +120,6 @@ export function TasksPinnedList({ headerAction }: { headerAction?: ReactNode } =
           font-size: var(--text-sm);
           color: var(--text-secondary);
           line-height: 1.7;
-        }
-        .tpl-list {
-          margin: 0;
-          padding: 0;
-          list-style: none;
-          display: flex;
-          flex-direction: column;
-          gap: var(--spacing-1);
         }
         .tpl-item {
           width: 100%;
