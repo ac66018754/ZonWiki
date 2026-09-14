@@ -506,6 +506,60 @@ docker compose --profile full down
 docker compose --profile full up --detach --build
 ```
 
+### 兩台裝置共用同一份資料（桌機跑服務、筆電只用瀏覽器）
+
+**情境**：家裡有桌機、外出用筆電，兩台要看到完全一樣的內容。
+
+**做法**：**只有一台跑 ZonWiki**（通常是桌機），另一台什麼都不用裝，直接用瀏覽器連過去。
+資料自始至終只有一份，所以**不會有「兩邊各改一份、之後要合併」的問題**——這正是「同步」最難、
+也最容易靜默丟資料的部分，這個做法直接繞開它。
+
+兩台在外網要互通，用 [Tailscale](https://tailscale.com/)（免費，個人可接 100 台裝置）。
+它的作用一句話：**把你的裝置接成「像在同一個家裡的區網」，不用設路由器、不用固定 IP、不用對外開埠**。
+
+#### 設定步驟
+
+1. **在跑服務的那台**，把主機名稱寫進 `.env`（沒有這個檔就從 `.env.example` 複製一份）：
+
+   ```powershell
+   # 兩種通用：先查主機名稱
+   hostname
+   ```
+
+   ```ini
+   # .env（全部小寫）
+   ZONWIKI_HOST=desktop-kol30jt
+   ```
+
+   用主機名稱而不是 IP 的理由：IP 會變、主機名稱不會；而且 Tailscale 的 MagicDNS
+   預設就是拿「主機名稱轉小寫」當裝置名，同一個名字在區網與外網都通，不必設兩次。
+
+2. **重新 build 前端**（這個值是 build 時烤進 bundle 的，只重啟沒有用）：
+
+   ```powershell
+   # 兩種通用
+   docker compose --profile full build web
+   docker compose --profile full up --detach --no-build web api
+   ```
+
+3. **兩台都裝 Tailscale**，用同一個帳號登入即可（外出時才需要；在同一個區網內不裝也通）。
+
+4. **兩台都用同一個網址開站**：`http://desktop-kol30jt:3000`
+
+#### ⚠️ 三個一定要知道的點
+
+- **不要再用 `http://localhost:3000`**。登入 Cookie 是 `SameSite=Lax`，
+  「用 localhost 開站、卻打主機名的 API」在瀏覽器眼中屬於跨站，Cookie 不會送出，
+  結果就是**一直停在登入頁**。這個行為有 E2E 反例存證，不是猜的。
+- **換網址等於換一個瀏覽器儲存空間**。主題、側欄收合狀態、**編輯到一半的草稿**
+  都存在瀏覽器的 localStorage，而它是綁定網址的——切換前請先確認沒有未存檔的內容。
+  第一次用新網址也要重新登入一次。
+- **筆電要用的時候，桌機必須開著**。這是這個做法唯一的代價（換來的是「永遠不會有資料衝突」）。
+
+#### 想改回只有本機自己用
+
+把 `.env` 的 `ZONWIKI_HOST` 改回 `localhost`（或直接刪掉 `.env`），再重跑上面第 2 步即可。
+
 ### 設定 Google OAuth（正式部署用，本機開發可略）
 
 開發環境若要用真實 Google OAuth（正式測試時）：

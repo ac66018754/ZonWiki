@@ -43,6 +43,21 @@ services:
       ASPNETCORE_ENVIRONMENT: Production
       # 容器網路內 postgres 走服務名 + 內部埠 5432(不是主機的 5533)。
       ConnectionStrings__Postgres: "Host=postgres;Port=5432;Database=zonwiki;Username=zonwiki;Password=zonwiki_dev_password;Include Error Detail=true"
+      # DataProtection 主鑰存放路徑。不設的話 .NET 會把金鑰寫在容器內的暫時目錄，
+      # 容器一重建就換一把新的 → 資料庫裡用舊金鑰加密的 AiModel_ApiKeyEncrypted 會全部解不開
+      # （症狀：AI 模型明明有設金鑰卻無法呼叫）。正式環境的 docker-compose.prod.yml 也是這樣掛。
+      DataProtection__KeyPath: /app/dpkeys
+      # CORS 允許來源：本容器跑 Production 環境，而 Production 「不會」讀 appsettings.Development.json，
+      # 所以那裡的 localhost:3000 設定在這裡無效。Program.cs 的設計是「正式環境沒顯性設定就一律不允許跨域」
+      # （刻意的安全預設），於是瀏覽器的 preflight(OPTIONS) 會被擋，前端每頁都變成「無法載入資料」。
+      # 本機前端在 3000、API 在 5009 屬跨來源，必須在這裡顯性允許。
+      #
+      # 兩筆的用意：
+      #   __0 = 用 ZONWIKI_HOST 這個名字開站時的來源（多裝置共用的情境，見下方 web 服務的說明）。
+      #   __1 = 永遠保留 localhost，這樣「只在本機用」的情境不必改任何設定就能跑。
+      # ZONWIKI_HOST 沒設定時兩筆會一樣（都是 localhost:3000），重複不會有副作用。
+      Cors__AllowedOrigins__0: "http://${ZONWIKI_HOST:-localhost}:3000"
+      Cors__AllowedOrigins__1: "http://localhost:3000"
       TZ: Asia/Taipei
     ports:
       - "5009:8080"
@@ -50,6 +65,8 @@ services:
       # 筆記附件（貼上的圖片）落地目錄:必須掛卷,否則重建容器附件全滅。
       # 正式環境的 docker-compose.prod.yml(在 VM 上)也要照樣掛,並納入備份(scripts/backup-db.sh)。
       - api-appdata:/app/App_Data
+      # DataProtection 主鑰：必須掛卷持久化，理由同上面 DataProtection__KeyPath 的說明。
+      - api-dpkeys:/app/dpkeys
 
   web:
     profiles: ["full"]
@@ -57,8 +74,20 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        # 瀏覽器端打 API 的位址(主機發佈埠),build 時烤進前端 bundle。
-        NEXT_PUBLIC_API_URL: "http://localhost:5009"
+        # 瀏覽器端打 API 的位址(主機發佈埠)。
+        #
+        # ⚠️ 這個值是「build 時就烤進前端 bundle」的，改了一定要重新 build，光重啟容器沒有用：
+        #     docker compose --profile full build web
+        #     docker compose --profile full up --detach --no-build web
+        #
+        # ZONWIKI_HOST 決定「瀏覽器要用哪個名字找這台機器」，預設 localhost（只在本機用）。
+        # 要讓第二台裝置（筆電）也連進來時，把它設成這台機器的主機名稱（見 .env.example）。
+        # 為什麼不寫死 IP：IP 會變，主機名稱不會；Tailscale 的 MagicDNS 也是用主機名稱。
+        #
+        # ⚠️ 設定之後，**兩台裝置都要用同一個名字開站**（例如 http://desktop-xxx:3000），
+        # 不要在本機混用 http://localhost:3000 —— 登入 Cookie 是 SameSite=Lax，
+        # 「用 localhost 開站卻打 desktop-xxx 的 API」屬於跨站，Cookie 不會被送出，會一直是未登入。
+        NEXT_PUBLIC_API_URL: "http://${ZONWIKI_HOST:-localhost}:5009"
     container_name: zonwiki-web
     restart: unless-stopped
     depends_on:
@@ -75,3 +104,5 @@ volumes:
     name: zonwiki-postgres-data
   api-appdata:
     name: zonwiki-api-appdata
+  api-dpkeys:
+    name: zonwiki-api-dpkeys
